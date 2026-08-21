@@ -1,72 +1,74 @@
 # loom-lang
 
-状态：**Active Language Experiment**
+状态：**Active Language Design / Core 0.1 Confirmed Draft**
 
-阶段：E0——语言设计基线与对照 fixture 设计（尚无编译器实现）
+阶段：已确认最小核心的范围与主语义，正在闭合 executable contract；尚无编译器实现
 
 日期：2026-08-21
 
-`loom-lang` 是一项编程语言实验：验证在普通文本文件、普通 Git 和常规 compiler/LSP 工作流中，**声明、约束和显式组合/贡献**能否比常规语言更清楚、更局部地组织真实系统。
+`loom-lang` 当前只确认一组小而完整的常规语言能力：代数数据类型、函数与方法、显式失败、穷尽匹配、模块、基本泛型、普通测试，以及受约束值和契约编程。
 
-如果实验成立，`loom-lang` 应能作为一门具有完整常规工具链的语言独立交付。
+目标是先回答一个更小的问题：
 
-## 当前结论
+> 一门普通静态语言能否让“合法值、合法对象状态和函数契约”成为编译器持续执行的语言事实，同时保持熟悉、可阅读的文本编程体验？
 
-- 源码首先是普通、可阅读、可 diff 的文本；用户可以用常规编辑器和 Git。
-- 编译器从源码、显式依赖和构建配置构造并检查程序；同一组输入必须产生同一语义结果。
-- 用户模型由声明、约束、依赖和显式贡献组成。
-- 每个贡献必须显式指向目标；组合必须确定、可检查、可解释。工具必须回答“最终行为由哪些来源组成、为什么按这个顺序执行”。
-- desired-state reconciliation 已确认属于长期语言/runtime 范围；当前后置实现，并为 observation、plan、action、receipt 与收敛安全另设证据门。
-- E1 有意收缩为 raw-to-domain 约束建立、顺序 flow path、三个 closed-error ordered pipeline、direct target composition 和具名 host provider；不同时引入 bundle、footprint、开放错误或通用 DAG。
-- 当前先冻结问题、fixture 与测量方法，不创建没有验证用途的编译器空壳。
+## 已确认核心基线
 
-## 文档入口
+- `record`、`enum`；
+- `fn` 与带 receiver 的 method；
+- `Option[T]`、`Result[T, E]`；
+- 穷尽 `match`；
+- `module`、显式 import 与 public/private 边界；
+- rank-1 基本泛型；
+- 普通 `test`；
+- `type Price = Float where self >= 0` 一类名义受约束类型；
+- `invariant`、`requires`、`ensures`、`assert`；
+- 默认只读 receiver 与显式 `mut self`。
 
-以下文档按主题构成当前权威基线：
+权威基线见 [最小语言核心规范](docs/02-language-design-baseline.md)，具体书写见 [核心表面与代码风格](docs/03-surface-and-style.md)，尚待闭合的可执行细节与实现边界见 [核心能力分期](docs/04-capability-stages.md)。
+
+## 尚未确认
+
+以下仍需单独讨论和小实验，不属于 Core 0.1：
+
+- AOP-like 静态组合、注入点、贡献与排序；
+- desired-state、operator 与持续调和；
+- capability/provider、effect、异步与并发；
+- `example`、`scenario`、`property` 等专用验证声明；
+- package、target、feature/bundle 与大型工程组合治理。
+
+普通 `test` 已足够验证当前核心；不会为了未来能力提前保留关键字或运行时模型。
+
+## 文档权威关系
 
 | 主题 | 权威文档 |
 |---|---|
-| 项目命题、产品边界、证据等级 | [项目章程与边界](docs/00-charter.md) |
-| 语言范围与核心语义 | [语言设计基线](docs/02-language-design-baseline.md) |
-| 表面语法与代码风格 | [表面语法与代码风格](docs/03-surface-and-style.md) |
-| 能力分期与进入条件 | [能力分期与决策状态](docs/04-capability-stages.md) |
-| Checkout 对照方法与计分 | [第一项 checkout 对照实验](docs/01-first-experiment.md) |
-| Checkout typed graph、错误映射与 oracle | [checkout fixture 设计](fixtures/checkout/README.md) |
+| 项目边界和裁决原则 | [项目章程](docs/00-charter.md) |
+| Core 0.1 语义 | [最小语言核心规范](docs/02-language-design-baseline.md) |
+| Core 0.1 表面写法 | [核心表面与代码风格](docs/03-surface-and-style.md) |
+| 实现顺序与开放问题 | [核心能力分期](docs/04-capability-stages.md) |
 
-跨主题引用必须与对应权威文档一致；出现冲突视为文档缺陷，不能由实现任选一份解释。
+[历史设计草案](docs/draft/README.md)保存此前的声明式组合、AOP-like 与 desired-state/operator 方案；其中 [Checkout 对照实验](docs/draft/03-checkout-composition-experiment.md)及其 [fixture](docs/draft/04-checkout-composition-fixture.md) 均不是当前语言规范。
 
 ## 目标交付形态
 
-未来最小产品即使只有下列传统形态，也必须有价值：
+Core 0.1 采用普通、静态的工具链：
 
 ```text
 .loom 普通文本
-  -> parser / checker / composition compiler
-  -> diagnostics / explain plan / executable artifact
+  -> lexer / parser / type checker / contract checker
+  -> diagnostics / executable program / ordinary tests
   -> standard LSP
 
 Git add / commit / branch / merge 仍是普通 Git
 ```
 
-计划中的命令名仅用于界定产品边界，并不表示现在已有实现：
+计划命令只描述产品边界，并不表示已有实现：
 
 ```text
 loomc check
 loomc build
 loomc test
-loomc explain <declaration>
 ```
 
-`loomc explain` 与 `check` 同等重要；若编译器能够组合行为，却不能完整解释贡献来源、排序依据和冲突原因，则语言假设失败。
-
-## 当前工作
-
-E0 只产出可审查的语言与实验资产：
-
-- 一份语言章程和可逐项确认的设计基线；
-- 一份表面风格与能力分期；
-- 一个 checkout 领域的等价基线设计；
-- 固定任务、正确性 oracle、解释性问题与预注册指标；
-- 明确的继续、重设计和停止条件。
-
-下一道门不是“创建更多 crate”，而是先冻结 [语言设计基线](docs/02-language-design-baseline.md) 中标记为 E1 阻塞项，再审定 [第一项实验](docs/01-first-experiment.md) 与 [fixture 契约](fixtures/checkout/README.md)，确认语言切片和公平对照能够同时闭合。
+下一步是在不引入组合或 operator 能力的前提下，为 Core 0.1 补齐 executable grammar、静态规则、诊断 golden 和最小解释器/编译器切片。

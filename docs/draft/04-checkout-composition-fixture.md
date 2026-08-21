@@ -1,10 +1,10 @@
 # Checkout fixture 设计
 
-状态：Design Protocol 0.2 / 尚无实现
+状态：Paused / Non-normative composition research
 
-对应实验：[第一项 checkout 对照实验](../../docs/01-first-experiment.md)
+> 本文早于 Core 0.1，只保留未来静态组合研究的 fixture 思路。这里出现的 `flow`、slot、contribution、capability、target 和 scenario 不属于当前语言规范，也不是实现任务。当前权威范围见 [最小语言核心规范](../02-language-design-baseline.md)。
 
-边界依据：[loom-lang 项目章程](../../docs/00-charter.md)
+对应研究记录：[第一项 checkout 对照实验](03-checkout-composition-experiment.md)
 
 本目录当前只冻结 fixture 的公平性与可观察契约。E0 不放置无法运行的 `.loom`、TypeScript 空壳或伪生成产物。
 

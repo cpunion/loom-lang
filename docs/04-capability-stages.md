@@ -1,201 +1,146 @@
-# loom-lang 能力分期
+# loom-lang Core 0.1 实现分期
 
-状态：Capability Map 0.2
+状态：Core Delivery Plan 0.1 / Active
 
-证据等级：E0
+证据等级：C0 草案（核心基线已确认，executable contract 尚未完成）
 
 日期：2026-08-21
 
-本文把语言设想分成三层：E1 首个可执行实验、候选 v1、未来独立研究。分期的目的不是缩小长期目标，而是防止编译器先实现大量互相耦合的机制，却还没有证明显式组合比惯用语言更有价值。
+本文只安排 [Core 0.1](02-language-design-baseline.md) 的实现和验收。过去的 Checkout 组合实验已暂停；AOP-like 组合和 desired-state/operator 不在当前实现路线中。
 
-## 1. E1：Checkout 最小可执行纵切
+## 1. C0：规范闭合中
 
-E1 只实现完成 [Checkout 实验](01-first-experiment.md) 所需的语言闭环。
+当前阶段要产出唯一、互不矛盾的语义和表面合同：
 
-### 1.1 必须实现
+- [项目章程](00-charter.md) 定义范围；
+- [最小语言核心规范](02-language-design-baseline.md) 定义语义；
+- [核心表面与代码风格](03-surface-and-style.md) 定义常用写法；
+- 本文定义实现顺序和关门条件。
 
-| 能力 | E1 合同 |
+C0 当前尚未关门。关门不代表语言已经可运行，只代表实现者不需要自行发明 `Price` 构造、record invariant、method receiver 或合同失败的第二种解释。
+
+## 2. C1a：常规静态语言骨架
+
+先实现不依赖合同运行时的基础闭环：
+
+| 子系统 | 最小范围 |
 |---|---|
-| 文本与 module | UTF-8、大括号、顶层恢复、module/import、普通多文件项目 |
-| 基础类型 | Int、Bool、Text、Decimal、Unit、Option、Result、Vec；冻结 Checkout 所需运算、舍入、溢出/除零类别 |
-| 领域数据 | raw record、type where、record、enum、显式构造与 invariant；entity/update 后置 |
-| 表达式与控制流 | fn、let/局部 var、if、`for item in Vec`、封闭 enum/Option/Result 的最小穷尽 match、尾表达式、return、`?`、基础运算 |
-| 错误 | typed Result；panic 与业务错误分开诊断 |
-| capability | Authorization/Risk/Tax/OrderStore/AuditSink 预声明词法槽、`uses`、具名 host provider、target/scenario 精确 binding |
-| flow | build-local 顺序 flow paths、数据/outcome 边、显式业务边、Ok/Err typed lane |
-| 显式 slot | pricing、pre-authorization、authorization-rejected 三个 closed-error ordered pipeline |
-| contribution | 一个 slot-local keyed transform、唯一目标、`uses` 不超过 slot/base 上界、来源可定位 |
-| composition root | 单一 target 直接列 fully-qualified contribution 和全部 provider bindings |
-| 组合检查 | missing target、duplicate transform key、unknown anchor、unordered pair、cycle、capability/error 越界 fail closed |
-| 工具 | `loomc check`、`loomc test`、`loomc explain` |
-| 验证声明 | pure example、每次 fresh host provider 的 scenario；property 后置 |
-| 确定性 | canonical JSON diagnostic/explain 对相同输入逐字节一致；人类文本保证 code/span/participants/reason 一致 |
+| source | UTF-8、注释、大括号、完整 declaration-start sequence 与 impl-member 同步恢复 |
+| module | module、显式 import、pub、跨文件同 module、拒绝 cycle |
+| data | record、enum、Option、Result、字面量与名义类型 |
+| code | fn、let、局部 var、if、block、return、基础运算 |
+| match | variant/payload/literal/`_`，封闭类型穷尽检查 |
+| generics | rank-1 record/enum/fn、调用点推断、定义处检查 |
+| tests | `test fn` 发现、执行与结构化失败报告 |
+| tools | `loomc check`、`loomc test`、machine-readable diagnostics |
 
-### 1.2 实现顺序
+### C1a 必过门
 
-E1 是一个关门目标，不是一次性实现。按四个可独立验收的子门推进：
+1. 一个损坏声明不能吞掉后续合法顶层声明；
+2. 恢复后的 `pub`、`test fn` 和 `method` 不得被错误降级或重新分类；
+3. 文件名、文件遍历和声明排列不改变类型检查结果；
+4. module cycle、重复声明、不可见名字和 import 错误稳定诊断；
+5. enum/Option/Result 的遗漏 match arm 静态失败；
+6. 泛型函数只依据声明签名检查，不按每个调用点重新猜实现；
+7. `test fn` 的 Unit、Ok、Err 三条结果路径可区分；
+8. CLI 与未来 LSP 使用同一个 parser/checker。
 
-1. **E1a 常规语言核**：module、raw/domain record、fn、Result、最小 match、诊断和 pure example；
-2. **E1b 数据约束**：`type where`、record invariant、Raw/Input 建立路径和结构化 Violation；
-3. **E1c 显式组合**：flow、三个 typed pipeline slot、contribution、composition root、check/explain；
-4. **E1d 外部效果**：capability、显式 provider、scenario、调用 trace 与完整 Checkout oracle。
+## 3. C1b：受约束数据
 
-每一门只扩展前一门的 typed program，不允许为赶任务同时引入第二种组合代数。
+在普通类型系统稳定后实现：
 
-### 1.3 E1 的保守简化
+- `type T = Base where predicate`；
+- checked construction `T(expr) -> Result[T, Violation]`；
+- 带 invariant record 的 checked literal；
+- 结构化 Violation；
+- 约束值向 base 的读取与运算后重新建立；
+- 编译器可证明检查成立时的安全消除。
 
-- 不实现 resource footprint、并行或无序 flow；每条 outcome path 和每个 pipeline 都必须有唯一顺序；
-- 不实现 field extension、policy fold 或运行期 registry；
-- 不实现用户泛型；Result/Option/Vec 可先由标准库/编译器提供；
-- 不实现通用 boundary adapter、FFI、并发或持久化；
-- 不实现闭包、HOF 或通用 while；只实现 Checkout 汇总必需的确定性 `for item in Vec`，不在循环中开放 effectful contribution；
-- 不实现 package registry；fixture 可用单 package、多 module；
-- 不实现 provider body、resource 或 `use`；provider 由 host harness 提供，scenario 每次 fresh instance；
-- 不实现 profile、feature 或 bundle；target 直接 compose contribution；
-- 不生成生产 artifact；解释器或简单后端只需通过共享 oracle；
-- 不实现目标状态调和。
+### C1b 必过门
 
-### 1.4 E1 关门条件
+1. `Price(-0.01)` 返回 Err，`Price(0.0)` 和 `Price(1.0)` 返回 Ok；
+2. `Price(expr)` 无论能否静态证明，静态类型始终是 `Result[Price, Violation]`；
+3. 解析、record literal、反序列化和泛型路径都不能伪造 Price；
+4. 普通 Float 运算不会静默获得 Price 类型；
+5. 有 invariant 的 Order literal 返回 Result，非法 discount 被拒绝；
+6. Violation 至少稳定提供 type、predicate/code、path、safe value summary 和 contract location；
+7. debug/release 的接受与拒绝结果一致；
+8. NaN、正负无穷、负零和边界值的 Float 规则有 golden tests。
 
-E1 不是“parser 能跑”即完成，必须同时满足：
+## 4. C1c：method 与契约
 
-1. Checkout 两种实现通过同一行为、顺序、mutation 与 explanation oracle；
-2. contribution 只能进入预先声明的 slot；
-3. pipeline 的 empty identity、context threading、首错停止、closed error mapping 和 capability closure 有 executable tests；
-4. pricing 至少覆盖 empty、A、B、A+B 全 subset，A+B 由显式边全序；
-5. 授权拒绝审计通过 typed error lane 表达，验证失败不会误触发，handler failure 的错误优先级固定；
-6. `explain` 与实际 trace 满足 typed path refinement：一次 trace 只能走计划中的唯一分支，且 capability 调用顺序相同；
-7. 文件顺序、声明顺序和依赖遍历顺序不改变计划，所有组合歧义 fail closed；
-8. TypeScript 基线通过外部惯用性审阅；进入 E2 计时前，候选具备 diagnostics/go-to/rename 的最低 LSP parity。
+随后实现：
 
-## 2. 候选 v1：可写常规应用
+- `impl T` 和 inherent method；
+- 默认深只读 `self`；
+- 独占 inout `mut self`、caller `var` place 与正常返回写回；
+- record invariant 的入口/出口检查；
+- `requires`、`ensures`、`assert`；
+- `result` 和 `old(expr)`；
+- 结构化、不可由普通业务代码捕获的 ContractFault。
 
-只有 E1 机制正确且 Checkout 对照值得继续，才扩展到候选 v1。
+### C1c 必过门
 
-### 2.1 通用语言层
+1. 只读 method 写直接字段、容器成员或 receiver 可达状态都静态失败；
+2. 非 `var` receiver 不能调用 `mut self` method；
+3. `mut self` 从 Ok 或 Err 正常返回都写回 caller place，其他值副本不改变；
+4. invariant 暂时失效的 receiver 不能逃逸、传参、存储或用于嵌套 method call；
+5. free fn 和 method 的 `requires` 失败都报告 PreconditionFault 并定位 caller；
+6. free fn 和 method 的 `ensures` 失败都报告 PostconditionFault 并定位 callee；
+7. `assert` 失败报告 AssertionFault；
+8. test runner 把 AssertionFault 归为测试失败，并保留与普通 Err 不同的类别；
+9. 所有 private/public method 从 Ok 或 Err 正常返回时都重新检查 invariant；
+10. 出口 invariant 先于 ensures；二者同时失败时稳定报告 InvariantFault；
+11. 合同检查顺序与 Core 规范一致，`old` 读取入口快照；
+12. ContractFault 不能被普通 `match` 或 catch 风格业务分支消费；
+13. release build 不得整体关闭合同；只有静态证明成立的单项检查可以消除；
+14. `try_apply_discount` 的 Err 路径保持 receiver 不变，并由 ensures 验证；
+15. 编译器不得替普通 `Result` mut method 提供虚假的自动回滚。
 
-- rank-1 用户泛型；
-- 内建 concept 与结构派生；
-- 纯函数值/闭包与常用 HOF；
-- `for` / `while`、Range、Map、Set；
-- 完整 pattern matching 与封闭 enum 穷尽检查；
-- Decimal、Text、time 的稳定标准语义；
-- `use` 资源作用域；
-- entity key 与受约束 update；
-- package、版本、lockfile 和标准 LSP。
+## 5. C1d：可使用的最小工具链
 
-### 2.2 约束与边界
+Core 语义闭合后补齐日常使用所需工具：
 
-- 递归约束类型和 record/entity invariant；
-- boundary 解码、错误闭合、Violation blame 和 panic 隔离；
-- HTTP/CLI/queue/storage adapter 库；
-- 约束感知 property 生成器；
-- schema 版本与显式纯迁移函数。
+- 稳定 formatter；
+- diagnostics 的 JSON schema 与 golden；
+- go-to-definition、find references、rename、hover 和 diagnostics LSP；
+- 普通多文件 build artifact 或可替代的确定解释器；
+- 增量实现可以后置，但增量与冷构建结果必须一致；
+- 最小标准库：基础数值/Text、Option、Result、常用比较与 parsing。
 
-### 2.3 已验证组合的工程化
+C1 关门要求同一组 fixture 通过冷 CLI、测试 runner 和 LSP 三条入口，且诊断 code、span、blame 与 failure category 一致。
 
-- ordered pipeline 与 typed lane 的库级 public contract；
-- package contribution policy；
-- 经独立大型工程 fixture 解锁后，target 可显式启用 package feature/bundle composition domain，bundle membership 由贡献方声明并自动参与；普通 dependency/import 不激活；未过该门时 v1 继续使用 direct target；
-- composition plan diff 与 contribution policy 报告；
-- machine-readable `explain` schema；
-- provider declaration/body、构造、实例 lifetime 与 binding closure。
+## 6. 实现前仍需冻结的可执行细节
 
-keyed members、policy rule fold、field/provider contribution 都是独立候选实验，不因 pipeline 通过而自动进入 v1。
+以下是 Core 内部的工程合同，不是新语言能力。相应子系统开工前必须冻结：
 
-### 2.4 效果与构建
+1. 完整 lexical grammar、字符串转义和 error-island diagnostic code；
+2. Float 文本解析/格式化与跨平台 canonical encoding（运行与比较语义已由 Core 规范固定）；
+3. Int 位宽或 arbitrary-precision 裁决，以及溢出、除零、`MIN / -1`、转换和可进入合同的 total 运算；
+4. `Violation` 与 `ContractFault` 的规范字段、code、序列化和隐私摘要；
+5. 已确认 inout/exclusive 语义的静态 place/alias 分析算法与 diagnostic；
+6. record/enum 值布局不参与源码语义时的 ABI 策略；
+7. 合同 predicate 的可判定 pure/terminating 子集；
+8. `old(expr)` 的快照边界和复制成本；
+9. 标准库 builtin 与普通源码声明的边界；
+10. compiler/runtime defect 的终止和宿主报告协议。
 
-- 经独立 fixture 解锁的 resource key family 与 `reads`/`touches` footprint；
-- 经独立 fixture 解锁的 public effect upper bound 与 composition-derived effect row；
-- capability provider 的并发/幂等等显式合同；
-- 确定 artifact、dependency lock 与构建 manifest；
-- package 级精确增量编译和影响查询。
+这些细节未闭合时可以做 lexer 或 checker spike，但不能把 spike 的偶然实现升级成规范。
 
-### 2.5 验证
+## 7. 后续讨论轨，不进入当前排期
 
-- pure example；
-- explicit-provider scenario；
-- property；
-- composition plan 与执行 trace 对齐；
-- 第二个领域 fixture，证明组合模型不是 Checkout 特例。
+Core 0.1 之后再分别用小例子讨论：
 
-## 3. 后续能力阶段（独立证据门）
+### 7.1 AOP-like 静态组合
 
-以下能力各自需要新的场景、正确性模型和退出条件，不能随候选 v1 自动进入。
+要回答的最小问题是：一个 owner 如何显式开放扩展位置，外部贡献如何静态附着、排序、类型检查和解释，同时不依赖调用栈匹配、全局扫描或隐藏控制流。
 
-### 3.1 已确认长期范围：目标状态调和
+在该问题闭合前，不定义 `flow`、`slot`、`contribution`、pointcut/advice 或任何同类关键字。
 
-这仍是 loom-lang 的语言/runtime 目标，不是第三个项目。研究内容：desired/current 分离、typed observation、pure plan、capability action 与 resource scope、at-least-once、幂等 key、durable receipt、程序 basis、管理域重叠、崩溃恢复、换版与收敛/`Escalated`。
+### 7.2 desired-state / operator
 
-解锁条件：Checkout 与第二个领域已经证明语言核不是单一 fixture 特例；同时至少一个真实的跨重启业务过程无法用普通 flow 清楚表达，并且团队已有可验证的 observation、幂等 provider 与 durable receipt 合同。
+要回答的最小问题是：如何先声明 desired/current/observation，再由纯 plan 和显式 action 驱动收敛；如何处理幂等、重试、崩溃恢复、版本 basis 和不收敛。
 
-### 3.2 结构化并发
+在该问题闭合前，不定义 `operator`、`machine`、`reconcile` 或专用 runtime。
 
-研究内容：task scope、取消传播、deadline、并行 flow 调度、失败聚合与 resource cleanup。
-
-解锁条件：顺序执行成为已测瓶颈，且 footprint 模型在真实 provider 上足够准确。
-
-### 3.3 高级抽象
-
-可能包括用户 trait、效果多态函数值、开放 dispatch、受限 compile-time 派生。每项必须由标准库或第二领域的具体缺口解锁。
-
-### 3.4 性能与后端
-
-可能包括原生代码、WASM、服务 runtime 和更可控的内存布局。它们不改变声明/约束/组合语义，并以真实 workload 而不是语言展示解锁。
-
-## 4. 暂不进入路线的能力
-
-- 任意用户宏和语法改写；
-- 用户自定义组合代数；
-- 隐式全局目标匹配；
-- algebraic effect handler 与可恢复 continuation；
-- 所有权/借用作为默认内存模型；
-- 依赖任意对象回收时机的终结器；
-- 跨 capability 原子事务；
-- 通用分布式 exactly-once；
-- 持久化任意命令式调用栈；
-- 内建部署控制面。
-
-## 5. 决策状态矩阵
-
-| 主题 | 当前状态 | 备注 |
-|---|---|---|
-| 静态类型、值语义、自动内存管理 | 确认 | E1 起遵守 |
-| 大括号文本语法、缩进非语义 | 确认 | E1 grammar |
-| 声明/实现/状态分离 | 确认 | 核心原则 |
-| 约束类型与 invariant | 确认 | E1 最小实现 |
-| Result + panic 分轨 | 确认 | E1 |
-| capability + `uses` | 确认 | E1 |
-| slot + targeted contribution | 确认语义 | 精确 grammar 待冻结 |
-| fn 有序、flow 依赖图 | 确认 | E1 |
-| typed Ok/Err flow lane | 确认需求 | 精确语义需纸面执行 |
-| ordered pipeline | 确认语义 | E1 唯一组合代数 |
-| keyed/rules/field/provider contribution | 开放 | 各自独立 fixture，不自动进入 v1 |
-| import 与 contribution 激活分离 | 确认 | 激活由 build target |
-| resource footprint | 开放 | 独立 fixture 通过前一律使用显式边 |
-| package feature/bundle activation | 开放 | 需大型工程 fixture；E1/direct target 可独立成立 |
-| rank-1 泛型、纯闭包 | 暂定 v1 | E1 可后置 |
-| boundary 三职责 | 确认方向 | E1 不实现通用 adapter |
-| 并发/取消语法 | 开放 | 另行实验 |
-| 目标状态调和能力 | 确认长期范围 | loom-lang 后续阶段 |
-| 目标状态语法、存储和调度协议 | 开放 | 独立证据门 |
-| 编译后端与包注册表 | 开放 | 不阻塞 E1 |
-
-## 6. 下一份必须产出的设计资产
-
-在创建编译器工程前，按顺序完成：
-
-1. Checkout base flow 的 typed graph；
-2. pricing、pre-authorization 与 authorization-rejected 三个 pipeline slot 的精确输入/输出；
-3. Raw/Input -> constrained domain -> CheckoutError 的唯一建立和映射；
-4. closed CheckoutError、每个 slot error、handler failure priority；
-5. Authorization/Risk/Tax/OrderStore/AuditSink host provider contract、fresh lifecycle 与 bindings；
-6. pricing empty/A/B/A+B 计划及 T1–T4 纸面 composition plan；
-7. 成功、验证失败、风险拒绝、授权拒绝、handler 失败、持久化失败执行 trace；
-8. slot/lane grammar 候选、`explain` JSON schema/golden 与 E1 type rules；
-9. Decimal 字面量、scale/舍入，以及 Int/Decimal 溢出、除零和越界的 defect oracle；
-10. 内建结构 equality、Vec 字面量/遍历、最小 pattern、穷尽 match 和 `result`/`return` 控制类型；
-11. Raw schema、Violation code/path/value summary、确定首错顺序和 canonical JSON；
-12. host-provider descriptor manifest、adapter digest、fresh constructor、fixture alias 与 trace schema。
-
-这十二项能闭合，才说明 E1 executable contract 足够清楚，可以冻结 parser AST/checker API。在此之前只能做不承诺 AST 形状的一次性 lexer/error-recovery spike。
+这两条研究轨彼此独立，也不得作为 Core 0.1 实现的前置条件。

@@ -1,364 +1,407 @@
-# loom-lang 语言设计基线
+# loom-lang 最小语言核心规范
 
-状态：Design Baseline 0.2
+状态：Core 0.1 / Confirmed Normative Draft
 
-证据等级：E0（设计已确认，尚未由编译器和真实任务验证）
+证据等级：C0 草案（本文列出的决定已确认，尚有可执行细节待闭合）
 
 日期：2026-08-21
 
-本文回答“loom-lang 是一门什么语言”。它是语言范围与核心语义的当前权威；[表面与代码风格](03-surface-and-style.md)回答代码应当如何书写，[能力分期](04-capability-stages.md)回答哪些能力进入首个实现、候选 v1 与未来研究。
+本文是当前唯一的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；[实现分期](04-capability-stages.md#6-实现前仍需冻结的可执行细节) 所列问题闭合后，Core 0.1 才能升级为 parser/checker 的完整 executable contract。AOP-like 组合和 desired-state/operator 仍在讨论，不属于本文。
 
-文中使用三种状态：
+文中的“必须”“不得”是规范要求；表面拼写由 [核心表面与代码风格](03-surface-and-style.md)补充。
 
-- **确认**：除非实验给出反例，否则实现必须遵守；
-- **暂定**：方向已选，但具体语法、算法或运行时合同仍可调整；
-- **后置**：不进入当前实现，需由新的真实场景解锁。
+## 1. Core 0.1 范围
 
-## 1. 定位与目标领域
+Core 0.1 包含：
 
-loom-lang 是一门面向应用系统和大型工程组织的静态类型语言，优先服务：
+- `module`、显式 import、`pub`；
+- `record`、`enum`；
+- `fn`、method、只读与可写 receiver；
+- `Option[T]`、`Result[T, E]`；
+- 穷尽 `match`；
+- 显式 rank-1 基本泛型；
+- 普通 `test fn`；
+- 名义受约束类型 `type T = Base where predicate`；
+- record `invariant`；
+- `requires`、`ensures`、`assert`。
 
-- 领域模型、业务服务、CLI 与数据处理程序；
-- 规则持续增加、多个 feature 向同一业务能力贡献行为的系统；
-- 需要把外部依赖、失败、约束和执行顺序说清楚的代码；
-- 需要可重复构建、可解释组合和明确模块边界的大型代码库；
-- 未来需要用目标状态和持续调和表达长时间业务过程的系统。
+普通表达式基础包括 `let`、局部 `var`、`if`、block、尾表达式、提前 `return` 和基础运算。表达式及参数从左到右求值。
 
-首要目标不是语法更短，而是减少四种工程歧义：约束写在哪里、行为来自哪里、为什么存在当前顺序、某个外部效果由谁提供。
+### 1.1 Core prelude 与 `Float`
 
-候选 v1 不是系统编程语言，不以手工内存管理、内核/嵌入式开发、极致数值计算或元编程 DSL 为首要场景。部署、切流、集群租约和灾备属于外部基础设施；语言只产生可执行程序及其明确的依赖合同。
+Core prelude 自动提供：`Bool`、`Int`、`Float`、`Text`、`Unit`、`Option`、`Result`、`Violation`、`ContractFault`，以及 `Some`、`None`、`Ok`、`Err`、`Unit` 构造。其他类型和函数必须显式 import。
 
-## 2. 四条核心原则
+Core 0.1 的 `Float` 固定为 IEEE 754 binary64：
 
-### 2.1 声明、实现和状态分离
+- 基础运算使用 round-to-nearest, ties-to-even；
+- 溢出、除以零和无效运算按 IEEE 754 产生 infinity 或 NaN，不隐式产生 ContractFault；
+- 与 NaN 的 `<`、`<=`、`>`、`>=`、`==` 都为 false，`!=` 为 true；
+- `+0.0 == -0.0` 为 true；
+- Core 0.1 不提供 Float 的隐式 total ordering；
+- 标准库 `standard.float.is_finite(Float) Bool` 是 compiler-known、pure、total predicate。
 
-编译器必须区分：
+文本解析/格式化和跨平台 canonical encoding 属于标准库 executable contract，不能改变上述运行语义。
 
-| 层 | 回答的问题 | 例子 |
-|---|---|---|
-| 声明/合同 | 什么值或行为才合法？ | 类型、约束、函数签名、能力操作、开放组合槽 |
-| 实现 | 如何计算或提供合同？ | 函数体、能力 provider、具名贡献 |
-| 状态 | 这次运行或外部世界现在是什么？ | record/entity 值、数据库内容、未来调和观测 |
+`Int` 的位宽、溢出、除零和转换语义尚未冻结，属于 C0 关门项。在该合同闭合前，本文只确认 Int literal、相等与顺序比较；不得把 Int 算术用于要求 total 的 contract predicate，也不得据此冻结后端行为。
 
-三者可以在相邻源码中书写，但不能在语义上混为一物。公共合同变化与实现体变化是不同类别；运行状态不能反向决定编译语义。
+## 2. 名字与 module
 
-### 2.2 声明即约束
+```loom
+module shop.pricing
 
-每个声明都是由编译器执行的合同，而不是注释：类型限制值域，函数签名限制调用，能力需求限制外部依赖，开放 slot 限制可贡献形状。本文专门使用“数据约束”时，只指 `where` / `invariant` 定义的值合法性，不把业务 eligibility、执行顺序或任意实现性质都塞进同一种约束机制。
-
-领域数据约束只有一个声明位置；值进入领域类型后应保持有效，不要求调用方反复手写校验。
-
-### 2.3 顺序即依赖
-
-不同上下文采用不同顺序语义：
-
-- 普通函数体是有序算法，语句先后有语义；
-- 顶层声明、record 字段、独立规则和 flow 节点的文本排列没有执行语义；
-- flow 中方向明确的数据依赖会产生顺序；
-- 真实业务先后由显式 `before` / `after` 边表达；
-- 效果足迹重叠只能产生“必须定序”的义务，不能替程序员猜测方向；
-- 长期只有被独立组合规则证明可交换且不可观察顺序的节点才可无序；规范计划可用稳定 key 序列化它们，但展示顺序不是程序语义。E1 不实现 totality/commutativity 证明，每条 outcome path 和 pipeline 都要求唯一顺序，绝不用任意 tie-break 掩盖缺失关系。
-
-### 2.4 组合必须显式且可解释
-
-任何开放组合都包含两个显式对象：
-
-1. 目标声明公开一个**具名、具类型、具组合规则的槽**；
-2. 贡献声明以限定名指向这个槽。
-
-不存在对任意函数、调用点或名字模式的隐式匹配。构建器必须从用于执行的同一组合计划回答：成员来自哪里、为何适用、为何有当前顺序，以及一个确定、可定位的冲突 witness。E1 不承诺计算全局最小冲突集合。
-
-## 3. 程序与名字
-
-### 3.1 编译输入
-
-程序语义只由以下输入决定：
-
-```text
-源码 + 显式依赖及 lockfile + 构建目标配置 + 编译器/标准库版本
+import shop.common.Currency
 ```
 
-同一输入必须产生同一诊断、typed program 与组合计划。具体后端一旦锁定，还必须另行规定 artifact 的可重复性；E0 不用“组合计划确定”冒充“所有平台产物逐字节相同”。环境变量、目录遍历顺序、文件修改时间和依赖下载时机不得成为隐藏语义输入。
+规则：
 
-### 3.2 源码名字就是编译身份
+1. 每个源码文件恰有一个 `module` 声明；
+2. 一个 module 可以分布在多个文件；
+3. 声明的编译身份是 module 限定名，不是文件路径；
+4. 默认只有本 module 可见，`pub` 声明进入外部接口；
+5. import 必须显式，Core 0.1 没有 wildcard import；
+6. import 只影响名字可见性，不执行初始化或激活行为；
+7. 文件名、文件遍历顺序和顶层声明排列不影响名字解析；
+8. 顶层没有可执行语句或可变全局状态；
+9. Core 0.1 拒绝 module import cycle。
 
-声明以 package、module 与声明名组成的限定名解析。公开 rename 是普通 API 变化；包版本与迁移工具负责兼容性，不引入用户不可见的历史身份。
+## 3. `record`
 
-文件是阅读和组织单位，不是声明身份：
-
-- 一个 module 可以分布在多个文件；
-- 文件移动不改变 module 内限定名；
-- 同一 module 内顶层声明排列不影响程序；
-- module 声明与实际目录布局的约束由项目配置统一规定。
-
-顶层只允许声明和编译期常量，不运行 effectful 初始化代码。程序世界效果必须从显式入口经 capability 发生。
-
-## 4. 声明模型
-
-候选 v1 的语言声明分为六组：
-
-| 组 | 声明 | 作用 |
-|---|---|---|
-| 数据 | `type`、`record`、`entity`、`enum` | 表达领域值、领域键、封闭变体与约束 |
-| 计算 | `fn` | 有序的局部算法与可复用计算 |
-| 外部依赖 | `capability`、provider、resource | 分离外部操作合同、实现和实例状态 |
-| 组合 | slot、contribution、policy、flow | 表达开放成员、规则集合和依赖图 |
-| 边界 | boundary | 解码不可信输入、闭合错误并隔离缺陷 |
-| 验证 | example、scenario、property | 表达示例、场景与生成式性质 |
-
-build target 属于构建配置：选择入口、依赖、组合成员与 capability provider，关闭所有开放槽，得到确定程序。E1 只有一个 repo-local target，直接列 fully-qualified contribution 和 provider binding；profile、feature 与 bundle activation 后置，避免首个实现同时承担四层配置语义。
-
-候选 v1 的大型工程方向仍确认：target 显式把 package feature/bundle 放进 composition domain，成员关系在贡献方声明；bundle 启用后其定向 contribution 自动参与，消费方无需逐项登记。普通 dependency 或 import 永远不激活行为，完整路径必须能解释为 `target -> enabled feature/bundle -> contribution -> slot`。
-
-### 4.1 数据声明
-
-- `type T = Base where predicate` 定义名义约束类型；同一基类型和同一谓词的两个不同名字仍是不同类型；
-- `record` 是不可变值积；
-- `entity` 也是值快照，但额外声明领域 key，用于寻址和持久化合同；它不是隐式 ORM、identity map 或可变远程对象；
-- `enum` 是封闭和类型；变体顺序没有隐式整数含义；
-- `T?` 是 `Option[T]` 的表面糖；
-- record 字段顺序只服务阅读和格式化，结构相等与编码不得依赖文件排列；
-- record 可按字段名和值派生结构相等；entity 不自动定义 `==`，领域身份使用 `same_key(a, b)`，快照内容比较必须显式；
-- 公共类型、函数与能力的签名必须显式，局部实现允许推断。
-
-### 4.2 值与内存
-
-确认采用：不可变默认、局部 `var` 可变、值语义、自动内存管理。资源生命周期不依赖对象回收时机；文件、连接等资源使用词法 `use` 作用域保证释放。
-
-候选 v1 的基础类型方向：
-
-- `Int`：有符号 64 位，普通溢出属于缺陷；
-- `Decimal`：十进制精确表示，除法必须给出舍入策略；
-- `Bool`；
-- `Text`：UTF-8 的 Unicode 标量序列，保留源码/输入的标量内容；NFC 等正规化必须由显式类型或 API 请求，不能在不同边界悄悄改变；
-- `Option`、`Result`、`Vec`、`Map`、`Set`；
-- `Instant`、`Monotonic`、`Duration` 和显式时区的 civil time 分型。
-
-精确 wire 编码和时间 API 在实现相应边界前冻结，不作为 E1 parser 的前置条件。
-
-## 5. 约束与信任边界
-
-### 5.1 约束类型恒有效
-
-约束值只有三个建立入口：
-
-1. 编译器可以证明的合法字面量；
-2. 显式构造，例如 `Money.from(value) Result[Money, Violation]`；
-3. boundary 对外部表示执行派生解码和校验。
-
-约束类型可以隐式上转为基类型；基类型不能隐式进入约束类型。不能证明保持约束的运算返回基类型，调用方必须重新建立。容器保持不变型，例如 `Vec[Money]` 不是 `Vec[Decimal]`。
-
-record/entity 的 `invariant` 在构造和产生新值的更新处检查。E1 不实现通用证明器：除合法字面量外，`from` 和重建一律在运行时返回 `Result`。
-
-E1 约束 AST 只允许字段投影、字面量、比较、布尔组合、穷尽 Option match 和少量 compiler-known total primitive；普通用户函数、递归、循环、`?`、capability 与 partial unwrap 一律拒绝。Violation 表示输入不满足合法谓词，不把实现缺陷伪装成普通业务违约。
-
-### 5.2 boundary 的职责
-
-boundary 同时承担三项语言职责：
-
-- 从 HTTP、CLI、queue、存储或 FFI 表示派生领域值；
-- 要求所有预期错误在入口处映射闭合；
-- 把 panic 限制在一次边界调用中，并生成结构化 incident。
-
-Violation 至少包含字段路径、约束、值摘要和来源边界。适配器是库，boundary 的类型/错误/隔离合同属于语言。
-
-E1 Checkout 使用确定性内存 provider，不要求先实现通用 boundary 派生器。非法数量、金额和 VAT 输入以无约束 `CheckoutInput` / `Raw*` record 表示，再经唯一 `CheckoutRequest.from(raw)` 路径建立 `Quantity`、`Money`、`Customer` 与 `CheckoutRequest`。共享 oracle 只能向 raw 类型注入非法值；构造失败固定映射为 `CheckoutError.Validation`，且不会进入 flow 或产生 capability trace。
-
-## 6. 函数、控制流与失败
-
-普通函数是有序、表达式导向的静态函数：
-
-- `let` 不可变，`var` 局部可变；
-- `if`、`match`、`for`、`while`、`return`、`break`、`continue`；
-- 尾表达式作为返回值；
-- 预期业务失败用 `Result[T, E]` 与 `?`；
-- `?` 只传播相同的错误类型；不同封闭错误之间必须显式 `match` 并构造目标 variant，不提供隐式 `From`；
-- `panic` 只表示除零、越界、断言等缺陷，用户代码不能捕获后继续业务分支；
-- 函数值与闭包进入候选 v1，默认按值捕获；首版只允许纯函数值，效果多态回调后置。
-
-泛型方向确认为 rank-1 显式类型参数，不提供 HKT 或特化。候选 v1 先使用封闭内建 concept 集（`Eq`、`Ord`、`Hash`、`Show`、`Decode`、`Encode`、`Num`）；用户定义 trait 需真实库场景解锁。
-
-## 7. capability 与效果
-
-### 7.1 外部依赖
-
-capability 是一组具名操作合同；函数以 `uses slot_name CapabilityType` 声明所需的词法槽。provider 不按类型搜索：只有 target/scenario 的 `slot_name -> qualified provider instance` 绑定有效，缺失绑定、同一槽重复绑定或类型不符都报错；依赖图中存在多个 provider implementation 本身不构成歧义。
-
-capability 是词法作用域中的依赖句柄，不是普通一等值：它不能存进普通数据、从函数返回或被闭包捕获。这样的限制保证依赖范围和测试替换仍然可见。
-
-时钟、随机数、文件、网络和数据库都必须通过 capability；没有 ambient 全局实例。FFI 只能实现 capability 操作，必须声明效果并把返回表示经过 boundary 检查。
-
-provider 完成声明/实现/状态分离：provider declaration 明确 `implements Capability`，完整实现相同操作签名和错误类型，也可以显式 `uses` 其他 capability；provider declaration 是实现，provider instance 才是状态。build target 绑定具有明确 program lifetime 的构造，scenario 每次运行创建 fresh instance，不存在通过类型名访问的全局 provider 状态。
-
-E1 不实现 loom 源码中的 provider body，只绑定测试 harness 提供的具名内存 provider。每个 host provider 必须由随源码/构建配置版本化的 descriptor 声明 qualified name、implemented capability、operation signature、fresh constructor、adapter version/digest 与 trace schema；checker 和 test runner 不得从进程环境猜测。scenario 的调用 trace 由该锁定 adapter 返回；若需要检查 stateful stub，scenario 使用本次运行的 fixture alias，不读取 `RecordingAudit.events` 一类静态全局。
-
-### 7.2 效果足迹
-
-效果足迹是候选 v1 方向，不进入 E1 最小实现：
-
-- capability 可以声明 resource key family；
-- 操作用 `reads` / `touches` 描述有限资源集合；
-- 调用方足迹由编译器保守推断；
-- 两个读取不冲突，读写或写写重叠产生排序义务；
-- 编译器无法证明不相交时必须保守要求显式边；
-- 足迹不会自动决定先后方向；
-- provider 对声明足迹的遵守是可测试/可审查合同。
-
-E1 中所有无数据依赖的效果步骤都必须用显式业务边定序；只有当 footprint 模型通过独立实验后，才允许省略可证明无关步骤之间的边。
-
-并发和取消的用户表面尚未冻结。确认的是：不会用隐式共享可变状态掩盖并发，能力依赖和资源作用域在并发下仍须保持可见。
-
-## 8. 显式组合
-
-### 8.1 统一 slot 模型
-
-目标声明必须先公开命名 slot；slot 合同包含：
-
-- 唯一限定名；
-- 接受的 contribution 形状；
-- 输入/输出类型和闭合错误类型；
-- 使用的组合规则；
-- contribution 允许使用的 capability 槽上界；
-- 允许贡献的 package 范围；
-- 组合失败的确定诊断。
-
-contribution 有自己的名字和源码位置，明确指向一个 slot。未公开的目标不可扩展；不存在“对所有同名函数生效”或“在某调用前后插入”的语义。
-
-### 8.2 组合代数分别解锁
-
-长期只考虑少量内建组合，不允许用户任意定义组合代数：
-
-| slot 类型 | 用途 | 冲突/顺序规则 |
-|---|---|---|
-| keyed members | 字段、注册项、命名 provider | key 唯一，重复即错误 |
-| rules | eligibility、集合约束、allow/deny | 仅使用语言内建且满足交换律的 fold |
-| ordered pipeline | checkout、导入、审批等流程 | 同型 transform；显式全序；首个错误停止 |
-
-E1 只实现 ordered pipeline。keyed members、rules、field/provider contribution 和 footprint 必须各自由后续 fixture 单独解锁，不因 Checkout 通过自动进入候选 v1。用户自定义组合代数、开放模式 dispatch 和隐式 provider choice 后置。
-
-### 8.3 flow 与普通函数的边界
-
-- `fn` 用于单一所有者、局部有序算法；
-- `flow` 用于明确需要开放步骤、具名阶段和组合解释的顺序过程；
-- E1 flow 节点拥有 typed input/output，错误结果也是显式 typed lane；每条可执行 outcome path 必须形成唯一顺序；
-- contribution 只能进入 flow 预先公开的 slot，不能包围任意函数；
-- flow 的实际执行计划由数据/outcome 边和显式业务边确定，源文件中的节点排列不决定顺序；并行/无序 DAG 后置。
-
-### 8.4 E1 唯一的 step slot
-
-E1 不实现任意形状的 DAG 注入，只实现目标拥有的 typed pipeline slot：
-
-```text
-pipeline[S, E]
-empty                         = Ok(input)
-one contribution             = S -> Result[S, E]
-multiple active contributions = explicit total order; output feeds next input
+```loom
+record PairOfPrices {
+    first  Price
+    second Price
+}
 ```
 
-`E` 是 slot owner 定义的封闭错误类型。contribution 必须返回精确 `Result[S, E]`，不能扩展错误联合；pipeline 依序传递 context，首个 `Err` 停止。基础 flow 在 slot 调用点显式把 `E` 映射到自己的封闭错误类型。
+`record` 是封闭、名义、具名字段的值积：
 
-slot 在基础 flow 中有唯一、可见的调用位置，因此它位于哪些基础步骤之间由正常数据/typed outcome 边决定。每个 contribution 恰好提供一个带显式 slot-local key 的同型 transform，不能跳转 lane、包围函数、截获未声明错误或引用 slot 外节点。
+- 相同字段的两个不同 record 名仍是不同类型；
+- 字段类型属于 record 的静态合同；
+- record **声明**中的字段顺序服务阅读，不参与相等、编码或执行语义；
+- record literal 的字段初始化式按 literal 中的源码顺序从左到右、各求值一次；
+- Core 0.1 构造时必须提供全部字段，没有默认字段；
+- 字段对外只读，只能由该类型的 `mut self` method 修改；
+- record 使用值语义；修改一个值不得改变其其他逻辑副本；
+- 没有 invariant 的 record literal 构造出 `T`；
+- 有 invariant 的 record literal 构造出 `Result[T, Violation]`；
+- Core 0.1 每个 record 最多声明一个 invariant clause；多个条件必须在该 clause 中用布尔组合明确写出；
+- 增加或删除 invariant 会改变构造 API，属于有意的 breaking change；
+- Core 0.1 没有继承、结构子类型、开放字段或对象 identity。
 
-同一 slot 有多个 active contribution 时：
+如果所有字段都支持值相等，record 可以派生值相等；否则使用相等是静态错误。
 
-- checker 先为 target-visible、同一 slot 的全部 declared transforms（active 或 inactive）建立 key catalog；key 在该 catalog 中必须无条件唯一，anchor 只能解析到唯一 catalog entry；
-- `before` / `after` 只有两端都 active 时才进入执行计划，因此可选 contribution 单独启用仍合法；引用 catalog 中不存在的 key 是 unknown anchor；
-- 所有 active members 必须形成显式全序，不尝试证明 pure、total 或 commutative；
-- 不同来源使用相同 key、未知 anchor、未定序 pair 和 cycle 都 fail closed；explain 同时保留 key 与 qualified source；
-- empty slot 返回 `Ok(input)`，启用/移除 contribution 不要求修改目标 flow 实现。
+## 4. `enum`
 
-E1 的 open flow 只作为 build-local entry，不导出为稳定库 API。它在声明中预列 Authorization、Risk、Tax、OrderStore、AuditSink 等全部 capability 槽；每个 contribution 的 `uses` 必须是该集合及目标 slot `allows` 上界的子集，禁止组合时引入新 capability。target 为所有预声明槽绑定唯一 provider，inactive contribution 只是不调用相应槽。composition-derived public effect row 后置。
-
-Checkout E1 需要三个明确 slot：`pricing`、`pre_authorization` 和 `authorization_rejected`。最后一个只在 Authorization 的 typed rejection lane 调用，保证“授权拒绝要审计、验证失败不审计”由显式路径表达，而不是由全局拦截实现。
-
-### 8.5 激活与可发现性
-
-import 只控制源码名字可见性，不激活 contribution。E1 只有 direct composition：单一 build target 逐项列 fully-qualified contribution；重复列同一 contribution 直接失败。`loomc explain` 的激活路径固定为 `target -> contribution -> target slot`。
-
-候选 v1 的大型工程阶段再引入 package feature/bundle composition domain：成员关系由贡献方显式声明，target 启用 bundle 后成员自动参与而无需中央逐项登记；普通 dependency/import 仍不激活。届时 explain 路径扩展为 `target -> enabled feature/bundle -> contribution -> slot`，锁定依赖升级和 membership 变化必须产生可审阅的 plan diff。
-
-## 9. package、module 与构建
-
-- package 是版本、分发、可见性和贡献政策边界；
-- module 是 package 内命名空间；
-- package 依赖和 E1 module import 必须无环；若后续真实场景需要 type-only cycle，须以独立规则解锁；
-- 可见性为 `pub`、`package`、`private`；
-- public 声明签名、约束、能力需求与组合 slot 必须显式；
-- E1 build target 选择入口、direct contributions 与 provider bindings；候选 v1 再加入 package feature/bundle composition domain；
-- 所有 slot、能力和错误必须闭合后才能构建可执行产物；
-- lockfile 与工具链版本进入可重复构建输入；
-- `loomc explain` 与检查器消费同一个 typed composition plan。删除影响仅指静态组合/依赖图中直接和传递受影响的声明、slot 与 step，不承诺预测业务输出值的语义反事实。
-
-公共接口兼容性、增量编译和 artifact manifest 属于编译器/包管理能力，但不能改变上述语言语义。
-
-### 9.1 大型工程组织目标
-
-大型工程能力不是“自动发现更多代码”，而是把所有权、激活与影响面做成可治理合同：
-
-- package owner 决定 public slot、允许的 contributor 范围与兼容性政策；
-- target/profile 的变化产生可审阅的 composition-plan diff，依赖升级不能静默激活行为；
-- 工具可按 package、feature/bundle、contribution、slot、capability 与 public contract 查询直接/传递影响；
-- public contract、lockfile、provider binding 与构建输入可重复，CI 与本地 checker 使用同一 typed plan；
-- 增量编译和并行构建只能优化该计划，不能另造语义；
-- feature/bundle membership 必须先通过独立大型工程 fixture，direct target 始终是可工作的保守退路。
-
-## 10. example、scenario 与 property
-
-这些是语言级验证声明，不绑定特定编辑器体验：
-
-- `example name = expr`：纯、确定、可作可执行文档；
-- `scenario name { ... }`：显式 provider 与输入下执行一条行为场景；
-- `property name { ... }`：在可重复生成器下检查性质。
-
-它们由 `loomc test` 执行。E1 实现 pure example 与 explicit-provider scenario；property 在候选 v1 加入可重复生成器后实现。effectful scenario 必须显式选择 provider，并产生可报告的调用 trace；不会因保存源码自动执行世界效果。
-
-## 11. 已确认的长期能力：目标状态调和
-
-目标状态调和是 loom-lang 已确认的长期语言/runtime 范围，但不进入 Checkout E1；独立证据门只决定何时实现，不决定它是否属于本项目。它可以调和任何由 capability 暴露并能可靠观测的领域或系统资源，不等于把部署控制面内建进语言。
-
-语义分解确认保留：
-
-```text
-desired state
-  + durable observations -> current state
-  + pure gap plan
-  + capability actions
-  + idempotency key and durable receipt
-  -> repeated reconciliation
+```loom
+enum PriceInputError {
+    InvalidNumber(ParseFloatError)
+    OutOfRange(Violation)
+}
 ```
 
-它必须满足：`desired` 与 gap `plan` 是 pure；外部 observation 经 typed boundary 验证后才能折叠为 current；action 只经 capability 执行并声明资源作用范围；执行采用 at-least-once + idempotency key + durable receipt；pending action 固定程序版本和 provider/action contract；崩溃后由持久观测继续；可证明重叠的 controller 管理域必须拒绝或显式协调；无进展或震荡进入 `Escalated`。具体声明名、表面语法、存储协议和调度算法均后置到 loom-lang 的独立实验阶段。
+`enum` 是封闭和类型：
 
-## 12. 明确后置的语言能力
+- variant 可以没有载荷或携带一个/多个 typed values；
+- 自定义 variant 位于 enum 的命名空间中，构造和 pattern 使用 `EnumName.Variant`；
+- Core prelude 的 `Some`、`None`、`Ok`、`Err` 是该限定规则的唯一内建短名；
+- variant 源码顺序没有隐式整数或优先级语义；
+- Core 0.1 不提供隐式 discriminant、开放 enum 或继承；
+- 消费 enum 必须通过穷尽 `match` 或明确处理具体 variant。
 
-以下能力不进入 E1，且只有真实 fixture 才能解锁：
+## 5. `Option`、`Result` 与失败
 
-- 用户宏、comptime 和任意语法扩展；
-- 用户自定义组合代数与开放 dispatch；
-- 用户自定义 trait、HKT、特化与效果多态函数值；
-- algebraic effect handler 和可恢复 continuation；
-- 所有权/借用或无 GC 核心；
-- 跨 capability 原子事务或分布式 exactly-once；
-- 运行期 footprint 锁调度；
-- 通用持久化命令式调用栈；
-- 目标状态调和的生产协议；
-- 部署控制面。
+`Option` 和 `Result` 是标准封闭泛型 enum：
 
-## 13. 当前仍需在 E1 前冻结的决定
+```loom
+enum Option[T] {
+    None
+    Some(T)
+}
 
-以下不改变语言定位，但会阻塞首个 parser/checker：
+enum Result[T, E] {
+    Ok(T)
+    Err(E)
+}
+```
 
-1. slot/contribution 的最终关键字与 typed slot 语法；
-2. flow 的 Ok/Err typed lane 与 slot 调用形式；
-3. E1 所需的最小类型和表达式全集；
-4. package manifest 与单 package fixture 的目录约定；
-5. E1 host provider、fresh scenario instance、fixture alias 与 target/scenario 绑定表示；
-6. `explain` 的 canonical machine-readable schema；
-7. Checkout Raw/Input -> constrained domain -> `CheckoutError.Validation` 的唯一建立路径；
-8. direct target composition、slot-local transform key 和 capability `allows` 语法。
-9. E1 Decimal 的字面量、scale/舍入，以及 Int/Decimal 溢出、除零和越界的 defect 诊断。
-10. E1 内建结构 equality、Vec 字面量/遍历、最小 pattern 与穷尽 `match` 的 type rules。
-11. Raw schema、Violation code/path/value summary、确定首错顺序和 canonical JSON。
-12. host-provider descriptor manifest、adapter digest、fresh constructor、fixture alias 与 trace schema。
+规则：
 
-这些决定应先用 fixture 纸面展开，再写 parser；不能用 parser 当前最好实现的形状倒推语言。
+- Core 0.1 没有隐式 `null`；缺失值使用 `Option`；
+- 可预期失败使用 `Result`；
+- `Err` 是普通值，不是异常；
+- 不提供隐式错误转换或 checked exception；
+- `?` 等传播糖不属于 Core 0.1，当前使用显式 `match`；
+- contract fault 与 `Result` 分轨，见第 11 节。
+
+## 6. `match`
+
+```loom
+fn value_or[T](value Option[T], fallback T) T {
+    match value {
+        Some(found) => found
+        None => fallback
+    }
+}
+```
+
+`match` 是表达式：
+
+- 所有 arm 必须产生兼容类型；
+- 对封闭 enum、Option 和 Result 必须穷尽；
+- 没有 fallthrough；
+- 不可到达 arm 是诊断；
+- Core 0.1 pattern 只包含可递归嵌套的 variant pattern、payload binding、字面量和 `_`；
+- 因此 `Err(LookupError.Unavailable(reason))` 合法；record/collection pattern、pattern guard 和开放 pattern 后置。
+
+## 7. 函数与 method
+
+```loom
+fn add_tax(price Price, rate Float) Result[Price, Violation] {
+    Price(price * (1.0 + rate))
+}
+```
+
+规则：
+
+- 参数默认不可变；
+- public 函数必须写出参数和返回类型；
+- 局部变量允许类型推断；
+- 普通函数体按源码顺序执行；
+- 尾表达式是返回值，`return` 用于提前返回；
+- Core 0.1 没有函数重载、动态派发或隐式 receiver。
+
+method 在 `impl T` 中使用独立的 `method` 关键字声明：
+
+```loom
+impl Order {
+    method total(self) Float {
+        self.subtotal - self.discount
+    }
+}
+```
+
+- 只有定义 `T` 的 module 可以声明 `T` 的 inherent methods；
+- method 是带显式 receiver 的静态函数；
+- `self` 默认深只读，等价于把比 C++ `const` 更严格的语义设为默认；
+- `mut self` 才能写字段或调用其他 `mut self` method；
+- `mut self` 是对 caller `var` place 的独占 inout receiver，不是 copy-in/copy-out，也不消费该值；
+- `mut self` 只能对 `var` place 调用，不能对 `let`、temporary 或 rvalue 调用；
+- method 通过 `Ok`、`Err` 或其他正常返回离开时，修改已经写回同一个 caller place；其他逻辑副本不改变；
+- ContractFault 终止普通控制流，不承诺回滚，也不存在可继续观察“部分写回”的普通业务分支；
+- Core 0.1 没有 interior mutability；只读 method 不得通过字段、容器或别名修改 receiver 可达状态；
+- read-only 只约束 receiver，不自动代表未来意义上的 effect purity；
+- 所有 method 调用都建立 invariant 边界；method 正常返回时 receiver 的 invariant 必须成立，返回 `Err` 也属于正常返回。
+
+## 8. 基本泛型
+
+```loom
+record Pair[A, B] {
+    first  A
+    second B
+}
+
+fn first[A, B](pair Pair[A, B]) A {
+    pair.first
+}
+```
+
+Core 0.1 的泛型只包含：
+
+- 显式 rank-1 类型参数；
+- 泛型 record、enum 和 fn；
+- 泛型 fn 调用从实参推断类型实参；
+- 泛型 record/enum constructor 同时从字段或 payload 以及 expected type context 推断；因此 `None`、`Ok(Unit)`、`Err(problem)` 只有在上下文确定其余类型参数时才合法；
+- 推断仍有多个解或没有解时静态失败，不设置默认类型；
+- 定义处静态检查；
+- 默认不变型。
+
+无约束类型参数只能被存储、传递、返回、构造进其他值或 pattern match。对 `T` 使用相等、排序、算术或任意 method 必须等待未来 concept/trait 设计；不得采用 duck typing。
+
+HKT、特化、反射、类型级计算和用户 trait 不属于 Core 0.1。
+
+## 9. 名义受约束类型
+
+```loom
+type Price = Float where self >= 0.0
+```
+
+`Price` 是名义类型，不是 `Float` 的别名。即使两个类型拥有相同 base 和 predicate，它们仍不相等。
+
+唯一构造规则是：
+
+```loom
+Price(value) : Result[Price, Violation]
+```
+
+其规范步骤为：
+
+```text
+value 恰好求值一次
+→ 对该值求 where predicate
+→ true 产生 Ok(Price value)
+→ false 产生 Err(Violation)
+```
+
+因此：
+
+- `Price(expr)` 的静态类型始终是 `Result[Price, Violation]`；
+- 编译器证明 predicate 时可以消除运行期检查，但不得改变表达式类型；
+- `Float` 不能隐式缩窄成 `Price`；
+- `Price` 可以按其 base value 读取为 `Float`；
+- 普通 Float 运算结果仍为 Float，除非未来规则证明闭包，否则必须重新构造 Price；
+- record 构造、反序列化、FFI 和泛型代码不得绕过检查；
+- `parse_float(text)` 若返回 Result，必须先显式处理，语言不自动展平嵌套失败。
+
+约束只保证声明的 predicate。按第 1.1 节规则，`NaN >= 0.0` 为 false，因此被拒绝；正无穷会通过。若价格还必须有限，必须显式 import 并使用标准库 predicate：
+
+```loom
+import standard.float.is_finite
+
+type Price = Float where is_finite(self) && self >= 0.0
+```
+
+### 9.1 `Violation`
+
+约束或 invariant 建立失败返回结构化 `Violation`，至少包含：
+
+- 目标类型；
+- 失败的 predicate/code；
+- 字段路径（若存在）；
+- 安全的值摘要；
+- 源码中的合同位置。
+
+Violation 是数据建立失败，可以由普通程序通过 Result 处理。
+
+## 10. record invariant
+
+```loom
+record Order {
+    subtotal Price
+    discount Price
+
+    invariant is_finite(self.subtotal)
+        && is_finite(self.discount)
+        && self.discount <= self.subtotal
+}
+```
+
+规则：
+
+- invariant 是 record 全值合法性；
+- 带 invariant 的外部构造返回 `Result[Order, Violation]`；
+- 构造时先求值全部字段，再检查唯一的 invariant clause；
+- 一个已经建立的 Order 在每个 method 入口都必须满足 invariant；
+- `mut self` method 可以在自己的 body 内暂时改变字段，但 invariant 失效期间 receiver 被隔离：不得复制、传参、存储、返回、捕获，也不得作为 receiver 调用任何 method；
+- 调用另一个 private 或 public method 前必须先恢复 invariant；
+- 每个正常出口，包括返回 `Err` 的出口，都必须重新满足 invariant；
+- 实现破坏一个已建立对象的 invariant 是 `InvariantFault`，不是普通 Violation。
+
+## 11. `requires`、`ensures` 与 `assert`
+
+```loom
+impl Order {
+    method apply_discount(mut self, value Price) Unit
+        requires value <= self.subtotal
+        ensures self.discount == value
+    {
+        assert value <= self.subtotal
+        self.discount = value
+    }
+}
+```
+
+四种合同的失败语义不同：
+
+| 合同 | 语义 | 失败 |
+|---|---|---|
+| `where` | 单值合法性 | 构造返回 `Err(Violation)` |
+| `invariant` | record 整体合法性 | 外部构造返回 Violation；实现破坏产生 `InvariantFault` |
+| `requires` | 调用者义务 | `PreconditionFault`，blame caller |
+| `ensures` | 实现正常返回承诺 | `PostconditionFault`，blame callee |
+| `assert` | 实现声明当前位置必然成立 | `AssertionFault`，blame 当前实现 |
+
+`PreconditionFault`、`PostconditionFault`、`InvariantFault` 和 `AssertionFault` 都属于结构化 `ContractFault`：
+
+- 普通业务代码不能捕获后继续运行；
+- test runner 和宿主边界可以报告；
+- 不是 undefined behavior；
+- 不能被自动转换成 `Err`。
+
+可预期的业务拒绝必须使用 `Result`，不能滥用 `requires`。
+
+### 11.1 合同表达式
+
+合同 predicate 必须 pure、deterministic、total。Core 0.1 允许参数、字段、`self`、`result`、`old(expr)`、字面量、total 基础运算、比较、布尔组合、穷尽 match，以及 compiler-known total predicates（首个是 `standard.float.is_finite`）；`assert` 还可以引用在该位置之前已经建立的 immutable locals。合同不得执行 I/O、修改状态或返回业务错误。
+
+Core 0.1 的合同中不允许用户函数调用、索引、Int 算术或其他无法静态保证 total 的操作。Int 数值模型闭合后，可把其中已证明 total 的操作加入合同子集。后续若开放用户 pure/total function，必须先有可检查的效果与终止合同。
+
+- `result` 表示完整返回值；
+- `old(expr)` 只允许出现在 ensures，表示当前 fn/method 调用入口时的逻辑值快照；其中表达式只能引用在入口已存在的参数，以及 method 的 `self`/字段；
+- 多条合同按逻辑与解释；
+- 合同在所有 build mode 中有效；
+- 只有静态证明成立时，编译器才能消除相应运行期检查。
+
+### 11.2 fn 与 method 的检查顺序
+
+普通 fn 也可以声明 `requires` 和 `ensures`。它的观察顺序固定为：
+
+```text
+requires
+→ 捕获 old(...)
+→ body
+→ ensures
+```
+
+method 在同一规则上增加 receiver invariant 边界，所有 public/private method 都采用：
+
+```text
+入口 invariant
+→ requires
+→ 捕获 old(...)
+→ body
+→ 出口 invariant
+→ ensures
+```
+
+若 body 通过任一正常路径返回，包括 `Ok` 或 `Err`，出口 invariant 与 ensures 都必须执行。出口 invariant 先检查；若它与 ensures 同时不成立，报告 `InvariantFault`，不会被较后的 PostconditionFault 遮蔽。
+
+## 12. 普通 test
+
+```loom
+test fn negative_price_is_rejected() {
+    let rejected = match Price(-0.01) {
+        Err(_) => true
+        Ok(_) => false
+    }
+
+    assert rejected
+}
+```
+
+`test fn` 是只进入测试构建的普通顶层函数：
+
+- 无参数；
+- 返回 Unit 或 `Result[Unit, E]`；
+- 使用与普通代码相同的 parser、类型系统和合同；
+- 正常返回 Unit/Ok(Unit) 即通过；
+- 返回 Err、ContractFault 或未处理程序缺陷即失败；
+- 对预期业务 Err 必须在 test 内显式 match；
+- test 遵守正常 module/import/可见性；
+- 没有专用响应式执行、fixture 生命周期、mock DSL 或隐式依赖注入。
+
+Core 0.1 不包含 `example`、`scenario`、`property`。
+
+## 13. 明确开放的问题
+
+以下不属于本规范，也没有保留关键字：
+
+- AOP-like 静态组合和注入；
+- desired-state/operator/reconcile；
+- capability/provider/effect；
+- async、并发与持久化；
+- trait、动态派发、继承和 extension method；
+- package/target/feature；
+- `?`、pattern guard、默认字段和复杂解构；
+- 所有权、借用与底层内存布局。
+
+这些方向只有在新的最小例子闭合后，才能修改 Core 版本。

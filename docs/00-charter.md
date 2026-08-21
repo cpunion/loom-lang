@@ -1,125 +1,97 @@
 # loom-lang 项目章程
 
-状态：Active / E0
+状态：Active / Core 0.1 Confirmed Draft
 
 日期：2026-08-21
 
-## 1. 要验证的命题
+## 1. 当前命题
 
-`loom-lang` 只验证一个可独立证伪的命题：
+当前阶段只验证：
 
-> 在普通文本、普通 Git 与常规 compiler/LSP 环境中，以声明和约束表达系统，并通过显式、可解释的贡献完成组合，能否让真实工程变更更局部、规则更少重复、行为来源更容易理解。
+> 在普通文本、普通 Git 和常规 compiler/LSP 中，把值约束、对象不变量与函数契约做成不可绕过的语言语义，能否得到一门清楚、安全且适合日常编程的静态语言核心。
 
-该命题必须通过可执行 fixture、受控变更任务和持续工程数据逐级验证，不能用功能演示代替效率与可维护性证据。
+这份命题不依赖 live coding、结构化编辑、语义版本管理或专用 IDE。
 
-## 2. 产品组成
+## 2. 已确认的当前产品边界
 
-`loom-lang` 包含：
+Core 0.1 包含：
 
-- 普通文本表面语法、parser、类型检查与诊断；
-- 声明、约束、模块、包和可见性；
-- 显式贡献及其封闭组合；
-- 从数据/结果依赖或显式业务边确定顺序；效果冲突只产生必须定序的义务，不替用户猜方向；
-- 组合冲突、缺失依赖和循环的静态拒绝；
-- 组合来源、顺序依据和影响面的解释接口；
-- conventional compiler/runtime、测试入口和标准 LSP；
-- 以后经独立实验验证的 desired-state reconciliation runtime。
+- `module`、显式 import 和可见性；
+- `record`、`enum`；
+- `fn`、method 与 receiver 读写区分；
+- `Option`、`Result` 与穷尽 `match`；
+- rank-1 基本泛型；
+- 普通 `test`；
+- `type T = Base where predicate`；
+- `invariant`、`requires`、`ensures`、`assert`。
 
-## 3. 硬依赖规则
+支撑这些能力的普通表达式基础——`let`、局部 `var`、`if`、block、尾表达式、提前 `return` 和基础运算——也属于 Core 0.1。
 
-语言工具的最小输入只有：
+## 3. 明确不在当前规范中
+
+下列方向仍可继续讨论，但当前没有权威语法或语义：
+
+- AOP-like 静态组合、注入和贡献；
+- desired-state、operator 和 reconciliation runtime；
+- capability/provider 与 effect system；
+- async、并发、持久化和分布式执行；
+- package、target、feature/bundle；
+- `example`、`scenario`、`property` 专用声明；
+- entity/ORM、trait、继承、动态派发和宏。
+
+这些方向不能反向改变 Core 0.1 已确认的类型、契约和失败语义；需要扩展时必须通过新的小例子单独裁决。
+
+## 4. 硬依赖规则
+
+语言工具的输入是：
 
 ```text
-当前 checkout 中的源码 + 显式依赖 + 构建配置
+当前源码 + 显式 module/import + 编译器与标准库版本
 ```
 
-最小输出只有：
+输出是：
 
 ```text
-诊断 + 可解释的组合计划 + 测试/构建产物
+诊断 + typed program + 普通测试/构建结果
 ```
 
 因此：
 
-1. parser、checker、compiler、runtime 和 LSP 必须能按常规语言工具的方式构建和使用；
-2. 一个普通 Git clone 应能直接执行 `loomc check/build/test`；
-3. 编译语义只由源码、显式依赖和构建配置决定；
-4. 相同输入必须生成相同的诊断、typed program 和组合计划；具体后端启用时再冻结 artifact 可重复性合同；
-5. LSP 是编译器分析接口的客户端，命令行构建具有相同语义。
+1. 普通 Git clone 可以直接执行 `loomc check/build/test`；
+2. 相同输入必须得到相同类型检查和契约检查结果；
+3. 文件遍历、修改时间、编辑器状态和隐藏注册表不参与语义；
+4. LSP 与 CLI 必须调用同一 parser/checker；
+5. 所有契约在所有构建模式中有效，只能因静态证明成立而消除。
 
-未来若建立代码目录，应以自动依赖检查守住这一方向；E0 不为此创建空 crate。
+## 5. 失败分轨原则
 
-## 4. 用户模型
+Core 0.1 区分两类失败：
 
-语言以四类核心关系组织程序：
+- 不可信数据无法建立受约束值或带 invariant 的 record，是可处理的 `Violation`，通过 `Result` 返回；
+- `requires`、`ensures`、已建立对象的 invariant 或 `assert` 被程序实现破坏，是不可作为业务分支捕获的结构化 `ContractFault`。
 
-1. **声明**：定义数据、行为、边界或目标是什么；
-2. **约束**：定义值和数据状态满足什么才合法；
-3. **依赖**：定义一个结果需要哪些输入、能力或先行结果；
-4. **显式贡献**：一个命名来源向目标拥有的具名 typed slot 增加该 slot 允许的成员。
+预期业务拒绝使用 `Result`。不得用 contract fault 代替普通业务错误，也不得把程序缺陷伪装成 `Err` 后继续运行。
 
-“组合”是编译器闭合这些关系的过程，不是另一类用户事实。贡献通过唯一目标和目标公开的扩展位置建立关系，所有激活条件与顺序依据都进入可检查的组合计划。E1 只验证 flow step contribution；字段、规则、provider 等其他组合形状必须分别由后续场景解锁。
-
-### 4.1 显式贡献的最低规则
-
-每项贡献都必须：
-
-- 有自己的限定来源；
-- 明确引用唯一目标拥有的具名 typed slot；
-- 声明它提供和消费的值；
-- 需要业务顺序时写出 `before` / `after` 等显式边；
-- 在重复 key、缺失目标、歧义或顺序成环时编译失败；
-- 进入最终计划的来源清单和解释输出。
-
-仅有文本先后顺序不得成为隐藏执行顺序。有序步骤的方向只能来自数据/typed outcome 依赖或显式业务边。效果冲突只能证明两个步骤不能保持无序；若没有方向，检查器必须要求补充 `before` / `after`。E1 不尝试证明 totality 或交换律：每条 executable flow path 和同一 pipeline 的全部 active transform 都必须形成唯一顺序。
-
-### 4.2 可解释性是语义要求
-
-对于任一可组合声明，工具至少必须回答：
-
-```text
-最终包含哪些成员/规则/步骤？
-每一项来自哪个源码声明？
-为什么它适用于这个目标？
-为什么它位于当前顺序？
-若组合失败，哪个确定性 witness 证明了 duplicate、missing target 或 cycle？
-删除某个贡献会影响静态组合图中的哪些声明、slot 和 step？
-```
-
-这些答案必须由检查器使用的同一组合计划产生，而不是另写一套近似文档生成器。不能唯一回答来源或顺序，就不能接受该程序。
-
-## 5. desired-state 能力的位置
-
-类似 controller/operator 的目标状态调和已经确认属于 `loom-lang` 的长期语言与 runtime 范围：程序声明期望状态，runtime 观察当前状态、规划差距、执行动作并留下回执，再持续调和。
-
-当前先验证声明、约束和显式贡献；通过 checkout 和第二领域的证据门后，再为 reconciliation 制定单独的语言/runtime fixture、正确性模型和实验门禁。独立证据门只控制实现次序，不把它拆成另一个项目。
-
-## 6. 证据阶梯
+## 6. 证据等级
 
 | 等级 | 能证明什么 | 不能证明什么 |
 |---|---|---|
-| E0 文档与 fixture | 问题、边界、对照和指标可执行 | 语言可实现或更高效 |
-| E1 executable slice | 语法、组合与解释机制可运行 | 开发效率更高 |
-| E2 controlled tasks | 固定任务上正确性与效率有差异 | 大型工程长期收益 |
-| E3 real repository | 一个持续演化项目中组织能力成立 | 对所有领域普适 |
-| E4 multi-team evidence | 跨团队维护和治理有重复证据 | 无条件优于常规语言 |
+| C0 规范 | 语义边界可唯一说明 | 语法可实现、体验优秀 |
+| C1 executable core | parser/checker/runtime 能执行规范 | 开发效率更高 |
+| C2 controlled tasks | 固定任务上正确性与效率差异 | 大型工程长期收益 |
+| C3 real repository | 一个真实项目中能持续使用 | 对所有领域普适 |
 
-所有文档必须标注证据等级。没有 E2 数据前，不使用“开发效率更高”的完成时表述。
+当前处于 C0 草案：范围和本文列出的主语义已经确认，但 [实现分期](04-capability-stages.md#6-实现前仍需冻结的可执行细节) 中的 executable contract 尚未全部闭合。
 
-## 7. 当前路线
+## 7. 裁决原则
 
-1. **E0**：冻结 [语言设计基线](02-language-design-baseline.md)、[表面风格](03-surface-and-style.md)、[能力分期](04-capability-stages.md)，并审定 [checkout 对照实验](01-first-experiment.md) 与 [fixture 契约](../fixtures/checkout/README.md)；
-2. **E1**：只实现完成这些任务所需的最小 parser/checker/composition/explain 纵切；
-3. **E2**：冻结实现和任务包，执行配对、反平衡的对照实验；
-4. 根据预注册继续条件决定扩展、重设计或停止；
-5. 通过 E2 后再选择第二领域，验证是否只是 checkout 特例。
+出现设计冲突时依次遵守：
 
-## 8. 决策原则
+1. 一个概念只保留一种主要失败语义；
+2. 编译器保证不得依赖 release/debug 模式；
+3. 不通过隐式转换、异常或动态搜索隐藏控制流；
+4. 先用最小例子闭合，再增加语法；
+5. 尚未确认的能力不预留关键字和运行时；
+6. 常规文本、CLI、测试和 LSP 必须能独立完成工作。
 
-出现路线冲突时依次遵守：
-
-1. 语言核心优先：语义必须能由源码、显式依赖和构建配置完整决定；
-2. 显式性优先：不以方便为由引入隐藏目标匹配或控制流；
-3. 可解释性优先：无法解释的自动组合不进入语言；
-4. 对照公平性优先：传统基线允许采用成熟、惯用的最佳实践；
-5. 证据优先：实验未要求的通用语言功能延后，而不是提前建空壳。
+权威 Core 规则见 [最小语言核心规范](02-language-design-baseline.md)。

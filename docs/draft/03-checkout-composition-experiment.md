@@ -1,10 +1,12 @@
 # 第一项实验：checkout 的声明、约束与显式贡献
 
-状态：E0 / Protocol 0.2
+状态：Paused / Non-normative composition research
 
 日期：2026-08-21
 
-依赖：[项目章程](00-charter.md) · [fixture 设计](../fixtures/checkout/README.md)
+> 本文早于 Core 0.1，保留为未来讨论静态组合时的研究输入。文中的 `flow`、slot、contribution、capability、target、example 和 scenario 都不是当前语言决定，不得据此实现 parser、checker 或 runtime。当前权威范围见 [最小语言核心规范](../02-language-design-baseline.md)。
+
+关联记录：[fixture 设计](04-checkout-composition-fixture.md)
 
 ## 1. 研究问题
 
@@ -85,7 +87,7 @@ checkout 同时包含局部业务逻辑和典型横向规则，但不需要分�
 6. US/EU、普通/VIP、授权通过/拒绝、重复 operation id 的 oracle cases；
 7. 能回答最终计划来源和顺序的基准问题。
 
-完整设计见 [fixture 文档](../fixtures/checkout/README.md)。E0 不提交伪实现源码。
+完整设计见 [fixture 文档](04-checkout-composition-fixture.md)。E0 不提交伪实现源码。
 
 ## 5. 实验任务
 
