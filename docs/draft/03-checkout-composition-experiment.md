@@ -4,7 +4,7 @@
 
 日期：2026-08-21
 
-> 本文早于 Core 0.1，保留为未来讨论静态组合时的研究输入。文中的 `flow`、slot、contribution、capability、target、example 和 scenario 都不是当前语言决定，不得据此实现 parser、checker 或 runtime。当前权威范围见 [最小语言核心规范](../02-language-design-baseline.md)。
+> 本文早于当前 Core，保留为未来讨论静态组合时的研究输入。文中的 `flow`、slot、contribution、capability、target、example 和 scenario 都不是当前语言决定，不得据此实现 parser、checker 或 runtime。当前权威范围见根 [README 权威表](../../README.md#文档权威关系)。
 
 关联记录：[fixture 设计](04-checkout-composition-fixture.md)
 

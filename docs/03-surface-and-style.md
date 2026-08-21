@@ -1,12 +1,12 @@
-# loom-lang Core 0.1 表面与代码风格
+# loom-lang 核心表面与代码风格
 
-状态：Core Surface 0.1 / Confirmed Draft
+状态：Core Surface / Core 0.1 Draft + Core 0.2 Confirmed Addendum
 
 证据等级：C0 草案（常用写法已确认，完整 lexical grammar 尚待闭合）
 
 日期：2026-08-21
 
-本文只规定 [Core 0.1](02-language-design-baseline.md) 已确认能力的常用写法。AOP-like 组合、desired-state/operator、capability 和专用 `example`/`scenario` 不在本文中，也不预留关键字。
+本文只规定 [Core 0.1](02-language-design-baseline.md) 已确认能力的常用写法。Core 0.2 的 `concept`、conformance 与 borrowed dyn carrier 由 [独立规范](05-concepts-and-dynamic-polymorphism.md)定稿；owned/shared dyn 只确认方向。它们都不属于 C1 parser 的输入。AOP-like 组合、desired-state/operator、capability 和专用 `example`/`scenario` 不在本文中，也不预留关键字。
 
 ## 1. 总体风格
 
@@ -258,7 +258,52 @@ test fn order_total_is_non_negative() Result[Unit, Violation] {
 
 测试正常返回 `Unit` 或 `Ok(Unit)` 即通过；返回 `Err`、产生 ContractFault 或发生未处理缺陷即失败。
 
-## 9. 当前没有写法的方向
+## 9. 已确认的下一版表面
+
+Core 0.2 已确认以下唯一主写法：
+
+```loom
+pub concept Ordered {
+    method less_equal(self, other Self) Bool
+}
+
+pub dyn concept Formatter {
+    associated type Error
+
+    method format(self, document Document)
+        Result[Text, Self.Error]
+}
+
+impl Ordered for Price {
+    method less_equal(self, other Self) Bool {
+        self <= other
+    }
+}
+
+fn smaller[T: Ordered](left T, right T) T {
+    if left.less_equal(right) { left } else { right }
+}
+```
+
+动态值必须显式写出 carrier：
+
+```loom
+view[dyn Formatter[Error = FormatError]]
+view[mut dyn Source[Item = Text]]
+```
+
+拥有型载体的目标拼写已选择为：
+
+```loom
+box[dyn Formatter[Error = FormatError]]
+shared[dyn Formatter[Error = FormatError]]
+```
+
+后两种仍等待独立 affine/shared 所有权规范，不是 Core 0.2 parser 当前可接受源码。
+
+Core 0.2 parser 的 top-level sequence 将增加 `(pub)? concept`、`(pub)? dyn concept` 与 `impl Concept for Type`。conformance body 的 member-start sequence 是 `associated type`、`method` 和 `static method`；它与 Core 0.1 的 inherent `impl Type` 分开恢复。完整语法、动态兼容和 carrier 规则只以 [Core 0.2 规范](05-concepts-and-dynamic-polymorphism.md)为准。
+
+## 10. 当前没有写法的方向
 
 Core 0.1 不定义或保留以下表面：
 
@@ -267,6 +312,6 @@ Core 0.1 不定义或保留以下表面：
 - capability、provider、effect；
 - `example`、`scenario`、`property`；
 - package、target、feature/bundle；
-- trait、extension method、继承和动态派发。
+- 第二套 trait/interface、concept conformance 之外的自由 extension declaration、继承、开放/多重派发和运行期实现发现。
 
-这些方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。
+`concept` 与显式 dyn receiver dispatch 已经进入 Core 0.2，不属于本节。其余方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。

@@ -9,7 +9,7 @@
 ## 权威边界
 
 - 本目录中的任何关键字、类型、运行时协议或实现分期都**不是**当前语言规范；
-- 当前范围和语义以 [项目章程](../00-charter.md)、[最小语言核心规范](../02-language-design-baseline.md)、[核心表面与代码风格](../03-surface-and-style.md)和 [Core 实现分期](../04-capability-stages.md)为准；
+- 当前范围和语义以根 [README 权威表](../../README.md#文档权威关系)、[Core 0.1 规范](../02-language-design-baseline.md)和 [Core 0.2 concept/dyn 规范](../05-concepts-and-dynamic-polymorphism.md)为准；
 - 当前 Core 不保留 `flow`、`slot`、`contribution`、`compose`、`capability`、`operator`、`reconcile` 等关键字；草案中的拼写都只是历史语义示意；
 - 归档不等于否决。某条路线只有经过新的小实验、独立决策并写回规范文档，才会重新成为实现范围；
 - 本目录不能作为 parser、checker、标准库或 runtime 自行补全语义的依据。
@@ -29,4 +29,6 @@
 
 旧路线一次绑定了常规语言核、约束、静态组合、效果能力、build target、解释计划和持久调和 runtime。即使整体方向有价值，也无法判断一次实验的成功或失败究竟来自哪一层。
 
-当前策略是先把 `record`、`enum`、`fn`/method、`Result`/`Option`、`match`、module、基本泛型、普通 test 和契约编程闭合为可执行语言核。静态组合与持续调和随后分别接受独立验证；一条路线失败时，不影响另一条，也不否定语言核心本身。
+当前策略是先把 `record`、`enum`、`fn`/method、`Result`/`Option`、`match`、module、基本泛型、普通 test 和契约编程闭合为可执行语言核，再按独立证据门实现已经定稿的 `concept` 与显式 dyn receiver dispatch。静态组合与持续调和随后分别接受独立验证；一条路线失败时，不影响另一条，也不否定语言核心本身。
+
+`concept`/`dyn concept` 不会使本目录中的组合方案自动复活：conformance 只说明一个类型满足一个接口，dyn carrier 只调用构造时封装的唯一 witness；二者都不会扫描、激活、排序或编织 contribution。

@@ -74,7 +74,16 @@
 | keyed members | 注册项、命名 handler/provider | key 唯一，重复即错误 | 仅方向草案 |
 | rules | eligibility、allow/deny、集合约束 | 只能用语言内建且可证明交换的 fold | 仅方向草案 |
 
-字段扩展、开放 method、隐式 provider 选择、用户自定义代数和开放 dispatch 都没有得到旧方案授权。即使 ordered pipeline 实验成功，也不能自动证明其他代数合理。
+字段扩展、开放 method、隐式 provider 选择、用户自定义代数和开放多重/模式 dispatch 都没有得到旧方案授权。即使 ordered pipeline 实验成功，也不能自动证明其他代数合理。
+
+当前已经确认的 `concept`/`dyn concept` 与本方案不同：
+
+- `impl C for T` 只证明名义类型 `T` 满足接口 `C`，每个 `(T, C)` 只有一个 conformance；
+- dyn carrier 只调用显式 construction 时封装的 concrete witness；
+- import 不激活 impl，运行时也不扫描候选；
+- concept 不允许多个来源向同一个执行点贡献、排序或编织 member。
+
+因此 concept/dyn 可以作为未来组合实验的普通 typed interface 和显式依赖传递基线，但不能替代 slot/contribution 假设本身，也不提供 capability、effect 或 provider 生命周期。
 
 ## 5. Ordered pipeline 的历史语义草图
 
@@ -195,7 +204,7 @@ target checkout_test
 - inactive contribution 不调用相应 capability，但也不能使 target 的合同发生不可见变化；
 - 时钟、随机、网络、文件和数据库都不得来自 ambient global。
 
-这套 capability/provider 模型与静态组合有关，但不是同一个问题。未来组合实验应先判断没有专用 capability 系统时是否仍有独立价值；不能为了验证 slot 而一次实现完整 effect system、provider runtime 和 FFI。
+这套 capability/provider 模型与静态组合有关，但不是同一个问题。未来组合实验应先判断在只有普通静态 concept、显式 dyn carrier、函数参数和 composition root 时，专用 slot 是否仍有独立价值；不能为了验证 slot 而一次实现完整 effect system、provider runtime 和 FFI。
 
 ## 9. 可解释性合同
 
@@ -246,7 +255,7 @@ target checkout_test
 
 未来若重启，建议只选择一个 owner、一个 ordered pipeline slot 和两个独立贡献，不同时引入 provider runtime、bundle、policy fold 或并行 DAG。实验至少应具有：
 
-- 一个惯用且经过外部审阅的常规语言 composition-root 基线；
+- 一个惯用且经过外部审阅、可以使用静态 concept 与显式 dyn carrier 的常规语言 composition-root 基线；
 - 相同的行为和 mutation oracle；
 - empty/A/B/A+B 四个组合子集；
 - duplicate key、unknown anchor、unordered pair、cycle 和 missing target 的稳定诊断；

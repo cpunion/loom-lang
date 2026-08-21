@@ -2,7 +2,7 @@
 
 状态：Paused / Non-normative composition research
 
-> 本文早于 Core 0.1，只保留未来静态组合研究的 fixture 思路。这里出现的 `flow`、slot、contribution、capability、target 和 scenario 不属于当前语言规范，也不是实现任务。当前权威范围见 [最小语言核心规范](../02-language-design-baseline.md)。
+> 本文早于当前 Core，只保留未来静态组合研究的 fixture 思路。这里出现的 `flow`、slot、contribution、capability、target 和 scenario 不属于当前语言规范，也不是实现任务。当前权威范围见根 [README 权威表](../../README.md#文档权威关系)。
 
 对应研究记录：[第一项 checkout 对照实验](03-checkout-composition-experiment.md)
 

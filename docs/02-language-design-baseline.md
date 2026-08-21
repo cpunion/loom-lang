@@ -6,7 +6,7 @@
 
 日期：2026-08-21
 
-本文是当前唯一的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；[实现分期](04-capability-stages.md#6-实现前仍需冻结的可执行细节) 所列问题闭合后，Core 0.1 才能升级为 parser/checker 的完整 executable contract。AOP-like 组合和 desired-state/operator 仍在讨论，不属于本文。
+本文是 Core 0.1 的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；[实现分期](04-capability-stages.md#6-实现前仍需冻结的可执行细节) 所列问题闭合后，Core 0.1 才能升级为 parser/checker 的完整 executable contract。下一版已确认的行为抽象由 [Core 0.2 concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)单独定义；AOP-like 组合和 desired-state/operator 仍在讨论。
 
 文中的“必须”“不得”是规范要求；表面拼写由 [核心表面与代码风格](03-surface-and-style.md)补充。
 
@@ -168,7 +168,7 @@ fn add_tax(price Price, rate Float) Result[Price, Violation] {
 - 局部变量允许类型推断；
 - 普通函数体按源码顺序执行；
 - 尾表达式是返回值，`return` 用于提前返回；
-- Core 0.1 没有函数重载、动态派发或隐式 receiver。
+- Core 0.1 没有函数重载、动态派发或隐式 receiver；Core 0.2 只通过显式 dyn carrier 增加 receiver dispatch。
 
 method 在 `impl T` 中使用独立的 `method` 关键字声明：
 
@@ -215,9 +215,9 @@ Core 0.1 的泛型只包含：
 - 定义处静态检查；
 - 默认不变型。
 
-无约束类型参数只能被存储、传递、返回、构造进其他值或 pattern match。对 `T` 使用相等、排序、算术或任意 method 必须等待未来 concept/trait 设计；不得采用 duck typing。
+无约束类型参数只能被存储、传递、返回、构造进其他值或 pattern match。Core 0.1 不能对 `T` 使用相等、排序、算术或任意 method，也不得采用 duck typing。Core 0.2 已确认用显式 `T: Concept` bounds 开放相应能力，见 [concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)。
 
-HKT、特化、反射、类型级计算和用户 trait 不属于 Core 0.1。
+HKT、特化、反射、类型级计算和用户行为抽象不属于 Core 0.1。Core 0.2 只增加一套 `concept`，不会再增加平行的 `trait` 关键字。
 
 ## 9. 名义受约束类型
 
@@ -399,9 +399,9 @@ Core 0.1 不包含 `example`、`scenario`、`property`。
 - desired-state/operator/reconcile；
 - capability/provider/effect；
 - async、并发与持久化；
-- trait、动态派发、继承和 extension method；
+- 继承、concept conformance 之外的自由 extension declaration、开放/多重派发和第二套 trait/interface 抽象；
 - package/target/feature；
 - `?`、pattern guard、默认字段和复杂解构；
-- 所有权、借用与底层内存布局。
+- 一般所有权、借用与底层内存布局；Core 0.2 只为 dyn carrier 定义受限的 readonly/mutable 词法 view，box/shared 仍等待独立所有权规范。
 
-这些方向只有在新的最小例子闭合后，才能修改 Core 版本。
+`concept`/`dyn concept` 已经通过独立裁决进入 Core 0.2，不再属于本节开放问题。其余方向只有在新的最小例子闭合后，才能修改 Core 版本。
