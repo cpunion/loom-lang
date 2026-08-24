@@ -1,0 +1,12 @@
+schema = 1
+
+[[package]]
+name = "application"
+version = "0.1.0"
+source = "root"
+dependencies = ["utility@1.2.0"]
+
+[[package]]
+name = "utility"
+version = "1.2.0"
+source = "path"

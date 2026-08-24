@@ -102,6 +102,7 @@ cargo run -p loom-cli -- resolve examples/packages/application
 cargo run -p loom-cli -- build --target app --output target/package-app examples/packages/application
 cargo run -p loom-cli -- test --target unit examples/packages/application
 cargo run -p loom-cli -- run --target app examples/packages/application
+cargo run -p loom-cli -- build --target utility --output target/utility.loomlib examples/packages/utility
 ```
 
 源码命令默认使用项目内 `target/loom/cache/v1` 的内容寻址缓存；`--cache-dir DIR` 可改位置，`--no-cache` 可做冷路径对照。缓存当前真实复用逐文件 lossless token/AST、canonical module public-interface、经过 decoder 与 MIR validator 的整图 checked MIR、按 root/witness reachability 裁剪的 LLVM target object，以及最终 native/`.loomi` artifact。不可达私有函数的等长实现修改会使 checked MIR miss，但可继续命中 object/final-link；损坏 ref/blob 只会安全 miss 并重建。
