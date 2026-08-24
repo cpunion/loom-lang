@@ -13,16 +13,17 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|fmt> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|fmt> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
-    build [--target NAME | --entry NAME] [--output FILE] [PATH] build an executable or portable library\n\
+    build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
     fmt [--check] [PATH]     format .loom files (default PATH is .)";
 
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
+const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +41,7 @@ enum Command {
     Build {
         output: PathBuf,
         entry: Option<String>,
+        emit: BuildEmit,
     },
     Test,
     Run {
@@ -49,6 +51,12 @@ enum Command {
     Format {
         check: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildEmit {
+    Executable,
+    Object,
 }
 
 #[derive(Clone, Debug)]
@@ -61,11 +69,13 @@ struct Options {
     no_cache: bool,
     cache_dir: Option<PathBuf>,
     project: ProjectOptions,
+    target_triple: Option<String>,
+    optimization: loom_codegen_llvm::OptimizationProfile,
     program_arguments: Vec<String>,
 }
 
 enum ParsedArgs {
-    Run(Options),
+    Run(Box<Options>),
     Help,
     Version,
 }
@@ -401,16 +411,18 @@ pub fn run(
             writeln!(stdout, "loomc {}", env!("CARGO_PKG_VERSION"))?;
             return Ok(EXIT_SUCCESS);
         }
-        ParsedArgs::Run(options) => options,
+        ParsedArgs::Run(options) => *options,
     };
 
     match &options.command {
         Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
-        Command::Build { output, entry } => {
-            run_build(&options, output, entry.as_deref(), stdout, stderr)
-        }
+        Command::Build {
+            output,
+            entry,
+            emit,
+        } => run_build(&options, output, entry.as_deref(), *emit, stdout, stderr),
         Command::Test => run_test(&options, stdout, stderr),
         Command::Run { entry, artifact } => {
             if let Some(artifact) = artifact {
@@ -512,6 +524,7 @@ fn run_build(
     options: &Options,
     output: &Path,
     explicit_entry: Option<&str>,
+    emit: BuildEmit,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
@@ -553,6 +566,19 @@ fn run_build(
         return Ok(EXIT_USAGE);
     }
     if let BuildTarget::Library(name) = &target {
+        if emit == BuildEmit::Object
+            || options.target_triple.is_some()
+            || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
+        {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "LibraryTargetIsPortable",
+                "library targets already emit portable checked MIR and do not accept --release, --emit object, or --target-triple",
+            )?;
+            return Ok(EXIT_USAGE);
+        }
         return build_library(
             &compilation,
             program,
@@ -576,8 +602,37 @@ fn run_build(
         )?;
         return Ok(EXIT_FAILURE);
     }
-    let artifact_key =
-        final_artifact_key(&compilation, program, options.backend, "run", Some(&entry));
+    let emit_options =
+        configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
+    if emit == BuildEmit::Object {
+        if let Err(error) = emit_object_with_cache(
+            &compilation,
+            program,
+            &output,
+            &emit_options,
+            options,
+            stdout,
+        )? {
+            emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
+            return Ok(EXIT_DEFECT);
+        }
+        emit_build_result(options, stdout, &output)?;
+        return Ok(EXIT_SUCCESS);
+    }
+    if options.backend == Backend::Llvm
+        && let Err(error) = loom_codegen_llvm::validate_native_link_target(&emit_options)
+    {
+        emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
+        return Ok(EXIT_USAGE);
+    }
+    let artifact_key = final_artifact_key(
+        &compilation,
+        program,
+        options.backend,
+        "run",
+        Some(&entry),
+        Some(&emit_options),
+    );
     match restore_cached_artifact(
         &compilation,
         artifact_key.as_ref(),
@@ -608,9 +663,7 @@ fn run_build(
                 &compilation,
                 program,
                 &output,
-                &loom_codegen_llvm::EmitOptions::run(&entry),
-                "run",
-                Some(&entry),
+                &emit_options,
                 options,
                 stdout,
             )? {
@@ -761,8 +814,16 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
         };
         let directory = tempfile::tempdir()?;
         let executable = directory.path().join("loom-tests");
-        let artifact_key =
-            final_artifact_key(&compilation, program, options.backend, "tests", None);
+        let emit_options =
+            configured_emit_options(options, loom_codegen_llvm::EmitOptions::tests());
+        let artifact_key = final_artifact_key(
+            &compilation,
+            program,
+            options.backend,
+            "tests",
+            None,
+            Some(&emit_options),
+        );
         match restore_cached_artifact(
             &compilation,
             artifact_key.as_ref(),
@@ -790,9 +851,7 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             &compilation,
             program,
             &executable,
-            &loom_codegen_llvm::EmitOptions::tests(),
-            "tests",
-            None,
+            &emit_options,
             options,
             stdout,
         )? {
@@ -864,8 +923,16 @@ fn run_program(
         Backend::Llvm => {
             let directory = tempfile::tempdir()?;
             let executable = directory.path().join("loom-program");
-            let artifact_key =
-                final_artifact_key(&compilation, program, options.backend, "run", Some(&entry));
+            let emit_options =
+                configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
+            let artifact_key = final_artifact_key(
+                &compilation,
+                program,
+                options.backend,
+                "run",
+                Some(&entry),
+                Some(&emit_options),
+            );
             match restore_cached_artifact(
                 &compilation,
                 artifact_key.as_ref(),
@@ -893,9 +960,7 @@ fn run_program(
                 &compilation,
                 program,
                 &executable,
-                &loom_codegen_llvm::EmitOptions::run(&entry),
-                "run",
-                Some(&entry),
+                &emit_options,
                 options,
                 stdout,
             )? {
@@ -1249,7 +1314,7 @@ fn load_compilation(
         }));
     }
 
-    let context = match cache_context(options.backend) {
+    let context = match cache_context(options) {
         Ok(context) => context,
         Err(error) => {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
@@ -1312,7 +1377,7 @@ fn load_compilation(
     }))
 }
 
-fn cache_context(backend: Backend) -> Result<CacheContext, loom_codegen_llvm::CodegenError> {
+fn cache_context(options: &Options) -> Result<CacheContext, loom_codegen_llvm::CodegenError> {
     let build_profile = if cfg!(debug_assertions) {
         "debug"
     } else {
@@ -1326,9 +1391,12 @@ fn cache_context(backend: Backend) -> Result<CacheContext, loom_codegen_llvm::Co
         loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         loom_mir::INTERPRETED_ARTIFACT_VERSION
     );
-    let context = match backend {
+    let context = match options.backend {
         Backend::Llvm => {
-            let target = loom_codegen_llvm::native_target_identity()?;
+            let target = loom_codegen_llvm::target_identity(
+                options.target_triple.as_deref(),
+                options.optimization,
+            )?;
             CacheContext {
                 compiler_version,
                 backend_version: format!(
@@ -1365,10 +1433,11 @@ fn final_artifact_key(
     backend: Backend,
     mode: &str,
     entry: Option<&str>,
+    emit_options: Option<&loom_codegen_llvm::EmitOptions>,
 ) -> Option<CacheKey> {
     let (parent, toolchain, runtime) = match backend {
         Backend::Llvm => (
-            target_object_key(compilation, program, mode, entry)?,
+            target_object_key(compilation, program, emit_options?)?,
             format!(
                 "{};debug={}",
                 loom_codegen_llvm::native_linker_identity().ok()?,
@@ -1412,16 +1481,10 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
 fn target_object_key(
     compilation: &Compilation,
     program: &loom_mir::Program,
-    mode: &str,
-    entry: Option<&str>,
+    emit_options: &loom_codegen_llvm::EmitOptions,
 ) -> Option<CacheKey> {
     compilation.key()?;
-    let base = match mode {
-        "run" => loom_codegen_llvm::EmitOptions::run(entry?),
-        "tests" => loom_codegen_llvm::EmitOptions::tests(),
-        _ => return None,
-    };
-    let emit_options = emit_options_with_debug(compilation, &base);
+    let emit_options = emit_options_with_debug(compilation, emit_options);
     let fingerprint = loom_codegen_llvm::native_object_fingerprint(program, &emit_options).ok()?;
     let profile = if cfg!(debug_assertions) {
         "debug"
@@ -1436,6 +1499,15 @@ fn target_object_key(
             ("object-fingerprint", &fingerprint),
         ],
     ))
+}
+
+fn configured_emit_options(
+    options: &Options,
+    emit_options: loom_codegen_llvm::EmitOptions,
+) -> loom_codegen_llvm::EmitOptions {
+    emit_options
+        .with_target_triple(options.target_triple.clone())
+        .with_optimization(options.optimization)
 }
 
 fn emit_options_with_debug(
@@ -1455,23 +1527,42 @@ fn emit_options_with_debug(
     emit_options.clone().with_debug_sources(debug_sources)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_native_with_cache(
     compilation: &Compilation,
     program: &loom_mir::Program,
     output: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
-    mode: &str,
-    entry: Option<&str>,
     options: &Options,
     stdout: &mut dyn Write,
 ) -> io::Result<Result<(), loom_codegen_llvm::CodegenError>> {
+    if let Err(error) = loom_codegen_llvm::validate_native_link_target(emit_options) {
+        return Ok(Err(error));
+    }
     let directory = tempfile::tempdir()?;
     let object = directory.path().join("loom-target.o");
-    let key = target_object_key(compilation, program, mode, entry);
+    if let Err(error) =
+        emit_object_with_cache(compilation, program, &object, emit_options, options, stdout)?
+    {
+        return Ok(Err(error));
+    }
+    if let Err(error) = loom_codegen_llvm::link_native_object(&object, output) {
+        return Ok(Err(error));
+    }
+    Ok(loom_codegen_llvm::emit_native_debug_companion(output))
+}
+
+fn emit_object_with_cache(
+    compilation: &Compilation,
+    program: &loom_mir::Program,
+    object: &Path,
+    emit_options: &loom_codegen_llvm::EmitOptions,
+    options: &Options,
+    stdout: &mut dyn Write,
+) -> io::Result<Result<(), loom_codegen_llvm::CodegenError>> {
+    let key = target_object_key(compilation, program, emit_options);
     let restored = if let (Some(cache), Some(key)) = (compilation.cache(), key.as_ref()) {
         match cache.load_target_object(key) {
-            CacheLookup::Hit(bytes) if cache.materialize(&bytes, &object, false).is_ok() => {
+            CacheLookup::Hit(bytes) if cache.materialize(&bytes, object, false).is_ok() => {
                 emit_cache_result(
                     options.json,
                     stdout,
@@ -1505,19 +1596,16 @@ fn emit_native_with_cache(
 
     if !restored {
         let emit_options = emit_options_with_debug(compilation, emit_options);
-        if let Err(error) = loom_codegen_llvm::emit_native_object(program, &object, &emit_options) {
+        if let Err(error) = loom_codegen_llvm::emit_native_object(program, object, &emit_options) {
             return Ok(Err(error));
         }
         if let (Some(cache), Some(key), Ok(bytes)) =
-            (compilation.cache(), key.as_ref(), std::fs::read(&object))
+            (compilation.cache(), key.as_ref(), std::fs::read(object))
         {
             let _ = cache.store_target_object(key, &bytes);
         }
     }
-    if let Err(error) = loom_codegen_llvm::link_native_object(&object, output) {
-        return Ok(Err(error));
-    }
-    Ok(loom_codegen_llvm::emit_native_debug_companion(output))
+    Ok(Ok(()))
 }
 
 fn restore_cached_artifact(
@@ -1838,6 +1926,12 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
             ));
         }
     };
+    let optimization = if take_flag(&mut strings, "--release") {
+        loom_codegen_llvm::OptimizationProfile::Release
+    } else {
+        loom_codegen_llvm::OptimizationProfile::Development
+    };
+    let target_triple = take_option(&mut strings, "--target-triple")?;
     let features = parse_feature_list(take_option(&mut strings, "--features")?)?;
     let no_default_features = take_flag(&mut strings, "--no-default-features");
     let locked = take_flag(&mut strings, "--locked");
@@ -1872,10 +1966,12 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
                 LockMode::Use
             },
         },
+        target_triple,
+        optimization,
         program_arguments,
     };
     validate_parsed_options(&options, &strings)?;
-    Ok(ParsedArgs::Run(options))
+    Ok(ParsedArgs::Run(Box::new(options)))
 }
 
 fn parse_command(
@@ -1889,14 +1985,25 @@ fn parse_command(
         },
         "check" => Command::Check,
         "build" => {
-            let default_output = match backend {
-                Backend::Llvm => DEFAULT_NATIVE_ARTIFACT,
-                Backend::Interpreter => DEFAULT_INTERPRETED_ARTIFACT,
+            let emit = match take_option(arguments, "--emit")?.as_deref() {
+                None | Some("executable") => BuildEmit::Executable,
+                Some("object") => BuildEmit::Object,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown build emission `{other}`; expected `executable` or `object`"
+                    ));
+                }
+            };
+            let default_output = match (backend, emit) {
+                (Backend::Llvm, BuildEmit::Executable) => DEFAULT_NATIVE_ARTIFACT,
+                (Backend::Llvm, BuildEmit::Object) => DEFAULT_OBJECT_ARTIFACT,
+                (Backend::Interpreter, _) => DEFAULT_INTERPRETED_ARTIFACT,
             };
             Command::Build {
                 output: take_option(arguments, "--output")?
                     .map_or_else(|| PathBuf::from(default_output), PathBuf::from),
                 entry: take_option(arguments, "--entry")?,
+                emit,
             }
         }
         "test" => Command::Test,
@@ -1924,6 +2031,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     if remaining.len() > 1 {
         return Err("expected at most one PATH".to_owned());
     }
+    validate_codegen_options(options)?;
     if options.target.is_some()
         && matches!(
             &command,
@@ -1993,6 +2101,42 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     ) && !remaining.is_empty()
     {
         return Err("run --artifact does not also accept a source PATH".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_codegen_options(options: &Options) -> Result<(), String> {
+    let command = &options.command;
+    if options.target_triple.is_some() && !matches!(command, Command::Build { .. }) {
+        return Err("--target-triple is only valid for build".to_owned());
+    }
+    if options.optimization == loom_codegen_llvm::OptimizationProfile::Release
+        && matches!(
+            command,
+            Command::Resolve { .. }
+                | Command::Format { .. }
+                | Command::Run {
+                    artifact: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err("--release is only valid for source check/build/test/run".to_owned());
+    }
+    if options.backend == Backend::Interpreter
+        && (options.target_triple.is_some()
+            || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
+            || matches!(
+                command,
+                Command::Build {
+                    emit: BuildEmit::Object,
+                    ..
+                }
+            ))
+    {
+        return Err(
+            "--release, --target-triple, and --emit object require the LLVM backend".to_owned(),
+        );
     }
     Ok(())
 }

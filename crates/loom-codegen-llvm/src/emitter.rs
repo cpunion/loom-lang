@@ -43,7 +43,7 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
-use crate::target::{OPTIMIZATION_PIPELINE, create_native_target_machine};
+use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
 
 pub(crate) struct Emitter;
@@ -56,7 +56,8 @@ impl Emitter {
         output: &Path,
         options: &EmitOptions,
     ) -> Result<NativeObjectArtifact, CodegenError> {
-        let (triple, machine) = create_native_target_machine()?;
+        let (triple, machine) =
+            create_target_machine(options.target_triple.as_deref(), options.optimization)?;
 
         let context = Context::create();
         let mut backend = Backend::new(&context, program, reachable, roots, options);
@@ -73,7 +74,7 @@ impl Emitter {
         backend
             .module
             .run_passes(
-                OPTIMIZATION_PIPELINE,
+                options.optimization.pipeline(),
                 &machine,
                 PassBuilderOptions::create(),
             )

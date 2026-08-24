@@ -4,7 +4,7 @@ use loom_mir::Program;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CodegenError, ReachableProgram, Roots, emitter::Emitter};
+use crate::{CodegenError, OptimizationProfile, ReachableProgram, Roots, emitter::Emitter};
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,6 +20,9 @@ pub struct EmitOptions {
     pub emit_ir: Option<PathBuf>,
     /// Stable relative source paths and byte line starts used for DWARF.
     pub debug_sources: Vec<DebugSource>,
+    /// Explicit normalized LLVM target triple, or the host target when absent.
+    pub target_triple: Option<String>,
+    pub optimization: OptimizationProfile,
 }
 
 /// Relocation-independent source metadata consumed only by native debug info.
@@ -87,6 +90,8 @@ impl EmitOptions {
             },
             emit_ir: None,
             debug_sources: Vec::new(),
+            target_triple: None,
+            optimization: OptimizationProfile::Development,
         }
     }
 
@@ -96,12 +101,26 @@ impl EmitOptions {
             kind: EmitKind::Tests,
             emit_ir: None,
             debug_sources: Vec::new(),
+            target_triple: None,
+            optimization: OptimizationProfile::Development,
         }
     }
 
     #[must_use]
     pub fn with_debug_sources(mut self, sources: Vec<DebugSource>) -> Self {
         self.debug_sources = sources;
+        self
+    }
+
+    #[must_use]
+    pub fn with_target_triple(mut self, triple: Option<String>) -> Self {
+        self.target_triple = triple;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_optimization(mut self, optimization: OptimizationProfile) -> Self {
+        self.optimization = optimization;
         self
     }
 }
@@ -200,7 +219,7 @@ pub fn native_object_fingerprint(
         backend_version: crate::BACKEND_VERSION,
         mir_format: loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         mir_version: loom_mir::INTERPRETED_ARTIFACT_VERSION,
-        target: crate::native_target_identity()?,
+        target: crate::target_identity(options.target_triple.as_deref(), options.optimization)?,
         roots: &roots,
         reachable: &reachable,
         types: &program.types,
@@ -244,6 +263,22 @@ pub fn link_native_object(object: &Path, output: &Path) -> Result<(), CodegenErr
     Emitter::link_object(object, output)
 }
 
+/// Rejects linking an object for a non-host triple with the embedded host runtime.
+///
+/// # Errors
+///
+/// Returns `CrossLinkUnavailable` when the selected target is not the host.
+pub fn validate_native_link_target(options: &EmitOptions) -> Result<(), CodegenError> {
+    if crate::target::is_native_target(options.target_triple.as_deref()) {
+        Ok(())
+    } else {
+        Err(CodegenError::new(
+            "CrossLinkUnavailable",
+            "cross-target executable linking requires a matching Loom runtime and linker; emit an object instead",
+        ))
+    }
+}
+
 /// Emits and links a native executable from checked MIR.
 ///
 /// # Errors
@@ -255,6 +290,7 @@ pub fn emit_native(
     output: &Path,
     options: &EmitOptions,
 ) -> Result<NativeArtifact, CodegenError> {
+    validate_native_link_target(options)?;
     let object = tempfile::Builder::new()
         .prefix("loom-")
         .suffix(".o")

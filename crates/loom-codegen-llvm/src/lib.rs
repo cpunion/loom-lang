@@ -13,15 +13,16 @@ mod target;
 
 pub use codegen::{
     DebugSource, EmitKind, EmitOptions, NativeArtifact, NativeObjectArtifact, emit_native,
-    emit_native_object, link_native_object, native_object_fingerprint,
+    emit_native_object, link_native_object, native_object_fingerprint, validate_native_link_target,
 };
 pub use error::CodegenError;
 pub use reachability::{ReachableProgram, Roots, analyze_reachability};
 pub use target::{
-    CPU_FEATURES, CPU_POLICY, NATIVE_RUNTIME_ABI, NativeTargetIdentity, OPTIMIZATION_PIPELINE,
-    RELOCATION_MODE, emit_native_debug_companion, materialize_native_debug_metadata,
+    CPU_FEATURES, CPU_POLICY, DEVELOPMENT_OPTIMIZATION_PIPELINE, NATIVE_RUNTIME_ABI,
+    NativeTargetIdentity, OptimizationProfile, RELEASE_OPTIMIZATION_PIPELINE, RELOCATION_MODE,
+    emit_native_debug_companion, is_native_target, materialize_native_debug_metadata,
     native_debug_companion_path, native_debug_tool_identity, native_linker_identity,
-    native_runtime_identity, native_target_identity,
+    native_runtime_identity, native_target_identity, target_identity,
 };
 
 /// LLVM backend version recorded in diagnostics and future cache keys.

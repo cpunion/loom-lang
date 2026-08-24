@@ -3,12 +3,57 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::{
+    EmitOptions, OptimizationProfile, emit_native, emit_native_object, target_identity,
+    validate_native_link_target,
+};
 use loom_driver::AnalysisHost;
 use loom_mir::{Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Type};
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+const CROSS_TRIPLE: &str = "aarch64-unknown-linux-gnu";
+
 #[test]
 fn emits_links_and_runs_a_native_unit_entry() {
+    let program = unit_program();
+    let directory = tempfile::tempdir().expect("create temp directory");
+    let executable = directory.path().join("program");
+    let artifact = emit_native(&program, &executable, &EmitOptions::run("main"))
+        .expect("emit native executable");
+    assert_eq!(artifact.functions, 1);
+    let output = Command::new(&executable).output().expect("run executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+}
+
+#[test]
+fn release_and_cross_target_object_policies_are_real_target_inputs() {
+    let development =
+        target_identity(None, OptimizationProfile::Development).expect("development target");
+    let release = target_identity(None, OptimizationProfile::Release).expect("release target");
+    assert_eq!(development.triple, release.triple);
+    assert_eq!(development.data_layout, release.data_layout);
+    assert_ne!(development.optimization, release.optimization);
+
+    let program = unit_program();
+    let directory = tempfile::tempdir().expect("create cross target directory");
+    let object = directory.path().join("program-aarch64.o");
+    let options = EmitOptions::run("main")
+        .with_target_triple(Some(CROSS_TRIPLE.to_owned()))
+        .with_optimization(OptimizationProfile::Release);
+    emit_native_object(&program, &object, &options).expect("emit AArch64 ELF object");
+    assert!(
+        std::fs::read(&object)
+            .expect("read cross object")
+            .starts_with(b"\x7fELF")
+    );
+    let error = validate_native_link_target(&options).expect_err("cross link is unavailable");
+    assert_eq!(error.code(), "CrossLinkUnavailable");
+}
+
+fn unit_program() -> Program {
     let mut program = Program::default();
     program.functions.push(Function {
         id: FunctionId(0),
@@ -34,14 +79,7 @@ fn emits_links_and_runs_a_native_unit_entry() {
         call_plan: CallPlan::default(),
     });
     program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
-    let directory = tempfile::tempdir().expect("create temp directory");
-    let executable = directory.path().join("program");
-    let artifact = emit_native(&program, &executable, &EmitOptions::run("main"))
-        .expect("emit native executable");
-    assert_eq!(artifact.functions, 1);
-    let output = Command::new(&executable).output().expect("run executable");
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    program
 }
 
 #[test]

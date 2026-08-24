@@ -13,9 +13,44 @@ use crate::emitter::{native_linker_program, native_runtime_bytes};
 
 pub const CPU_POLICY: &str = "generic";
 pub const CPU_FEATURES: &str = "";
-pub const OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
+pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
+pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
 pub const NATIVE_RUNTIME_ABI: &str = "loom-value-v1/wait-v1/task-v1/gc-v1";
+
+/// User-selected LLVM optimization policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptimizationProfile {
+    #[default]
+    Development,
+    Release,
+}
+
+impl OptimizationProfile {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::Release => "release",
+        }
+    }
+
+    #[must_use]
+    pub const fn pipeline(self) -> &'static str {
+        match self {
+            Self::Development => DEVELOPMENT_OPTIMIZATION_PIPELINE,
+            Self::Release => RELEASE_OPTIMIZATION_PIPELINE,
+        }
+    }
+
+    const fn llvm_level(self) -> OptimizationLevel {
+        match self {
+            Self::Development => OptimizationLevel::None,
+            Self::Release => OptimizationLevel::Default,
+        }
+    }
+}
 
 /// LLVM facts which affect native object and executable compatibility.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -34,14 +69,26 @@ pub struct NativeTargetIdentity {
 ///
 /// Returns a stable backend error if native LLVM target initialization fails.
 pub fn native_target_identity() -> Result<NativeTargetIdentity, CodegenError> {
-    let (triple, machine) = create_native_target_machine()?;
+    target_identity(None, OptimizationProfile::Development)
+}
+
+/// Returns the exact target-machine identity for a host or explicit LLVM triple.
+///
+/// # Errors
+///
+/// Returns a stable backend error if LLVM does not provide the requested target.
+pub fn target_identity(
+    triple: Option<&str>,
+    optimization: OptimizationProfile,
+) -> Result<NativeTargetIdentity, CodegenError> {
+    let (triple, machine) = create_target_machine(triple, optimization)?;
     let data_layout = machine.get_target_data().get_data_layout();
     Ok(NativeTargetIdentity {
         triple: triple.as_str().to_string_lossy().into_owned(),
         data_layout: data_layout.as_str().to_string_lossy().into_owned(),
         cpu_policy: CPU_POLICY.to_owned(),
         cpu_features: CPU_FEATURES.to_owned(),
-        optimization: OPTIMIZATION_PIPELINE.to_owned(),
+        optimization: optimization.pipeline().to_owned(),
         relocation: RELOCATION_MODE.to_owned(),
     })
 }
@@ -266,11 +313,14 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-pub(crate) fn create_native_target_machine() -> Result<(TargetTriple, TargetMachine), CodegenError>
-{
-    Target::initialize_native(&InitializationConfig::default())
-        .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message))?;
-    let triple = TargetMachine::get_default_triple();
+pub(crate) fn create_target_machine(
+    requested: Option<&str>,
+    optimization: OptimizationProfile,
+) -> Result<(TargetTriple, TargetMachine), CodegenError> {
+    Target::initialize_all(&InitializationConfig::default());
+    let triple = requested.map_or_else(TargetMachine::get_default_triple, |triple| {
+        TargetMachine::normalize_triple(&TargetTriple::create(triple))
+    });
     let target = Target::from_triple(&triple)
         .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message.to_string()))?;
     let machine = target
@@ -278,7 +328,7 @@ pub(crate) fn create_native_target_machine() -> Result<(TargetTriple, TargetMach
             &triple,
             CPU_POLICY,
             CPU_FEATURES,
-            OptimizationLevel::Default,
+            optimization.llvm_level(),
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -289,4 +339,15 @@ pub(crate) fn create_native_target_machine() -> Result<(TargetTriple, TargetMach
             )
         })?;
     Ok((triple, machine))
+}
+
+/// Reports whether an explicit triple normalizes to the current host triple.
+#[must_use]
+pub fn is_native_target(requested: Option<&str>) -> bool {
+    let Some(requested) = requested else {
+        return true;
+    };
+    let requested = TargetMachine::normalize_triple(&TargetTriple::create(requested));
+    let native = TargetMachine::normalize_triple(&TargetMachine::get_default_triple());
+    requested == native
 }

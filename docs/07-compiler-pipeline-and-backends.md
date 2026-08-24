@@ -115,10 +115,10 @@ InstanceKey = (
 - LLVM 19.1；
 - Rust 使用 `inkwell 0.10` 的 `llvm19-1-prefer-dynamic` feature；
 - 不直接编写 `llvm-sys` FFI 或项目内 unsafe binding；
-- module 设置 host target triple 与 LLVM data layout；
+- module 设置规范化后的 host 或显式 `--target-triple` 及该 TargetMachine 的 LLVM data layout；
 - LLVM verifier 在优化前后各执行一次；
-- 当前 optimization pipeline 是 `default<O2>` 加 global DCE；
-- TargetMachine 输出 native object；
+- development pipeline 是 `default<O0>` 加 global DCE；`--release` 切换为 `default<O2>` 加 global DCE；
+- TargetMachine 输出所选 triple 的 relocatable object；
 - object emission 与 final link 是独立 API/cache 边界；native object 由 `clang` 链接，可由 `LOOM_CC` 覆盖；
 - 用户函数和 statement/expr span 生成 DWARF line table；Linux ELF 直接保留 DWARF，macOS 在 object 尚存时用 `dsymutil` 生成标准 dSYM，并把 DWARF payload 与 executable 同 key 缓存；
 - compiler-private runtime 是 Cargo 构建并嵌入 codegen crate 的 Rust static library；float codec、moving GC、Task scheduler 与 reactor 共用该 runtime，不编译 C++ 源码。
@@ -181,6 +181,8 @@ Loom MIR 先把 async body降低成 numbered suspension/cancellation states，�
 ```sh
 loomc check PATH
 loomc build [--target NAME | --entry main] [--output target/loom/program] PATH
+loomc --release build [--target NAME | --entry main] [--output target/loom/program] PATH
+loomc build --target-triple aarch64-unknown-linux-gnu --emit object --output target/loom/program.o PATH
 loomc test [--target NAME] PATH
 loomc run [--target NAME | --entry main] PATH
 loomc run --artifact target/loom/program
@@ -188,7 +190,7 @@ loomc run PATH -- arg1 arg2
 loomc run --artifact target/loom/program -- arg1 arg2
 ```
 
-`build` 产生平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
+`build` 默认产生宿主平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。显式 target triple 目前闭环到真实 LLVM relocatable object。只有 triple 规范化后等于 host 时才能继续与内嵌 Rust runtime/linker 组成 executable；其他 triple 稳定报告 `CrossLinkUnavailable`，因为 Loom 不会把宿主 runtime archive 伪装成目标 runtime。portable `.loomlib` 不接受 release/target-triple/object 选项。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
 
 `--` 后的参数原样进入 `standard.process.arguments()`，但 executable path 不进入该 list。source run、native artifact 和 interpreted artifact 使用同一规则；环境变量由 child process/当前 interpreter host environment 提供，保持 `environment(Text) Option[Text]` 的相同 Unicode 边界。
 

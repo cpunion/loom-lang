@@ -196,7 +196,7 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 2. public interface/semantic shape/body fingerprint：已接入长驻 host 的 typed-HIR selective body query；声明形状变化安全回退整图；
 3. checked MIR：整图缓存；reachable function body 进入 object fingerprint；
 4. generic/witness：当前 shared generic body，proof/witness edge 进入 reachability fingerprint；未来单态化才新增独立 instance entry；
-5. target triple/data layout 下的 object：已真实复用；
+5. development/release profile 与显式 target triple/data layout 下的 object：已真实复用；非宿主 triple 可真实发出 relocatable object，跨目标 executable 在缺少匹配 runtime/linker 时 fail closed；
 6. runtime/linker/debug-tool keyed final link：已真实复用。
 
 当前明确宣称两层复用：同一长驻 host 的无关 module 不重查 body semantics；跨进程则恢复 validated whole-graph checked MIR，不序列化 typed-HIR body。不可达 private body 修改还可继续复用 object/final link。

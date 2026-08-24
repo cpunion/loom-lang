@@ -5,6 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+const CROSS_TRIPLE: &str = "aarch64-unknown-linux-gnu";
+
 struct TestProject(PathBuf);
 
 impl TestProject {
@@ -631,6 +636,129 @@ fn build_writes_a_runnable_native_artifact() {
         String::from_utf8(run.stdout).expect("UTF-8 stdout"),
         "Unit\n"
     );
+}
+
+#[test]
+fn release_and_cross_target_object_builds_are_distinct_and_cached() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let release_object = project.0.join("release-aarch64.o");
+    let release = loomc()
+        .args([
+            "--json",
+            "--release",
+            "--target-triple",
+            CROSS_TRIPLE,
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
+        .arg(&release_object)
+        .arg(&project.0)
+        .output()
+        .expect("emit release cross object");
+    assert_eq!(
+        release.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&release.stdout),
+        String::from_utf8_lossy(&release.stderr)
+    );
+    assert!(
+        fs::read(&release_object)
+            .expect("read release object")
+            .starts_with(b"\x7fELF")
+    );
+    assert_eq!(
+        cache_status(&release.stdout, "target_object").as_deref(),
+        Some("miss")
+    );
+
+    let cached_object = project.0.join("release-aarch64-copy.o");
+    let cached = loomc()
+        .args([
+            "--json",
+            "--release",
+            "--target-triple",
+            CROSS_TRIPLE,
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
+        .arg(&cached_object)
+        .arg(&project.0)
+        .output()
+        .expect("restore cross object cache");
+    assert_eq!(cached.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&cached.stdout, "target_object").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        fs::read(&release_object).expect("read first cross object"),
+        fs::read(&cached_object).expect("read cached cross object")
+    );
+
+    let development_object = project.0.join("development-aarch64.o");
+    let development = loomc()
+        .args([
+            "--json",
+            "--target-triple",
+            CROSS_TRIPLE,
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
+        .arg(&development_object)
+        .arg(&project.0)
+        .output()
+        .expect("emit development cross object");
+    assert_eq!(development.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&development.stdout, "target_object").as_deref(),
+        Some("miss")
+    );
+    assert_ne!(
+        cache_key(&release.stdout, "target_object"),
+        cache_key(&development.stdout, "target_object")
+    );
+
+    let cross_link = loomc()
+        .args([
+            "--json",
+            "--target-triple",
+            CROSS_TRIPLE,
+            "build",
+            "--output",
+        ])
+        .arg(project.0.join("invalid-cross-executable"))
+        .arg(&project.0)
+        .output()
+        .expect("reject cross executable link");
+    assert_eq!(cross_link.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&cross_link.stdout).contains("CrossLinkUnavailable"));
+}
+
+#[test]
+fn release_build_produces_a_runnable_native_executable() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let release_executable = project.0.join("release-native");
+    let native = loomc()
+        .args(["--release", "build", "--output"])
+        .arg(&release_executable)
+        .arg(&project.0)
+        .output()
+        .expect("build release native executable");
+    assert_eq!(native.status.code(), Some(0));
+    let executed = loomc()
+        .args(["run", "--artifact"])
+        .arg(&release_executable)
+        .output()
+        .expect("run release executable");
+    assert_eq!(executed.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&executed.stdout), "Unit\n");
 }
 
 #[test]
