@@ -2943,6 +2943,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     };
                     self.semantics.assertion_checks.insert(*predicate, check);
                     self.proof_facts.assume(term, true);
+                    self.recover_receiver_invariant();
                 }
             }
         }
@@ -4273,6 +4274,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.proof_facts.assume(term, true);
         }
         self.assume_established_record_fields(ty, value);
+    }
+
+    fn recover_receiver_invariant(&mut self) {
+        if !self.self_dirty {
+            return;
+        }
+        let Some(self_ty) = self.environment.self_ty else {
+            return;
+        };
+        let value = ProofTerm::Place(ProofPlace {
+            root: ProofRoot::SelfValue,
+            fields: Vec::new(),
+        });
+        if self
+            .established_type_term(self_ty, &value)
+            .is_some_and(|invariant| self.proof_facts.prove(&invariant) == ProofResult::Proven)
+        {
+            self.self_dirty = false;
+        }
     }
 
     fn assume_established_record_fields(&mut self, ty: TyId, value: &ProofTerm) {
@@ -8059,6 +8079,38 @@ impl Pair {
             .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
             .count();
         assert_eq!(isolation, 1, "{:#?}", analysis.diagnostics);
+    }
+
+    #[test]
+    fn successful_assertion_restores_the_receiver_invariant_boundary() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+pub record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Counter {
+    method observe(self) Unit {
+        Unit
+    }
+
+    method repair(mut self, next Int) Unit {
+        self.value = next
+        assert self.value >= 0
+        self.observe()
+        Unit
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
     }
 
     #[test]
