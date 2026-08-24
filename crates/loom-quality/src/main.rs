@@ -18,7 +18,11 @@ const EXECUTION_BUDGET: Duration = Duration::from_secs(15);
 const PARSER_BUDGET: Duration = Duration::from_secs(8);
 const ARTIFACT_DECODE_BUDGET: Duration = Duration::from_secs(15);
 const INCREMENTAL_BUDGET: Duration = Duration::from_secs(10);
-const TOTAL_BUDGET: Duration = Duration::from_secs(180);
+const TOTAL_BUDGET: Duration = Duration::from_secs(300);
+const C3_ANALYSIS_BUDGET: Duration = Duration::from_secs(15);
+const C3_NATIVE_BUILD_BUDGET: Duration = Duration::from_secs(90);
+const C3_REPOSITORY: &str = "examples/c3/application";
+const C3_TARGET: &str = "app";
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -60,8 +64,28 @@ struct EvidenceReport {
     target_triple: String,
     optimization: String,
     tasks: Vec<TaskEvidence>,
+    repository: Option<RepositoryEvidence>,
     gates: Vec<GateEvidence>,
     failures: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryEvidence {
+    name: &'static str,
+    path: &'static str,
+    source_sha256: String,
+    packages: usize,
+    modules: usize,
+    source_bytes: usize,
+    mir_functions: usize,
+    mir_tests: usize,
+    native_reachable_main_functions: usize,
+    native_reachable_test_functions: usize,
+    analysis_ms: u64,
+    interpreter_run_ms: u64,
+    native_build_ms: u64,
+    native_run_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -106,7 +130,7 @@ fn main() {
     };
     let mut report = EvidenceReport {
         schema_version: 1,
-        evidence_level: "C2 implementation-controlled tasks",
+        evidence_level: "C3 real multi-package repository",
         status: "running",
         compiler_version: env!("CARGO_PKG_VERSION"),
         llvm_backend_version: loom_codegen_llvm::BACKEND_VERSION,
@@ -114,6 +138,7 @@ fn main() {
         target_triple: target.triple,
         optimization: target.optimization,
         tasks: Vec::new(),
+        repository: None,
         gates: Vec::new(),
         failures: Vec::new(),
     };
@@ -123,6 +148,10 @@ fn main() {
             Ok(evidence) => report.tasks.push(evidence),
             Err(error) => report.failures.push(format!("{}: {error}", task.name)),
         }
+    }
+    match run_c3_repository(&workspace, &mut report.gates) {
+        Ok(evidence) => report.repository = Some(evidence),
+        Err(error) => report.failures.push(format!("c3-repository: {error}")),
     }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
         report.failures.push(error);
@@ -148,6 +177,172 @@ fn main() {
     if !passed {
         std::process::exit(1);
     }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_c3_repository(
+    workspace: &Path,
+    gates: &mut Vec<GateEvidence>,
+) -> Result<RepositoryEvidence, String> {
+    let analysis_started = Instant::now();
+    let snapshot = AnalysisHost::new(workspace.join(C3_REPOSITORY))
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let analysis_elapsed = analysis_started.elapsed();
+    upper_gate(
+        gates,
+        "c3-repository.analysis",
+        analysis_elapsed,
+        C3_ANALYSIS_BUDGET,
+    );
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+
+    let entry = snapshot
+        .project()
+        .target(C3_TARGET)
+        .and_then(loom_driver::Target::entry)
+        .ok_or_else(|| "C3 app target has no entry".to_owned())?
+        .to_owned();
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+    let main = program
+        .exports
+        .get(&entry)
+        .copied()
+        .ok_or_else(|| format!("C3 program does not export `{entry}`"))?;
+
+    let interpreter_started = Instant::now();
+    let interpreter_tests = Interpreter::new(program).run_tests();
+    if interpreter_tests
+        .iter()
+        .any(|result| result.status != TestStatus::Passed)
+    {
+        return Err(format!(
+            "interpreter tests did not pass: {interpreter_tests:#?}"
+        ));
+    }
+    let call_site = program
+        .function(main)
+        .map_or_else(Span::default, |function| function.span);
+    let interpreted = Interpreter::new(program)
+        .invoke(main, Vec::new(), call_site)
+        .map_err(|failure| format!("interpreter main failed: {failure:?}"))?;
+    if interpreted != Value::Unit {
+        return Err(format!(
+            "interpreter main returned {}, expected Unit",
+            interpreted.summary()
+        ));
+    }
+    let interpreter_elapsed = interpreter_started.elapsed();
+    upper_gate(
+        gates,
+        "c3-repository.interpreter-execution",
+        interpreter_elapsed,
+        EXECUTION_BUDGET,
+    );
+
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let native_build_started = Instant::now();
+    let executable = directory.path().join("main");
+    let main_artifact = emit_native(
+        program,
+        &executable,
+        &EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
+    )
+    .map_err(|error| format!("native main build failed: {error}"))?;
+    let test_executable = directory.path().join("tests");
+    let test_artifact = emit_native(
+        program,
+        &test_executable,
+        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+    )
+    .map_err(|error| format!("native test build failed: {error}"))?;
+    let native_build_elapsed = native_build_started.elapsed();
+    upper_gate(
+        gates,
+        "c3-repository.native-build",
+        native_build_elapsed,
+        C3_NATIVE_BUILD_BUDGET,
+    );
+
+    let native_run_started = Instant::now();
+    let main_output = Command::new(&executable)
+        .current_dir(workspace.join(C3_REPOSITORY))
+        .output()
+        .map_err(|error| format!("execute native main: {error}"))?;
+    if !main_output.status.success() || main_output.stdout != b"Unit\n" {
+        return Err(format!(
+            "native main mismatch: status={:?}, stdout={}, stderr={}",
+            main_output.status.code(),
+            String::from_utf8_lossy(&main_output.stdout),
+            String::from_utf8_lossy(&main_output.stderr)
+        ));
+    }
+    let test_output = Command::new(&test_executable)
+        .current_dir(workspace.join(C3_REPOSITORY))
+        .output()
+        .map_err(|error| format!("execute native tests: {error}"))?;
+    let native_test_output = String::from_utf8_lossy(&test_output.stdout);
+    if !test_output.status.success()
+        || native_test_output.lines().count() != program.tests.len()
+        || !native_test_output
+            .lines()
+            .all(|line| line.starts_with("passed "))
+    {
+        return Err(format!(
+            "native tests mismatch: status={:?}, stdout={}, stderr={}",
+            test_output.status.code(),
+            native_test_output,
+            String::from_utf8_lossy(&test_output.stderr)
+        ));
+    }
+    let native_run_elapsed = native_run_started.elapsed();
+    upper_gate(
+        gates,
+        "c3-repository.native-execution",
+        native_run_elapsed,
+        EXECUTION_BUDGET,
+    );
+
+    let mut source_identity = Sha256::new();
+    let mut source_bytes = 0_usize;
+    for document in snapshot.sources().documents() {
+        let text = document
+            .text()
+            .ok_or_else(|| format!("{} is not UTF-8", document.relative_path()))?;
+        source_identity.update(document.relative_path().as_bytes());
+        source_identity.update([0]);
+        source_identity.update(text.as_bytes());
+        source_identity.update([0]);
+        source_bytes = source_bytes.saturating_add(text.len());
+    }
+    let source_sha256 =
+        source_identity
+            .finalize()
+            .iter()
+            .fold(String::with_capacity(64), |mut output, byte| {
+                write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+                output
+            });
+
+    Ok(RepositoryEvidence {
+        name: "multi-package-checkout-service",
+        path: C3_REPOSITORY,
+        source_sha256,
+        packages: snapshot.project().packages().count(),
+        modules: snapshot.sources().documents().len(),
+        source_bytes,
+        mir_functions: program.functions.len(),
+        mir_tests: program.tests.len(),
+        native_reachable_main_functions: main_artifact.functions,
+        native_reachable_test_functions: test_artifact.functions,
+        analysis_ms: millis(analysis_elapsed),
+        interpreter_run_ms: millis(interpreter_elapsed),
+        native_build_ms: millis(native_build_elapsed),
+        native_run_ms: millis(native_run_elapsed),
+    })
 }
 
 #[allow(clippy::too_many_lines)]

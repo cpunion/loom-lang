@@ -10,7 +10,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 loom-core = { path = "../crates/loom-core" }
+loom-hir = { path = "../crates/loom-hir" }
+loom-interpreter = { path = "../crates/loom-interpreter" }
+loom-lowering = { path = "../crates/loom-lowering" }
 loom-mir = { path = "../crates/loom-mir" }
+loom-sema = { path = "../crates/loom-sema" }
 loom-syntax = { path = "../crates/loom-syntax" }
 
 [workspace]
@@ -26,6 +30,13 @@ bench = false
 [[bin]]
 name = "artifact"
 path = "fuzz_targets/artifact.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "semantics"
+path = "fuzz_targets/semantics.rs"
 test = false
 doc = false
 bench = false

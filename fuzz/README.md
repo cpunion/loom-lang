@@ -10,6 +10,9 @@ Targets:
 - `artifact` feeds both raw bytes and structured mutations of a valid seed
   through envelope decoding, Float restoration, entry checking, and the full
   checked-MIR validator.
+- `semantics` generates bounded constrained-integer programs and checks that
+  direct proof elimination, statically rejected literals, runtime validation,
+  and interpreter execution all agree.
 
 Run locally with a nightly toolchain and `cargo-fuzz` 0.13.1:
 
@@ -17,6 +20,7 @@ Run locally with a nightly toolchain and `cargo-fuzz` 0.13.1:
 cargo install cargo-fuzz --locked --version 0.13.1
 cargo +nightly fuzz run syntax -- -max_total_time=60 -timeout=5
 cargo +nightly fuzz run artifact -- -max_total_time=60 -timeout=5
+cargo +nightly fuzz run semantics -- -max_total_time=60 -timeout=5
 ```
 
 Crashes are written below `fuzz/artifacts/` and must be minimized and promoted
