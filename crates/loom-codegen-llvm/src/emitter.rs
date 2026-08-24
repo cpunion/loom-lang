@@ -48,6 +48,22 @@ use crate::{CodegenError, ReachableProgram, Roots};
 
 pub(crate) struct Emitter;
 
+fn native_fault_message(code: &str) -> &str {
+    match code {
+        "IntegerOverflow" => "integer arithmetic overflowed",
+        "IntegerDivisionByZero" => "integer division by zero",
+        "IntegerDivisionOverflow" => "integer division overflowed",
+        "InvalidSleepDuration" => "sleep duration must not be negative",
+        "SleepDurationOverflow" => "sleep duration overflowed",
+        "InvalidPort" => "socket port must fit UInt16",
+        "InvalidFileDescriptor" => "resource descriptor is invalid",
+        "TaskAllocationFault" => "task allocation failed",
+        "TaskJoinFault" => "task join failed",
+        "ResourceCloseFault" => "resource close failed",
+        _ => "runtime operation failed",
+    }
+}
+
 impl Emitter {
     pub(crate) fn emit_object(
         program: &Program,
@@ -729,6 +745,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 done,
                 &[
                     (self.tag(VALUE_TAG_RECORD), aggregate),
+                    (self.tag(VALUE_TAG_CONSTRAINT_ERROR), aggregate),
                     (self.tag(VALUE_TAG_TUPLE), aggregate),
                     (self.tag(VALUE_TAG_LIST), aggregate),
                     (self.tag(VALUE_TAG_ENUM), enumeration),
@@ -1499,6 +1516,19 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_value_summary(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_value_summary")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_runtime_value_summary", function_type, None)
+            })
+    }
+
     fn native_set_arguments(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_set_arguments")
@@ -1832,6 +1862,59 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_task_set_fault(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_set_fault")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_task_set_fault", function_type, None)
+            })
+    }
+
+    fn native_task_report_fault(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_report_fault")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_report_fault", function_type, None)
+            })
+    }
+
+    fn native_executor_raise_fault(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_raise_fault")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_executor_raise_fault", function_type, None)
+            })
+    }
+
     fn native_task_join_step(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_task_join_step")
@@ -1955,6 +2038,73 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.libc_puts(),
                 &[string.as_pointer_value().into()],
                 "puts",
+            )
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn set_task_fault(
+        &self,
+        task: PointerValue<'ctx>,
+        code: &str,
+        message: &str,
+    ) -> Result<(), CodegenError> {
+        let code_data = self
+            .builder
+            .build_global_string_ptr(code, &self.unique("fault.code"))
+            .map_err(builder_error)?;
+        let message_data = self
+            .builder
+            .build_global_string_ptr(message, &self.unique("fault.message"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_call(
+                self.native_task_set_fault(),
+                &[
+                    task.into(),
+                    code_data.as_pointer_value().into(),
+                    self.i64_type.const_int(code.len() as u64, false).into(),
+                    message_data.as_pointer_value().into(),
+                    self.i64_type.const_int(message.len() as u64, false).into(),
+                ],
+                "task.fault.set",
+            )
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn raise_fault(
+        &self,
+        executor: PointerValue<'ctx>,
+        code: &str,
+        message: &str,
+        display: &str,
+    ) -> Result<(), CodegenError> {
+        let code_data = self
+            .builder
+            .build_global_string_ptr(code, &self.unique("fault.code"))
+            .map_err(builder_error)?;
+        let message_data = self
+            .builder
+            .build_global_string_ptr(message, &self.unique("fault.message"))
+            .map_err(builder_error)?;
+        let display_data = self
+            .builder
+            .build_global_string_ptr(display, &self.unique("fault.display"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_call(
+                self.native_executor_raise_fault(),
+                &[
+                    executor.into(),
+                    code_data.as_pointer_value().into(),
+                    self.i64_type.const_int(code.len() as u64, false).into(),
+                    message_data.as_pointer_value().into(),
+                    self.i64_type.const_int(message.len() as u64, false).into(),
+                    display_data.as_pointer_value().into(),
+                    self.i64_type.const_int(display.len() as u64, false).into(),
+                ],
+                "fault.raise",
             )
             .map_err(builder_error)?;
         Ok(())
@@ -2114,11 +2264,36 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     }
 
     fn needs_executor(&self) -> bool {
-        self.reachable
-            .functions
-            .iter()
-            .filter_map(|function| self.program.function(*function))
-            .any(|function| function.is_async)
+        // The executor also owns the moving heap used by synchronous roots.
+        // Keeping one root heap for every invocation avoids process-lifetime
+        // fallback allocations in programs that do not use async functions.
+        true
+    }
+
+    fn native_gc_activate_executor(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_activate_executor")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_gc_activate_executor", function_type, None)
+            })
+    }
+
+    fn native_gc_deactivate_executor(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_deactivate_executor")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_gc_deactivate_executor", function_type, None)
+            })
     }
 
     fn create_root_executor(&self) -> Result<PointerValue<'ctx>, CodegenError> {
@@ -2157,11 +2332,25 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
         self.builder.position_at_end(ready);
+        self.builder
+            .build_call(
+                self.native_gc_activate_executor(),
+                &[executor.into()],
+                "executor.root.activate",
+            )
+            .map_err(builder_error)?;
         Ok(executor)
     }
 
     fn destroy_root_executor(&self, executor: PointerValue<'ctx>) -> Result<(), CodegenError> {
         if self.needs_executor() {
+            self.builder
+                .build_call(
+                    self.native_gc_deactivate_executor(),
+                    &[executor.into()],
+                    "executor.root.deactivate",
+                )
+                .map_err(builder_error)?;
             self.builder
                 .build_call(
                     self.native_executor_destroy(),
@@ -2410,6 +2599,13 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
         self.branch(merge)?;
         self.builder.position_at_end(run_failed);
+        self.builder
+            .build_call(
+                self.native_task_report_fault(),
+                &[task.into()],
+                "task.root.fault.report",
+            )
+            .map_err(builder_error)?;
         self.branch(merge)?;
 
         self.builder.position_at_end(merge);
@@ -2946,7 +3142,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
 
         backend.builder.position_at_end(invalid);
-        backend.puts("RuntimeFault: invalid coroutine state")?;
+        backend.set_task_fault(
+            task,
+            "LOOM_RUNTIME_INVALID_COROUTINE_STATE",
+            "invalid coroutine state",
+        )?;
         backend
             .builder
             .build_return(Some(
@@ -3100,8 +3300,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_conditional_branch(accepted, pass, fail)
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(fail);
-        self.backend
-            .puts(&format!("{category}: {}", contract.code))?;
+        self.record_or_print_fault(
+            category,
+            &format!("contract `{}` was not satisfied", contract.code),
+            &format!("{category}: {}", contract.code),
+        )?;
         self.emit_all_cleanups()?;
         self.backend
             .builder
@@ -3303,7 +3506,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .build_conditional_branch(accepted, pass, fail)
                     .map_err(builder_error)?;
                 self.backend.builder.position_at_end(fail);
-                self.backend.puts("AssertionFault")?;
+                self.record_or_print_fault(
+                    "AssertionFault",
+                    "assertion was not satisfied",
+                    "AssertionFault",
+                )?;
                 self.emit_all_cleanups()?;
                 self.backend
                     .builder
@@ -5028,7 +5235,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_conditional_branch(condition, fail, pass)
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(fail);
-        self.backend.puts(code)?;
+        self.record_or_print_fault(code, native_fault_message(code), code)?;
         self.emit_all_cleanups()?;
         self.backend
             .builder
@@ -5036,6 +5243,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(pass);
         Ok(())
+    }
+
+    fn record_or_print_fault(
+        &self,
+        code: &str,
+        message: &str,
+        synchronous_display: &str,
+    ) -> Result<(), CodegenError> {
+        self.backend
+            .raise_fault(self.executor, code, message, synchronous_display)
     }
 
     fn failure_status(&self) -> IntValue<'ctx> {
@@ -5204,7 +5421,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_arguments: Vec::new(),
             bindings: Vec::new(),
         };
-        self.emit_checked_construction(invariant, &context, record, ty, destination)
+        self.emit_checked_construction(
+            invariant,
+            &context,
+            record,
+            record,
+            ty,
+            "InvariantViolation",
+            destination,
+        )
     }
 
     fn emit_tuple(
@@ -5319,7 +5544,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_arguments: Vec::new(),
             bindings: Vec::new(),
         };
-        self.emit_checked_construction(predicate, &context, refined, ty, destination)
+        self.emit_checked_construction(
+            predicate,
+            &context,
+            refined,
+            value,
+            ty,
+            "ConstraintViolation",
+            destination,
+        )
     }
 
     fn emit_checked_construction(
@@ -5327,7 +5560,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         contract: &Contract,
         context: &ContractContext<'ctx>,
         accepted_value: PointerValue<'ctx>,
+        summary_source: PointerValue<'ctx>,
         target_type: TypeId,
+        violation_code: &str,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let condition = self.alloc_value("constraint");
@@ -5353,6 +5588,79 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             constraint_error,
             VALUE_FIELD_NOMINAL,
             self.backend.tag(u64::from(target_type.0)),
+        )?;
+        let definition = self.backend.program.type_def(target_type).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidTypeReference",
+                format!("type #{} does not exist", target_type.0),
+            )
+        })?;
+        let target = self.alloc_value("constraint.target");
+        self.emit_constant(&Constant::Text(definition.name.clone()), target)?;
+        let code = self.alloc_value("constraint.code");
+        self.emit_constant(&Constant::Text(violation_code.into()), code)?;
+        let predicate = self.alloc_value("constraint.predicate");
+        self.emit_constant(&Constant::Text(contract.code.clone()), predicate)?;
+        let path = self.alloc_value("constraint.path");
+        self.initialize(path, VALUE_TAG_LIST)?;
+        let summary = self.alloc_value("constraint.summary");
+        let summary_status = call_int(
+            &self.backend.builder,
+            self.backend.native_value_summary(),
+            &[summary_source.into(), summary.into()],
+            "constraint.summary.build",
+        )?;
+        let summary_failed = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                summary_status,
+                self.backend.context.i32_type().const_zero(),
+                "constraint.summary.failed",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(summary_failed, "ConstraintSummaryFault")?;
+        let contract_span = self.alloc_value("constraint.span");
+        let span_values = [
+            i64::from(contract.span.file.0),
+            i64::from(contract.span.range.start),
+            i64::from(contract.span.range.end),
+        ]
+        .into_iter()
+        .map(|value| {
+            let slot = self.alloc_value("constraint.span.value");
+            self.emit_constant(&Constant::Int(value), slot)
+                .map(|()| slot)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        self.initialize(contract_span, VALUE_TAG_TUPLE)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            contract_span,
+            VALUE_FIELD_AUX,
+            self.backend.tag(span_values.len() as u64),
+        )?;
+        let span_head = self.build_value_nodes(&span_values)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            contract_span,
+            VALUE_FIELD_DATA,
+            span_head,
+        )?;
+        let fields = [target, code, predicate, path, summary, contract_span];
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            constraint_error,
+            VALUE_FIELD_AUX,
+            self.backend.tag(fields.len() as u64),
+        )?;
+        let data = self.build_value_nodes(&fields)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            constraint_error,
+            VALUE_FIELD_DATA,
+            data,
         )?;
         self.emit_result(false, constraint_error, destination)?;
         self.backend.branch(merge)?;

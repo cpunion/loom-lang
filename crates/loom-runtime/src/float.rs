@@ -46,7 +46,7 @@ fn has_float_syntax(text: &str) -> bool {
     index == bytes.len() && (decimal || exponent)
 }
 
-fn canonical_text(value: f64) -> String {
+pub(crate) fn canonical_text(value: f64) -> String {
     if value.is_nan() {
         return "NaN".into();
     }
@@ -114,13 +114,10 @@ pub unsafe extern "C" fn format_float(
     let Ok(text_length) = u64::try_from(text.len()) else {
         return 1;
     };
-    let mut bytes = text.into_bytes();
-    bytes.push(0);
-    let pointer = bytes.as_mut_ptr().cast::<c_char>();
-    std::mem::forget(bytes);
+    let (pointer, _) = crate::gc::retain_bytes(text.into_bytes());
     // SAFETY: both caller-owned output slots were checked non-null.
     unsafe {
-        output.write(pointer);
+        output.write(pointer.cast_mut().cast::<c_char>());
         length.write(text_length);
     }
     0

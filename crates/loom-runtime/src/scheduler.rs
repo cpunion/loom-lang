@@ -14,8 +14,8 @@ use crate::reactor::{
 };
 use crate::{
     TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
-    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_INVALID_ARGUMENT, WAIT_OK,
-    WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_UNSUPPORTED,
+    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY,
+    WAIT_OK, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_UNSUPPORTED,
 };
 
 const NO_JOIN_WINNER: u64 = u64::MAX;
@@ -688,17 +688,14 @@ unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: i
 
 unsafe fn store_text_result(
     task: *mut LoomTask,
-    executor: *mut LoomExecutor,
+    _executor: *mut LoomExecutor,
     bytes: Vec<u8>,
     code: &str,
 ) -> i32 {
     if std::str::from_utf8(&bytes).is_err() {
         return unsafe { fail_message(task, code, "I/O bytes are not valid UTF-8 Text") };
     }
-    let bytes = bytes.into_boxed_slice();
-    let pointer = bytes.as_ptr();
-    let length = bytes.len() as u64;
-    unsafe { (*executor).result_bytes.push(bytes) };
+    let (pointer, length) = crate::gc::retain_bytes(bytes);
     let mut result = ValueSlot::default();
     result.words[0] = VALUE_TAG_TEXT;
     result.words[2] = length;
@@ -1051,6 +1048,85 @@ pub unsafe extern "C" fn task_is_cancelled(task: *const LoomTask) -> i32 {
     i32::from(!task.is_null() && unsafe { (*task).cancel_requested })
 }
 
+/// Stores the structured failure carried by a native task.
+///
+/// Generated coroutine code calls this before returning `TASK_FAULTED`.  The
+/// scheduler deliberately does not print child failures: `Task.settled` and
+/// `Task.race` must be able to consume them as ordinary values without an
+/// observable side effect.
+#[unsafe(export_name = "loom_task_set_fault")]
+pub unsafe extern "C" fn task_set_fault(
+    task: *mut LoomTask,
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+) -> i32 {
+    if task.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let (Some(code), Some(message)) = (unsafe { copy_text(code, code_length) }, unsafe {
+        copy_text(message, message_length)
+    }) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    unsafe {
+        (*task).fault_code = code;
+        (*task).fault_message = message;
+    }
+    WAIT_OK
+}
+
+/// Reports an unhandled root-task failure exactly once at the executable
+/// boundary. Child task failures are never routed through this function.
+#[unsafe(export_name = "loom_task_report_fault")]
+pub unsafe extern "C" fn task_report_fault(task: *const LoomTask) -> i32 {
+    if task.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let task = unsafe { &*task };
+    let code = if task.fault_code.is_empty() {
+        std::str::from_utf8(TASK_FAULT_CODE).expect("static TaskFault code is UTF-8")
+    } else {
+        &task.fault_code
+    };
+    let message = if task.fault_message.is_empty() {
+        std::str::from_utf8(TASK_FAULT_MESSAGE).expect("static TaskFault message is UTF-8")
+    } else {
+        &task.fault_message
+    };
+    println!("{code}: {message}");
+    WAIT_OK
+}
+
+/// Records a failure on the task currently executing in `executor`. When no
+/// task is active this is a synchronous executable boundary, so the supplied
+/// display text is emitted immediately instead.
+#[unsafe(export_name = "loom_executor_raise_fault")]
+pub unsafe extern "C" fn executor_raise_fault(
+    executor: *mut LoomExecutor,
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+    display: *const u8,
+    display_length: u64,
+) -> i32 {
+    let active_task = if executor.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { (*executor).active_task }
+    };
+    if !active_task.is_null() {
+        return unsafe { task_set_fault(active_task, code, code_length, message, message_length) };
+    }
+    let Some(display) = (unsafe { copy_text(display, display_length) }) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    println!("{display}");
+    WAIT_OK
+}
+
 #[unsafe(export_name = "loom_task_prepare_join")]
 pub unsafe extern "C" fn task_prepare_join(
     executor: *mut LoomExecutor,
@@ -1242,22 +1318,134 @@ unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut V
 }
 
 fn text_value(bytes: &[u8]) -> ValueSlot {
+    let (pointer, length) = crate::gc::retain_bytes(bytes.to_vec());
     let mut value = ValueSlot::default();
     value.words[0] = VALUE_TAG_TEXT;
-    value.words[2] = bytes.len() as u64;
-    value.words[4] = bytes.as_ptr() as u64;
+    value.words[2] = length;
+    value.words[4] = pointer as u64;
     value
 }
 
 fn retain_result_node(
-    executor: &mut LoomExecutor,
+    _executor: &mut LoomExecutor,
     value: ValueSlot,
     next: *mut ValueNode,
 ) -> *mut ValueNode {
-    let mut node = Box::new(ValueNode { value, next });
-    let pointer = &raw mut *node;
-    executor.result_nodes.push(node);
-    pointer
+    let node = crate::gc::allocate_value_node().cast::<ValueNode>();
+    if node.is_null() {
+        std::process::abort();
+    }
+    unsafe {
+        (*node).value = value;
+        (*node).next = next;
+    }
+    node
+}
+
+unsafe fn retire_join_children(parent: *mut LoomTask) {
+    if parent.is_null() {
+        return;
+    }
+    let executor = unsafe { &mut *(*parent).executor };
+    let children = unsafe { std::mem::take(&mut (*parent).join_children) };
+    for child in children {
+        if let Some(index) =
+            unsafe { (*parent).owned_children.iter() }.position(|candidate| *candidate == child)
+        {
+            unsafe { (*parent).owned_children.remove(index) };
+        }
+        if !executor.retired_tasks.contains(&child) && terminal(unsafe { (*child).status }) {
+            executor.retired_tasks.push(child);
+        }
+    }
+}
+
+fn referenced_tasks_in_value(value: &ValueSlot, referenced: &mut std::collections::HashSet<usize>) {
+    match value.words[0] {
+        VALUE_TAG_TASK => {
+            if value.words[2] == TASK_VALUE_DIRECT && value.words[4] != 0 {
+                referenced.insert(value.words[4] as usize);
+            }
+        }
+        VALUE_TAG_RECORD | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
+            referenced_tasks_in_nodes(
+                value.words[4] as *const ValueNode,
+                value.words[2],
+                referenced,
+            );
+        }
+        VALUE_TAG_ENUM => {
+            referenced_tasks_in_nodes(
+                value.words[4] as *const ValueNode,
+                value.words[3],
+                referenced,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn referenced_tasks_in_nodes(
+    mut node: *const ValueNode,
+    count: u64,
+    referenced: &mut std::collections::HashSet<usize>,
+) {
+    for _ in 0..count {
+        if node.is_null() {
+            return;
+        }
+        unsafe {
+            referenced_tasks_in_value(&(*node).value, referenced);
+            node = (*node).next;
+        }
+    }
+}
+
+fn reap_retired_tasks(executor: &mut LoomExecutor, root: *mut LoomTask) {
+    if executor.retired_tasks.is_empty() {
+        return;
+    }
+    let retired = executor
+        .retired_tasks
+        .iter()
+        .map(|task| *task as usize)
+        .collect::<std::collections::HashSet<_>>();
+    let mut referenced = std::collections::HashSet::new();
+    referenced.insert(root as usize);
+    for task in &executor.tasks {
+        let pointer = (&raw const **task) as usize;
+        if retired.contains(&pointer) {
+            continue;
+        }
+        for slot in &task.slots {
+            referenced_tasks_in_value(slot, &mut referenced);
+        }
+        referenced.extend(task.owned_children.iter().map(|child| *child as usize));
+        referenced.extend(task.join_children.iter().map(|child| *child as usize));
+    }
+    let reclaim = retired
+        .difference(&referenced)
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if reclaim.is_empty() {
+        return;
+    }
+    executor
+        .runnable
+        .retain(|task| !reclaim.contains(&(*task as usize)));
+    executor
+        .join_specs
+        .retain(|join| !reclaim.contains(&(join.task as usize)));
+    let before = executor.tasks.len();
+    executor
+        .tasks
+        .retain(|task| !reclaim.contains(&((&raw const **task) as usize)));
+    executor
+        .retired_tasks
+        .retain(|task| !reclaim.contains(&(*task as usize)));
+    executor.tasks_reclaimed = executor
+        .tasks_reclaimed
+        .saturating_add(before.saturating_sub(executor.tasks.len()) as u64);
 }
 
 #[unsafe(export_name = "loom_task_write_join_result")]
@@ -1293,41 +1481,46 @@ pub unsafe extern "C" fn task_write_join_result(
             index
         };
         if outcome {
-            return unsafe { write_outcome(parent, index, destination) };
+            let status = unsafe { write_outcome(parent, index, destination) };
+            if status == WAIT_OK {
+                unsafe { retire_join_children(parent) };
+            }
+            return status;
         }
         let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
         if result.is_null() {
             return WAIT_INVALID_ARGUMENT;
         }
         unsafe { destination.write(*result) };
+        unsafe { retire_join_children(parent) };
         return WAIT_OK;
     }
 
-    let executor = unsafe { (*parent).executor };
     let mut head = ptr::null_mut();
     for index in (0..count).rev() {
-        let mut node = Box::new(ValueNode {
-            value: ValueSlot::default(),
-            next: head,
-        });
+        let node = crate::gc::allocate_value_node().cast::<ValueNode>();
+        if node.is_null() {
+            return WAIT_NO_MEMORY;
+        }
+        unsafe {
+            (*node).value = ValueSlot::default();
+            (*node).next = head;
+        }
         let status = if outcome {
-            unsafe { write_outcome(parent, index, &raw mut node.value) }
+            unsafe { write_outcome(parent, index, &raw mut (*node).value) }
         } else {
             let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
             if result.is_null() {
                 WAIT_INVALID_ARGUMENT
             } else {
-                node.value = unsafe { *result };
+                unsafe { (*node).value = *result };
                 WAIT_OK
             }
         };
         if status != WAIT_OK {
             return status;
         }
-        head = &raw mut *node;
-        // SAFETY: write_outcome released its temporary executor borrow before
-        // this mutation and generated code is single-threaded.
-        unsafe { (*executor).result_nodes.push(node) };
+        head = node;
     }
     let mut result = ValueSlot::default();
     result.words[0] = if matches!(shape, JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_LIST) {
@@ -1338,6 +1531,7 @@ pub unsafe extern "C" fn task_write_join_result(
     result.words[2] = count as u64;
     result.words[4] = head as u64;
     unsafe { destination.write(result) };
+    unsafe { retire_join_children(parent) };
     WAIT_OK
 }
 
@@ -1542,6 +1736,7 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
         let task = {
             // SAFETY: the scheduler is the executor's unique driver.
             let executor_ref = unsafe { &mut *executor };
+            reap_retired_tasks(executor_ref, root);
             collect(executor_ref);
             move_task_frames(executor_ref);
             executor_ref.runnable.pop_front()
@@ -1611,6 +1806,26 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         0
     } else {
         let executor = unsafe { &*executor };
-        (executor.gc_values.len() as u64).saturating_add(executor.gc_nodes.len() as u64)
+        (executor.gc_values.len() as u64)
+            .saturating_add(executor.gc_nodes.len() as u64)
+            .saturating_add(executor.gc_bytes.len() as u64)
+    }
+}
+
+#[unsafe(export_name = "loom_executor_live_tasks")]
+pub unsafe extern "C" fn executor_live_tasks(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        unsafe { (*executor).tasks.len() as u64 }
+    }
+}
+
+#[unsafe(export_name = "loom_executor_tasks_reclaimed")]
+pub unsafe extern "C" fn executor_tasks_reclaimed(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        unsafe { (*executor).tasks_reclaimed }
     }
 }

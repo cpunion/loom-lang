@@ -22,6 +22,10 @@ mod int;
 mod process;
 mod reactor;
 mod scheduler;
+mod value;
+
+pub use gc::{activate_executor, deactivate_executor};
+pub use value::value_summary;
 
 pub use reactor::{
     LoomReadyNotification, LoomRegistration, LoomWaitSource, executor_cancel, executor_create,
@@ -30,10 +34,11 @@ pub use reactor::{
 };
 pub use scheduler::{
     LoomJoinSpec, LoomTask, executor_gc_collections, executor_gc_live_objects,
-    executor_gc_reclaimed, executor_gc_relocations, executor_run, join_add_list, join_add_task,
-    join_create, join_task, task_add_join_child, task_cancel, task_from_wait_source,
-    task_is_cancelled, task_join_count, task_join_result, task_join_result_step, task_join_step,
-    task_join_winner, task_prepare_join, task_result, task_set_state, task_slot, task_spawn,
+    executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_raise_fault,
+    executor_run, executor_tasks_reclaimed, join_add_list, join_add_task, join_create, join_task,
+    task_add_join_child, task_cancel, task_from_wait_source, task_is_cancelled, task_join_count,
+    task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
+    task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
     task_suspend_join, task_suspend_value, task_suspend_wait, task_write_join_result,
 };
 
@@ -93,6 +98,7 @@ mod tests {
     }
 
     static VALUE_RELOCATED: AtomicBool = AtomicBool::new(false);
+    const TASK_BATCH_SIZE: usize = 512;
 
     unsafe extern "C" fn gc_fixture_resume(
         task: *mut LoomTask,
@@ -127,6 +133,49 @@ mod tests {
                 VALUE_RELOCATED.store(old != current, Ordering::SeqCst);
                 unsafe { slot.write(scheduler::ValueSlot::default()) };
                 TASK_COMPLETED
+            }
+            _ => TASK_FAULTED,
+        }
+    }
+
+    unsafe extern "C" fn completed_child_resume(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn task_batch_resume(
+        task: *mut LoomTask,
+        executor: *mut LoomExecutor,
+    ) -> i32 {
+        match unsafe { scheduler::task_state(task) } {
+            0 => {
+                if unsafe { task_prepare_join(executor, task, TASK_JOIN_ALL) } != WAIT_OK {
+                    return TASK_FAULTED;
+                }
+                for _ in 0..TASK_BATCH_SIZE {
+                    let child = unsafe { task_spawn(executor, Some(completed_child_resume), 1, 0) };
+                    if child.is_null()
+                        || unsafe { task_add_join_child(executor, task, child) } != WAIT_OK
+                    {
+                        return TASK_FAULTED;
+                    }
+                }
+                unsafe { task_set_state(task, 1) };
+                if unsafe { task_suspend_join(executor, task) } == 1 {
+                    TASK_PENDING
+                } else {
+                    TASK_FAULTED
+                }
+            }
+            1 => {
+                let destination = unsafe { task_slot(task, 1) };
+                if unsafe { task_write_join_result(task, destination, 2) } == WAIT_OK {
+                    TASK_COMPLETED
+                } else {
+                    TASK_FAULTED
+                }
             }
             _ => TASK_FAULTED,
         }
@@ -228,6 +277,26 @@ mod tests {
         unsafe { gc::collect(&mut *executor) };
         assert_eq!(unsafe { executor_gc_live_objects(executor) }, 0);
         unsafe { executor_destroy(executor) };
+    }
+
+    #[test]
+    fn consumed_task_batches_are_reclaimed_at_the_next_safepoint() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        unsafe {
+            let batch = task_spawn(executor, Some(task_batch_resume), 2, 0);
+            assert!(!batch.is_null());
+            assert_eq!(executor_run(executor, batch), TASK_COMPLETED);
+
+            // Starting another root gives the executor a safepoint after the
+            // batch result has detached its consumed children.
+            let next = task_spawn(executor, Some(completed_child_resume), 1, 0);
+            assert!(!next.is_null());
+            assert_eq!(executor_run(executor, next), TASK_COMPLETED);
+            assert!(executor_tasks_reclaimed(executor) >= TASK_BATCH_SIZE as u64);
+            assert!(executor_live_tasks(executor) <= 2);
+            executor_destroy(executor);
+        }
     }
 
     #[test]

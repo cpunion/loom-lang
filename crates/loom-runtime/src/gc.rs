@@ -14,8 +14,10 @@ use crate::reactor::LoomExecutor;
 use crate::scheduler::{ValueNode, ValueSlot};
 
 const VALUE_TAG_RECORD: u64 = 5;
+const VALUE_TAG_TEXT: u64 = 4;
 const VALUE_TAG_ENUM: u64 = 6;
 const VALUE_TAG_REFINED: u64 = 7;
+const VALUE_TAG_CONSTRAINT_ERROR: u64 = 8;
 const VALUE_TAG_DYN: u64 = 9;
 const VALUE_TAG_TUPLE: u64 = 10;
 const VALUE_TAG_LIST: u64 = 12;
@@ -24,17 +26,60 @@ const TASK_COMPLETED: u64 = 0;
 
 thread_local! {
     static ACTIVE_EXECUTOR: Cell<*mut LoomExecutor> = const { Cell::new(ptr::null_mut()) };
+    static ACTIVE_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 pub(crate) fn enter_executor(executor: *mut LoomExecutor) {
     ACTIVE_EXECUTOR.with(|active| {
-        debug_assert!(active.get().is_null());
-        active.set(executor);
+        let current = active.get();
+        debug_assert!(current.is_null() || current == executor);
+        if current.is_null() {
+            active.set(executor);
+        }
     });
+    ACTIVE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
 }
 
 pub(crate) fn leave_executor() {
-    ACTIVE_EXECUTOR.with(|active| active.set(ptr::null_mut()));
+    ACTIVE_DEPTH.with(|depth| {
+        let current = depth.get();
+        debug_assert!(current > 0);
+        let remaining = current.saturating_sub(1);
+        depth.set(remaining);
+        if remaining == 0 {
+            ACTIVE_EXECUTOR.with(|active| active.set(ptr::null_mut()));
+        }
+    });
+}
+
+/// Activates an executor-owned heap for synchronous generated code. Scheduler
+/// resumes nest this activation while running an async root on the same thread.
+#[unsafe(export_name = "loom_gc_activate_executor")]
+pub unsafe extern "C" fn activate_executor(executor: *mut LoomExecutor) -> i32 {
+    if executor.is_null() {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    let compatible = ACTIVE_EXECUTOR.with(|active| {
+        let current = active.get();
+        current.is_null() || current == executor
+    });
+    if !compatible {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    enter_executor(executor);
+    crate::WAIT_OK
+}
+
+#[unsafe(export_name = "loom_gc_deactivate_executor")]
+pub unsafe extern "C" fn deactivate_executor(executor: *mut LoomExecutor) -> i32 {
+    if executor.is_null()
+        || !ACTIVE_EXECUTOR.with(|active| active.get() == executor)
+        || ACTIVE_DEPTH.with(|depth| depth.get() == 0)
+    {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    leave_executor();
+    crate::WAIT_OK
 }
 
 #[unsafe(export_name = "loom_gc_alloc_value")]
@@ -71,6 +116,26 @@ pub extern "C" fn allocate_value_node() -> *mut c_void {
         }
     });
     pointer
+}
+
+pub(crate) fn retain_bytes(bytes: Vec<u8>) -> (*const u8, u64) {
+    let length = bytes.len() as u64;
+    if bytes.is_empty() {
+        return (std::ptr::NonNull::<u8>::dangling().as_ptr(), 0);
+    }
+    let bytes = bytes.into_boxed_slice();
+    let pointer = bytes.as_ptr();
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if executor.is_null() {
+            let _ = Box::into_raw(bytes);
+        } else {
+            // SAFETY: see allocate_value. Text payloads are immutable after
+            // publication and collection runs only at generated safepoints.
+            unsafe { (*executor).gc_bytes.push(bytes) };
+        }
+    });
+    (pointer, length)
 }
 
 /// Appends one already-evaluated value to a checked native List.
@@ -165,6 +230,7 @@ pub extern "C" fn allocate_witness_node() -> *mut c_void {
 struct HeapIndex {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
+    bytes: HashSet<usize>,
 }
 
 impl HeapIndex {
@@ -180,6 +246,11 @@ impl HeapIndex {
                 .iter()
                 .map(|node| (&raw const **node) as usize)
                 .collect(),
+            bytes: executor
+                .gc_bytes
+                .iter()
+                .map(|bytes| bytes.as_ptr() as usize)
+                .collect(),
         }
     }
 }
@@ -188,11 +259,18 @@ impl HeapIndex {
 struct Marks {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
+    bytes: HashSet<usize>,
 }
 
 fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
     match value.words[0] {
-        VALUE_TAG_RECORD | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
+        VALUE_TAG_TEXT => {
+            let address = value.words[4] as usize;
+            if index.bytes.contains(&address) {
+                marks.bytes.insert(address);
+            }
+        }
+        VALUE_TAG_RECORD | VALUE_TAG_CONSTRAINT_ERROR | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
             trace_nodes(
                 value.words[4] as *const ValueNode,
                 value.words[2],
@@ -252,12 +330,22 @@ fn rewrite_value(
     value: &mut ValueSlot,
     values: &HashMap<usize, *mut ValueSlot>,
     nodes: &HashMap<usize, *mut ValueNode>,
+    bytes: &HashMap<usize, *const u8>,
 ) {
     let Ok(address) = usize::try_from(value.words[4]) else {
         return;
     };
     match value.words[0] {
-        VALUE_TAG_RECORD | VALUE_TAG_ENUM | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
+        VALUE_TAG_TEXT => {
+            if let Some(pointer) = bytes.get(&address) {
+                value.words[4] = *pointer as u64;
+            }
+        }
+        VALUE_TAG_RECORD
+        | VALUE_TAG_CONSTRAINT_ERROR
+        | VALUE_TAG_ENUM
+        | VALUE_TAG_TUPLE
+        | VALUE_TAG_LIST => {
             if let Some(pointer) = nodes.get(&address) {
                 value.words[4] = *pointer as u64;
             }
@@ -273,7 +361,8 @@ fn rewrite_value(
 
 pub(crate) fn collect(executor: &mut LoomExecutor) {
     executor.gc_collections = executor.gc_collections.saturating_add(1);
-    if executor.gc_values.is_empty() && executor.gc_nodes.is_empty() {
+    if executor.gc_values.is_empty() && executor.gc_nodes.is_empty() && executor.gc_bytes.is_empty()
+    {
         return;
     }
     let index = HeapIndex::new(executor);
@@ -283,27 +372,26 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
             trace_value(slot, &index, &mut marks);
         }
     }
-    for value in &executor.result_values {
-        trace_value(value, &index, &mut marks);
-    }
-    for node in &executor.result_nodes {
-        trace_value(&node.value, &index, &mut marks);
-    }
 
     let before = executor
         .gc_values
         .len()
-        .saturating_add(executor.gc_nodes.len());
+        .saturating_add(executor.gc_nodes.len())
+        .saturating_add(executor.gc_bytes.len());
     executor
         .gc_values
         .retain(|value| marks.values.contains(&((&raw const **value) as usize)));
     executor
         .gc_nodes
         .retain(|node| marks.nodes.contains(&((&raw const **node) as usize)));
+    executor
+        .gc_bytes
+        .retain(|bytes| marks.bytes.contains(&(bytes.as_ptr() as usize)));
     let after = executor
         .gc_values
         .len()
-        .saturating_add(executor.gc_nodes.len());
+        .saturating_add(executor.gc_nodes.len())
+        .saturating_add(executor.gc_bytes.len());
     executor.gc_reclaimed = executor
         .gc_reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
@@ -327,29 +415,31 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         *node = replacement;
         node_moves.insert(old, new);
     }
-    executor.gc_relocations = executor
-        .gc_relocations
-        .saturating_add((value_moves.len().saturating_add(node_moves.len())) as u64);
+    let mut byte_moves = HashMap::with_capacity(executor.gc_bytes.len());
+    for bytes in &mut executor.gc_bytes {
+        let old = bytes.as_ptr() as usize;
+        let replacement = bytes.to_vec().into_boxed_slice();
+        let new = replacement.as_ptr();
+        *bytes = replacement;
+        byte_moves.insert(old, new);
+    }
+    executor.gc_relocations = executor.gc_relocations.saturating_add(
+        (value_moves
+            .len()
+            .saturating_add(node_moves.len())
+            .saturating_add(byte_moves.len())) as u64,
+    );
 
     for task in &mut executor.tasks {
         for slot in &mut task.slots {
-            rewrite_value(slot, &value_moves, &node_moves);
-        }
-    }
-    for value in &mut executor.result_values {
-        rewrite_value(value, &value_moves, &node_moves);
-    }
-    for node in &mut executor.result_nodes {
-        rewrite_value(&mut node.value, &value_moves, &node_moves);
-        if let Some(next) = node_moves.get(&(node.next as usize)) {
-            node.next = *next;
+            rewrite_value(slot, &value_moves, &node_moves, &byte_moves);
         }
     }
     for value in &mut executor.gc_values {
-        rewrite_value(value, &value_moves, &node_moves);
+        rewrite_value(value, &value_moves, &node_moves, &byte_moves);
     }
     for node in &mut executor.gc_nodes {
-        rewrite_value(&mut node.value, &value_moves, &node_moves);
+        rewrite_value(&mut node.value, &value_moves, &node_moves, &byte_moves);
         if let Some(next) = node_moves.get(&(node.next as usize)) {
             node.next = *next;
         }

@@ -133,7 +133,16 @@ pub fn main() Unit {
     let money = direct()
     assert money == 10.0
     match checked(-1.0) {
-        Err(_) => Unit
+        Err(first) => match checked(-2.0) {
+            Err(second) => {
+                assert first != second
+                Unit
+            }
+            Ok(_) => {
+                assert false
+                Unit
+            }
+        }
         Ok(_) => {
             assert false
             Unit
@@ -378,8 +387,8 @@ pub async fn main() Unit {
         Faulted(fault) => {
             let code = fault.code()
             let message = fault.message()
-            assert code == "TaskFault"
-            assert message == "task execution failed"
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
             Unit
         }
         Cancelled => {
@@ -410,10 +419,7 @@ pub async fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "AssertionFault\nUnit\n"
-    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
 }
 
 #[test]
@@ -542,7 +548,7 @@ pub async fn main() Unit {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
-    assert!(stdout.contains("AssertionFault\n"), "{stdout}");
+    assert!(!stdout.contains("AssertionFault\n"), "{stdout}");
     assert!(stdout.ends_with("Unit\n"), "{stdout}");
 }
 

@@ -90,18 +90,18 @@ pub(crate) struct Reactor {
 pub struct LoomExecutor {
     pub(crate) reactor: Reactor,
     pub(crate) tasks: Vec<Box<LoomTask>>,
+    pub(crate) retired_tasks: Vec<*mut LoomTask>,
     pub(crate) runnable: VecDeque<*mut LoomTask>,
     pub(crate) active_task: *mut LoomTask,
     pub(crate) join_specs: Vec<Box<LoomJoinSpec>>,
-    pub(crate) result_nodes: Vec<Box<ValueNode>>,
-    pub(crate) result_values: Vec<Box<ValueSlot>>,
-    pub(crate) result_bytes: Vec<Box<[u8]>>,
     pub(crate) gc_values: Vec<Box<ValueSlot>>,
     pub(crate) gc_nodes: Vec<Box<ValueNode>>,
+    pub(crate) gc_bytes: Vec<Box<[u8]>>,
     pub(crate) metadata_nodes: Vec<Box<[usize; 2]>>,
     pub(crate) gc_collections: u64,
     pub(crate) gc_relocations: u64,
     pub(crate) gc_reclaimed: u64,
+    pub(crate) tasks_reclaimed: u64,
 }
 
 impl LoomExecutor {
@@ -116,18 +116,18 @@ impl LoomExecutor {
                 last_os_error: 0,
             },
             tasks: Vec::new(),
+            retired_tasks: Vec::new(),
             runnable: VecDeque::new(),
             active_task: ptr::null_mut(),
             join_specs: Vec::new(),
-            result_nodes: Vec::new(),
-            result_values: Vec::new(),
-            result_bytes: Vec::new(),
             gc_values: Vec::new(),
             gc_nodes: Vec::new(),
+            gc_bytes: Vec::new(),
             metadata_nodes: Vec::new(),
             gc_collections: 0,
             gc_relocations: 0,
             gc_reclaimed: 0,
+            tasks_reclaimed: 0,
         })
     }
 }
