@@ -15,5 +15,5 @@ pub use ids::{
     BodyId, DefId, ExprId, GenericParamId, LocalId, ModuleId, ParamId, PatternId, TypeRefId,
 };
 pub use ir::*;
-pub use lower::{LoweringResult, SourceUnit, lower_files};
+pub use lower::{LoweringResult, PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 pub use source_map::{BodySourceMap, ProgramSourceMap};

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use loom_core::{Diagnostic, ModuleName};
-use loom_hir::{Import, ModuleId, Path, Program};
+use loom_hir::{Import, ModuleId, ModuleResolution, Path, Program};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportEdge {
@@ -80,13 +80,26 @@ impl ModuleGraphBuild {
                     ));
                     continue;
                 };
-                let Some(target) = program.module_by_name(&imported_name) else {
-                    build.diagnostics.push(Diagnostic::error(
-                        "UnknownName",
-                        format!("module `{imported_name}` does not exist"),
-                        import.span,
-                    ));
-                    continue;
+                let target = match program.resolve_module_from(module, &imported_name) {
+                    ModuleResolution::Found(target) => target,
+                    ModuleResolution::UndeclaredDependency(package) => {
+                        build.diagnostics.push(Diagnostic::error(
+                            "UndeclaredDependency",
+                            format!(
+                                "module `{imported_name}` belongs to `{package}`, which is not a direct dependency"
+                            ),
+                            import.span,
+                        ));
+                        continue;
+                    }
+                    ModuleResolution::Missing => {
+                        build.diagnostics.push(Diagnostic::error(
+                            "UnknownName",
+                            format!("module `{imported_name}` does not exist"),
+                            import.span,
+                        ));
+                        continue;
+                    }
                 };
                 if seen_targets.insert((target, import_index)) {
                     build

@@ -4,6 +4,7 @@
 //! files are untrusted: every blob is size/hash checked and cached MIR crosses
 //! the ordinary artifact decoder and MIR validator before it is returned.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -131,6 +132,33 @@ pub struct PersistentCache {
     root: PathBuf,
 }
 
+/// Deterministic cache inventory used by `loomc cache stat`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct CacheStats {
+    pub schema_version: u32,
+    pub references: u64,
+    pub invalid_references: u64,
+    pub blobs: u64,
+    pub bytes: u64,
+    pub reclaimable_blobs: u64,
+    pub reclaimable_bytes: u64,
+}
+
+/// Files removed by an explicit cache prune operation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct CachePruneReport {
+    pub invalid_references_removed: u64,
+    pub blobs_removed: u64,
+    pub bytes_reclaimed: u64,
+}
+
+#[derive(Default)]
+struct CacheInventory {
+    stats: CacheStats,
+    invalid_references: Vec<PathBuf>,
+    orphan_blobs: Vec<(PathBuf, u64)>,
+}
+
 impl PersistentCache {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -147,6 +175,78 @@ impl PersistentCache {
         &self.root
     }
 
+    /// Inventories valid refs and content blobs without trusting cache files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when an existing cache directory cannot be read.
+    pub fn stats(&self) -> Result<CacheStats, CacheError> {
+        self.inventory().map(|inventory| inventory.stats)
+    }
+
+    /// Removes malformed refs and blobs which are not reachable from a valid
+    /// ref. The operation is confined to this exact versioned cache root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when inventory or removal fails.
+    pub fn prune(&self) -> Result<CachePruneReport, CacheError> {
+        let inventory = self.inventory()?;
+        for path in &inventory.invalid_references {
+            fs::remove_file(path).map_err(|error| CacheError::io(path, error))?;
+        }
+        for (path, _) in &inventory.orphan_blobs {
+            fs::remove_file(path).map_err(|error| CacheError::io(path, error))?;
+        }
+        Ok(CachePruneReport {
+            invalid_references_removed: u64::try_from(inventory.invalid_references.len())
+                .unwrap_or(u64::MAX),
+            blobs_removed: u64::try_from(inventory.orphan_blobs.len()).unwrap_or(u64::MAX),
+            bytes_reclaimed: inventory.orphan_blobs.iter().map(|(_, bytes)| *bytes).sum(),
+        })
+    }
+
+    fn inventory(&self) -> Result<CacheInventory, CacheError> {
+        let reference_paths = regular_files(&self.root.join("refs"))?;
+        let blob_paths = regular_files(&self.root.join("blobs/sha256"))?;
+        let mut reachable = BTreeSet::new();
+        let mut inventory = CacheInventory::default();
+        inventory.stats.schema_version = CACHE_SCHEMA_VERSION;
+        inventory.stats.references = u64::try_from(reference_paths.len()).unwrap_or(u64::MAX);
+        for path in reference_paths {
+            let valid = fs::read(&path)
+                .ok()
+                .filter(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_REF_BYTES)
+                .and_then(|bytes| serde_json::from_slice::<BlobRef>(&bytes).ok())
+                .filter(|reference| {
+                    reference.schema_version == CACHE_SCHEMA_VERSION
+                        && valid_digest(&reference.blob)
+                        && reference.size <= MAX_BLOB_BYTES
+                });
+            if let Some(reference) = valid {
+                reachable.insert(reference.blob);
+            } else {
+                inventory.stats.invalid_references += 1;
+                inventory.invalid_references.push(path);
+            }
+        }
+        inventory.stats.blobs = u64::try_from(blob_paths.len()).unwrap_or(u64::MAX);
+        for path in blob_paths {
+            let bytes = fs::metadata(&path)
+                .map_err(|error| CacheError::io(&path, error))?
+                .len();
+            inventory.stats.bytes = inventory.stats.bytes.saturating_add(bytes);
+            let digest = path.file_name().and_then(|name| name.to_str());
+            if digest.is_none_or(|digest| !valid_digest(digest) || !reachable.contains(digest)) {
+                inventory.stats.reclaimable_blobs += 1;
+                inventory.stats.reclaimable_bytes =
+                    inventory.stats.reclaimable_bytes.saturating_add(bytes);
+                inventory.orphan_blobs.push((path, bytes));
+            }
+        }
+        Ok(inventory)
+    }
+
     /// Computes a relocation-independent key for an exact loaded source map.
     #[must_use]
     pub fn compilation_key(
@@ -154,7 +254,7 @@ impl PersistentCache {
         sources: &SourceMap,
         context: &CacheContext,
     ) -> CacheKey {
-        let mut identity = Identity::new("loom-compilation-cache-v1");
+        let mut identity = Identity::new("loom-compilation-cache-v2");
         identity.field("compiler-version", &context.compiler_version);
         identity.field("backend-version", &context.backend_version);
         identity.field("stdlib-version", &context.standard_library_version);
@@ -186,7 +286,7 @@ impl PersistentCache {
     /// Derives a child artifact identity without including an output path.
     #[must_use]
     pub fn derived_key(parent: &CacheKey, fields: &[(&str, &str)]) -> CacheKey {
-        let mut identity = Identity::new("loom-derived-cache-v1");
+        let mut identity = Identity::new("loom-derived-cache-v2");
         identity.field("parent", parent.as_str());
         for (label, value) in fields {
             identity.field(label, value);
@@ -208,7 +308,7 @@ impl PersistentCache {
     /// Computes a per-source lossless token/AST identity.
     #[must_use]
     pub fn source_parse_key(relative_path: &str, source: &str, compiler_version: &str) -> CacheKey {
-        let mut identity = Identity::new("loom-source-parse-v1");
+        let mut identity = Identity::new("loom-source-parse-v2");
         identity.field("compiler-version", compiler_version);
         identity.field(
             "syntax-nesting-version",
@@ -270,7 +370,7 @@ impl PersistentCache {
     #[must_use]
     pub fn module_interface_key(interface: &ModuleInterface, compiler_version: &str) -> CacheKey {
         Self::semantic_key(
-            "loom-module-interface-cache-v1",
+            "loom-module-interface-cache-v2",
             &[
                 ("compiler-version", compiler_version),
                 ("module", &interface.module),
@@ -587,6 +687,32 @@ fn read_bounded(path: &Path, limit: u64) -> Option<Vec<u8>> {
         .read_to_end(&mut bytes)
         .ok()?;
     (u64::try_from(bytes.len()).ok()? <= limit).then_some(bytes)
+}
+
+fn regular_files(root: &Path) -> Result<Vec<PathBuf>, CacheError> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| CacheError::io(&directory, error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| CacheError::io(&directory, error))?;
+        for entry in entries {
+            let kind = entry
+                .file_type()
+                .map_err(|error| CacheError::io(entry.path(), error))?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn atomic_write(destination: &Path, bytes: &[u8], executable: bool) -> Result<(), CacheError> {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use loom_core::{Diagnostic, FileId, Severity, Span};
-use loom_hir::{BodyId, LoweringResult, SourceUnit, lower_files};
+use loom_hir::{BodyId, LoweringResult, PackageSourceUnit, lower_package_files};
 use loom_interpreter::{Interpreter, TestResult};
 use loom_lowering::lower_to_mir;
 use loom_mir::Program as MirProgram;
@@ -401,6 +401,7 @@ impl AnalysisHost {
             if let Some(text) = source.text() {
                 let parse = parse_with_file(source.id(), text);
                 diagnostics.extend(parse.diagnostics().iter().cloned());
+                validate_package_module(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 let start = source.invalid_utf8_at().unwrap_or(0);
@@ -450,6 +451,7 @@ impl AnalysisHost {
                     }
                 };
                 diagnostics.extend(parse.diagnostics().iter().cloned());
+                validate_package_module(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 stats.misses += 1;
@@ -475,12 +477,19 @@ impl AnalysisHost {
         mut diagnostics: Vec<Diagnostic>,
     ) -> AnalysisSnapshot {
         let LoweringResult {
-            program: hir,
+            program: mut hir,
             diagnostics: lowering_diagnostics,
-        } = lower_files(parses.iter().map(|(file, parse)| SourceUnit {
-            file: *file,
-            syntax: parse.ast(),
+        } = lower_package_files(parses.iter().map(|(file, parse)| {
+            let source = sources
+                .document(*file)
+                .expect("every parsed file belongs to the source map");
+            PackageSourceUnit {
+                file: *file,
+                package: source.package().cloned().unwrap_or_default(),
+                syntax: parse.ast(),
+            }
         }));
+        self.project.configure_hir_packages(&mut hir);
         diagnostics.extend(lowering_diagnostics);
 
         let query_keys = module_query_keys(&sources, &parses);
@@ -565,7 +574,12 @@ impl AnalysisHost {
                 .iter()
                 .filter_map(|(body, definition)| {
                     let owner = &hir.definitions[definition.owner];
-                    let module = hir.modules[owner.module].name.to_string();
+                    let source_module = &hir.modules[owner.module];
+                    let module = if source_module.package.name() == "<legacy>" {
+                        source_module.name.to_string()
+                    } else {
+                        format!("{}::{}", source_module.package, source_module.name)
+                    };
                     reusable_modules.contains(&module).then_some(body)
                 })
                 .collect::<BTreeSet<BodyId>>()
@@ -595,6 +609,39 @@ impl AnalysisHost {
         }
         (analysis, semantic_stats)
     }
+}
+
+fn validate_package_module(
+    source: &crate::SourceDocument,
+    parse: &Parse,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(package) = source.package() else {
+        return;
+    };
+    let Some(declaration) = &parse.ast().module else {
+        return;
+    };
+    let first = declaration
+        .name
+        .segments
+        .first()
+        .map(|segment| segment.text.as_str());
+    if first == Some(package.name()) {
+        return;
+    }
+    diagnostics.push(Diagnostic::error(
+        "PackageModuleNamespace",
+        format!(
+            "module `{}` must be inside package namespace `{}`",
+            declaration.name.as_string(),
+            package.name()
+        ),
+        Span {
+            file: source.id(),
+            range: declaration.range,
+        },
+    ));
 }
 
 fn sort_diagnostics(diagnostics: &mut [Diagnostic], sources: &SourceMap) {

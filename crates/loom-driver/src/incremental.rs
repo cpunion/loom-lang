@@ -76,10 +76,17 @@ fn module_query_data(
     >::new();
     for (file, parse) in parses {
         let ast = parse.ast();
-        let module = ast.module.as_ref().map_or_else(
+        let source_module = ast.module.as_ref().map_or_else(
             || format!("<missing:{}>", file.0),
             |declaration| declaration.name.as_string(),
         );
+        let module = sources
+            .document(*file)
+            .map_or(source_module.clone(), |source| {
+                source.package().map_or(source_module.clone(), |package| {
+                    format!("{package}::{source_module}")
+                })
+            });
         let imports = serde_json::to_value(&ast.imports).unwrap_or(serde_json::Value::Null);
         let interface_declarations = ast
             .declarations
@@ -137,14 +144,14 @@ fn module_query_data(
                 interface: ModuleInterface {
                     module: module.clone(),
                     files: paths,
-                    fingerprint: fingerprint("loom-module-interface-v1", &module, &interface_files),
+                    fingerprint: fingerprint("loom-module-interface-v2", &module, &interface_files),
                 },
                 shape_fingerprint: fingerprint(
-                    "loom-module-semantic-shape-v1",
+                    "loom-module-semantic-shape-v2",
                     &module,
                     &shape_files,
                 ),
-                body_fingerprint: fingerprint("loom-module-semantic-body-v1", &module, &body_files),
+                body_fingerprint: fingerprint("loom-module-semantic-body-v2", &module, &body_files),
             }
         })
         .collect()

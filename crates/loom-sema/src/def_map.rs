@@ -217,7 +217,7 @@ impl DefMapBuild {
                 let Some(imported_name) = imported_name(import) else {
                     continue;
                 };
-                let Some(target_module) = import_target_module(program, import) else {
+                let Some(target_module) = import_target_module(program, module, import) else {
                     continue;
                 };
                 let Some(target_map) = local_maps.get(&target_module) else {
@@ -278,7 +278,11 @@ fn namespace_of(kind: &DefinitionKind) -> Option<Namespace> {
     }
 }
 
-fn import_target_module(program: &Program, import: &loom_hir::Import) -> Option<ModuleId> {
+fn import_target_module(
+    program: &Program,
+    from: ModuleId,
+    import: &loom_hir::Import,
+) -> Option<ModuleId> {
     if import.path.segments.len() < 2 {
         return None;
     }
@@ -289,7 +293,11 @@ fn import_target_module(program: &Program, import: &loom_hir::Import) -> Option<
             .collect::<Vec<_>>()
             .join("."),
     );
-    program.module_by_name(&module_name)
+    match program.resolve_module_from(from, &module_name) {
+        loom_hir::ModuleResolution::Found(module) => Some(module),
+        loom_hir::ModuleResolution::UndeclaredDependency(_)
+        | loom_hir::ModuleResolution::Missing => None,
+    }
 }
 
 fn definition_sort_key(program: &Program, definition: DefId) -> (u32, u32, u32) {

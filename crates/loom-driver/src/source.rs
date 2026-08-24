@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use loom_core::FileId;
+use loom_core::{FileId, PackageId};
 
 use crate::project::ProjectGraph;
 use crate::{Position, Range};
@@ -86,6 +86,8 @@ pub struct SourceDocument {
     id: FileId,
     absolute_path: PathBuf,
     relative_path: String,
+    package: Option<PackageId>,
+    is_root_package: bool,
     text: Option<String>,
     byte_len: u32,
     line_starts: Vec<u32>,
@@ -106,6 +108,18 @@ impl SourceDocument {
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
+    }
+
+    /// Resolved package owning this source, or `None` for legacy inputs.
+    #[must_use]
+    pub const fn package(&self) -> Option<&PackageId> {
+        self.package.as_ref()
+    }
+
+    /// Whether source-mutating tools may edit this document by default.
+    #[must_use]
+    pub const fn is_root_package(&self) -> bool {
+        self.is_root_package
     }
 
     /// Returns source text, or `None` when the file contains invalid UTF-8.
@@ -260,7 +274,12 @@ impl SourceMap {
         let mut paths = project
             .source_files()?
             .into_iter()
-            .map(|source| (source.absolute, source.stable_path))
+            .map(|source| {
+                (
+                    source.absolute,
+                    (source.stable_path, source.package, source.is_root_package),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         for overlay in overlays.keys() {
             let overlay = normalize_absolute(overlay);
@@ -271,11 +290,12 @@ impl SourceMap {
                 });
             }
             if let Some(stable_path) = project.overlay_stable_path(&overlay) {
-                paths.insert(overlay, stable_path);
+                let package = project.root_package().map(|package| package.id().clone());
+                paths.insert(overlay, (stable_path, package, true));
             }
         }
         let mut paths = paths.into_iter().collect::<Vec<_>>();
-        paths.sort_by(|(_, left), (_, right)| left.cmp(right));
+        paths.sort_by(|(_, left), (_, right)| left.0.cmp(&right.0));
 
         if u32::try_from(paths.len()).is_err() {
             return Err(DriverError::TooManyFiles(paths.len()));
@@ -283,7 +303,9 @@ impl SourceMap {
 
         let mut documents = Vec::with_capacity(paths.len());
         let mut by_path = BTreeMap::new();
-        for (index, (path, relative_path)) in paths.into_iter().enumerate() {
+        for (index, (path, (relative_path, package, is_root_package))) in
+            paths.into_iter().enumerate()
+        {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
             let bytes = if let Some(text) = overlays.get(&path) {
                 text.as_bytes().to_vec()
@@ -316,6 +338,8 @@ impl SourceMap {
                 id,
                 absolute_path: path,
                 relative_path,
+                package,
+                is_root_package,
                 text,
                 byte_len,
                 line_starts,

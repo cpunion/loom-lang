@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loom_core::{FileId, ModuleName, Name, Span};
+use loom_core::{FileId, ModuleName, Name, PackageId, Span};
 
 use crate::{
     Arena, BodyId, BodySourceMap, DefId, ExprId, GenericParamId, LocalId, ModuleId, ParamId,
@@ -57,6 +57,7 @@ pub struct Import {
 
 #[derive(Clone, Debug)]
 pub struct Module {
+    pub package: PackageId,
     pub name: ModuleName,
     pub files: Vec<FileId>,
     pub imports: Vec<Import>,
@@ -567,18 +568,141 @@ pub struct Program {
     pub type_refs: Arena<TypeRefId, TypeRef>,
     pub bodies: Arena<BodyId, Body>,
     pub source_map: ProgramSourceMap,
-    module_by_name: BTreeMap<ModuleName, ModuleId>,
+    module_by_identity: BTreeMap<(PackageId, ModuleName), ModuleId>,
+    packages: BTreeMap<PackageId, PackageInfo>,
+    root_package: Option<PackageId>,
+}
+
+/// Resolved package namespace available during semantic name resolution.
+#[derive(Clone, Debug, Default)]
+struct PackageInfo {
+    dependencies: BTreeMap<Name, PackageId>,
+}
+
+/// Result of resolving a source module path from a package-owned module.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModuleResolution {
+    Found(ModuleId),
+    /// The module exists in the graph but its package is not a direct
+    /// dependency of the importing package.
+    UndeclaredDependency(PackageId),
+    Missing,
 }
 
 impl Program {
     #[must_use]
     pub fn module_by_name(&self, name: &ModuleName) -> Option<ModuleId> {
-        self.module_by_name.get(name).copied()
+        let mut matches = self
+            .module_by_identity
+            .iter()
+            .filter_map(|((_, candidate), module)| (candidate == name).then_some(*module));
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+
+    /// Registers the direct dependency aliases visible from one package.
+    pub fn register_package(
+        &mut self,
+        package: PackageId,
+        dependencies: impl IntoIterator<Item = (Name, PackageId)>,
+        is_root: bool,
+    ) {
+        self.packages.insert(
+            package.clone(),
+            PackageInfo {
+                dependencies: dependencies.into_iter().collect(),
+            },
+        );
+        if is_root {
+            self.root_package = Some(package);
+        }
+    }
+
+    #[must_use]
+    pub fn root_package(&self) -> Option<&PackageId> {
+        self.root_package.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_root_module(&self, module: ModuleId) -> bool {
+        self.root_package
+            .as_ref()
+            .is_none_or(|root| root == &self.modules[module].package)
+    }
+
+    /// Resolves a module using only the current package and its declared
+    /// direct dependency aliases. Transitive packages are deliberately not in
+    /// this lookup scope.
+    #[must_use]
+    pub fn resolve_module_from(&self, from: ModuleId, requested: &ModuleName) -> ModuleResolution {
+        let package = &self.modules[from].package;
+        if let Some(module) = self
+            .module_by_identity
+            .get(&(package.clone(), requested.clone()))
+            .copied()
+        {
+            return ModuleResolution::Found(module);
+        }
+
+        let first = requested.as_str().split('.').next().unwrap_or_default();
+        if let Some(target_package) = self
+            .packages
+            .get(package)
+            .and_then(|info| info.dependencies.get(&Name::new(first)))
+        {
+            let target_name = if first == target_package.name() {
+                requested.clone()
+            } else {
+                ModuleName::new(
+                    std::iter::once(target_package.name())
+                        .chain(requested.as_str().split('.').skip(1))
+                        .collect::<Vec<_>>()
+                        .join("."),
+                )
+            };
+            return self
+                .module_by_identity
+                .get(&(target_package.clone(), target_name))
+                .copied()
+                .map_or(ModuleResolution::Missing, ModuleResolution::Found);
+        }
+
+        let transitive =
+            self.module_by_identity
+                .iter()
+                .find_map(|((candidate_package, candidate_name), _)| {
+                    (candidate_package != package
+                        && (candidate_name == requested
+                            || candidate_package.name() == first
+                                && candidate_name
+                                    .as_str()
+                                    .split('.')
+                                    .skip(1)
+                                    .eq(requested.as_str().split('.').skip(1))))
+                    .then_some(candidate_package.clone())
+                });
+        transitive.map_or(
+            ModuleResolution::Missing,
+            ModuleResolution::UndeclaredDependency,
+        )
     }
 
     /// Interns a module name, merging files that declare the same module.
     pub fn intern_module(&mut self, name: ModuleName, file: FileId, declaration: Span) -> ModuleId {
-        if let Some(module) = self.module_by_name.get(&name).copied() {
+        self.intern_package_module(PackageId::legacy(), name, file, declaration)
+    }
+
+    /// Interns a package-qualified module, never merging equal source module
+    /// names that originate from different resolved packages.
+    pub fn intern_package_module(
+        &mut self,
+        package: PackageId,
+        name: ModuleName,
+        file: FileId,
+        declaration: Span,
+    ) -> ModuleId {
+        let identity = (package.clone(), name.clone());
+        if let Some(module) = self.module_by_identity.get(&identity).copied() {
             if !self.modules[module].files.contains(&file) {
                 self.modules[module].files.push(file);
                 self.modules[module].files.sort_unstable();
@@ -588,12 +712,13 @@ impl Program {
         }
 
         let module = self.modules.alloc(Module {
+            package,
             name: name.clone(),
             files: vec![file],
             imports: Vec::new(),
             items: Vec::new(),
         });
-        self.module_by_name.insert(name, module);
+        self.module_by_identity.insert(identity, module);
         self.source_map.add_module_declaration(module, declaration);
         module
     }

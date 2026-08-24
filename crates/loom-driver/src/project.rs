@@ -1,7 +1,6 @@
 //! Manifest, package-dependency, target, and source-root resolution.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -9,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+pub use loom_core::PackageId;
 
 use crate::DriverError;
 use crate::source::{
@@ -38,30 +39,6 @@ pub struct ProjectOptions {
     pub features: BTreeSet<String>,
     pub no_default_features: bool,
     pub lock_mode: LockMode,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct PackageId {
-    name: String,
-    version: String,
-}
-
-impl PackageId {
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[must_use]
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-}
-
-impl fmt::Display for PackageId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}@{}", self.name, self.version)
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,6 +225,8 @@ pub struct ProjectGraph {
 pub(crate) struct ProjectSource {
     pub absolute: PathBuf,
     pub stable_path: String,
+    pub package: Option<PackageId>,
+    pub is_root_package: bool,
 }
 
 impl ProjectGraph {
@@ -414,7 +393,10 @@ impl ProjectGraph {
 
     #[must_use]
     pub fn cache_root(&self) -> PathBuf {
-        self.root.join("target/loom/cache/v1")
+        self.root.join(format!(
+            "target/loom/cache/v{}",
+            crate::cache::CACHE_SCHEMA_VERSION
+        ))
     }
 
     #[must_use]
@@ -467,7 +449,7 @@ impl ProjectGraph {
         match &self.kind {
             ProjectKind::Legacy { input } => legacy_sources(&self.root, input),
             ProjectKind::Manifest { root_package } => {
-                let mut sources = BTreeMap::<PathBuf, String>::new();
+                let mut sources = BTreeMap::<PathBuf, (String, PackageId, bool)>::new();
                 for package in self.packages.values() {
                     let is_root = &package.id == root_package;
                     for source_root in &package.source_roots {
@@ -479,9 +461,10 @@ impl ProjectGraph {
                             } else {
                                 format!("deps/{}/{relative}", package.id)
                             };
-                            if let Some(previous) =
-                                sources.insert(path.clone(), stable_path.clone())
-                                && previous != stable_path
+                            if let Some((previous, _, _)) = sources.insert(
+                                path.clone(),
+                                (stable_path.clone(), package.id.clone(), is_root),
+                            ) && previous != stable_path
                             {
                                 return Err(manifest_error(
                                     &package.manifest,
@@ -496,10 +479,14 @@ impl ProjectGraph {
                 }
                 let mut result = sources
                     .into_iter()
-                    .map(|(absolute, stable_path)| ProjectSource {
-                        absolute,
-                        stable_path,
-                    })
+                    .map(
+                        |(absolute, (stable_path, package, is_root_package))| ProjectSource {
+                            absolute,
+                            stable_path,
+                            package: Some(package),
+                            is_root_package,
+                        },
+                    )
                     .collect::<Vec<_>>();
                 result.sort_by(|left, right| left.stable_path.cmp(&right.stable_path));
                 Ok(result)
@@ -576,6 +563,28 @@ impl ProjectGraph {
                     ));
                 }
                 fields
+            }
+        }
+    }
+
+    pub(crate) fn configure_hir_packages(&self, program: &mut loom_hir::Program) {
+        match &self.kind {
+            ProjectKind::Legacy { .. } => {
+                program.register_package(PackageId::legacy(), [], true);
+            }
+            ProjectKind::Manifest { root_package } => {
+                for package in self.packages.values() {
+                    program.register_package(
+                        package.id.clone(),
+                        package.dependencies.iter().map(|dependency| {
+                            (
+                                loom_core::Name::new(dependency.alias.clone()),
+                                dependency.package.clone(),
+                            )
+                        }),
+                        &package.id == root_package,
+                    );
+                }
             }
         }
     }
@@ -709,10 +718,7 @@ impl Resolver {
         }
 
         let raw = read_manifest(&manifest)?;
-        let id = PackageId {
-            name: raw.package.name.clone(),
-            version: raw.package.version.clone(),
-        };
+        let id = PackageId::new(raw.package.name.clone(), raw.package.version.clone());
         let requested_features = resolve_features(&manifest, &raw, request)?;
         let mut combined_features = self
             .enabled_features
@@ -985,8 +991,8 @@ impl Resolver {
         }
         let Some(locked) = self.locked.as_ref().and_then(|lock| {
             lock.packages.iter().find(|locked| {
-                locked.name == package.name
-                    && locked.version == package.version
+                locked.name == package.name()
+                    && locked.version == package.version()
                     && locked.source == source
             })
         }) else {
@@ -1314,8 +1320,8 @@ fn lockfile_for_packages(packages: &BTreeMap<PackageId, Package>) -> Lockfile {
     let packages = packages
         .values()
         .map(|package| LockedPackage {
-            name: package.id.name.clone(),
-            version: package.id.version.clone(),
+            name: package.id.name().to_owned(),
+            version: package.id.version().to_owned(),
             source: package.source.clone(),
             checksum: package.checksum.clone(),
             dependencies: package
@@ -1575,6 +1581,8 @@ fn legacy_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, Drive
             Ok(ProjectSource {
                 absolute,
                 stable_path,
+                package: None,
+                is_root_package: true,
             })
         })
         .collect()

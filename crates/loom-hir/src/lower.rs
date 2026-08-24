@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use loom_core::{Diagnostic, FileId, ModuleName, Name, Span, TextRange};
+use loom_core::{Diagnostic, FileId, ModuleName, Name, PackageId, Span, TextRange};
 use loom_syntax::ast as syntax;
 
 use crate::{
@@ -21,6 +21,14 @@ pub struct SourceUnit<'a> {
     pub syntax: &'a syntax::SourceFile,
 }
 
+/// A parsed file with resolved package provenance.
+#[derive(Clone)]
+pub struct PackageSourceUnit<'a> {
+    pub file: FileId,
+    pub package: PackageId,
+    pub syntax: &'a syntax::SourceFile,
+}
+
 /// HIR plus lowering-only diagnostics. Parser diagnostics remain owned by the
 /// caller so they are never duplicated or reordered here.
 #[derive(Clone, Debug, Default)]
@@ -32,6 +40,18 @@ pub struct LoweringResult {
 /// Lowers files in stable `FileId` order, independent of discovery order.
 #[must_use]
 pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> LoweringResult {
+    lower_package_files(files.into_iter().map(|unit| PackageSourceUnit {
+        file: unit.file,
+        package: PackageId::legacy(),
+        syntax: unit.syntax,
+    }))
+}
+
+/// Lowers files while preserving package identity in every module.
+#[must_use]
+pub fn lower_package_files<'a>(
+    files: impl IntoIterator<Item = PackageSourceUnit<'a>>,
+) -> LoweringResult {
     let mut files = files.into_iter().collect::<Vec<_>>();
     files.sort_by_key(|unit| unit.file);
 
@@ -59,7 +79,8 @@ pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> Lower
         if declaration.name.segments.is_empty() {
             continue;
         }
-        let module = context.program.intern_module(
+        let module = context.program.intern_package_module(
+            unit.package.clone(),
             ModuleName::new(declaration.name.as_string()),
             unit.file,
             span(unit.file, declaration.range),

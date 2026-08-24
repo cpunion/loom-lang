@@ -1274,6 +1274,7 @@ impl<'a> Compiler<'a> {
         for (definition, source) in self.hir.definitions.iter() {
             if source.visibility != Visibility::Public
                 || !matches!(source.kind, DefinitionKind::Function(_))
+                || !self.hir.is_root_module(source.module)
             {
                 continue;
             }

@@ -65,6 +65,37 @@ fn portable_cache_context() -> CacheContext {
 }
 
 #[test]
+fn cache_inventory_and_prune_are_versioned_and_bounded() {
+    let project = TestProject::new();
+    let cache = PersistentCache::new(project.root.join("cache/v2"));
+    let key = PersistentCache::semantic_key("cache-test", &[("input", "one")]);
+    cache
+        .store_artifact(&key, b"reachable")
+        .expect("store reachable cache blob");
+    let orphan_digest = "a".repeat(64);
+    project.write(
+        &format!("cache/v2/blobs/sha256/aa/{orphan_digest}"),
+        "orphan",
+    );
+    project.write("cache/v2/refs/broken/not-json.json", "not json");
+
+    let stats = cache.stats().expect("inventory cache");
+    assert_eq!(stats.schema_version, loom_driver::CACHE_SCHEMA_VERSION);
+    assert_eq!(stats.references, 2);
+    assert_eq!(stats.invalid_references, 1);
+    assert_eq!(stats.blobs, 2);
+    assert_eq!(stats.reclaimable_blobs, 1);
+
+    let report = cache.prune().expect("prune cache");
+    assert_eq!(report.invalid_references_removed, 1);
+    assert_eq!(report.blobs_removed, 1);
+    assert_eq!(report.bytes_reclaimed, 6);
+    let after = cache.stats().expect("inventory pruned cache");
+    assert_eq!(after.invalid_references, 0);
+    assert_eq!(after.reclaimable_blobs, 0);
+}
+
+#[test]
 fn first_class_dynamic_values_execute_in_the_interpreter() {
     let project = TestProject::new();
     project.write(
@@ -176,6 +207,105 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
             .expect("manifest graph lowers to MIR")
             .exports
             .contains_key("application.start")
+    );
+}
+
+#[test]
+fn package_imports_are_limited_to_direct_dependencies() {
+    let project = TestProject::new();
+    project.write(
+        "leaf/loom.toml",
+        "schema = 1\n[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "leaf/src/lib.loom",
+        "module leaf.api\n\npub fn value() Int { 1 }\n",
+    );
+    project.write(
+        "middle/loom.toml",
+        "schema = 1\n[package]\nname = \"middle\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\" }\n",
+    );
+    project.write("middle/src/lib.loom", "module middle\n");
+    project.write(
+        "root/loom.toml",
+        "schema = 1\n[package]\nname = \"root\"\nversion = \"1.0.0\"\n[dependencies]\nmiddle = { path = \"../middle\" }\n",
+    );
+    project.write(
+        "root/src/main.loom",
+        "module root\n\nimport leaf.api.value\n\npub fn main() Unit {\n    let answer = value()\n    assert answer == 1\n    Unit\n}\n",
+    );
+
+    let snapshot = AnalysisHost::new(project.root.join("root"))
+        .expect("open transitive graph")
+        .snapshot()
+        .expect("analyze transitive import");
+    assert!(
+        snapshot.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code == "UndeclaredDependency" && diagnostic.message.contains("leaf@1.0.0")
+        }),
+        "{:#?}",
+        snapshot.diagnostics()
+    );
+}
+
+#[test]
+fn dependency_aliases_resolve_without_exposing_the_package_name() {
+    let project = TestProject::new();
+    project.write(
+        "utility/loom.toml",
+        "schema = 1\n[package]\nname = \"utility\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "utility/src/math.loom",
+        "module utility.math\n\npub fn increment(value Int) Int { value + 1 }\n",
+    );
+    project.write(
+        "application/loom.toml",
+        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutil = { path = \"../utility\", package = \"utility\" }\n",
+    );
+    project.write(
+        "application/src/main.loom",
+        "module application\n\nimport util.math.increment\n\npub fn main() Unit {\n    let answer = increment(1)\n    assert answer == 2\n    Unit\n}\n",
+    );
+
+    let snapshot = AnalysisHost::new(project.root.join("application"))
+        .expect("open aliased graph")
+        .snapshot()
+        .expect("analyze aliased import");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+}
+
+#[test]
+fn package_sources_cannot_claim_another_package_namespace() {
+    let project = TestProject::new();
+    project.write(
+        "dependency/loom.toml",
+        "schema = 1\n[package]\nname = \"dependency\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "dependency/src/lib.loom",
+        "module application\n\npub fn hijack() Unit { Unit }\n",
+    );
+    project.write(
+        "application/loom.toml",
+        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\ndependency = { path = \"../dependency\" }\n",
+    );
+    project.write(
+        "application/src/main.loom",
+        "module application\n\npub fn main() Unit { Unit }\n",
+    );
+
+    let snapshot = AnalysisHost::new(project.root.join("application"))
+        .expect("open namespaced graph")
+        .snapshot()
+        .expect("analyze package namespace");
+    assert!(
+        snapshot
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "PackageModuleNamespace" }),
+        "{:#?}",
+        snapshot.diagnostics()
     );
 }
 

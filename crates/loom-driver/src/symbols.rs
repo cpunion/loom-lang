@@ -544,7 +544,11 @@ impl AnalysisSnapshot {
                     .collect::<Vec<_>>()
                     .join("."),
             );
-            self.hir().module_by_name(&module_name)?
+            match self.hir().resolve_module_from(module, &module_name) {
+                loom_hir::ModuleResolution::Found(module) => module,
+                loom_hir::ModuleResolution::UndeclaredDependency(_)
+                | loom_hir::ModuleResolution::Missing => return None,
+            }
         };
         let map = self.semantic_analysis().def_maps.map(target_module)?;
         let binding = if path.segments.len() == 1 {

@@ -260,7 +260,7 @@ feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖�
 
 ### 已实现缓存边界
 
-默认 cache root 是 root package 下的 `target/loom/cache/v1`。`--cache-dir DIR` 只改变存储位置，`--no-cache` 强制冷编译；JSON 模式输出 `cache_result` 的 layer、hit/miss/disabled 和 key。
+默认 cache root 是 root package 下的 `target/loom/cache/v2`。schema 升级使用新版本目录，旧缓存不会被误读。`--cache-dir DIR` 只改变存储位置，`--no-cache` 强制冷编译；`cache stat` 报告引用、blob、字节与可回收空间，显式 `cache prune` 删除损坏引用和不可达 blob。JSON 模式输出 `cache_result` 的 layer、hit/miss/disabled 和 key。
 
 当前真实缓存五个边界：
 

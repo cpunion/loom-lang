@@ -179,6 +179,36 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 }
 
 #[test]
+fn cache_stat_and_prune_have_stable_json_reports() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    let check = loomc()
+        .args(["--json", "--backend", "interpreter", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("populate cache");
+    assert_eq!(check.status.code(), Some(0));
+
+    let stat = loomc()
+        .args(["--json", "cache", "stat"])
+        .arg(&project.0)
+        .output()
+        .expect("inspect cache");
+    assert_eq!(stat.status.code(), Some(0));
+    let stdout = String::from_utf8(stat.stdout).expect("UTF-8 stat output");
+    assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
+    assert!(stdout.contains("\"schema_version\":2"), "{stdout}");
+
+    let prune = loomc()
+        .args(["--json", "cache", "prune"])
+        .arg(&project.0)
+        .output()
+        .expect("prune cache");
+    assert_eq!(prune.status.code(), Some(0));
+    let stdout = String::from_utf8(prune.stdout).expect("UTF-8 prune output");
+    assert!(stdout.contains("\"category\":\"cache_prune\""), "{stdout}");
+}
+
+#[test]
 fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
     let project = TestProject::new(
         "module demo\n\npub fn main() Unit {\n    Unit\n}\n\nfn dead() Int {\n    1\n}\n",
@@ -225,7 +255,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
     fs::write(
         project
             .0
-            .join("target/loom/cache/v1/refs/artifact")
+            .join("target/loom/cache/v2/refs/artifact")
             .join(format!("{final_key}.json")),
         b"corrupt",
     )
@@ -532,6 +562,93 @@ fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
         .output()
         .expect("run second fmt check");
     assert_eq!(second.status.code(), Some(0));
+}
+
+#[test]
+fn fmt_never_writes_dependency_sources() {
+    let project = TestProject::empty();
+    let dependency_source = "module utility\n\npub fn value() Int {\n\t1   \n}\n";
+    project.write(
+        "utility/loom.toml",
+        "schema = 1\n[package]\nname = \"utility\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("utility/src/lib.loom", dependency_source);
+    project.write(
+        "application/loom.toml",
+        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { path = \"../utility\" }\n",
+    );
+    project.write(
+        "application/src/main.loom",
+        "module application\n\nfn local() Unit {\n\tUnit   \n}\n",
+    );
+
+    let output = loomc()
+        .arg("fmt")
+        .arg(project.0.join("application"))
+        .output()
+        .expect("format root package");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("utility/src/lib.loom")).expect("read dependency source"),
+        dependency_source
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("application/src/main.loom")).expect("read root source"),
+        "module application\n\nfn local() Unit {\n    Unit\n}\n"
+    );
+}
+
+#[test]
+fn configured_entries_use_one_strict_signature_check() {
+    for (name, declaration) in [
+        ("parameters", "pub fn main(value Int) Unit { Unit }"),
+        ("generic", "pub fn main[T]() Unit { Unit }"),
+        ("return", "pub fn main() Int { 1 }"),
+    ] {
+        let project = TestProject::empty();
+        project.write(
+            "loom.toml",
+            "schema = 1\n[package]\nname = \"sample\"\nversion = \"1.0.0\"\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"sample.main\"\n",
+        );
+        project.write(
+            "src/main.loom",
+            &format!("module sample\n\n{declaration}\n"),
+        );
+        let output = loomc()
+            .args(["--json", "check"])
+            .arg(&project.0)
+            .output()
+            .unwrap_or_else(|error| panic!("run {name} entry check: {error}"));
+        assert_eq!(output.status.code(), Some(1), "{name}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+        assert!(stdout.contains("InvalidEntrySignature"), "{name}: {stdout}");
+    }
+}
+
+#[test]
+fn dependency_public_functions_cannot_be_selected_as_root_entries() {
+    let project = TestProject::empty();
+    project.write(
+        "dependency/loom.toml",
+        "schema = 1\n[package]\nname = \"dependency\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "dependency/src/lib.loom",
+        "module dependency\n\npub fn main() Unit { Unit }\n",
+    );
+    project.write(
+        "application/loom.toml",
+        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\ndependency = { path = \"../dependency\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"dependency.main\"\n",
+    );
+    project.write("application/src/main.loom", "module application\n");
+    let output = loomc()
+        .args(["--json", "check"])
+        .arg(project.0.join("application"))
+        .output()
+        .expect("check dependency entry");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(stdout.contains("UnknownEntry"), "{stdout}");
 }
 
 #[test]

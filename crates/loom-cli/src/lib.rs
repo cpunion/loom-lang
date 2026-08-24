@@ -13,7 +13,7 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|debug|fmt> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
@@ -21,7 +21,8 @@ const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--relea
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
     debug [--target NAME | --entry NAME] [--debugger PROGRAM] [PATH] [-- ARGS...] build with source info and launch LLDB/GDB\n\
-    fmt [--check] [PATH]     format .loom files (default PATH is .)";
+    fmt [--check] [PATH]     format .loom files (default PATH is .)\n\
+    cache <stat|prune> [PATH] inspect or explicitly prune the versioned project cache";
 
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
 const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
@@ -59,6 +60,9 @@ enum Command {
     },
     Format {
         check: bool,
+    },
+    Cache {
+        prune: bool,
     },
 }
 
@@ -200,6 +204,35 @@ impl TargetSelectionError {
             message: format!("manifest does not define target `{name}`"),
         }
     }
+}
+
+fn validate_entry_point(
+    program: &loom_mir::Program,
+    entry: &str,
+) -> Result<(), TargetSelectionError> {
+    let function = program
+        .exports
+        .get(entry)
+        .copied()
+        .and_then(|function| program.function(function))
+        .ok_or_else(|| TargetSelectionError {
+            code: "UnknownEntry",
+            message: format!("no public root-package entry named `{entry}`"),
+        })?;
+    let valid = function.type_parameters == 0
+        && function.params.is_empty()
+        && function.witness_params.is_empty()
+        && function.receiver.is_none()
+        && function.return_ty == loom_mir::Type::Unit;
+    if valid {
+        return Ok(());
+    }
+    Err(TargetSelectionError {
+        code: "InvalidEntrySignature",
+        message: format!(
+            "entry `{entry}` must be a public root-package function with no receiver, parameters, type parameters, or witnesses, returning `Unit`"
+        ),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -426,6 +459,7 @@ pub fn run(
     match &options.command {
         Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
+        Command::Cache { prune } => run_cache(&options, *prune, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
         Command::Build {
             output,
@@ -604,15 +638,8 @@ fn run_build(
     let BuildTarget::Binary(entry) = target else {
         unreachable!("library target returned above")
     };
-    if !program.exports.contains_key(&entry) {
-        emit_tool_error(
-            options.json,
-            stdout,
-            stderr,
-            "UnknownEntry",
-            &format!("no exported entry named `{entry}`"),
-        )?;
-        return Ok(EXIT_FAILURE);
+    if let Err(error) = validate_entry_point(program, &entry) {
+        return emit_entry_error(options, stdout, stderr, &error);
     }
     let emit_options =
         configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
@@ -797,6 +824,21 @@ fn run_check(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) 
         emit_unavailable(&unavailable, options.json, stdout, stderr)?;
         return Ok(EXIT_USAGE);
     }
+    if let Ok(program) = compilation.executable() {
+        for target in compilation
+            .project()
+            .targets()
+            .iter()
+            .filter(|target| target.kind() == TargetKind::Bin)
+        {
+            let entry = target
+                .entry()
+                .expect("validated binary target has an entry");
+            if let Err(error) = validate_entry_point(program, entry) {
+                return emit_entry_error(options, stdout, stderr, &error);
+            }
+        }
+    }
     emit_summary(
         options.json,
         stdout,
@@ -931,6 +973,9 @@ fn run_program(
             return Ok(EXIT_USAGE);
         }
     };
+    if let Err(error) = validate_entry_point(program, &entry) {
+        return emit_entry_error(options, stdout, stderr, &error);
+    }
     match options.backend {
         Backend::Llvm => {
             let directory = tempfile::tempdir()?;
@@ -1025,15 +1070,8 @@ fn run_debug(
             return Ok(EXIT_USAGE);
         }
     };
-    if !program.exports.contains_key(&entry) {
-        emit_tool_error(
-            options.json,
-            stdout,
-            stderr,
-            "UnknownEntry",
-            &format!("no exported entry named `{entry}`"),
-        )?;
-        return Ok(EXIT_FAILURE);
+    if let Err(error) = validate_entry_point(program, &entry) {
+        return emit_entry_error(options, stdout, stderr, &error);
     }
 
     let directory = tempfile::tempdir()?;
@@ -1329,6 +1367,9 @@ fn run_format(
     let mut failed = false;
     let mut changed = Vec::new();
     for source in snapshot.sources().documents() {
+        if !source.is_root_package() {
+            continue;
+        }
         let Some(text) = source.text() else {
             failed = true;
             continue;
@@ -1396,6 +1437,104 @@ fn run_format(
     } else {
         Ok(EXIT_SUCCESS)
     }
+}
+
+fn run_cache(
+    options: &Options,
+    prune: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let cache = if let Some(root) = &options.cache_dir {
+        PersistentCache::new(root)
+    } else {
+        let project = match ProjectGraph::load_with_options(&options.path, &options.project) {
+            Ok(project) => project,
+            Err(error) => {
+                emit_tool_error(
+                    options.json,
+                    stdout,
+                    stderr,
+                    "ProjectLoadFailed",
+                    &error.to_string(),
+                )?;
+                return Ok(EXIT_USAGE);
+            }
+        };
+        PersistentCache::for_project(&project)
+    };
+    if prune {
+        let report = match cache.prune() {
+            Ok(report) => report,
+            Err(error) => {
+                emit_tool_error(
+                    options.json,
+                    stdout,
+                    stderr,
+                    "CachePruneFailed",
+                    &error.to_string(),
+                )?;
+                return Ok(EXIT_USAGE);
+            }
+        };
+        if options.json {
+            return write_json_line(
+                stdout,
+                &json!({
+                    "schema_version": 1,
+                    "category": "cache_prune",
+                    "root": cache.root(),
+                    "report": report,
+                }),
+            )
+            .map(|()| EXIT_SUCCESS);
+        }
+        writeln!(
+            stdout,
+            "pruned {} refs and {} blobs ({} bytes) from {}",
+            report.invalid_references_removed,
+            report.blobs_removed,
+            report.bytes_reclaimed,
+            cache.root().display()
+        )?;
+        return Ok(EXIT_SUCCESS);
+    }
+    let stats = match cache.stats() {
+        Ok(stats) => stats,
+        Err(error) => {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "CacheStatFailed",
+                &error.to_string(),
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if options.json {
+        write_json_line(
+            stdout,
+            &json!({
+                "schema_version": 1,
+                "category": "cache_stat",
+                "root": cache.root(),
+                "stats": stats,
+            }),
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "cache {}: {} refs ({} invalid), {} blobs, {} bytes, {} reclaimable bytes",
+            cache.root().display(),
+            stats.references,
+            stats.invalid_references,
+            stats.blobs,
+            stats.bytes,
+            stats.reclaimable_bytes
+        )?;
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 fn load_snapshot(
@@ -1996,6 +2135,16 @@ fn emit_target_error(
     Ok(EXIT_USAGE)
 }
 
+fn emit_entry_error(
+    options: &Options,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    error: &TargetSelectionError,
+) -> io::Result<i32> {
+    emit_tool_error(options.json, stdout, stderr, error.code, &error.message)?;
+    Ok(EXIT_FAILURE)
+}
+
 fn emit_tool_error(
     json_output: bool,
     stdout: &mut dyn Write,
@@ -2178,6 +2327,18 @@ fn parse_command(
         "fmt" => Command::Format {
             check: take_flag(arguments, "--check"),
         },
+        "cache" => {
+            let operation = arguments
+                .first()
+                .ok_or_else(|| "cache requires `stat` or `prune`".to_owned())?
+                .clone();
+            arguments.remove(0);
+            match operation.as_str() {
+                "stat" => Command::Cache { prune: false },
+                "prune" => Command::Cache { prune: true },
+                other => return Err(format!("unknown cache operation `{other}`")),
+            }
+        }
         other => return Err(format!("unknown command `{other}`")),
     };
     Ok(command)
@@ -2237,6 +2398,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             &command,
             Command::Resolve { .. }
                 | Command::Format { .. }
+                | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2259,6 +2421,9 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
         return Err(
             "cache options are only valid for source check/build/test/run/debug".to_owned(),
         );
+    }
+    if options.no_cache && matches!(command, Command::Cache { .. }) {
+        return Err("--no-cache is not meaningful for cache stat/prune".to_owned());
     }
     if matches!(
         command,
@@ -2290,6 +2455,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             command,
             Command::Resolve { .. }
                 | Command::Format { .. }
+                | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..

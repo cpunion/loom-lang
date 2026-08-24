@@ -298,6 +298,14 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(symbol.definition.file) else {
             return self.respond(id, Value::Null);
         };
+        if !source.is_root_package() {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "dependency sources are read-only",
+                Some(json!({"code": "DependencySourceReadOnly"})),
+            );
+        }
         self.respond(
             id,
             json!({
@@ -540,6 +548,21 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(references) = snapshot.references_at(file, byte, true) else {
             return self.respond(id, Value::Null);
         };
+        let definition_file = references
+            .iter()
+            .find(|reference| reference.is_declaration)
+            .map(|reference| reference.span.file);
+        if definition_file
+            .and_then(|file| snapshot.sources().document(file))
+            .is_some_and(|source| !source.is_root_package())
+        {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "dependency sources are read-only",
+                Some(json!({"code": "DependencySourceReadOnly"})),
+            );
+        }
         let mut changes = serde_json::Map::new();
         for reference in references {
             let Some(source) = snapshot.sources().document(reference.span.file) else {

@@ -4,6 +4,54 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Stable package provenance carried by every source module.
+///
+/// Package identity includes the resolved version so two versions of the same
+/// package can coexist without merging their modules or definitions.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageId {
+    name: String,
+    version: String,
+}
+
+impl PackageId {
+    #[must_use]
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            version: version.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    #[must_use]
+    pub fn legacy() -> Self {
+        Self::new("<legacy>", "0")
+    }
+}
+
+impl Default for PackageId {
+    fn default() -> Self {
+        Self::legacy()
+    }
+}
+
+impl fmt::Display for PackageId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}@{}", self.name, self.version)
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]

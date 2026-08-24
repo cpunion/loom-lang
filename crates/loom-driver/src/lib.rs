@@ -18,7 +18,8 @@ pub use analysis::{
     ExecutableAdapter, ParseCacheStats, PipelineStage, SemanticQueryStats, StageUnavailable,
 };
 pub use cache::{
-    CacheContext, CacheError, CacheKey, CacheLookup, CachedCompilation, PersistentCache,
+    CACHE_SCHEMA_VERSION, CacheContext, CacheError, CacheKey, CacheLookup, CachePruneReport,
+    CacheStats, CachedCompilation, PersistentCache,
 };
 pub use format::{FormatResult, format_source};
 pub use incremental::ModuleInterface;

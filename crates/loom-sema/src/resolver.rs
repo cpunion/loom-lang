@@ -166,8 +166,12 @@ impl<'a> Resolver<'a> {
                 .collect::<Vec<_>>()
                 .join("."),
         );
-        let Some(module) = self.program.module_by_name(&module_name) else {
-            return Err(ResolveError::UnknownModule(module_name));
+        let module = match self.program.resolve_module_from(self.module, &module_name) {
+            loom_hir::ModuleResolution::Found(module) => module,
+            loom_hir::ModuleResolution::UndeclaredDependency(_)
+            | loom_hir::ModuleResolution::Missing => {
+                return Err(ResolveError::UnknownModule(module_name));
+            }
         };
         let definition = binding_result(
             self.def_maps
