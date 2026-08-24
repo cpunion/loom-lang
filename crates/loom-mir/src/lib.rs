@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub use artifact::{
     ArtifactError, INTERPRETED_ARTIFACT_FORMAT, INTERPRETED_ARTIFACT_VERSION,
-    decode_interpreted_artifact, decode_interpreted_executable_artifact,
+    LOOM_LANGUAGE_VERSION, decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact,
 };
 pub use validation::{

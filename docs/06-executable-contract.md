@@ -457,7 +457,7 @@ summary 必须 deterministic，并且：
 
 前端、checked MIR、root graph 和缓存 identity 对相同输入必须 deterministic。最终 executable 不承诺逐字节 reproducible，因为系统 linker 可能加入平台 metadata；它仍不得让时间戳、绝对路径、文件遍历顺序或编辑器状态改变语言行为。
 
-解释器只作为 `--backend interpreter` 显式选择的语义 oracle。其 `.loomi` image 是 compiler-private versioned artifact；不兼容版本必须报 `ArtifactVersionMismatch`，不得猜测运行。默认 `build/test/run` 不能隐式回退到解释器。
+解释器只作为 `--backend interpreter` 显式选择的语义 oracle。其 `.loomi` image 是 compiler-private versioned artifact，并固定记录 Loom language version；不兼容 artifact format/version 必须报 `ArtifactVersionMismatch`，不兼容语言版本必须报 `ArtifactLanguageVersionMismatch`，不得猜测运行。默认 `build/test/run` 不能隐式回退到解释器。
 
 record/enum layout、typed IR、calling convention、contract thunk、concept witness table 和成员顺序均为 compiler-private ABI。源码不能观察它们；Core 不承诺跨编译器版本、dynamic library、plugin 或 FFI ABI。
 
@@ -467,7 +467,7 @@ record/enum layout、typed IR、calling convention、contract thunk、concept wi
 |---|---:|---|
 | 成功 | 0 | 正常结果 |
 | source diagnostic、test Err、ConstraintError test failure、ContractFault、RuntimeFault | 1 | 对应结构化报告 |
-| CLI invocation/config/artifact version 错误 | 2 | diagnostic / `ArtifactVersionMismatch` |
+| CLI invocation/config/artifact version 错误 | 2 | diagnostic / `ArtifactVersionMismatch` / `ArtifactLanguageVersionMismatch` |
 | compiler、backend 或 interpreter defect | 3 | 对应 defect code |
 
 defect 只能在 CLI/host 边界报告并终止当前执行；不得暴露为语言 exception、`Err`、ContractFault 或 RuntimeFault。debug/release 不得改变上述分类。

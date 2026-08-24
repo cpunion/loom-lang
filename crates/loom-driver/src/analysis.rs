@@ -578,7 +578,13 @@ impl AnalysisHost {
                     let module = if source_module.package.name() == "<legacy>" {
                         source_module.name.to_string()
                     } else {
-                        format!("{}::{}", source_module.package, source_module.name)
+                        format!(
+                            "{}@{}+loom{}::{}",
+                            source_module.package.name(),
+                            source_module.package.version(),
+                            source_module.package.language(),
+                            source_module.name
+                        )
                     };
                     reusable_modules.contains(&module).then_some(body)
                 })

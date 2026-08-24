@@ -10,7 +10,8 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 13;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 14;
+pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
@@ -25,6 +26,10 @@ pub enum ArtifactError {
     VersionMismatch {
         expected: u32,
         found: u64,
+    },
+    LanguageVersionMismatch {
+        expected: &'static str,
+        found: String,
     },
     MissingEntry,
     UnknownEntry {
@@ -52,6 +57,10 @@ impl fmt::Display for ArtifactError {
             Self::VersionMismatch { expected, found } => write!(
                 formatter,
                 "artifact version {found} is incompatible with supported version {expected}"
+            ),
+            Self::LanguageVersionMismatch { expected, found } => write!(
+                formatter,
+                "artifact language version `{found}` is incompatible with supported version `{expected}`"
             ),
             Self::MissingEntry => write!(formatter, "executable artifact has no fixed entry"),
             Self::UnknownEntry { entry } => {
@@ -93,6 +102,7 @@ impl From<MirValidationErrors> for ArtifactError {
 struct Envelope {
     format: String,
     version: u32,
+    language_version: String,
     entry: Option<String>,
     program: Program,
     float_bits: Vec<u64>,
@@ -142,6 +152,7 @@ fn encode_interpreted_artifact_envelope(
     let bytes = serde_json::to_vec(&Envelope {
         format: INTERPRETED_ARTIFACT_FORMAT.to_owned(),
         version: INTERPRETED_ARTIFACT_VERSION,
+        language_version: LOOM_LANGUAGE_VERSION.to_owned(),
         entry: entry.map(str::to_owned),
         program: normalized,
         float_bits,
@@ -280,6 +291,18 @@ fn validate_header(value: &serde_json::Value) -> Result<(), ArtifactError> {
         return Err(ArtifactError::VersionMismatch {
             expected: INTERPRETED_ARTIFACT_VERSION,
             found: version,
+        });
+    }
+    let language_version = object
+        .get("languageVersion")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            ArtifactError::Malformed("missing string field `languageVersion`".to_owned())
+        })?;
+    if language_version != LOOM_LANGUAGE_VERSION {
+        return Err(ArtifactError::LanguageVersionMismatch {
+            expected: LOOM_LANGUAGE_VERSION,
+            found: language_version.to_owned(),
         });
     }
     Ok(())

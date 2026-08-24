@@ -52,6 +52,7 @@ fn relative(root: &Path, path: &Path) -> String {
 
 fn portable_cache_context() -> CacheContext {
     CacheContext {
+        language_version: "0.3".to_owned(),
         compiler_version: "test-compiler-v1".to_owned(),
         backend_version: "test-backend-v1".to_owned(),
         standard_library_version: "test-stdlib-v1".to_owned(),
@@ -361,6 +362,53 @@ fn manifest_fails_closed_on_version_mismatch_and_dependency_cycle() {
         .err()
         .expect("dependency cycle is rejected");
     assert!(error.to_string().contains("dependency cycle"), "{error}");
+}
+
+#[test]
+fn language_version_defaults_to_current_and_rejects_unknown_versions() {
+    let defaulted = TestProject::new();
+    defaulted.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"1.0.0\"\n",
+    );
+    defaulted.write("src/lib.loom", "module sample\n");
+    let graph = ProjectGraph::load(&defaulted.root).expect("default language version");
+    assert_eq!(graph.language_version(), "0.3");
+    assert_eq!(
+        graph.root_package().expect("root package").id().language(),
+        "0.3"
+    );
+    assert!(graph.write_lockfile().expect("write versioned lockfile"));
+    let lock = fs::read_to_string(defaulted.root.join("loom.lock")).expect("read lockfile");
+    assert!(lock.contains("language = \"0.3\""), "{lock}");
+
+    let future = TestProject::new();
+    future.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.4\"\n[package]\nname = \"future\"\nversion = \"1.0.0\"\n",
+    );
+    future.write("src/lib.loom", "module future\n");
+    let error = ProjectGraph::load(&future.root).expect_err("future language must fail closed");
+    assert_eq!(error.code(), "UnsupportedLanguageVersion");
+    assert!(
+        error.to_string().contains("`0.4`") && error.to_string().contains("`0.3`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn language_version_changes_compilation_cache_identity() {
+    let project = TestProject::new();
+    project.write("main.loom", "module sample\n");
+    let host = AnalysisHost::new(&project.root).expect("open cache project");
+    let sources = host.load_sources().expect("load cache sources");
+    let current = portable_cache_context();
+    let mut future = current.clone();
+    future.language_version = "0.4".to_owned();
+    assert_ne!(
+        PersistentCache::compilation_key(host.project(), &sources, &current),
+        PersistentCache::compilation_key(host.project(), &sources, &future)
+    );
 }
 
 #[test]

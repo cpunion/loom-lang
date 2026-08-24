@@ -31,6 +31,7 @@ const ARTIFACT_NAMESPACE: &str = "artifact";
 /// All toolchain and target facts which can change checked MIR or codegen.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheContext {
+    pub language_version: String,
     pub compiler_version: String,
     pub backend_version: String,
     pub standard_library_version: String,
@@ -255,6 +256,7 @@ impl PersistentCache {
         context: &CacheContext,
     ) -> CacheKey {
         let mut identity = Identity::new("loom-compilation-cache-v2");
+        identity.field("language-version", &context.language_version);
         identity.field("compiler-version", &context.compiler_version);
         identity.field("backend-version", &context.backend_version);
         identity.field("stdlib-version", &context.standard_library_version);

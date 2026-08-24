@@ -4,6 +4,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Current source-semantics and proof-domain version.
+pub const LOOM_LANGUAGE_VERSION: &str = "0.3";
+
 /// Stable package provenance carried by every source module.
 ///
 /// Package identity includes the resolved version so two versions of the same
@@ -13,14 +16,25 @@ use serde::{Deserialize, Serialize};
 pub struct PackageId {
     name: String,
     version: String,
+    language: String,
 }
 
 impl PackageId {
     #[must_use]
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self::with_language(name, version, LOOM_LANGUAGE_VERSION)
+    }
+
+    #[must_use]
+    pub fn with_language(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        language: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             version: version.into(),
+            language: language.into(),
         }
     }
 
@@ -35,8 +49,13 @@ impl PackageId {
     }
 
     #[must_use]
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    #[must_use]
     pub fn legacy() -> Self {
-        Self::new("<legacy>", "0")
+        Self::with_language("<legacy>", "0", LOOM_LANGUAGE_VERSION)
     }
 }
 

@@ -219,6 +219,7 @@ loomc --backend interpreter run --artifact program.loomi
 
 ```toml
 schema = 1
+language = "0.3"
 
 [package]
 name = "application"
@@ -249,6 +250,8 @@ kind = "test"
 name = "api"
 kind = "lib" # 无 entry，产出 portable checked-MIR library
 ```
+
+`language` 固定选择源码语义与静态证明域；省略时为兼容现有 manifest 等价于 `"0.3"`。当前编译器只接受 `0.3`，未知版本以 `UnsupportedLanguageVersion` fail closed。该值进入 resolved `PackageId`、`loom.lock`、module identity、checked-MIR/object/final-artifact cache key 与 `.loomi`/`.loomlib` envelope；扩大可证明检查消除能力必须发布新的 language version，不能静默改变旧包的推断类型。
 
 dependency path 与 registry root 相对当前 manifest；registry 布局是 `<root>/<package>/<semver>/loom.toml`，resolver 选择满足 requirement 的最高版本。已有 `loom.lock` pin 优先，`loomc resolve --update` 忽略旧 pin 后更新；registry package 的 manifest 与被选 `.loom` source 进入 SHA-256，同一已锁版本内容变化会 fail closed。`--locked` 要求当前 feature/package graph 与 lock 完全一致。resolver 还检查 SemVer、feature 引用/循环、依赖循环、重复 package identity、越界 source root 和重复 target。
 

@@ -13,13 +13,30 @@ use crate::{Position, Range};
 /// source diagnostics.
 #[derive(Debug)]
 pub enum DriverError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     InvalidRoot(PathBuf),
     NonUtf8Path(PathBuf),
     TooManyFiles(usize),
-    SourceTooLarge { path: PathBuf, bytes: usize },
-    PathOutsideProject { root: PathBuf, path: PathBuf },
-    Manifest { path: PathBuf, message: String },
+    SourceTooLarge {
+        path: PathBuf,
+        bytes: usize,
+    },
+    PathOutsideProject {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    Manifest {
+        path: PathBuf,
+        message: String,
+    },
+    UnsupportedLanguageVersion {
+        path: PathBuf,
+        found: String,
+        supported: &'static str,
+    },
 }
 
 impl DriverError {
@@ -27,6 +44,14 @@ impl DriverError {
         Self::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedLanguageVersion { .. } => "UnsupportedLanguageVersion",
+            _ => "ProjectLoadFailed",
         }
     }
 }
@@ -67,6 +92,15 @@ impl fmt::Display for DriverError {
             Self::Manifest { path, message } => {
                 write!(formatter, "{}: {message}", path.display())
             }
+            Self::UnsupportedLanguageVersion {
+                path,
+                found,
+                supported,
+            } => write!(
+                formatter,
+                "{}: language version `{found}` is incompatible with supported version `{supported}`",
+                path.display()
+            ),
         }
     }
 }

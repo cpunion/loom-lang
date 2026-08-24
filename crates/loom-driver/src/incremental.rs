@@ -84,7 +84,12 @@ fn module_query_data(
             .document(*file)
             .map_or(source_module.clone(), |source| {
                 source.package().map_or(source_module.clone(), |package| {
-                    format!("{package}::{source_module}")
+                    format!(
+                        "{}@{}+loom{}::{source_module}",
+                        package.name(),
+                        package.version(),
+                        package.language()
+                    )
                 })
             });
         let imports = serde_json::to_value(&ast.imports).unwrap_or(serde_json::Value::Null);

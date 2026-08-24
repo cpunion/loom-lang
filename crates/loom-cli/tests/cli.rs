@@ -90,6 +90,24 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
 }
 
 #[test]
+fn check_rejects_an_unknown_language_version() {
+    let project = TestProject::empty();
+    project.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.4\"\n[package]\nname = \"future\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("src/main.loom", "module future\n");
+    let output = loomc()
+        .args(["--json", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check future language");
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert!(stdout.contains("UnsupportedLanguageVersion"), "{stdout}");
+}
+
+#[test]
 fn clean_check_uses_the_real_semantic_pipeline() {
     let project = TestProject::new("module demo\n\nfn main() Unit {\n    Unit\n}\n");
     let output = loomc()
@@ -1008,4 +1026,37 @@ fn run_rejects_an_incompatible_artifact_version() {
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
     assert!(stdout.contains("ArtifactVersionMismatch"), "{stdout}");
+}
+
+#[test]
+fn run_rejects_an_incompatible_artifact_language_version() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    let artifact = project.0.join("future.loomi");
+    let build = loomc()
+        .args(["--backend", "interpreter", "build", "--output"])
+        .arg(&artifact)
+        .arg(&project.0)
+        .output()
+        .expect("build interpreted artifact");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let bytes = fs::read(&artifact).expect("read artifact");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+    value["languageVersion"] = serde_json::json!("0.4");
+    fs::write(
+        &artifact,
+        serde_json::to_vec(&value).expect("artifact JSON"),
+    )
+    .expect("tamper language version");
+
+    let output = loomc()
+        .args(["--json", "--backend", "interpreter", "run", "--artifact"])
+        .arg(&artifact)
+        .output()
+        .expect("run future-language artifact");
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert!(
+        stdout.contains("ArtifactLanguageVersionMismatch"),
+        "{stdout}"
+    );
 }

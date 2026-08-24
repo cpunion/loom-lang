@@ -24,8 +24,8 @@ pub use cache::{
 pub use format::{FormatResult, format_source};
 pub use incremental::ModuleInterface;
 pub use project::{
-    LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package, PackageDependency, PackageId,
-    ProjectGraph, ProjectOptions, Target, TargetKind,
+    CURRENT_LANGUAGE_VERSION, LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package,
+    PackageDependency, PackageId, ProjectGraph, ProjectOptions, Target, TargetKind,
 };
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
 pub use source::{DriverError, SourceDocument, SourceMap, discover_loom_files};

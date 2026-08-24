@@ -502,7 +502,7 @@ fn open_analysis_host(
                     options.json,
                     stdout,
                     stderr,
-                    "ProjectLoadFailed",
+                    error.code(),
                     &error.to_string(),
                 )?;
                 return Ok(None);
@@ -1218,10 +1218,12 @@ fn run_artifact(
     let (program, entry) = match loom_mir::decode_interpreted_executable_artifact(&bytes) {
         Ok(artifact) => artifact,
         Err(error) => {
-            let code = if matches!(error, loom_mir::ArtifactError::VersionMismatch { .. }) {
-                "ArtifactVersionMismatch"
-            } else {
-                "ArtifactLoadFailed"
+            let code = match &error {
+                loom_mir::ArtifactError::VersionMismatch { .. } => "ArtifactVersionMismatch",
+                loom_mir::ArtifactError::LanguageVersionMismatch { .. } => {
+                    "ArtifactLanguageVersionMismatch"
+                }
+                _ => "ArtifactLoadFailed",
             };
             emit_tool_error(json_output, stdout, stderr, code, &error.to_string())?;
             return Ok(EXIT_USAGE);
@@ -1455,7 +1457,7 @@ fn run_cache(
                     options.json,
                     stdout,
                     stderr,
-                    "ProjectLoadFailed",
+                    error.code(),
                     &error.to_string(),
                 )?;
                 return Ok(EXIT_USAGE);
@@ -1552,7 +1554,7 @@ fn load_snapshot(
                 options.json,
                 stdout,
                 stderr,
-                "ProjectLoadFailed",
+                error.code(),
                 &error.to_string(),
             )?;
             Ok(None)
@@ -1576,7 +1578,7 @@ fn load_compilation(
                 options.json,
                 stdout,
                 stderr,
-                "ProjectLoadFailed",
+                error.code(),
                 &error.to_string(),
             )?;
             return Ok(None);
@@ -1611,7 +1613,7 @@ fn load_compilation(
         }));
     }
 
-    let context = match cache_context(options) {
+    let context = match cache_context(options, host.project().language_version()) {
         Ok(context) => context,
         Err(error) => {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
@@ -1674,17 +1676,21 @@ fn load_compilation(
     }))
 }
 
-fn cache_context(options: &Options) -> Result<CacheContext, loom_codegen_llvm::CodegenError> {
+fn cache_context(
+    options: &Options,
+    language_version: &str,
+) -> Result<CacheContext, loom_codegen_llvm::CodegenError> {
     let build_profile = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
     let compiler_version = format!(
-        "loomc-{}/source-{}/profile-{}/{}-{}",
+        "loomc-{}/source-{}/profile-{}/language-{}/{}-{}",
         env!("CARGO_PKG_VERSION"),
         env!("LOOM_COMPILER_SOURCE_FINGERPRINT"),
         build_profile,
+        language_version,
         loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         loom_mir::INTERPRETED_ARTIFACT_VERSION
     );
@@ -1695,6 +1701,7 @@ fn cache_context(options: &Options) -> Result<CacheContext, loom_codegen_llvm::C
                 options.optimization,
             )?;
             CacheContext {
+                language_version: language_version.to_owned(),
                 compiler_version,
                 backend_version: format!(
                     "loom-codegen-llvm-{}",
@@ -1710,6 +1717,7 @@ fn cache_context(options: &Options) -> Result<CacheContext, loom_codegen_llvm::C
             }
         }
         Backend::Interpreter => CacheContext {
+            language_version: language_version.to_owned(),
             compiler_version,
             backend_version: format!("loom-interpreter-{}", loom_interpreter::BACKEND_VERSION),
             standard_library_version: "loom-core-inline-v1".to_owned(),

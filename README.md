@@ -96,7 +96,7 @@ cargo run -p loom-cli -- debug --debugger lldb examples/core01
 
 `loom-lsp` 与 CLI 复用长驻 `AnalysisHost`，现已提供 diagnostics、hover、definition、references、prepare rename/rename、语义 completion、document symbols 和 workspace symbols。引用与重命名按定义身份覆盖跨文件全局声明以及 callable 内的泛型参数、参数和局部变量；源码存在错误时会拒绝生成不完整的引用编辑。
 
-基础多包工程使用 `loom.toml`、path/文件系统 registry dependency、显式 feature 和 bin/test/lib target；`loomc resolve` 生成锁定 registry 版本与 SHA-256 的 `loom.lock`，`--locked` 禁止隐式变更，`resolve --update` 才重新选择最高兼容 SemVer。feature 只激活显式 optional dependency，不做源码 `cfg`、隐式 import 或运行时注册。bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
+基础多包工程使用 `loom.toml`、path/文件系统 registry dependency、显式 feature 和 bin/test/lib target；manifest 的 `language = "0.3"`（省略时同值）固定源码语义和证明域，并进入 package/artifact/cache identity，未知版本拒绝加载。`loomc resolve` 生成锁定语言版本、registry 版本与 SHA-256 的 `loom.lock`，`--locked` 禁止隐式变更，`resolve --update` 才重新选择最高兼容 SemVer。feature 只激活显式 optional dependency，不做源码 `cfg`、隐式 import 或运行时注册。bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
 
 ```sh
 cargo run -p loom-cli -- check --target app examples/packages/application

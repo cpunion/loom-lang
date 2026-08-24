@@ -18,6 +18,7 @@ use crate::source::{
 
 pub const MANIFEST_FILE: &str = "loom.toml";
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 pub const LOCK_FILE: &str = "loom.lock";
 pub const LOCK_SCHEMA_VERSION: u32 = 1;
 
@@ -131,6 +132,11 @@ impl Package {
     pub fn checksum(&self) -> Option<&str> {
         self.checksum.as_deref()
     }
+
+    #[must_use]
+    pub fn language_version(&self) -> &str {
+        self.id.language()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,6 +207,8 @@ struct Lockfile {
 struct LockedPackage {
     name: String,
     version: String,
+    #[serde(default = "default_language_version")]
+    language: String,
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checksum: Option<String>,
@@ -382,6 +390,12 @@ impl ProjectGraph {
     }
 
     #[must_use]
+    pub fn language_version(&self) -> &str {
+        self.root_package()
+            .map_or(CURRENT_LANGUAGE_VERSION, Package::language_version)
+    }
+
+    #[must_use]
     pub fn targets(&self) -> &[Target] {
         &self.targets
     }
@@ -533,8 +547,9 @@ impl ProjectGraph {
                 ];
                 for package in self.packages.values() {
                     fields.push(format!(
-                        "package:{}:{}:{}",
+                        "package:{}:language={}:{}:{}",
                         package.id,
+                        package.language_version(),
                         package.source,
                         package.checksum.as_deref().unwrap_or("")
                     ));
@@ -594,6 +609,8 @@ impl ProjectGraph {
 #[serde(deny_unknown_fields)]
 struct RawManifest {
     schema: u32,
+    #[serde(default = "default_language_version")]
+    language: String,
     package: RawPackage,
     #[serde(default)]
     dependencies: BTreeMap<String, RawDependency>,
@@ -616,6 +633,10 @@ struct RawPackage {
 
 fn default_sources() -> Vec<String> {
     vec!["src".to_owned()]
+}
+
+fn default_language_version() -> String {
+    CURRENT_LANGUAGE_VERSION.to_owned()
 }
 
 #[derive(Clone, Deserialize)]
@@ -718,7 +739,11 @@ impl Resolver {
         }
 
         let raw = read_manifest(&manifest)?;
-        let id = PackageId::new(raw.package.name.clone(), raw.package.version.clone());
+        let id = PackageId::with_language(
+            raw.package.name.clone(),
+            raw.package.version.clone(),
+            raw.language.clone(),
+        );
         let requested_features = resolve_features(&manifest, &raw, request)?;
         let mut combined_features = self
             .enabled_features
@@ -1026,6 +1051,13 @@ fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
             ),
         ));
     }
+    if raw.language != CURRENT_LANGUAGE_VERSION {
+        return Err(DriverError::UnsupportedLanguageVersion {
+            path: manifest.to_path_buf(),
+            found: raw.language,
+            supported: CURRENT_LANGUAGE_VERSION,
+        });
+    }
     validate_name("package", &raw.package.name, manifest)?;
     Version::parse(&raw.package.version).map_err(|error| {
         manifest_error(
@@ -1290,7 +1322,19 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
                 ),
             )
         })?;
-        if !identities.insert((&package.name, &package.version, &package.source)) {
+        if package.language != CURRENT_LANGUAGE_VERSION {
+            return Err(DriverError::UnsupportedLanguageVersion {
+                path: path.to_path_buf(),
+                found: package.language.clone(),
+                supported: CURRENT_LANGUAGE_VERSION,
+            });
+        }
+        if !identities.insert((
+            &package.name,
+            &package.version,
+            &package.language,
+            &package.source,
+        )) {
             return Err(manifest_error(
                 path,
                 format!(
@@ -1322,6 +1366,7 @@ fn lockfile_for_packages(packages: &BTreeMap<PackageId, Package>) -> Lockfile {
         .map(|package| LockedPackage {
             name: package.id.name().to_owned(),
             version: package.id.version().to_owned(),
+            language: package.language_version().to_owned(),
             source: package.source.clone(),
             checksum: package.checksum.clone(),
             dependencies: package
