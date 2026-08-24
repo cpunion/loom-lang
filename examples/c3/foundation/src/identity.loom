@@ -1,0 +1,11 @@
+module foundation.identity
+
+pub record ProductId {
+    value Int
+
+    invariant self.value >= 0
+}
+
+pub fn checked_product_id(raw Int) Result[ProductId, ConstraintError] {
+    ProductId { value = raw }
+}

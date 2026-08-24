@@ -1,0 +1,6 @@
+module foundation.error
+
+pub enum CheckoutError {
+    OutOfStock
+    Rejected
+}

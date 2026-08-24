@@ -1,0 +1,9 @@
+module application.health
+
+pub enum Health {
+    Ready
+}
+
+pub fn status() Health {
+    Health.Ready
+}

@@ -1,0 +1,8 @@
+module catalog.pricing
+
+import catalog.product.Product
+import foundation.money.Money
+
+pub fn base_price(product Product) Money {
+    product.price
+}

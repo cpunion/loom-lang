@@ -1,0 +1,12 @@
+schema = 1
+
+[package]
+name = "catalog"
+version = "1.0.0"
+
+[dependencies]
+foundation = { path = "../foundation", version = "^1" }
+
+[[target]]
+name = "catalog"
+kind = "lib"

@@ -1,0 +1,7 @@
+module catalog.tax
+
+import foundation.money.Money
+
+pub fn add_tax(price Money, tax Money) Result[Money, ConstraintError] {
+    Money(price + tax)
+}

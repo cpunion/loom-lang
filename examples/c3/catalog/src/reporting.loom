@@ -1,0 +1,7 @@
+module catalog.reporting
+
+import foundation.named.Named
+
+pub fn report_name(value Named) Text {
+    value.name()
+}

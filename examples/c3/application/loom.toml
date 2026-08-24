@@ -1,0 +1,18 @@
+schema = 1
+
+[package]
+name = "application"
+version = "1.0.0"
+
+[dependencies]
+catalog = { path = "../catalog", version = "^1" }
+foundation = { path = "../foundation", version = "^1" }
+
+[[target]]
+name = "app"
+kind = "bin"
+entry = "application.main.start"
+
+[[target]]
+name = "unit"
+kind = "test"

@@ -1,0 +1,11 @@
+module foundation.quantity
+
+pub type Quantity = Int where self >= 0
+
+pub fn zero_quantity() Quantity {
+    Quantity(0)
+}
+
+pub fn checked_quantity(raw Int) Result[Quantity, ConstraintError] {
+    Quantity(raw)
+}

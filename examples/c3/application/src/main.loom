@@ -1,0 +1,26 @@
+module application.main
+
+import application.commands.run_checkout
+import application.health.Health
+import application.health.status
+import application.routing.Route
+import application.routing.default_route
+
+pub fn start() Unit {
+    match default_route() {
+        Checkout => run_checkout()
+        Health => match status() {
+            Ready => Unit
+        }
+    }
+}
+
+test fn checkout_workflow() {
+    run_checkout()
+}
+
+test fn service_health() {
+    match status() {
+        Ready => Unit
+    }
+}

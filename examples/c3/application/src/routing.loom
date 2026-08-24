@@ -1,0 +1,10 @@
+module application.routing
+
+pub enum Route {
+    Checkout
+    Health
+}
+
+pub fn default_route() Route {
+    Route.Checkout
+}

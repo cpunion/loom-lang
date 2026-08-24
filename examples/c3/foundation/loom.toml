@@ -1,0 +1,9 @@
+schema = 1
+
+[package]
+name = "foundation"
+version = "1.0.0"
+
+[[target]]
+name = "foundation"
+kind = "lib"

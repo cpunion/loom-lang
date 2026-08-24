@@ -1,0 +1,13 @@
+module foundation.money
+
+import standard.float.is_finite
+
+pub type Money = Float where is_finite(self) && self >= 0.0
+
+pub fn zero_money() Money {
+    Money(0.0)
+}
+
+pub fn checked_money(raw Float) Result[Money, ConstraintError] {
+    Money(raw)
+}
