@@ -92,7 +92,6 @@ fn analyze_with_reused_bodies(
         analyzer.validate_dynamic_concepts();
         analyzer.build_conformances();
         analyzer.validate_resource_concepts();
-        analyzer.validate_async_functions();
         analyzer.check_bodies(previous);
         (analyzer.typed, analyzer.impl_index, analyzer.diagnostics)
     };
@@ -199,44 +198,6 @@ impl Analyzer<'_> {
                 "standard.resource.Dispose must be a non-dyn concept containing only `method dispose(mut self) Unit` without contracts",
                 self.definition_span(definition),
             );
-        }
-    }
-
-    fn validate_async_functions(&mut self) {
-        let async_functions = self
-            .program
-            .definitions
-            .iter()
-            .filter_map(|(definition, item)| match &item.kind {
-                DefinitionKind::Function(function) | DefinitionKind::Test(function)
-                    if function.is_async =>
-                {
-                    Some(definition)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        for definition in async_functions {
-            let Some(Signature::Callable(signature)) = self.typed.signatures.get(definition) else {
-                continue;
-            };
-            let (DefinitionKind::Function(source) | DefinitionKind::Test(source)) =
-                &self.program.definitions[definition].kind
-            else {
-                continue;
-            };
-            if !signature.generic_params.is_empty()
-                || !signature.bounds.is_empty()
-                || signature.receiver.is_some()
-                || !source.signature.contracts.requires.is_empty()
-                || !source.signature.contracts.ensures.is_empty()
-            {
-                self.error(
-                    "AsyncExecutableSliceRestriction",
-                    "the current async executable slice accepts non-generic functions without receiver or contracts",
-                    self.definition_span(definition),
-                );
-            }
         }
     }
 

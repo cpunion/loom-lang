@@ -381,3 +381,49 @@ fn requirement_method_bound_associated_projection_is_preserved() {
         "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nconcept Mapper {\n    method map[U: Source](self, source U) U.Item\n}\n\nrecord Identity {}\n\nimpl Mapper for Identity {\n    method map[U: Source](self, source U) U.Item { source.first() }\n}\n",
     );
 }
+
+#[test]
+fn generic_async_functions_with_witnesses_and_contracts_lower_to_checked_mir() {
+    let program = compile_and_validate(
+        r"
+module sample
+
+concept Measure {
+    method measure(self) Int
+}
+
+record Number {
+    value Int
+}
+
+impl Measure for Number {
+    method measure(self) Int { self.value }
+}
+
+async fn measured[T: Measure](value T, minimum Int) Int
+    requires minimum >= 0
+    ensures result >= minimum
+{
+    Task.sleep(0).await
+    value.measure() + minimum
+}
+
+test async fn generic_async_contracts() {
+    let observed = measured(Number { value = 2 }, 3).await
+    assert observed == 5
+    Unit
+}
+",
+    );
+    let measured = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "measured"))
+        .expect("generic async function");
+    assert!(measured.is_async);
+    assert_eq!(measured.type_parameters, 1);
+    assert_eq!(measured.witness_params.len(), 1);
+    assert_eq!(measured.call_plan.requires.len(), 1);
+    assert_eq!(measured.call_plan.ensures.len(), 1);
+    assert_eq!(measured.suspension_points.len(), 1);
+}
