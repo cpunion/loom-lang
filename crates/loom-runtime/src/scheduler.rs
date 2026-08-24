@@ -3,9 +3,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::ptr;
 use std::slice;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use crate::gc::{collect, enter_executor, leave_executor};
 use crate::reactor::{
@@ -88,12 +89,63 @@ enum IoOperation {
     },
     SocketRead {
         descriptor: i32,
+        bytes: Vec<u8>,
     },
     SocketWrite {
         descriptor: i32,
         bytes: Vec<u8>,
         offset: usize,
     },
+}
+
+pub(crate) enum BlockingResult {
+    Resource { nominal: u64, descriptor: OwnedFd },
+    Text { bytes: Vec<u8>, code: &'static str },
+    Unit,
+    Fault { code: &'static str, message: String },
+}
+
+pub(crate) struct WorkerCompletion {
+    pub(crate) task: usize,
+    pub(crate) registration: LoomRegistration,
+    pub(crate) result: BlockingResult,
+}
+
+type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
+
+fn blocking_pool() -> &'static mpsc::SyncSender<BlockingJob> {
+    static POOL: OnceLock<mpsc::SyncSender<BlockingJob>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel::<BlockingJob>(256);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..4 {
+            let receiver = Arc::clone(&receiver);
+            std::thread::Builder::new()
+                .name(format!("loom-blocking-{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let Ok(receiver) = receiver.lock() else {
+                                return;
+                            };
+                            receiver.recv()
+                        };
+                        let Ok(job) = job else {
+                            return;
+                        };
+                        job();
+                    }
+                })
+                .expect("create bounded Loom blocking worker");
+        }
+        sender
+    })
+}
+
+fn duplicate_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
+    // SAFETY: the scoped File/Socket value owns this live descriptor while its
+    // method task is created. The worker receives an independent duplicate.
+    unsafe { BorrowedFd::borrow_raw(descriptor) }.try_clone_to_owned()
 }
 
 pub struct LoomTask {
@@ -118,6 +170,7 @@ pub struct LoomTask {
     wait_source: LoomWaitSource,
     composite_spec: *mut LoomJoinSpec,
     io_operation: Option<IoOperation>,
+    blocking_result: Option<BlockingResult>,
     fault_code: String,
     fault_message: String,
 }
@@ -416,6 +469,32 @@ unsafe fn consume_notifications(executor: *mut LoomExecutor) {
     }
 }
 
+unsafe fn drain_worker_completions(executor: *mut LoomExecutor) {
+    loop {
+        let completion = match unsafe { (*executor).worker_receiver.try_recv() } {
+            Ok(completion) => completion,
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return,
+        };
+        let task = completion.task as *mut LoomTask;
+        let executor_ref = unsafe { &mut *executor };
+        if !executor_owns(executor_ref, task)
+            || terminal(unsafe { (*task).status })
+            || !unsafe { (*task).waits.contains(&completion.registration) }
+        {
+            continue;
+        }
+        unsafe { (*task).blocking_result = Some(completion.result) };
+        let _ = unsafe {
+            crate::reactor::executor_notify_completion(
+                executor,
+                &raw const completion.registration,
+                0,
+                0,
+            )
+        };
+    }
+}
+
 fn move_task_frames(executor: &mut LoomExecutor) {
     for task in &mut executor.tasks {
         let pointer = (&raw mut **task).cast::<LoomTask>();
@@ -500,26 +579,47 @@ unsafe extern "C" fn resume_composite(task: *mut LoomTask, executor: *mut LoomEx
 }
 
 unsafe extern "C" fn resume_io(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
-    if task.is_null() || executor.is_null() || unsafe { (*task).io_operation.is_none() } {
+    if task.is_null() || executor.is_null() {
         return TASK_FAULTED;
     }
     if unsafe { (*task).cancel_requested } {
         return TASK_CANCELLED;
     }
-    let operation = unsafe { (*task).io_operation.take().expect("checked above") };
+    if let Some(result) = unsafe { (*task).blocking_result.take() } {
+        return unsafe { finish_blocking_result(task, executor, result) };
+    }
+    let Some(operation) = (unsafe { (*task).io_operation.take() }) else {
+        return unsafe {
+            fail_message(
+                task,
+                "IoCompletionFault",
+                "I/O task resumed without a result",
+            )
+        };
+    };
     match operation {
-        IoOperation::FileOpen { path, create } => unsafe { resume_file_open(task, &path, create) },
-        IoOperation::FileRead { descriptor } => unsafe {
-            resume_file_read(task, executor, descriptor)
+        IoOperation::FileOpen { path, create } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_open(path, create))
         },
-        IoOperation::FileWrite { descriptor, bytes } => unsafe {
-            resume_file_write(task, descriptor, &bytes)
+        IoOperation::FileRead { descriptor } => match duplicate_descriptor(descriptor) {
+            Ok(descriptor) => unsafe {
+                suspend_blocking(task, executor, move || blocking_file_read(descriptor))
+            },
+            Err(error) => unsafe { fail_io(task, "FileReadFault", &error) },
+        },
+        IoOperation::FileWrite { descriptor, bytes } => match duplicate_descriptor(descriptor) {
+            Ok(descriptor) => unsafe {
+                suspend_blocking(task, executor, move || {
+                    blocking_file_write(descriptor, bytes)
+                })
+            },
+            Err(error) => unsafe { fail_io(task, "FileWriteFault", &error) },
         },
         IoOperation::SocketConnect { host, port } => unsafe {
-            resume_socket_connect(task, &host, port)
+            suspend_blocking(task, executor, move || blocking_socket_connect(host, port))
         },
-        IoOperation::SocketRead { descriptor } => unsafe {
-            resume_socket_read(task, executor, descriptor)
+        IoOperation::SocketRead { descriptor, bytes } => unsafe {
+            resume_socket_read(task, executor, descriptor, bytes)
         },
         IoOperation::SocketWrite {
             descriptor,
@@ -529,7 +629,56 @@ unsafe extern "C" fn resume_io(task: *mut LoomTask, executor: *mut LoomExecutor)
     }
 }
 
-unsafe fn resume_file_open(task: *mut LoomTask, path: &str, create: bool) -> i32 {
+unsafe fn suspend_blocking<F>(task: *mut LoomTask, executor: *mut LoomExecutor, work: F) -> i32
+where
+    F: FnOnce() -> BlockingResult + Send + 'static,
+{
+    let source = LoomWaitSource {
+        abi_version: WAIT_ABI_VERSION,
+        kind: crate::WAIT_SOURCE_COMPLETION,
+        handle: -1,
+        interests: 0,
+        reserved: 0,
+        deadline_ns: 0,
+    };
+    if unsafe { task_suspend_wait(executor, task, &raw const source) } != WAIT_OK {
+        return unsafe {
+            fail_message(task, "IoWaitFault", "could not register worker completion")
+        };
+    }
+    let registration = unsafe { *(*task).waits.last().expect("completion was registered") };
+    let sender = unsafe { (*executor).worker_sender.clone() };
+    let poller = unsafe { Arc::clone(&(*executor).reactor.poller) };
+    let task_address = task as usize;
+    let job: BlockingJob = Box::new(move || {
+        let result = work();
+        let _ = sender.send(WorkerCompletion {
+            task: task_address,
+            registration,
+            result,
+        });
+        let _ = poller.notify();
+    });
+    match blocking_pool().try_send(job) {
+        Ok(()) => TASK_PENDING,
+        Err(mpsc::TrySendError::Full(_) | mpsc::TrySendError::Disconnected(_)) => {
+            let _ = unsafe { cancel_for_task(&mut *executor, &raw const registration) };
+            unsafe {
+                (*task).waits.retain(|candidate| *candidate != registration);
+                (*task).status = TaskStatus::Running;
+            }
+            unsafe {
+                fail_message(
+                    task,
+                    "BlockingPoolSaturated",
+                    "blocking I/O pool is saturated",
+                )
+            }
+        }
+    }
+}
+
+fn blocking_file_open(path: String, create: bool) -> BlockingResult {
     let opened = if create {
         OpenOptions::new()
             .write(true)
@@ -537,65 +686,96 @@ unsafe fn resume_file_open(task: *mut LoomTask, path: &str, create: bool) -> i32
             .truncate(true)
             .open(path)
     } else {
-        File::open(path)
+        File::open(&path)
     };
     match opened {
-        Ok(file) => unsafe { store_resource_result(task, FILE_TYPE, file.into_raw_fd()) },
-        Err(error) => unsafe {
-            fail_io(
-                task,
-                if create {
-                    "FileCreateFault"
-                } else {
-                    "FileOpenFault"
-                },
-                &error,
-            )
+        Ok(file) => BlockingResult::Resource {
+            nominal: FILE_TYPE,
+            descriptor: file.into(),
+        },
+        Err(error) => BlockingResult::Fault {
+            code: if create {
+                "FileCreateFault"
+            } else {
+                "FileOpenFault"
+            },
+            message: error.to_string(),
         },
     }
 }
 
-unsafe fn resume_file_read(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-    descriptor: i32,
-) -> i32 {
-    // SAFETY: the File value owns the descriptor; this temporary only borrows it.
-    let mut file = ManuallyDrop::new(unsafe { File::from_raw_fd(descriptor) });
+fn blocking_file_read(descriptor: OwnedFd) -> BlockingResult {
+    let mut file = File::from(descriptor);
     let mut bytes = Vec::new();
     match file.read_to_end(&mut bytes) {
-        Ok(_) => unsafe { store_text_result(task, executor, bytes, "FileReadFault") },
-        Err(error) => unsafe { fail_io(task, "FileReadFault", &error) },
+        Ok(_) => BlockingResult::Text {
+            bytes,
+            code: "FileReadFault",
+        },
+        Err(error) => BlockingResult::Fault {
+            code: "FileReadFault",
+            message: error.to_string(),
+        },
     }
 }
 
-unsafe fn resume_file_write(task: *mut LoomTask, descriptor: i32, bytes: &[u8]) -> i32 {
-    // SAFETY: the File value owns the descriptor; this temporary only borrows it.
-    let mut file = ManuallyDrop::new(unsafe { File::from_raw_fd(descriptor) });
-    match file.write_all(bytes) {
-        Ok(()) => unsafe { store_unit_result(task) },
-        Err(error) => unsafe { fail_io(task, "FileWriteFault", &error) },
+fn blocking_file_write(descriptor: OwnedFd, bytes: Vec<u8>) -> BlockingResult {
+    let mut file = File::from(descriptor);
+    match file.write_all(&bytes) {
+        Ok(()) => BlockingResult::Unit,
+        Err(error) => BlockingResult::Fault {
+            code: "FileWriteFault",
+            message: error.to_string(),
+        },
     }
 }
 
-unsafe fn resume_socket_connect(task: *mut LoomTask, host: &str, port: u16) -> i32 {
-    let address = (host, port)
+fn blocking_socket_connect(host: String, port: u16) -> BlockingResult {
+    let address = (host.as_str(), port)
         .to_socket_addrs()
         .ok()
         .and_then(|mut addresses| addresses.next());
     let Some(address) = address else {
-        return unsafe {
-            fail_message(task, "SocketResolveFault", "host resolved to no addresses")
+        return BlockingResult::Fault {
+            code: "SocketResolveFault",
+            message: "host resolved to no addresses".into(),
         };
     };
     match TcpStream::connect(address) {
         Ok(socket) => {
             if let Err(error) = socket.set_nonblocking(true) {
-                return unsafe { fail_io(task, "SocketConnectFault", &error) };
+                return BlockingResult::Fault {
+                    code: "SocketConnectFault",
+                    message: error.to_string(),
+                };
             }
-            unsafe { store_resource_result(task, SOCKET_TYPE, socket.into_raw_fd()) }
+            BlockingResult::Resource {
+                nominal: SOCKET_TYPE,
+                descriptor: socket.into(),
+            }
         }
-        Err(error) => unsafe { fail_io(task, "SocketConnectFault", &error) },
+        Err(error) => BlockingResult::Fault {
+            code: "SocketConnectFault",
+            message: error.to_string(),
+        },
+    }
+}
+
+unsafe fn finish_blocking_result(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+    result: BlockingResult,
+) -> i32 {
+    match result {
+        BlockingResult::Resource {
+            nominal,
+            descriptor,
+        } => unsafe { store_resource_result(task, nominal, descriptor.into_raw_fd()) },
+        BlockingResult::Text { bytes, code } => unsafe {
+            store_text_result(task, executor, bytes, code)
+        },
+        BlockingResult::Unit => unsafe { store_unit_result(task) },
+        BlockingResult::Fault { code, message } => unsafe { fail_message(task, code, &message) },
     }
 }
 
@@ -603,25 +783,27 @@ unsafe fn resume_socket_read(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
     descriptor: i32,
+    mut bytes: Vec<u8>,
 ) -> i32 {
     // SAFETY: the Socket value owns the descriptor; this temporary only borrows it.
     let mut socket = ManuallyDrop::new(unsafe { TcpStream::from_raw_fd(descriptor) });
-    let mut bytes = vec![0_u8; 64 * 1024];
-    match socket.read(&mut bytes) {
-        Ok(length) => {
-            bytes.truncate(length);
-            unsafe { store_text_result(task, executor, bytes, "SocketReadFault") }
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        match socket.read(&mut chunk) {
+            Ok(0) => return unsafe { store_text_result(task, executor, bytes, "SocketReadFault") },
+            Ok(length) => bytes.extend_from_slice(&chunk[..length]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => unsafe {
+                return suspend_io(
+                    task,
+                    executor,
+                    IoOperation::SocketRead { descriptor, bytes },
+                    descriptor,
+                    crate::WAIT_READABLE,
+                );
+            },
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => unsafe { return fail_io(task, "SocketReadFault", &error) },
         }
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => unsafe {
-            suspend_io(
-                task,
-                executor,
-                IoOperation::SocketRead { descriptor },
-                descriptor,
-                crate::WAIT_READABLE,
-            )
-        },
-        Err(error) => unsafe { fail_io(task, "SocketReadFault", &error) },
     }
 }
 
@@ -796,6 +978,7 @@ pub unsafe extern "C" fn task_spawn(
         wait_source: LoomWaitSource::default(),
         composite_spec: ptr::null_mut(),
         io_operation: None,
+        blocking_result: None,
         fault_code: "TaskFault".into(),
         fault_message: "task execution failed".into(),
     });
@@ -814,6 +997,30 @@ unsafe fn spawn_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> 
         unsafe { (*task).io_operation = Some(operation) };
     }
     task
+}
+
+#[cfg(test)]
+unsafe extern "C" fn resume_slow_blocking_fixture(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+) -> i32 {
+    if unsafe { (*task).cancel_requested } {
+        return TASK_CANCELLED;
+    }
+    if unsafe { (*task).blocking_result.take().is_some() } {
+        return unsafe { store_unit_result(task) };
+    }
+    unsafe {
+        suspend_blocking(task, executor, || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            BlockingResult::Unit
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn spawn_slow_blocking_fixture(executor: *mut LoomExecutor) -> *mut LoomTask {
+    unsafe { task_spawn(executor, Some(resume_slow_blocking_fixture), 1, 0) }
 }
 
 unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
@@ -922,7 +1129,15 @@ pub unsafe extern "C" fn socket_read_text(
     let Some(descriptor) = checked_fd(descriptor) else {
         return ptr::null_mut();
     };
-    unsafe { spawn_io_task(executor, IoOperation::SocketRead { descriptor }) }
+    unsafe {
+        spawn_io_task(
+            executor,
+            IoOperation::SocketRead {
+                descriptor,
+                bytes: Vec::new(),
+            },
+        )
+    }
 }
 
 #[unsafe(export_name = "loom_socket_write_text")]
@@ -1718,6 +1933,7 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
         return WAIT_INVALID_ARGUMENT;
     }
     while !terminal(unsafe { (*root).status }) {
+        unsafe { drain_worker_completions(executor) };
         unsafe { consume_notifications(executor) };
         if unsafe { (*executor).runnable.is_empty() } {
             let mut ready_count = 0;
@@ -1725,6 +1941,7 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
             if status != WAIT_OK {
                 return status;
             }
+            unsafe { drain_worker_completions(executor) };
             unsafe { consume_notifications(executor) };
             if unsafe { (*executor).runnable.is_empty() } {
                 if has_registrations(unsafe { &*executor }) {

@@ -181,6 +181,51 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn blocking_race_resume(
+        task: *mut LoomTask,
+        executor: *mut LoomExecutor,
+    ) -> i32 {
+        match unsafe { scheduler::task_state(task) } {
+            0 => {
+                let slow = unsafe { scheduler::spawn_slow_blocking_fixture(executor) };
+                let timer_source = LoomWaitSource {
+                    abi_version: WAIT_ABI_VERSION,
+                    kind: WAIT_SOURCE_TIMER,
+                    handle: -1,
+                    deadline_ns: wait_now_ns().saturating_add(2_000_000),
+                    ..LoomWaitSource::default()
+                };
+                let timer = unsafe { task_from_wait_source(executor, &raw const timer_source) };
+                if slow.is_null()
+                    || timer.is_null()
+                    || unsafe { task_prepare_join(executor, task, TASK_JOIN_RACE) } != WAIT_OK
+                    || unsafe { task_add_join_child(executor, task, slow) } != WAIT_OK
+                    || unsafe { task_add_join_child(executor, task, timer) } != WAIT_OK
+                {
+                    return TASK_FAULTED;
+                }
+                unsafe { task_set_state(task, 1) };
+                if unsafe { task_suspend_join(executor, task) } == 1 {
+                    TASK_PENDING
+                } else {
+                    TASK_FAULTED
+                }
+            }
+            1 => {
+                if unsafe { task_join_winner(task) } != 1 {
+                    return TASK_FAULTED;
+                }
+                let destination = unsafe { task_slot(task, 1) };
+                if unsafe { task_write_join_result(task, destination, 3) } == WAIT_OK {
+                    TASK_COMPLETED
+                } else {
+                    TASK_FAULTED
+                }
+            }
+            _ => TASK_FAULTED,
+        }
+    }
+
     #[test]
     fn real_completion_timer_and_fd_are_one_shot() {
         let executor = executor_create();
@@ -295,6 +340,20 @@ mod tests {
             assert_eq!(executor_run(executor, next), TASK_COMPLETED);
             assert!(executor_tasks_reclaimed(executor) >= TASK_BATCH_SIZE as u64);
             assert!(executor_live_tasks(executor) <= 2);
+            executor_destroy(executor);
+        }
+    }
+
+    #[test]
+    fn blocking_worker_does_not_delay_timer_or_cancellation() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let started = std::time::Instant::now();
+        unsafe {
+            let root = task_spawn(executor, Some(blocking_race_resume), 2, 0);
+            assert!(!root.is_null());
+            assert_eq!(executor_run(executor, root), TASK_COMPLETED);
+            assert!(started.elapsed() < std::time::Duration::from_millis(100));
             executor_destroy(executor);
         }
     }

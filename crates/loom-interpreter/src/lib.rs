@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use loom_core::Span;
@@ -20,6 +21,37 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_FUEL: u64 = 1_000_000;
 const DEFAULT_MAX_DEPTH: u32 = 256;
+
+type HostIoJob = Box<dyn FnOnce() + Send + 'static>;
+
+fn host_io_pool() -> &'static mpsc::SyncSender<HostIoJob> {
+    static POOL: OnceLock<mpsc::SyncSender<HostIoJob>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel::<HostIoJob>(256);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..4 {
+            let receiver = Arc::clone(&receiver);
+            std::thread::Builder::new()
+                .name(format!("loom-interpreter-io-{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let Ok(receiver) = receiver.lock() else {
+                                return;
+                            };
+                            receiver.recv()
+                        };
+                        let Ok(job) = job else {
+                            return;
+                        };
+                        job();
+                    }
+                })
+                .expect("create bounded interpreter I/O worker");
+        }
+        sender
+    })
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
@@ -333,13 +365,24 @@ struct ManagedTask {
     marked: bool,
     /// Present only for the compiler-known `Task.sleep` leaf task.
     timer_deadline: Option<Instant>,
-    /// Present only for a compiler-known descriptor readiness leaf task.
-    fd_wait: Option<(i64, bool)>,
+    host_io: bool,
     join_mode: TaskJoinMode,
     join_dynamic: bool,
     join_combined: bool,
     join_winner: Option<usize>,
     cancel_requested: bool,
+}
+
+enum HostIoValue {
+    Value(Value),
+    File(std::fs::File),
+    Socket(TcpStream),
+}
+
+struct HostIoCompletion {
+    task: u64,
+    span: Span,
+    outcome: Result<HostIoValue, ExecutionFailure>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -433,6 +476,8 @@ pub struct Interpreter<'program> {
     files: BTreeMap<u64, std::fs::File>,
     sockets: BTreeMap<u64, TcpStream>,
     next_resource: u64,
+    host_io_sender: mpsc::Sender<HostIoCompletion>,
+    host_io_receiver: mpsc::Receiver<HostIoCompletion>,
 }
 
 impl<'program> Interpreter<'program> {
@@ -443,6 +488,7 @@ impl<'program> Interpreter<'program> {
 
     #[must_use]
     pub fn with_limits(program: &'program Program, limits: ExecutionLimits) -> Self {
+        let (host_io_sender, host_io_receiver) = mpsc::channel();
         Self {
             program,
             frames: BTreeMap::new(),
@@ -461,6 +507,8 @@ impl<'program> Interpreter<'program> {
             files: BTreeMap::new(),
             sockets: BTreeMap::new(),
             next_resource: 0,
+            host_io_sender,
+            host_io_receiver,
         }
     }
 
@@ -485,6 +533,9 @@ impl<'program> Interpreter<'program> {
         call_site: Span,
     ) -> Result<Value, ExecutionFailure> {
         if self.call_depth == 0 {
+            let (host_io_sender, host_io_receiver) = mpsc::channel();
+            self.host_io_sender = host_io_sender;
+            self.host_io_receiver = host_io_receiver;
             self.frames.clear();
             self.tasks.clear();
             self.ready.clear();
@@ -570,6 +621,7 @@ impl<'program> Interpreter<'program> {
     fn run_task(&mut self, root: u64) -> Result<Value, ExecutionFailure> {
         self.active_root = Some(root);
         loop {
+            self.drain_host_io_completions();
             match self.tasks.get(&root).map(|task| task.status.clone()) {
                 Some(TaskStatus::Completed(value)) => {
                     self.active_task = None;
@@ -604,7 +656,7 @@ impl<'program> Interpreter<'program> {
             }
 
             let Some(current) = self.ready.pop_front() else {
-                if self.wait_for_next_timer() {
+                if self.wait_for_work() {
                     continue;
                 }
                 return Err(self
@@ -632,19 +684,43 @@ impl<'program> Interpreter<'program> {
         }
     }
 
-    fn wait_for_next_timer(&mut self) -> bool {
-        let Some(deadline) = self
+    fn wait_for_work(&mut self) -> bool {
+        if self.drain_host_io_completions() || !self.ready.is_empty() {
+            return true;
+        }
+        let deadline = self
             .tasks
             .values()
             .filter(|task| {
                 task.timer_deadline.is_some() && matches!(task.status, TaskStatus::Waiting)
             })
             .filter_map(|task| task.timer_deadline)
-            .min()
-        else {
+            .min();
+        let host_io_pending = self
+            .tasks
+            .values()
+            .any(|task| task.host_io && matches!(task.status, TaskStatus::Waiting));
+        if deadline.is_none() && !host_io_pending {
             return false;
-        };
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        }
+
+        if host_io_pending {
+            let completion = deadline.map_or_else(
+                || self.host_io_receiver.recv().ok(),
+                |deadline| {
+                    self.host_io_receiver
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        .ok()
+                },
+            );
+            if let Some(completion) = completion {
+                self.finish_host_io_completion(completion);
+                self.drain_host_io_completions();
+            }
+        } else if let Some(deadline) = deadline {
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        }
+
         let now = Instant::now();
         let ready = self
             .tasks
@@ -662,6 +738,38 @@ impl<'program> Interpreter<'program> {
                 .status = TaskStatus::Runnable;
             self.enqueue_task(task_id);
         }
+        true
+    }
+
+    fn drain_host_io_completions(&mut self) -> bool {
+        let mut completed = false;
+        while let Ok(completion) = self.host_io_receiver.try_recv() {
+            completed |= self.finish_host_io_completion(completion);
+        }
+        completed
+    }
+
+    fn finish_host_io_completion(&mut self, completion: HostIoCompletion) -> bool {
+        let accepts_completion = self.tasks.get(&completion.task).is_some_and(|task| {
+            task.host_io && !task.cancel_requested && matches!(task.status, TaskStatus::Waiting)
+        });
+        if !accepts_completion {
+            return false;
+        }
+        let outcome = completion.outcome.and_then(|value| match value {
+            HostIoValue::Value(value) => Ok(value),
+            HostIoValue::File(file) => self.insert_file(file, completion.span),
+            HostIoValue::Socket(socket) => self.insert_socket(socket, completion.span),
+        });
+        let status = match outcome {
+            Ok(value) => TaskStatus::Completed(value),
+            Err(failure) => TaskStatus::Failed(failure),
+        };
+        self.tasks
+            .get_mut(&completion.task)
+            .expect("host I/O task was checked above")
+            .status = status;
+        self.wake_parent(completion.task);
         true
     }
 
@@ -796,31 +904,6 @@ impl<'program> Interpreter<'program> {
             self.tasks
                 .get_mut(&task_id)
                 .expect("timer task exists")
-                .status = TaskStatus::Completed(Value::Unit);
-            return Ok(TaskPoll::Completed);
-        }
-        if let Some((descriptor, writable)) = self.tasks.get(&task_id).and_then(|task| task.fd_wait)
-        {
-            let interests = if writable {
-                loom_runtime::WAIT_WRITABLE
-            } else {
-                loom_runtime::WAIT_READABLE
-            };
-            if let Err(error) = loom_runtime::wait_fd_once(descriptor, interests) {
-                let failure = self.runtime_fault(
-                    "IoWaitFault",
-                    format!("descriptor readiness wait failed: {error}"),
-                    Span::default(),
-                );
-                self.tasks
-                    .get_mut(&task_id)
-                    .expect("fd wait task exists")
-                    .status = TaskStatus::Failed(failure.clone().into());
-                return Ok(TaskPoll::Failed);
-            }
-            self.tasks
-                .get_mut(&task_id)
-                .expect("fd wait task exists")
                 .status = TaskStatus::Completed(Value::Unit);
             return Ok(TaskPoll::Completed);
         }
@@ -1199,7 +1282,7 @@ impl<'program> Interpreter<'program> {
             }
 
             let Some(current) = self.ready.pop_front() else {
-                if self.wait_for_next_timer() {
+                if self.wait_for_work() {
                     continue;
                 }
                 return Err(EvalAbort::from(self.runtime_fault(
@@ -1386,7 +1469,7 @@ impl<'program> Interpreter<'program> {
                     queued: false,
                     marked: false,
                     timer_deadline: None,
-                    fd_wait: None,
+                    host_io: false,
                     join_mode: TaskJoinMode::All,
                     join_dynamic: false,
                     join_combined: false,
@@ -1996,7 +2079,7 @@ impl<'program> Interpreter<'program> {
                         queued: false,
                         marked: false,
                         timer_deadline: Some(deadline),
-                        fd_wait: None,
+                        host_io: false,
                         join_mode: TaskJoinMode::All,
                         join_dynamic: false,
                         join_combined: false,
@@ -2028,40 +2111,18 @@ impl<'program> Interpreter<'program> {
                         expression.span,
                     )));
                 }
-                let task_id = self.next_task;
-                self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
-                    EvalAbort::from(self.runtime_fault(
-                        "TaskIdExhausted",
-                        "async task identity space was exhausted",
-                        expression.span,
-                    ))
-                })?;
-                self.tasks.insert(
-                    task_id,
-                    ManagedTask {
-                        function: FunctionId(u32::MAX),
-                        frame: u64::MAX,
-                        parent: self.active_task,
-                        children: Vec::new(),
-                        cursor: 0,
-                        awaiting_state: None,
-                        cleanups: Vec::new(),
-                        status: TaskStatus::Runnable,
-                        queued: false,
-                        marked: false,
-                        timer_deadline: None,
-                        fd_wait: Some((descriptor, *writable)),
-                        join_mode: TaskJoinMode::All,
-                        join_dynamic: false,
-                        join_combined: false,
-                        join_winner: None,
-                        cancel_requested: false,
-                    },
-                );
-                self.enqueue_task(task_id);
-                self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
-                self.gc_stats.live = self.tasks.len() as u64;
-                Ok(Value::Task { id: task_id })
+                let interests = if *writable {
+                    loom_runtime::WAIT_WRITABLE
+                } else {
+                    loom_runtime::WAIT_READABLE
+                };
+                let span = expression.span;
+                self.spawn_host_io_task(span, move || {
+                    loom_runtime::wait_fd_once(descriptor, interests)
+                        .map(|_| HostIoValue::Value(Value::Unit))
+                        .map_err(|error| io_failure("IoWaitFault", &error, span))
+                })
+                .map_err(EvalAbort::from)
             }
             ExprKind::TaskJoin { mode, arguments } => {
                 let values = arguments
@@ -2796,43 +2857,69 @@ impl<'program> Interpreter<'program> {
         arguments: &[Value],
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
-        let outcome = match (builtin, arguments) {
-            (Builtin::FileOpenRead, [Value::Text { value: path }]) => std::fs::File::open(path)
-                .map_err(|error| io_failure("FileOpenFault", &error, span))
-                .and_then(|file| self.insert_file(file, span)),
-            (Builtin::FileCreate, [Value::Text { value: path }]) => std::fs::File::create(path)
-                .map_err(|error| io_failure("FileCreateFault", &error, span))
-                .and_then(|file| self.insert_file(file, span)),
+        match (builtin, arguments) {
+            (Builtin::FileOpenRead, [Value::Text { value: path }]) => {
+                let path = path.clone();
+                self.spawn_host_io_task(span, move || {
+                    std::fs::File::open(path)
+                        .map(HostIoValue::File)
+                        .map_err(|error| io_failure("FileOpenFault", &error, span))
+                })
+            }
+            (Builtin::FileCreate, [Value::Text { value: path }]) => {
+                let path = path.clone();
+                self.spawn_host_io_task(span, move || {
+                    std::fs::File::create(path)
+                        .map(HostIoValue::File)
+                        .map_err(|error| io_failure("FileCreateFault", &error, span))
+                })
+            }
             (Builtin::FileReadText, [Value::Record { ty, fields }])
                 if self.program.prelude.file == Some(*ty) =>
             {
                 let handle = checked_resource_handle(fields, span)?;
-                let mut value = String::new();
-                self.files.get_mut(&handle).map_or_else(
+                let file = self.files.get(&handle).map_or_else(
                     || Err(resource_closed("File", span)),
                     |file| {
-                        file.read_to_string(&mut value)
-                            .map(|_| Value::Text { value })
+                        file.try_clone()
                             .map_err(|error| io_failure("FileReadFault", &error, span))
                     },
-                )
+                );
+                match file {
+                    Ok(mut file) => self.spawn_host_io_task(span, move || {
+                        let mut value = String::new();
+                        file.read_to_string(&mut value)
+                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map_err(|error| io_failure("FileReadFault", &error, span))
+                    }),
+                    Err(failure) => self.spawn_terminal_task(Err(failure), span),
+                }
             }
             (Builtin::FileWriteText, [Value::Record { ty, fields }, Value::Text { value }])
                 if self.program.prelude.file == Some(*ty) =>
             {
                 let handle = checked_resource_handle(fields, span)?;
-                self.files.get_mut(&handle).map_or_else(
+                let file = self.files.get(&handle).map_or_else(
                     || Err(resource_closed("File", span)),
                     |file| {
-                        file.write_all(value.as_bytes())
-                            .map(|()| Value::Unit)
+                        file.try_clone()
                             .map_err(|error| io_failure("FileWriteFault", &error, span))
                     },
-                )
+                );
+                match file {
+                    Ok(mut file) => {
+                        let value = value.clone();
+                        self.spawn_host_io_task(span, move || {
+                            file.write_all(value.as_bytes())
+                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map_err(|error| io_failure("FileWriteFault", &error, span))
+                        })
+                    }
+                    Err(failure) => self.spawn_terminal_task(Err(failure), span),
+                }
             }
-            _ => return Err(self.invalid_builtin_fault(span)),
-        };
-        self.spawn_terminal_task(outcome, span)
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
     }
 
     fn eval_socket_builtin(
@@ -2841,71 +2928,84 @@ impl<'program> Interpreter<'program> {
         arguments: &[Value],
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
-        let outcome = match (builtin, arguments) {
+        match (builtin, arguments) {
             (Builtin::SocketConnect, [Value::Text { value: host }, Value::Int { value: port }]) => {
-                self.connect_socket(host, *port, span)
+                let port = match u16::try_from(*port) {
+                    Ok(port) => port,
+                    Err(_) => {
+                        let failure =
+                            self.runtime_fault("InvalidPort", "socket port must fit UInt16", span);
+                        return self.spawn_terminal_task(Err(failure.into()), span);
+                    }
+                };
+                let host = host.clone();
+                self.spawn_host_io_task(span, move || {
+                    let address = (host.as_str(), port)
+                        .to_socket_addrs()
+                        .map_err(|error| io_failure("SocketResolveFault", &error, span))?
+                        .next()
+                        .ok_or_else(|| {
+                            ExecutionFailure::from(RuntimeFault {
+                                code: "SocketResolveFault".into(),
+                                message: "host resolved to no addresses".into(),
+                                span,
+                            })
+                        })?;
+                    TcpStream::connect(address)
+                        .map(HostIoValue::Socket)
+                        .map_err(|error| io_failure("SocketConnectFault", &error, span))
+                })
             }
             (Builtin::SocketReadText, [Value::Record { ty, fields }])
                 if self.program.prelude.socket == Some(*ty) =>
             {
                 let handle = checked_resource_handle(fields, span)?;
-                let mut value = String::new();
-                self.sockets.get_mut(&handle).map_or_else(
+                let socket = self.sockets.get(&handle).map_or_else(
                     || Err(resource_closed("Socket", span)),
                     |socket| {
                         socket
-                            .read_to_string(&mut value)
-                            .map(|_| Value::Text { value })
+                            .try_clone()
                             .map_err(|error| io_failure("SocketReadFault", &error, span))
                     },
-                )
+                );
+                match socket {
+                    Ok(mut socket) => self.spawn_host_io_task(span, move || {
+                        let mut value = String::new();
+                        socket
+                            .read_to_string(&mut value)
+                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map_err(|error| io_failure("SocketReadFault", &error, span))
+                    }),
+                    Err(failure) => self.spawn_terminal_task(Err(failure), span),
+                }
             }
             (Builtin::SocketWriteText, [Value::Record { ty, fields }, Value::Text { value }])
                 if self.program.prelude.socket == Some(*ty) =>
             {
                 let handle = checked_resource_handle(fields, span)?;
-                self.sockets.get_mut(&handle).map_or_else(
+                let socket = self.sockets.get(&handle).map_or_else(
                     || Err(resource_closed("Socket", span)),
                     |socket| {
                         socket
-                            .write_all(value.as_bytes())
-                            .map(|()| Value::Unit)
+                            .try_clone()
                             .map_err(|error| io_failure("SocketWriteFault", &error, span))
                     },
-                )
+                );
+                match socket {
+                    Ok(mut socket) => {
+                        let value = value.clone();
+                        self.spawn_host_io_task(span, move || {
+                            socket
+                                .write_all(value.as_bytes())
+                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map_err(|error| io_failure("SocketWriteFault", &error, span))
+                        })
+                    }
+                    Err(failure) => self.spawn_terminal_task(Err(failure), span),
+                }
             }
-            _ => return Err(self.invalid_builtin_fault(span)),
-        };
-        self.spawn_terminal_task(outcome, span)
-    }
-
-    fn connect_socket(
-        &mut self,
-        host: &str,
-        port: i64,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let port = u16::try_from(port).map_err(|_| {
-            ExecutionFailure::from(self.runtime_fault(
-                "InvalidPort",
-                "socket port must fit UInt16",
-                span,
-            ))
-        })?;
-        let address = (host, port)
-            .to_socket_addrs()
-            .map_err(|error| io_failure("SocketResolveFault", &error, span))?
-            .next()
-            .ok_or_else(|| {
-                ExecutionFailure::from(self.runtime_fault(
-                    "SocketResolveFault",
-                    "host resolved to no addresses",
-                    span,
-                ))
-            })?;
-        let socket = TcpStream::connect(address)
-            .map_err(|error| io_failure("SocketConnectFault", &error, span))?;
-        self.insert_socket(socket, span)
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
     }
 
     fn invalid_builtin_fault(&self, span: Span) -> ExecutionFailure {
@@ -3105,7 +3205,7 @@ impl<'program> Interpreter<'program> {
                 queued: false,
                 marked: false,
                 timer_deadline: None,
-                fd_wait: None,
+                host_io: false,
                 join_mode: TaskJoinMode::All,
                 join_dynamic: false,
                 join_combined: false,
@@ -3113,6 +3213,64 @@ impl<'program> Interpreter<'program> {
                 cancel_requested: false,
             },
         );
+        self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+        self.gc_stats.live = self.tasks.len() as u64;
+        Ok(Value::Task { id: task_id })
+    }
+
+    fn spawn_host_io_task<F>(&mut self, span: Span, work: F) -> Result<Value, ExecutionFailure>
+    where
+        F: FnOnce() -> Result<HostIoValue, ExecutionFailure> + Send + 'static,
+    {
+        let task_id = self.next_task;
+        self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "TaskIdExhausted",
+                "async task identity space was exhausted",
+                span,
+            ))
+        })?;
+        self.tasks.insert(
+            task_id,
+            ManagedTask {
+                function: FunctionId(u32::MAX),
+                frame: u64::MAX,
+                parent: self.active_task,
+                children: Vec::new(),
+                cursor: 0,
+                awaiting_state: None,
+                cleanups: Vec::new(),
+                status: TaskStatus::Waiting,
+                queued: false,
+                marked: false,
+                timer_deadline: None,
+                host_io: true,
+                join_mode: TaskJoinMode::All,
+                join_dynamic: false,
+                join_combined: false,
+                join_winner: None,
+                cancel_requested: false,
+            },
+        );
+        let completion_sender = self.host_io_sender.clone();
+        let job = Box::new(move || {
+            let _ = completion_sender.send(HostIoCompletion {
+                task: task_id,
+                span,
+                outcome: work(),
+            });
+        });
+        if host_io_pool().try_send(job).is_err() {
+            let failure = self.runtime_fault(
+                "BlockingPoolSaturated",
+                "bounded interpreter I/O worker queue is full",
+                span,
+            );
+            self.tasks
+                .get_mut(&task_id)
+                .expect("host I/O task was just inserted")
+                .status = TaskStatus::Failed(failure.into());
+        }
         self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
         self.gc_stats.live = self.tasks.len() as u64;
         Ok(Value::Task { id: task_id })

@@ -3,11 +3,12 @@ use std::ffi::c_void;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::ptr;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use polling::{Event, Events, Poller};
 
-use crate::scheduler::{LoomJoinSpec, LoomTask, ValueNode, ValueSlot};
+use crate::scheduler::{LoomJoinSpec, LoomTask, ValueNode, ValueSlot, WorkerCompletion};
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
     WAIT_DUPLICATE_SOURCE, WAIT_INFINITE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
@@ -79,7 +80,7 @@ struct Entry {
 }
 
 pub(crate) struct Reactor {
-    poller: Poller,
+    pub(crate) poller: Arc<Poller>,
     events: Events,
     entries: BTreeMap<u64, Entry>,
     ready: VecDeque<LoomReadyNotification>,
@@ -102,13 +103,16 @@ pub struct LoomExecutor {
     pub(crate) gc_relocations: u64,
     pub(crate) gc_reclaimed: u64,
     pub(crate) tasks_reclaimed: u64,
+    pub(crate) worker_sender: mpsc::Sender<WorkerCompletion>,
+    pub(crate) worker_receiver: mpsc::Receiver<WorkerCompletion>,
 }
 
 impl LoomExecutor {
     fn new() -> io::Result<Self> {
+        let (worker_sender, worker_receiver) = mpsc::channel();
         Ok(Self {
             reactor: Reactor {
-                poller: Poller::new()?,
+                poller: Arc::new(Poller::new()?),
                 events: Events::new(),
                 entries: BTreeMap::new(),
                 ready: VecDeque::new(),
@@ -128,6 +132,8 @@ impl LoomExecutor {
             gc_relocations: 0,
             gc_reclaimed: 0,
             tasks_reclaimed: 0,
+            worker_sender,
+            worker_receiver,
         })
     }
 }
