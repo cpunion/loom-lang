@@ -5,8 +5,8 @@ use std::sync::{Arc, Barrier};
 
 use loom_core::{FileId, Span};
 use loom_driver::{
-    AnalysisHost, CacheContext, CacheLookup, PersistentCache, PipelineStage, Position, TargetKind,
-    discover_loom_files, format_source,
+    AnalysisHost, CacheContext, CacheLookup, LockMode, PersistentCache, PipelineStage, Position,
+    ProjectGraph, ProjectOptions, TargetKind, discover_loom_files, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -231,6 +231,114 @@ fn manifest_fails_closed_on_version_mismatch_and_dependency_cycle() {
         .err()
         .expect("dependency cycle is rejected");
     assert!(error.to_string().contains("dependency cycle"), "{error}");
+}
+
+#[test]
+fn registry_features_and_lockfile_form_a_reproducible_graph() {
+    let project = TestProject::new();
+    let write_registry_version = |version: &str, value: i64| {
+        project.write(
+            &format!("registry/utility/{version}/loom.toml"),
+            &format!("schema = 1\n[package]\nname = \"utility\"\nversion = \"{version}\"\n"),
+        );
+        project.write(
+            &format!("registry/utility/{version}/src/lib.loom"),
+            &format!("module utility\n\npub fn value() Int {{\n    {value}\n}}\n"),
+        );
+    };
+    write_registry_version("1.0.0", 10);
+    write_registry_version("1.2.0", 12);
+    project.write(
+        "application/loom.toml",
+        "schema = 1\n[package]\nname = \"application\"\nversion = \"0.1.0\"\n[registries]\nlocal = \"../registry\"\n[dependencies]\nutility = { registry = \"local\", version = \"^1\", optional = true }\n[features]\ndefault = [\"utilities\"]\nutilities = [\"dep:utility\"]\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.main\"\n",
+    );
+    project.write(
+        "application/src/main.loom",
+        "module application\n\npub fn main() Unit {\n    Unit\n}\n",
+    );
+    let root = project.root.join("application");
+
+    let without_defaults = ProjectGraph::load_with_options(
+        &root,
+        &ProjectOptions {
+            no_default_features: true,
+            ..ProjectOptions::default()
+        },
+    )
+    .expect("resolve with defaults disabled");
+    assert_eq!(without_defaults.packages().count(), 1);
+
+    let graph = ProjectGraph::load(&root).expect("resolve newest registry package");
+    let utility = graph
+        .packages()
+        .find(|package| package.id().name() == "utility")
+        .expect("default feature activates utility");
+    assert_eq!(utility.id().version(), "1.2.0");
+    assert_eq!(utility.source(), "registry+local");
+    assert_eq!(utility.checksum().map(str::len), Some(64));
+    assert!(graph.write_lockfile().expect("write lockfile"));
+    assert!(!graph.write_lockfile().expect("lockfile is idempotent"));
+    let lock = fs::read_to_string(root.join("loom.lock")).expect("read lockfile");
+    assert!(lock.contains("version = \"1.2.0\""), "{lock}");
+    assert!(lock.contains("source = \"registry+local\""), "{lock}");
+
+    write_registry_version("1.3.0", 13);
+    let pinned = ProjectGraph::load(&root).expect("existing lock pins registry version");
+    assert!(
+        pinned.packages().any(|package| {
+            package.id().name() == "utility" && package.id().version() == "1.2.0"
+        })
+    );
+
+    let refreshed = ProjectGraph::load_with_options(
+        &root,
+        &ProjectOptions {
+            lock_mode: LockMode::Refresh,
+            ..ProjectOptions::default()
+        },
+    )
+    .expect("refresh registry resolution");
+    assert!(
+        refreshed.packages().any(|package| {
+            package.id().name() == "utility" && package.id().version() == "1.3.0"
+        })
+    );
+    assert!(refreshed.write_lockfile().expect("publish refreshed lock"));
+    ProjectGraph::load_with_options(
+        &root,
+        &ProjectOptions {
+            lock_mode: LockMode::Locked,
+            ..ProjectOptions::default()
+        },
+    )
+    .expect("fresh lock passes locked mode");
+
+    project.write(
+        "registry/utility/1.3.0/src/lib.loom",
+        "module utility\n\npub fn value() Int {\n    99\n}\n",
+    );
+    let error = ProjectGraph::load(&root)
+        .expect_err("published registry contents cannot mutate under a lock");
+    assert!(error.to_string().contains("checksum differs"), "{error}");
+}
+
+#[test]
+fn feature_graph_rejects_unknown_dependencies_and_cycles() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[features]\ndefault = [\"a\"]\na = [\"b\"]\nb = [\"a\"]\n",
+    );
+    project.write("src/lib.loom", "module sample\n");
+    let error = ProjectGraph::load(&project.root).expect_err("feature cycle is rejected");
+    assert!(error.to_string().contains("feature cycle"), "{error}");
+
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[features]\ndefault = [\"missing\"]\n",
+    );
+    let error = ProjectGraph::load(&project.root).expect_err("unknown feature is rejected");
+    assert!(error.to_string().contains("unknown feature"), "{error}");
 }
 
 #[test]

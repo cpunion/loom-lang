@@ -402,7 +402,7 @@ Core 0.1 不包含 `example`、`scenario`、`property`。
 - capability/provider/effect；
 - Core 0.3 已单独定义的 GC、scoped/defer 与结构化 async/Task 不属于 Core 0.1；持久化 coroutine 和分布式执行仍开放；
 - 继承、concept conformance 之外的自由 extension declaration、开放/多重派发和第二套 trait/interface 抽象；
-- registry package、lockfile、feature/bundle；基础 manifest/path dependency/bin-test target 属于工具链层，不改变 Core 0.1 表达式语义；
+- 网络 registry 发布、composition bundle；manifest、path/文件 registry dependency、lockfile、optional-dependency feature 和 bin/test/lib target 属于工具链层，不改变 Core 0.1 表达式语义；
 - `?`、pattern guard、默认字段和复杂解构；
 - 一般所有权、借用与公开底层内存布局；Core 0.2 的 `dyn C` 是普通一等值，同步参数写回由编译器管理为不可逃逸的 call-scoped inout，不增加 borrow、lifetime 或 owning-carrier 源码语法。
 

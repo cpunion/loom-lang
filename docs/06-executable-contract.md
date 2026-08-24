@@ -576,4 +576,4 @@ parser recovery 的 declaration start set 必须识别 `async fn`、`pub async f
 6. 冷路径与任何未来增量路径必须得到相同 typed program、diagnostic ordering、reachability 和运行结果；
 7. parser/checker/backend 实现细节可以替换，但不能自行发明第二套换行、overflow、fault、snapshot、builtin、interface 或 code 规则。
 
-所有权/借用、AOP-like 组合、live/AST 编辑、desired-state/operator、一般 capability/effect、registry/feature/bundle 与专用 example/scenario 均不是 Core 0.1–0.3 blocker。基础 package manifest、path dependency、target 和持久缓存已经闭环。
+所有权/借用、AOP-like 组合、live/AST 编辑、desired-state/operator、一般 capability/effect、网络 registry 发布/composition bundle 与专用 example/scenario 均不是 Core 0.1–0.3 blocker。基础 package manifest、path/文件 registry dependency、lockfile、optional-dependency feature、target 和持久缓存已经闭环。

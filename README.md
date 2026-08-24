@@ -46,7 +46,7 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 - capability/provider 与一般 effect system；
 - 多线程 shared-memory executor、分布式执行和持久化 coroutine；
 - `example`、`scenario`、`property` 等专用验证声明；
-- registry dependency、lockfile、feature/bundle 与大型工程组合治理；基础 path package 和 bin/test/lib target 已实现。
+- 网络 registry 发布/认证、composition bundle 与大型工程组合治理；文件系统 registry dependency、lockfile、只激活 optional dependency 的 package feature，以及 bin/test/lib target 已实现。
 
 普通 `test` 已足够验证当前核心；不会为了未来能力提前保留关键字或运行时模型。
 
@@ -90,10 +90,11 @@ cargo run -p loom-cli -- run examples/core01
 cargo run -p loom-cli -- run --artifact target/core01
 ```
 
-基础多包工程使用 `loom.toml`、本地 path dependency 和显式 bin/test/lib target；bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
+基础多包工程使用 `loom.toml`、path/文件系统 registry dependency、显式 feature 和 bin/test/lib target；`loomc resolve` 生成锁定 registry 版本与 SHA-256 的 `loom.lock`，`--locked` 禁止隐式变更，`resolve --update` 才重新选择最高兼容 SemVer。feature 只激活显式 optional dependency，不做源码 `cfg`、隐式 import 或运行时注册。bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
 
 ```sh
 cargo run -p loom-cli -- check --target app examples/packages/application
+cargo run -p loom-cli -- resolve examples/packages/application
 cargo run -p loom-cli -- build --target app --output target/package-app examples/packages/application
 cargo run -p loom-cli -- test --target unit examples/packages/application
 cargo run -p loom-cli -- run --target app examples/packages/application

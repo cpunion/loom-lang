@@ -186,7 +186,7 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 
 ## 13. C1k：module/package/cache
 
-多文件 module、schema-versioned `loom.toml`、本地 path dependency、SemVer requirement、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
+多文件 module、schema-versioned `loom.toml`、path/文件系统 registry dependency、SemVer requirement、optional-dependency feature、SHA-256 `loom.lock`、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。`resolve --update` 显式更新 pin，`--locked` 保证图不漂移；feature 不增加源码 `cfg` 或运行时注册。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
 
 持久缓存已经落地逐 source lossless token/AST、module public-interface、整张 package graph checked MIR（连同稳定 diagnostics）、closed-world reachable LLVM object、最终 native/`.loomi` artifact，以及 macOS dSYM payload。key 包含 compiler/backend/stdlib/ABI 版本、canonical package/dependency/target identity、稳定相对源码路径及内容、reachable function/witness/proof、target triple/data layout、CPU policy、优化、合同、runtime archive、linker 和 debug tool identity。mtime、绝对 checkout 路径、文件遍历顺序和编辑器状态不参与 identity；读取时验证 ref、size、SHA-256，parse 重建源码，checked MIR 重新通过 artifact decoder/MIR validator。损坏只产生 miss，写入采用同目录原子替换。
 

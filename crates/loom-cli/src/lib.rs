@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -6,13 +7,14 @@ use std::process::Command as ProcessCommand;
 use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, AnalysisSnapshot, CacheContext, CacheKey, CacheLookup, DiagnosticRecord,
-    EXIT_DEFECT, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, PersistentCache, PipelineStage,
-    ProjectGraph, SourceMap, StageUnavailable, TargetKind, format_source,
+    EXIT_DEFECT, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, LockMode, PersistentCache, PipelineStage,
+    ProjectGraph, ProjectOptions, SourceMap, StageUnavailable, TargetKind, format_source,
 };
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--no-cache | --cache-dir DIR] <check|build|test|run|fmt> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|fmt> [options] [PATH]\n\
+    resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--output FILE] [PATH] build an executable or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
@@ -31,6 +33,9 @@ enum Backend {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
+    Resolve {
+        refresh: bool,
+    },
     Check,
     Build {
         output: PathBuf,
@@ -55,6 +60,7 @@ struct Options {
     target: Option<String>,
     no_cache: bool,
     cache_dir: Option<PathBuf>,
+    project: ProjectOptions,
     program_arguments: Vec<String>,
 }
 
@@ -399,6 +405,7 @@ pub fn run(
     };
 
     match &options.command {
+        Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
         Command::Build { output, entry } => {
@@ -413,6 +420,91 @@ pub fn run(
             }
         }
     }
+}
+
+fn project_options(options: &Options, refresh: bool) -> ProjectOptions {
+    let mut project = options.project.clone();
+    if refresh {
+        project.lock_mode = LockMode::Refresh;
+    }
+    project
+}
+
+fn open_analysis_host(
+    options: &Options,
+    refresh: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<Option<AnalysisHost>> {
+    let host =
+        match AnalysisHost::new_with_options(&options.path, &project_options(options, refresh)) {
+            Ok(host) => host,
+            Err(error) => {
+                emit_tool_error(
+                    options.json,
+                    stdout,
+                    stderr,
+                    "ProjectLoadFailed",
+                    &error.to_string(),
+                )?;
+                return Ok(None);
+            }
+        };
+    if options.project.lock_mode != LockMode::Locked
+        && let Err(error) = host.project().write_lockfile()
+    {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "LockfileWriteFailed",
+            &error.to_string(),
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(host))
+}
+
+fn run_resolve(
+    options: &Options,
+    refresh: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let Some(host) = open_analysis_host(options, refresh, stdout, stderr)? else {
+        return Ok(EXIT_USAGE);
+    };
+    let Some(lockfile) = host.project().lockfile_path() else {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "ManifestRequired",
+            "resolve requires a loom.toml project",
+        )?;
+        return Ok(EXIT_USAGE);
+    };
+    if options.json {
+        write_json_line(
+            stdout,
+            &json!({
+                "schema_version": 1,
+                "category": "dependency_resolution",
+                "status": "ok",
+                "packages": host.project().packages().count(),
+                "lockfile": lockfile,
+                "refreshed": refresh,
+            }),
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "resolved {} packages into {}",
+            host.project().packages().count(),
+            lockfile.display()
+        )?;
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1088,18 +1180,8 @@ fn load_snapshot(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<Option<AnalysisSnapshot>> {
-    let host = match AnalysisHost::new(&options.path) {
-        Ok(host) => host,
-        Err(error) => {
-            emit_tool_error(
-                options.json,
-                stdout,
-                stderr,
-                "ProjectLoadFailed",
-                &error.to_string(),
-            )?;
-            return Ok(None);
-        }
+    let Some(host) = open_analysis_host(options, false, stdout, stderr)? else {
+        return Ok(None);
     };
     match host.snapshot() {
         Ok(snapshot) => Ok(Some(snapshot)),
@@ -1122,18 +1204,8 @@ fn load_compilation(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<Option<Compilation>> {
-    let host = match AnalysisHost::new(&options.path) {
-        Ok(host) => host,
-        Err(error) => {
-            emit_tool_error(
-                options.json,
-                stdout,
-                stderr,
-                "ProjectLoadFailed",
-                &error.to_string(),
-            )?;
-            return Ok(None);
-        }
+    let Some(host) = open_analysis_host(options, false, stdout, stderr)? else {
+        return Ok(None);
     };
     let sources = match host.load_sources() {
         Ok(sources) => sources,
@@ -1766,6 +1838,9 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
             ));
         }
     };
+    let features = parse_feature_list(take_option(&mut strings, "--features")?)?;
+    let no_default_features = take_flag(&mut strings, "--no-default-features");
+    let locked = take_flag(&mut strings, "--locked");
     let target = take_option(&mut strings, "--target")?;
     let no_cache = take_flag(&mut strings, "--no-cache");
     let cache_dir = take_option(&mut strings, "--cache-dir")?.map(PathBuf::from);
@@ -1777,18 +1852,10 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
     };
     strings.remove(0);
     let command = parse_command(&command_name, &mut strings, backend)?;
-    validate_parsed_options(
-        &command,
-        target.as_deref(),
-        no_cache,
-        cache_dir.is_some(),
-        &strings,
-        &program_arguments,
-    )?;
     let path = strings
         .first()
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
-    Ok(ParsedArgs::Run(Options {
+    let options = Options {
         command,
         path,
         json,
@@ -1796,8 +1863,19 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
         target,
         no_cache,
         cache_dir,
+        project: ProjectOptions {
+            features,
+            no_default_features,
+            lock_mode: if locked {
+                LockMode::Locked
+            } else {
+                LockMode::Use
+            },
+        },
         program_arguments,
-    }))
+    };
+    validate_parsed_options(&options, &strings)?;
+    Ok(ParsedArgs::Run(options))
 }
 
 fn parse_command(
@@ -1806,6 +1884,9 @@ fn parse_command(
     backend: Backend,
 ) -> Result<Command, String> {
     let command = match command_name {
+        "resolve" => Command::Resolve {
+            refresh: take_flag(arguments, "--update"),
+        },
         "check" => Command::Check,
         "build" => {
             let default_output = match backend {
@@ -1832,15 +1913,9 @@ fn parse_command(
     Ok(command)
 }
 
-fn validate_parsed_options(
-    command: &Command,
-    target: Option<&str>,
-    no_cache: bool,
-    has_cache_dir: bool,
-    remaining: &[String],
-    program_arguments: &[String],
-) -> Result<(), String> {
-    if !program_arguments.is_empty() && !matches!(command, Command::Run { .. }) {
+fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<(), String> {
+    let command = &options.command;
+    if !options.program_arguments.is_empty() && !matches!(command, Command::Run { .. }) {
         return Err("program arguments after `--` are only valid for run".to_owned());
     }
     if let Some(flag) = remaining.iter().find(|argument| argument.starts_with('-')) {
@@ -1849,7 +1924,7 @@ fn validate_parsed_options(
     if remaining.len() > 1 {
         return Err("expected at most one PATH".to_owned());
     }
-    if target.is_some()
+    if options.target.is_some()
         && matches!(
             &command,
             Command::Build { entry: Some(_), .. }
@@ -1861,10 +1936,33 @@ fn validate_parsed_options(
     {
         return Err("--target and --entry are mutually exclusive".to_owned());
     }
-    if target.is_some()
+    let resolution_options_used = !options.project.features.is_empty()
+        || options.project.no_default_features
+        || options.project.lock_mode == LockMode::Locked;
+    if resolution_options_used
+        && matches!(
+            command,
+            Command::Format { .. }
+                | Command::Run {
+                    artifact: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err(
+            "feature and lock options are only valid for resolve or source commands".to_owned(),
+        );
+    }
+    if options.project.lock_mode == LockMode::Locked
+        && matches!(command, Command::Resolve { refresh: true })
+    {
+        return Err("--locked and resolve --update are mutually exclusive".to_owned());
+    }
+    if options.target.is_some()
         && matches!(
             &command,
-            Command::Format { .. }
+            Command::Resolve { .. }
+                | Command::Format { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -1873,10 +1971,11 @@ fn validate_parsed_options(
     {
         return Err("--target is only valid for source check/build/test/run".to_owned());
     }
-    if (no_cache || has_cache_dir)
+    if (options.no_cache || options.cache_dir.is_some())
         && matches!(
             &command,
-            Command::Format { .. }
+            Command::Resolve { .. }
+                | Command::Format { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -1896,6 +1995,20 @@ fn validate_parsed_options(
         return Err("run --artifact does not also accept a source PATH".to_owned());
     }
     Ok(())
+}
+
+fn parse_feature_list(value: Option<String>) -> Result<BTreeSet<String>, String> {
+    let Some(value) = value else {
+        return Ok(BTreeSet::new());
+    };
+    if value.is_empty() {
+        return Err("--features requires a non-empty comma-separated list".to_owned());
+    }
+    let features = value.split(',').map(str::to_owned).collect::<BTreeSet<_>>();
+    if features.iter().any(String::is_empty) {
+        return Err("--features cannot contain an empty feature name".to_owned());
+    }
+    Ok(features)
 }
 
 fn take_flag(arguments: &mut Vec<String>, flag: &str) -> bool {

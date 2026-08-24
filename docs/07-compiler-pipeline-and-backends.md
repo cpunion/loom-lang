@@ -212,7 +212,7 @@ loomc --backend interpreter run --artifact program.loomi
 
 ### manifest v1
 
-当前只实现可离线、可重复解析的本地依赖闭环：
+当前实现可离线、可重复解析的 path 与文件系统 registry 依赖闭环：
 
 ```toml
 schema = 1
@@ -224,6 +224,14 @@ sources = ["src"] # 默认值
 
 [dependencies]
 utility = { path = "../utility", version = "^1" }
+codec = { registry = "local", version = "^2", optional = true }
+
+[registries]
+local = "../registry"
+
+[features]
+default = []
+binary-codec = ["dep:codec"]
 
 [[target]]
 name = "app"
@@ -239,7 +247,9 @@ name = "api"
 kind = "lib" # 无 entry，产出 portable checked-MIR library
 ```
 
-dependency path 相对当前 manifest；依赖包也必须有 schema v1 manifest。resolver 检查 SemVer、循环依赖、重复 package identity、越界 source root 和重复 target。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定，不做隐式 alias 重写。当前没有 registry、网络解析、lockfile、dynamic target 或 open-world plugin root。
+dependency path 与 registry root 相对当前 manifest；registry 布局是 `<root>/<package>/<semver>/loom.toml`，resolver 选择满足 requirement 的最高版本。已有 `loom.lock` pin 优先，`loomc resolve --update` 忽略旧 pin 后更新；registry package 的 manifest 与被选 `.loom` source 进入 SHA-256，同一已锁版本内容变化会 fail closed。`--locked` 要求当前 feature/package graph 与 lock 完全一致。resolver 还检查 SemVer、feature 引用/循环、依赖循环、重复 package identity、越界 source root 和重复 target。
+
+feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖；dependency 可用 `features = [...]` 与 `default-features = false` 请求下游 feature。它不裁剪同一 package 内的源码，不增加 `cfg` 表面，不隐式 import，更不激活 contribution/AOP 行为。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定。当前没有网络 registry 协议/认证/发布、dynamic target 或 open-world plugin root。
 
 ### 为什么需要缓存
 
@@ -259,7 +269,7 @@ dependency path 相对当前 manifest；依赖包也必须有 schema v1 manifest
 
 CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，native artifact 只有在内容验证后才原子 materialize 并设置执行权限。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 target 可 materialize 到不同位置。
 
-整图 key 以 length-delimited fields 编码，包含 compiler source + Rust version fingerprint、debug/release profile、MIR/backend/stdlib/runtime ABI、canonical package/dependency/target graph、稳定 source path 与 bytes、target triple/data layout、CPU/features、optimization/relocation 和 contract mode。编译器 fingerprint 只散列 workspace-relative compiler source path/content，不含 checkout 绝对路径。LLVM target identity 来自 emission 共用的同一个 TargetMachine policy，而不是另写一份猜测值；final native artifact 的派生 key 还包含精确 Rust runtime archive SHA-256、所选 linker 与 macOS `dsymutil` 的 version identity，工具 identity 无法确认时停用 final-artifact cache 而不影响前端检查。
+整图 key 以 length-delimited fields 编码，包含 compiler source + Rust version fingerprint、debug/release profile、MIR/backend/stdlib/runtime ABI、canonical package/dependency/feature/target graph、registry checksum、稳定 source path 与 bytes、target triple/data layout、CPU/features、optimization/relocation 和 contract mode。编译器 fingerprint 只散列 workspace-relative compiler source path/content，不含 checkout 绝对路径。LLVM target identity 来自 emission 共用的同一个 TargetMachine policy，而不是另写一份猜测值；final native artifact 的派生 key 还包含精确 Rust runtime archive SHA-256、所选 linker 与 macOS `dsymutil` 的 version identity，工具 identity 无法确认时停用 final-artifact cache 而不影响前端检查。
 
 ### 增量层与当前边界
 

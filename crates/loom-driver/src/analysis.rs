@@ -16,7 +16,7 @@ use crate::incremental::{ModuleQueryKey, module_query_keys};
 use crate::source::normalized_project_path;
 use crate::{
     CacheLookup, DiagnosticRecord, DriverError, ModuleInterface, PersistentCache, ProjectGraph,
-    SourceMap,
+    ProjectOptions, SourceMap,
 };
 
 /// Furthest compiler stage completed by a snapshot.
@@ -285,6 +285,18 @@ impl AnalysisHost {
         Self::with_adapter(input, Arc::new(ExecutableAdapter))
     }
 
+    /// Opens a project with explicit feature and lockfile resolution inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when the project graph cannot be resolved.
+    pub fn new_with_options(
+        input: impl AsRef<Path>,
+        options: &ProjectOptions,
+    ) -> Result<Self, DriverError> {
+        Self::with_adapter_and_options(input, Arc::new(ExecutableAdapter), options)
+    }
+
     /// Opens a host using an explicit compiler adapter.
     ///
     /// # Errors
@@ -294,7 +306,15 @@ impl AnalysisHost {
         input: impl AsRef<Path>,
         adapter: Arc<dyn CompilerAdapter>,
     ) -> Result<Self, DriverError> {
-        let project = ProjectGraph::load(input)?;
+        Self::with_adapter_and_options(input, adapter, &ProjectOptions::default())
+    }
+
+    fn with_adapter_and_options(
+        input: impl AsRef<Path>,
+        adapter: Arc<dyn CompilerAdapter>,
+        options: &ProjectOptions,
+    ) -> Result<Self, DriverError> {
+        let project = ProjectGraph::load_with_options(input, options)?;
         Ok(Self {
             project,
             overlays: BTreeMap::new(),

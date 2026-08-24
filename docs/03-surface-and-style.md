@@ -353,7 +353,7 @@ Core 0.1 不定义或保留以下表面：
 - desired-state、operator、reconcile；
 - capability、provider、effect；
 - `example`、`scenario`、`property`；
-- registry package、lockfile、feature/bundle；基础 `loom.toml` 与 bin/test target 已由工具链定义；
+- 网络 registry 发布与 composition bundle；`loom.toml`、path/文件 registry dependency、lockfile、optional-dependency feature 与 bin/test/lib target 已由工具链定义；
 - 第二套 trait/interface、concept conformance 之外的自由 extension declaration、继承、开放/多重派发和运行期实现发现。
 
 `concept` 与显式 dyn receiver dispatch 已经进入 Core 0.2；GC、scoped/defer 与结构化 Task 已进入 Core 0.3，均不属于本节。其余方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。

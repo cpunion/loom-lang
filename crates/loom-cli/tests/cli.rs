@@ -397,6 +397,100 @@ fn library_targets_build_portable_validated_artifacts() {
 }
 
 #[test]
+fn cli_resolves_registry_features_and_enforces_lockfiles() {
+    let project = TestProject::empty();
+    let write_registry = |version: &str, answer: i64| {
+        project.write(
+            &format!("registry/utility/{version}/loom.toml"),
+            &format!("schema = 1\n[package]\nname = \"utility\"\nversion = \"{version}\"\n"),
+        );
+        project.write(
+            &format!("registry/utility/{version}/src/lib.loom"),
+            &format!("module utility\n\npub fn answer() Int {{\n    {answer}\n}}\n"),
+        );
+    };
+    write_registry("1.0.0", 10);
+    write_registry("1.2.0", 12);
+    project.write(
+        "app/loom.toml",
+        "schema = 1\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n[registries]\nlocal = \"../registry\"\n[dependencies]\nutility = { registry = \"local\", version = \"^1\", optional = true }\n[features]\ndefault = [\"utilities\"]\nutilities = [\"dep:utility\"]\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"app.main\"\n",
+    );
+    project.write(
+        "app/src/main.loom",
+        "module app\n\nimport utility.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value > 0\n    Unit\n}\n",
+    );
+    let root = project.0.join("app");
+
+    let resolved = loomc()
+        .args(["--json", "resolve"])
+        .arg(&root)
+        .output()
+        .expect("resolve registry graph");
+    assert_eq!(resolved.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&resolved.stdout).contains("dependency_resolution"));
+    let lock_path = root.join("loom.lock");
+    let first_lock = fs::read_to_string(&lock_path).expect("read generated lockfile");
+    assert!(first_lock.contains("version = \"1.2.0\""), "{first_lock}");
+
+    let locked_check = loomc()
+        .args(["--locked", "check"])
+        .arg(&root)
+        .output()
+        .expect("check locked graph");
+    assert_eq!(locked_check.status.code(), Some(0));
+
+    let without_default = loomc()
+        .args(["--no-default-features", "check"])
+        .arg(&root)
+        .output()
+        .expect("disable optional registry dependency");
+    assert_eq!(without_default.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&without_default.stderr).contains("utility"));
+    let explicit_feature = loomc()
+        .args(["--no-default-features", "--features", "utilities", "check"])
+        .arg(&root)
+        .output()
+        .expect("explicitly activate optional dependency");
+    assert_eq!(explicit_feature.status.code(), Some(0));
+
+    write_registry("1.3.0", 13);
+    let pinned = loomc()
+        .arg("resolve")
+        .arg(&root)
+        .output()
+        .expect("keep locked version without update");
+    assert_eq!(pinned.status.code(), Some(0));
+    assert!(
+        fs::read_to_string(&lock_path)
+            .expect("read pinned lockfile")
+            .contains("version = \"1.2.0\"")
+    );
+    let updated = loomc()
+        .args(["resolve", "--update"])
+        .arg(&root)
+        .output()
+        .expect("refresh registry version");
+    assert_eq!(updated.status.code(), Some(0));
+    assert!(
+        fs::read_to_string(&lock_path)
+            .expect("read refreshed lockfile")
+            .contains("version = \"1.3.0\"")
+    );
+
+    project.write(
+        "registry/utility/1.3.0/src/lib.loom",
+        "module utility\n\npub fn answer() Int {\n    99\n}\n",
+    );
+    let tampered = loomc()
+        .arg("check")
+        .arg(&root)
+        .output()
+        .expect("reject mutable registry package");
+    assert_eq!(tampered.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&tampered.stderr).contains("checksum differs"));
+}
+
+#[test]
 fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
     let project = TestProject::new("module demo\r\n\r\nfn main() Unit {\r\n\tUnit   \r\n}\r\n\r\n");
     let first = loomc()
