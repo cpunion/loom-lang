@@ -484,6 +484,11 @@ impl<'program> Validator<'program> {
                 self.program.prelude.parse_float_error,
                 "enum",
             ),
+            (
+                "parse_int_error",
+                self.program.prelude.parse_int_error,
+                "enum",
+            ),
         ];
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
@@ -528,6 +533,33 @@ impl<'program> Validator<'program> {
                     "prelude Result must use variants #0(T) and #1(E)",
                     definition.span,
                     "prelude.result",
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
+            .parse_int_error
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 0
+                        && variants.len() == 2
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "InvalidSyntax"
+                        && variants[0].payload.is_empty()
+                        && variants[1].id == VariantId(1)
+                        && variants[1].name == "OutOfRange"
+                        && variants[1].payload.is_empty()
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude ParseIntError must use empty InvalidSyntax#0 and OutOfRange#1 variants",
+                    definition.span,
+                    "prelude.parse_int_error",
                 );
             }
         }
@@ -4104,10 +4136,13 @@ impl<'program> Validator<'program> {
         let types = self.validate_untyped_arguments(function, arguments, path, depth);
         let expected_arity = match builtin {
             Builtin::ListAdd | Builtin::ListGet => 2,
+            Builtin::ProcessArguments => 0,
             Builtin::IsFinite
             | Builtin::ParseFloat
             | Builtin::FormatFloat
-            | Builtin::ListLength => 1,
+            | Builtin::ListLength
+            | Builtin::ProcessEnvironment
+            | Builtin::ParseInt => 1,
         };
         if types.len() != expected_arity {
             self.push(
@@ -4119,6 +4154,27 @@ impl<'program> Validator<'program> {
             return None;
         }
         match builtin {
+            Builtin::ProcessArguments => Some(Type::List(Box::new(Type::Text))),
+            Builtin::ProcessEnvironment if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                let Some(option) = self.program.prelude.option else {
+                    self.push(
+                        MirValidationCode::InvalidTypeReference,
+                        "environment returns Option, but prelude.option is absent",
+                        expression.span,
+                        path,
+                    );
+                    return None;
+                };
+                Some(Type::Nominal(option, vec![Type::Text]))
+            }
+            Builtin::ParseInt if types_compatible(&Type::Text, types[0].as_ref()?) => self
+                .expected_result_type(
+                    Type::Int,
+                    self.program.prelude.parse_int_error,
+                    "parse_int_error",
+                    expression.span,
+                    path,
+                ),
             Builtin::IsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
             Builtin::ParseFloat if types_compatible(&Type::Text, types[0].as_ref()?) => self
                 .expected_result_type(
@@ -4129,64 +4185,8 @@ impl<'program> Validator<'program> {
                     path,
                 ),
             Builtin::FormatFloat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
-            Builtin::ListAdd => {
-                let Type::List(element) = types[0].as_ref()? else {
-                    self.push(
-                        MirValidationCode::BuiltinShape,
-                        "ListAdd receiver must be List",
-                        expression.span,
-                        path,
-                    );
-                    return None;
-                };
-                if !matches!(arguments.first(), Some(CallArgument::InOut(_))) {
-                    self.push(
-                        MirValidationCode::ReceiverShape,
-                        "ListAdd receiver must be passed inout",
-                        expression.span,
-                        format!("{path}.arguments[0]"),
-                    );
-                }
-                if !types_compatible(element, types[1].as_ref()?) {
-                    self.type_mismatch(element, types[1].as_ref()?, expression.span, path);
-                }
-                Some(Type::Unit)
-            }
-            Builtin::ListLength => match types[0].as_ref()? {
-                Type::List(_) => Some(Type::Int),
-                argument => {
-                    self.push(
-                        MirValidationCode::BuiltinShape,
-                        format!("builtin {builtin:?} cannot accept {argument:?}"),
-                        expression.span,
-                        path,
-                    );
-                    None
-                }
-            },
-            Builtin::ListGet => {
-                let Type::List(element) = types[0].as_ref()? else {
-                    self.push(
-                        MirValidationCode::BuiltinShape,
-                        "ListGet receiver must be List",
-                        expression.span,
-                        path,
-                    );
-                    return None;
-                };
-                if !types_compatible(&Type::Int, types[1].as_ref()?) {
-                    self.type_mismatch(&Type::Int, types[1].as_ref()?, expression.span, path);
-                }
-                let Some(option) = self.program.prelude.option else {
-                    self.push(
-                        MirValidationCode::InvalidTypeReference,
-                        "ListGet returns Option, but prelude.option is absent",
-                        expression.span,
-                        path,
-                    );
-                    return None;
-                };
-                Some(Type::Nominal(option, vec![element.as_ref().clone()]))
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet => {
+                self.validate_list_builtin(builtin, arguments, &types, expression.span, path)
             }
             _ => {
                 let argument = types[0].as_ref()?;
@@ -4198,6 +4198,78 @@ impl<'program> Validator<'program> {
                 );
                 None
             }
+        }
+    }
+
+    fn validate_list_builtin(
+        &mut self,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        types: &[Option<Type>],
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
+        match builtin {
+            Builtin::ListAdd => {
+                let Type::List(element) = types[0].as_ref()? else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListAdd receiver must be List",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                if !matches!(arguments.first(), Some(CallArgument::InOut(_))) {
+                    self.push(
+                        MirValidationCode::ReceiverShape,
+                        "ListAdd receiver must be passed inout",
+                        span,
+                        format!("{path}.arguments[0]"),
+                    );
+                }
+                if !types_compatible(element, types[1].as_ref()?) {
+                    self.type_mismatch(element, types[1].as_ref()?, span, path);
+                }
+                Some(Type::Unit)
+            }
+            Builtin::ListLength => match types[0].as_ref()? {
+                Type::List(_) => Some(Type::Int),
+                argument => {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        format!("builtin {builtin:?} cannot accept {argument:?}"),
+                        span,
+                        path,
+                    );
+                    None
+                }
+            },
+            Builtin::ListGet => {
+                let Type::List(element) = types[0].as_ref()? else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListGet receiver must be List",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                if !types_compatible(&Type::Int, types[1].as_ref()?) {
+                    self.type_mismatch(&Type::Int, types[1].as_ref()?, span, path);
+                }
+                let Some(option) = self.program.prelude.option else {
+                    self.push(
+                        MirValidationCode::InvalidTypeReference,
+                        "ListGet returns Option, but prelude.option is absent",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                Some(Type::Nominal(option, vec![element.as_ref().clone()]))
+            }
+            _ => unreachable!("caller filters List builtins"),
         }
     }
 

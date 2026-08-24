@@ -3641,6 +3641,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "is_finite" if self.builtin_is_imported("standard.float.is_finite") => {
                     Some(BuiltinValue::IsFinite)
                 }
+                "arguments" if self.builtin_is_imported("standard.process.arguments") => {
+                    Some(BuiltinValue::ProcessArguments)
+                }
+                "environment" if self.builtin_is_imported("standard.process.environment") => {
+                    Some(BuiltinValue::ProcessEnvironment)
+                }
+                "parse_int" if self.builtin_is_imported("standard.int.parse_int") => {
+                    Some(BuiltinValue::ParseInt)
+                }
                 _ => None,
             };
             if let Some(builtin) = builtin {
@@ -3791,22 +3800,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.types().error()
                 }
             }
-            BuiltinValue::ParseFloat => {
-                let text = self.types().builtin(BuiltinType::Text);
-                self.check_fixed_arguments(expression, arguments, &[text]);
-                let float = self.types().builtin(BuiltinType::Float);
-                let error = self.types().builtin(BuiltinType::ParseFloatError);
-                self.types().intern(TyData::Result { ok: float, error })
-            }
-            BuiltinValue::FormatFloat => {
-                let float = self.types().builtin(BuiltinType::Float);
-                self.check_fixed_arguments(expression, arguments, &[float]);
-                self.types().builtin(BuiltinType::Text)
-            }
-            BuiltinValue::IsFinite => {
-                let float = self.types().builtin(BuiltinType::Float);
-                self.check_fixed_arguments(expression, arguments, &[float]);
-                self.types().builtin(BuiltinType::Bool)
+            BuiltinValue::ParseFloat
+            | BuiltinValue::FormatFloat
+            | BuiltinValue::IsFinite
+            | BuiltinValue::ProcessArguments
+            | BuiltinValue::ProcessEnvironment
+            | BuiltinValue::ParseInt => {
+                self.check_standard_builtin_call(expression, builtin, arguments)
             }
             BuiltinValue::ListNew
             | BuiltinValue::ListAdd
@@ -3822,7 +3822,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             BuiltinValue::Unit
             | BuiltinValue::None
             | BuiltinValue::ParseFloatInvalidSyntax
-            | BuiltinValue::ParseFloatOutOfRange => {
+            | BuiltinValue::ParseFloatOutOfRange
+            | BuiltinValue::ParseIntInvalidSyntax
+            | BuiltinValue::ParseIntOutOfRange => {
                 self.error_at(
                     "TypeMismatch",
                     "value constructor is not callable",
@@ -3843,6 +3845,51 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         );
         self.finish_call_arguments(arguments);
         result
+    }
+
+    fn check_standard_builtin_call(
+        &mut self,
+        expression: ExprId,
+        builtin: BuiltinValue,
+        arguments: &[ExprId],
+    ) -> TyId {
+        match builtin {
+            BuiltinValue::ParseFloat => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                let float = self.types().builtin(BuiltinType::Float);
+                let error = self.types().builtin(BuiltinType::ParseFloatError);
+                self.types().intern(TyData::Result { ok: float, error })
+            }
+            BuiltinValue::FormatFloat => {
+                let float = self.types().builtin(BuiltinType::Float);
+                self.check_fixed_arguments(expression, arguments, &[float]);
+                self.types().builtin(BuiltinType::Text)
+            }
+            BuiltinValue::IsFinite => {
+                let float = self.types().builtin(BuiltinType::Float);
+                self.check_fixed_arguments(expression, arguments, &[float]);
+                self.types().builtin(BuiltinType::Bool)
+            }
+            BuiltinValue::ProcessArguments => {
+                self.check_fixed_arguments(expression, arguments, &[]);
+                let text = self.types().builtin(BuiltinType::Text);
+                self.types().intern(TyData::List(text))
+            }
+            BuiltinValue::ProcessEnvironment => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                self.types().intern(TyData::Option(text))
+            }
+            BuiltinValue::ParseInt => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                let int = self.types().builtin(BuiltinType::Int);
+                let error = self.types().builtin(BuiltinType::ParseIntError);
+                self.types().intern(TyData::Result { ok: int, error })
+            }
+            _ => unreachable!("caller filters standard builtins"),
+        }
     }
 
     fn check_fixed_arguments(
@@ -5223,6 +5270,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseFloatOutOfRange),
                 _ => None,
             },
+            TyData::Builtin(BuiltinType::ParseIntError) => match name.as_str() {
+                "InvalidSyntax" if payload.is_empty() => {
+                    Some(PatternVariant::ParseIntInvalidSyntax)
+                }
+                "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseIntOutOfRange),
+                _ => None,
+            },
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
                     &self.analyzer.program.definitions[*definition].kind
@@ -5296,6 +5350,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     && coverage
                         .variants
                         .contains(&PatternVariant::ParseFloatOutOfRange)
+            }
+            TyData::Builtin(BuiltinType::ParseIntError) => {
+                coverage
+                    .variants
+                    .contains(&PatternVariant::ParseIntInvalidSyntax)
+                    && coverage
+                        .variants
+                        .contains(&PatternVariant::ParseIntOutOfRange)
             }
             TyData::Nominal { definition, .. } => {
                 if let DefinitionKind::Enum(enumeration) =
@@ -5593,6 +5655,8 @@ enum PatternVariant {
     Err,
     ParseFloatInvalidSyntax,
     ParseFloatOutOfRange,
+    ParseIntInvalidSyntax,
+    ParseIntOutOfRange,
     User(DefId),
 }
 
@@ -5608,6 +5672,10 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::ParseFloatOutOfRange => {
             Resolution::Builtin(BuiltinValue::ParseFloatOutOfRange)
         }
+        PatternVariant::ParseIntInvalidSyntax => {
+            Resolution::Builtin(BuiltinValue::ParseIntInvalidSyntax)
+        }
+        PatternVariant::ParseIntOutOfRange => Resolution::Builtin(BuiltinValue::ParseIntOutOfRange),
         PatternVariant::User(definition) => Resolution::Definition(definition),
     }
 }

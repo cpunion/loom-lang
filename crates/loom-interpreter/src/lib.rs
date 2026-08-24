@@ -426,6 +426,7 @@ pub struct Interpreter<'program> {
     active_task: Option<u64>,
     active_root: Option<u64>,
     gc_stats: GcStats,
+    process_arguments: Vec<String>,
 }
 
 impl<'program> Interpreter<'program> {
@@ -450,7 +451,16 @@ impl<'program> Interpreter<'program> {
             active_task: None,
             active_root: None,
             gc_stats: GcStats::default(),
+            process_arguments: Vec::new(),
         }
+    }
+
+    /// Supplies arguments visible through `standard.process.arguments`.
+    /// The executable path is deliberately excluded.
+    #[must_use]
+    pub fn with_process_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.process_arguments = arguments;
+        self
     }
 
     /// Invokes a checked MIR function.
@@ -2361,6 +2371,30 @@ impl<'program> Interpreter<'program> {
                     .cloned();
                 self.option_value(element, span)
             }
+            (Builtin::ProcessArguments, []) => Ok(Value::List {
+                elements: self
+                    .process_arguments
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::Text { value })
+                    .collect(),
+            }),
+            (Builtin::ProcessEnvironment, [Value::Text { value: name }]) => self.option_value(
+                std::env::var(name).ok().map(|value| Value::Text { value }),
+                span,
+            ),
+            (Builtin::ParseInt, [Value::Text { value }]) => match value.parse::<i64>() {
+                Ok(number) => self.result_value(true, Value::Int { value: number }, span),
+                Err(error) => {
+                    let error = match error.kind() {
+                        std::num::IntErrorKind::PosOverflow
+                        | std::num::IntErrorKind::NegOverflow => ParseIntFailure::OutOfRange,
+                        _ => ParseIntFailure::InvalidSyntax,
+                    };
+                    let error = self.parse_int_error_value(error, span)?;
+                    self.result_value(false, error, span)
+                }
+            },
             (Builtin::ListAdd, _) => Err(self
                 .runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -2564,6 +2598,53 @@ impl<'program> Interpreter<'program> {
                 ExecutionFailure::from(self.runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
                     format!("prelude ParseFloatError is missing {expected}"),
+                    span,
+                ))
+            })?;
+        Ok(Value::Enum {
+            ty: definition.id,
+            variant: variant.id,
+            payload: Vec::new(),
+        })
+    }
+
+    fn parse_int_error_value(
+        &self,
+        error: ParseIntFailure,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self
+            .program
+            .prelude
+            .parse_int_error
+            .and_then(|id| self.program.type_def(id))
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude ParseIntError type is missing",
+                    span,
+                ))
+            })?;
+        let TypeDefKind::Enum { variants } = &definition.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude ParseIntError is not an enum",
+                    span,
+                )
+                .into());
+        };
+        let expected = match error {
+            ParseIntFailure::InvalidSyntax => "InvalidSyntax",
+            ParseIntFailure::OutOfRange => "OutOfRange",
+        };
+        let variant = variants
+            .iter()
+            .find(|variant| variant.name == expected)
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    format!("prelude ParseIntError is missing {expected}"),
                     span,
                 ))
             })?;
@@ -3171,6 +3252,12 @@ fn as_float(value: &Value) -> Option<f64> {
 
 #[derive(Clone, Copy)]
 enum ParseFloatFailure {
+    InvalidSyntax,
+    OutOfRange,
+}
+
+#[derive(Clone, Copy)]
+enum ParseIntFailure {
     InvalidSyntax,
     OutOfRange,
 }

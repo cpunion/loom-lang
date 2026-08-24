@@ -1384,6 +1384,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_parse_int(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_parse_int")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_parse_int", function_type, None)
+            })
+    }
+
     fn native_format_float(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_format_float")
@@ -1443,6 +1460,49 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
                 self.module
                     .add_function("loom_runtime_list_get", function_type, None)
+            })
+    }
+
+    fn native_set_arguments(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_set_arguments")
+            .unwrap_or_else(|| {
+                let function_type = self.context.void_type().fn_type(
+                    &[self.context.i32_type().into(), self.ptr_type.into()],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_set_arguments", function_type, None)
+            })
+    }
+
+    fn native_process_arguments(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_process_arguments")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_runtime_process_arguments", function_type, None)
+            })
+    }
+
+    fn native_process_environment(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_process_environment")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_process_environment", function_type, None)
             })
     }
 
@@ -1986,10 +2046,22 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
 
     #[allow(clippy::too_many_lines)]
     fn emit_main(&self) -> Result<(), CodegenError> {
-        let main_type = self.context.i32_type().fn_type(&[], false);
+        let main_type = self.context.i32_type().fn_type(
+            &[self.context.i32_type().into(), self.ptr_type.into()],
+            false,
+        );
         let main = self.module.add_function("main", main_type, None);
         let entry = self.context.append_basic_block(main, "entry");
         self.builder.position_at_end(entry);
+        let argument_count = parameter_int(main, 0)?;
+        let argument_vector = parameter_pointer(main, 1)?;
+        self.builder
+            .build_call(
+                self.native_set_arguments(),
+                &[argument_count.into(), argument_vector.into()],
+                "process.arguments.initialize",
+            )
+            .map_err(builder_error)?;
         let result = self
             .builder
             .build_alloca(self.value_type, "result")
@@ -5726,6 +5798,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         ) {
             return self.emit_list_builtin(builtin, &values, destination);
         }
+        if matches!(
+            builtin,
+            Builtin::ProcessArguments | Builtin::ProcessEnvironment
+        ) {
+            return self.emit_process_builtin(builtin, &values, destination);
+        }
         match (builtin, values.as_slice()) {
             (Builtin::IsFinite, [value]) => {
                 let number = self.float_scalar(*value)?;
@@ -5768,6 +5846,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             (Builtin::ParseFloat, [value]) => self.emit_parse_float(*value, destination),
+            (Builtin::ParseInt, [value]) => self.emit_parse_int(*value, destination),
             (Builtin::FormatFloat, [value]) => self.emit_format_float(*value, destination),
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
@@ -5861,6 +5940,109 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
     }
 
+    fn emit_process_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        match (builtin, values) {
+            (Builtin::ProcessArguments, []) => {
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_process_arguments(),
+                    &[destination.into()],
+                    "process.arguments",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "process.arguments.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ProcessRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::ProcessEnvironment, [name]) => {
+                let name = self.unwrap(*name)?;
+                let data = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    name,
+                    VALUE_FIELD_DATA,
+                    "environment.name.data",
+                )?;
+                let length = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    name,
+                    VALUE_FIELD_AUX,
+                    "environment.name.length",
+                )?;
+                let value_length = self
+                    .backend
+                    .builder
+                    .build_alloca(self.backend.i64_type, "environment.value.length")
+                    .map_err(builder_error)?;
+                let value = call_pointer(
+                    &self.backend.builder,
+                    self.backend.native_process_environment(),
+                    &[data.into(), length.into(), value_length.into()],
+                    "environment.value",
+                )?;
+                let found = self
+                    .backend
+                    .builder
+                    .build_is_not_null(value, "environment.found")
+                    .map_err(builder_error)?;
+                let some = self.append_block("environment.some");
+                let none = self.append_block("environment.none");
+                let merge = self.append_block("environment.merge");
+                self.backend
+                    .builder
+                    .build_conditional_branch(found, some, none)
+                    .map_err(builder_error)?;
+
+                self.backend.builder.position_at_end(some);
+                let text = self.alloc_value("environment.text");
+                self.initialize(text, VALUE_TAG_TEXT)?;
+                let length = self
+                    .backend
+                    .builder
+                    .build_load(self.backend.i64_type, value_length, "environment.length")
+                    .map_err(builder_error)?
+                    .into_int_value();
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    text,
+                    VALUE_FIELD_AUX,
+                    length,
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    text,
+                    VALUE_FIELD_DATA,
+                    value,
+                )?;
+                self.emit_variant_from_pointers(TypeId(0), 1, &[text], destination)?;
+                self.backend.branch(merge)?;
+
+                self.backend.builder.position_at_end(none);
+                self.emit_variant_from_pointers(TypeId(0), 0, &[], destination)?;
+                self.backend.branch(merge)?;
+
+                self.backend.builder.position_at_end(merge);
+                Ok(true)
+            }
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "process builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
     fn emit_parse_float(
         &self,
         value: PointerValue<'ctx>,
@@ -5947,6 +6129,106 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
             self.backend.builder.position_at_end(block);
             let error = self.alloc_value("parse.error");
+            self.emit_variant_from_pointers(error_type, variant, &[], error)?;
+            self.emit_result(false, error, destination)?;
+            self.backend.branch(merge)?;
+        }
+        self.backend.builder.position_at_end(merge);
+        Ok(true)
+    }
+
+    fn emit_parse_int(
+        &self,
+        value: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let text = self.unwrap(value)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_DATA,
+            "parse.int.data",
+        )?;
+        let length = self.backend.load_i64_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_AUX,
+            "parse.int.length",
+        )?;
+        let parsed = self
+            .backend
+            .builder
+            .build_alloca(self.backend.i64_type, "parse.int.output")
+            .map_err(builder_error)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_parse_int(),
+            &[data.into(), length.into(), parsed.into()],
+            "parse.int",
+        )?;
+        let success = self.append_block("parse.int.success");
+        let failure = self.append_block("parse.int.failure");
+        let invalid = self.append_block("parse.int.invalid");
+        let out_of_range = self.append_block("parse.int.out_of_range");
+        let merge = self.append_block("parse.int.merge");
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "parse.int.ok",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(success);
+        let number = self
+            .backend
+            .builder
+            .build_load(self.backend.i64_type, parsed, "parse.int.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        let payload = self.alloc_value("parse.int.payload");
+        self.initialize(payload, VALUE_TAG_INT)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            payload,
+            VALUE_FIELD_SCALAR,
+            number,
+        )?;
+        self.emit_result(true, payload, destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(failure);
+        let range_error = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_int(2, false),
+                "parse.int.range",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(range_error, out_of_range, invalid)
+            .map_err(builder_error)?;
+
+        let error_type = self
+            .backend
+            .program
+            .prelude
+            .parse_int_error
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "ParseIntError is missing"))?;
+        for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
+            self.backend.builder.position_at_end(block);
+            let error = self.alloc_value("parse.int.error");
             self.emit_variant_from_pointers(error_type, variant, &[], error)?;
             self.emit_result(false, error, destination)?;
             self.backend.branch(merge)?;

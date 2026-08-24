@@ -18,6 +18,8 @@
 
 mod float;
 mod gc;
+mod int;
+mod process;
 mod reactor;
 mod scheduler;
 

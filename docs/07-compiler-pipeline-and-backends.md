@@ -184,9 +184,13 @@ loomc build [--target NAME | --entry main] [--output target/loom/program] PATH
 loomc test [--target NAME] PATH
 loomc run [--target NAME | --entry main] PATH
 loomc run --artifact target/loom/program
+loomc run PATH -- arg1 arg2
+loomc run --artifact target/loom/program -- arg1 arg2
 ```
 
 `build` 产生平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
+
+`--` 后的参数原样进入 `standard.process.arguments()`，但 executable path 不进入该 list。source run、native artifact 和 interpreted artifact 使用同一规则；环境变量由 child process/当前 interpreter host environment 提供，保持 `environment(Text) Option[Text]` 的相同 Unicode 边界。
 
 解释器只通过以下形式显式选择：
 

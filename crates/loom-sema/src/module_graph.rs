@@ -231,7 +231,12 @@ pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
 pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
     matches!(
         path.as_string().as_str(),
-        "standard.float.parse_float" | "standard.float.format_float" | "standard.float.is_finite"
+        "standard.float.parse_float"
+            | "standard.float.format_float"
+            | "standard.float.is_finite"
+            | "standard.process.arguments"
+            | "standard.process.environment"
+            | "standard.int.parse_int"
     )
 }
 

@@ -38,8 +38,13 @@ pub enum BuiltinValue {
     ListAdd,
     ListLength,
     ListGet,
+    ProcessArguments,
+    ProcessEnvironment,
+    ParseInt,
     ParseFloatInvalidSyntax,
     ParseFloatOutOfRange,
+    ParseIntInvalidSyntax,
+    ParseIntOutOfRange,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

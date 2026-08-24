@@ -27,7 +27,8 @@ const RESULT_TYPE: TypeId = TypeId(1);
 const VIOLATION_TYPE: TypeId = TypeId(2);
 const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
 const PARSE_FLOAT_ERROR_TYPE: TypeId = TypeId(4);
-const SYNTHETIC_TYPE_COUNT: u32 = 5;
+const PARSE_INT_ERROR_TYPE: TypeId = TypeId(5);
+const SYNTHETIC_TYPE_COUNT: u32 = 6;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -266,6 +267,7 @@ impl<'a> Compiler<'a> {
                 option: Some(OPTION_TYPE),
                 violation: Some(VIOLATION_TYPE),
                 parse_float_error: Some(PARSE_FLOAT_ERROR_TYPE),
+                parse_int_error: Some(PARSE_INT_ERROR_TYPE),
             },
         };
         program.types.shrink_to_fit();
@@ -408,6 +410,7 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Violation => Type::Nominal(VIOLATION_TYPE, Vec::new()),
                 BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
                 BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
+                BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(Type::Tuple(
                 elements
@@ -765,6 +768,9 @@ impl<'a> Compiler<'a> {
                 }
                 BuiltinType::ParseFloatError => {
                     RequirementType::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new())
+                }
+                BuiltinType::ParseIntError => {
+                    RequirementType::Nominal(PARSE_INT_ERROR_TYPE, Vec::new())
                 }
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
@@ -1585,6 +1591,12 @@ impl ContractLowerer<'_, '_> {
                             }
                             BuiltinValue::ParseFloatOutOfRange => {
                                 (PARSE_FLOAT_ERROR_TYPE, VariantId(1))
+                            }
+                            BuiltinValue::ParseIntInvalidSyntax => {
+                                (PARSE_INT_ERROR_TYPE, VariantId(0))
+                            }
+                            BuiltinValue::ParseIntOutOfRange => {
+                                (PARSE_INT_ERROR_TYPE, VariantId(1))
                             }
                             _ => {
                                 return Err(defect(
@@ -2842,13 +2854,17 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::Ok
             | BuiltinValue::Err
             | BuiltinValue::ParseFloatInvalidSyntax
-            | BuiltinValue::ParseFloatOutOfRange => {
+            | BuiltinValue::ParseFloatOutOfRange
+            | BuiltinValue::ParseIntInvalidSyntax
+            | BuiltinValue::ParseIntOutOfRange => {
                 let (enum_ty, variant) = match builtin {
                     BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
                     BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
                     BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
                     BuiltinValue::ParseFloatInvalidSyntax => (PARSE_FLOAT_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
+                    BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
+                    BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
                     _ => unreachable!(),
                 };
                 ExprKind::Variant {
@@ -2866,7 +2882,10 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::IsFinite
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
-            | BuiltinValue::ListGet => {
+            | BuiltinValue::ListGet
+            | BuiltinValue::ProcessArguments
+            | BuiltinValue::ProcessEnvironment
+            | BuiltinValue::ParseInt => {
                 let target = match builtin {
                     BuiltinValue::ParseFloat => Builtin::ParseFloat,
                     BuiltinValue::FormatFloat => Builtin::FormatFloat,
@@ -2874,6 +2893,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::ListAdd => Builtin::ListAdd,
                     BuiltinValue::ListLength => Builtin::ListLength,
                     BuiltinValue::ListGet => Builtin::ListGet,
+                    BuiltinValue::ProcessArguments => Builtin::ProcessArguments,
+                    BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
+                    BuiltinValue::ParseInt => Builtin::ParseInt,
                     _ => unreachable!(),
                 };
                 let mut lowered =
@@ -3478,29 +3500,34 @@ fn synthetic_types() -> Vec<TypeDef> {
                 invariant: None,
             },
         },
-        TypeDef {
-            id: PARSE_FLOAT_ERROR_TYPE,
-            name: "ParseFloatError".into(),
-            span,
-            type_parameters: 0,
-            kind: TypeDefKind::Enum {
-                variants: vec![
-                    VariantDef {
-                        id: VariantId(0),
-                        name: "InvalidSyntax".into(),
-                        payload: Vec::new(),
-                        span,
-                    },
-                    VariantDef {
-                        id: VariantId(1),
-                        name: "OutOfRange".into(),
-                        payload: Vec::new(),
-                        span,
-                    },
-                ],
-            },
-        },
+        parse_error_type(PARSE_FLOAT_ERROR_TYPE, "ParseFloatError", span),
+        parse_error_type(PARSE_INT_ERROR_TYPE, "ParseIntError", span),
     ]
+}
+
+fn parse_error_type(id: TypeId, name: &str, span: Span) -> TypeDef {
+    TypeDef {
+        id,
+        name: name.into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "InvalidSyntax".into(),
+                    payload: Vec::new(),
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "OutOfRange".into(),
+                    payload: Vec::new(),
+                    span,
+                },
+            ],
+        },
+    }
 }
 
 fn executable_body(kind: &DefinitionKind) -> Option<BodyId> {
@@ -3602,6 +3629,8 @@ fn lower_pattern(
                         BuiltinValue::ParseFloatOutOfRange => {
                             (PARSE_FLOAT_ERROR_TYPE, VariantId(1))
                         }
+                        BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
+                        BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
                         _ => {
                             return Err(defect("non-variant builtin resolved as a pattern", span));
                         }

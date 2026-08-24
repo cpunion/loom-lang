@@ -16,8 +16,8 @@ const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--no-ca
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--output FILE] [PATH] build a native executable\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
-    run [--target NAME | --entry NAME] [PATH] compile and execute an exported function\n\
-    run --artifact FILE      execute a previously built artifact\n\
+    run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
+    run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
     fmt [--check] [PATH]     format .loom files (default PATH is .)";
 
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
@@ -55,6 +55,7 @@ struct Options {
     target: Option<String>,
     no_cache: bool,
     cache_dir: Option<PathBuf>,
+    program_arguments: Vec<String>,
 }
 
 enum ParsedArgs {
@@ -512,7 +513,9 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             options,
             stdout,
         )? {
-            Ok(true) => return execute_native(options.json, &executable, stdout, stderr),
+            Ok(true) => {
+                return execute_native_with_options(options, &executable, stdout, stderr);
+            }
             Ok(false) => {}
             Err(message) => {
                 emit_tool_error(
@@ -539,7 +542,7 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             return Ok(EXIT_DEFECT);
         }
         store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
-        return execute_native(options.json, &executable, stdout, stderr);
+        return execute_native_with_options(options, &executable, stdout, stderr);
     }
     let results = match compilation.run_tests() {
         Ok(results) => results,
@@ -613,7 +616,9 @@ fn run_program(
                 options,
                 stdout,
             )? {
-                Ok(true) => return execute_native(options.json, &executable, stdout, stderr),
+                Ok(true) => {
+                    return execute_native_with_options(options, &executable, stdout, stderr);
+                }
                 Ok(false) => {}
                 Err(message) => {
                     emit_tool_error(
@@ -644,9 +649,16 @@ fn run_program(
                 });
             }
             store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
-            execute_native(options.json, &executable, stdout, stderr)
+            execute_native_with_options(options, &executable, stdout, stderr)
         }
-        Backend::Interpreter => invoke_program(program, &entry, options.json, stdout, stderr),
+        Backend::Interpreter => invoke_program(
+            program,
+            &entry,
+            &options.program_arguments,
+            options.json,
+            stdout,
+            stderr,
+        ),
     }
 }
 
@@ -668,7 +680,7 @@ fn run_artifact(
         return Ok(EXIT_USAGE);
     }
     if options.backend == Backend::Llvm {
-        return execute_native(options.json, artifact, stdout, stderr);
+        return execute_native_with_options(options, artifact, stdout, stderr);
     }
     let json_output = options.json;
     let bytes = match std::fs::read(artifact) {
@@ -696,16 +708,39 @@ fn run_artifact(
             return Ok(EXIT_USAGE);
         }
     };
-    invoke_program(program.as_program(), &entry, json_output, stdout, stderr)
+    invoke_program(
+        program.as_program(),
+        &entry,
+        &options.program_arguments,
+        json_output,
+        stdout,
+        stderr,
+    )
+}
+
+fn execute_native_with_options(
+    options: &Options,
+    executable: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    execute_native(
+        options.json,
+        executable,
+        &options.program_arguments,
+        stdout,
+        stderr,
+    )
 }
 
 fn execute_native(
     json_output: bool,
     executable: &Path,
+    arguments: &[String],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
-    let output = match ProcessCommand::new(executable).output() {
+    let output = match ProcessCommand::new(executable).args(arguments).output() {
         Ok(output) => output,
         Err(error) => {
             emit_tool_error(
@@ -744,6 +779,7 @@ fn execute_native(
 fn invoke_program(
     program: &loom_mir::Program,
     entry: &str,
+    arguments: &[String],
     json_output: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -761,7 +797,10 @@ fn invoke_program(
     let call_site = program
         .function(function_id)
         .map_or_else(|| Span::new(FileId(0), 0, 0), |function| function.span);
-    match loom_interpreter::Interpreter::new(program).invoke(function_id, Vec::new(), call_site) {
+    match loom_interpreter::Interpreter::new(program)
+        .with_process_arguments(arguments.to_vec())
+        .invoke(function_id, Vec::new(), call_site)
+    {
         Ok(value) => {
             if json_output {
                 write_json_line(
@@ -1518,6 +1557,14 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let program_arguments = strings
+        .iter()
+        .position(|argument| argument == "--")
+        .map_or_else(Vec::new, |separator| {
+            let mut trailing = strings.split_off(separator);
+            trailing.remove(0);
+            trailing
+        });
     if strings
         .iter()
         .any(|argument| argument == "--help" || argument == "-h")
@@ -1557,6 +1604,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
         no_cache,
         cache_dir.is_some(),
         &strings,
+        &program_arguments,
     )?;
     let path = strings
         .first()
@@ -1569,6 +1617,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
         target,
         no_cache,
         cache_dir,
+        program_arguments,
     }))
 }
 
@@ -1610,7 +1659,11 @@ fn validate_parsed_options(
     no_cache: bool,
     has_cache_dir: bool,
     remaining: &[String],
+    program_arguments: &[String],
 ) -> Result<(), String> {
+    if !program_arguments.is_empty() && !matches!(command, Command::Run { .. }) {
+        return Err("program arguments after `--` are only valid for run".to_owned());
+    }
     if let Some(flag) = remaining.iter().find(|argument| argument.starts_with('-')) {
         return Err(format!("unknown option `{flag}`"));
     }

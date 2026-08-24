@@ -61,6 +61,7 @@ pub struct PreludeIds {
     pub option: Option<TypeId>,
     pub violation: Option<TypeId>,
     pub parse_float_error: Option<TypeId>,
+    pub parse_int_error: Option<TypeId>,
 }
 
 impl Program {
@@ -550,6 +551,9 @@ pub enum Builtin {
     ListAdd,
     ListLength,
     ListGet,
+    ProcessArguments,
+    ProcessEnvironment,
+    ParseInt,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

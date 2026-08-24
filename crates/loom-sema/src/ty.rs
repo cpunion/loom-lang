@@ -39,6 +39,7 @@ pub enum BuiltinType {
     Violation,
     ContractFault,
     ParseFloatError,
+    ParseIntError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

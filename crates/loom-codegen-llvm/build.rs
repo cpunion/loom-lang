@@ -9,6 +9,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../loom-runtime/src/lib.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/float.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/gc.rs");
+    println!("cargo:rerun-if-changed=../loom-runtime/src/int.rs");
+    println!("cargo:rerun-if-changed=../loom-runtime/src/process.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/reactor.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/scheduler.rs");
 

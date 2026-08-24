@@ -194,6 +194,8 @@ RHS 只能是一个 expression 或 block。arm 由 `NL` 或 `,` 分隔，可在 
 
 Int 算术因为可产生 RuntimeFault，**仍不得出现在 contract predicate 中**。Int literal、相等和顺序比较仍可用。
 
+`standard.int.parse_int(Text) Result[Int, ParseIntError]` 接受可选的单个 `+`/`-` 和至少一个 ASCII 十进制 digit；其他文本返回 `ParseIntError.InvalidSyntax`，超出上述 i64 范围返回 `ParseIntError.OutOfRange`。它是普通可失败函数，不进入 contract predicate 子集。
+
 ## 6. Float parse、format 和 canonical encoding
 
 Float 运算与比较仍按 `02` 的 IEEE 754 binary64 语义。本节只闭合文本和 artifact 边界。
@@ -261,9 +263,13 @@ contract predicate 只允许：
 | `Violation` | prelude failure value | checked construction 的可处理失败；无用户构造器 |
 | `ContractFault` | prelude report type | 不可构造、不可捕获，只由 contract runtime/host 报告 |
 | `standard.float.ParseFloatError` | standard enum | `InvalidSyntax`、`OutOfRange` |
+| `standard.int.ParseIntError` | standard enum | `InvalidSyntax`、`OutOfRange` |
+| `standard.int.parse_int` | standard function | 第 5 节 |
 | `standard.float.parse_float` | standard function | 第 6 节 |
 | `standard.float.format_float` | standard function | 第 6 节 |
 | `standard.float.is_finite` | compiler-known predicate | pure、deterministic、total，可用于 contract |
+| `standard.process.arguments` | standard function | 返回不含 executable path 的 `List[Text]` |
+| `standard.process.environment` | standard function | `Text -> Option[Text]`；缺失或 host 非 Unicode 值为 `None` |
 
 `RuntimeFault` 是 host/test report category，**不是 prelude 类型或语言值**。除上表外，其他标准库名称都必须显式 import，也不会因为被标准库实现而自动获得 compiler-known 纯度或终止性。
 

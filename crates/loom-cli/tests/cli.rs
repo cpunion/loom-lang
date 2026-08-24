@@ -391,12 +391,16 @@ fn test_and_run_execute_native_code() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "module dynamic\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() Unit {\n    let count = 5\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n    Unit\n}\n",
+        "module dynamic\n\nimport standard.int.parse_int\nimport standard.process.arguments\nimport standard.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() Unit {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n    Unit\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loomc()
             .args(["--backend", backend, "run"])
             .arg(&project.0)
+            .arg("--")
+            .args(["one", "two", "three", "four", "five"])
+            .env("LOOM_TEST_ENV", "visible")
+            .env("LOOM_WORKERS", "5")
             .output()
             .expect("run range/List program");
         assert_eq!(
@@ -407,6 +411,38 @@ fn range_and_growable_list_run_on_both_backends() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&output.stdout), "Unit\n");
+
+        let artifact = project.0.join(format!("dynamic-{backend}.artifact"));
+        let build = loomc()
+            .args(["--backend", backend, "build", "--output"])
+            .arg(&artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build range/List artifact");
+        assert_eq!(
+            build.status.code(),
+            Some(0),
+            "{backend} build: stdout={} stderr={}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let artifact_output = loomc()
+            .args(["--backend", backend, "run", "--artifact"])
+            .arg(&artifact)
+            .arg("--")
+            .args(["one", "two", "three", "four", "five"])
+            .env("LOOM_TEST_ENV", "visible")
+            .env("LOOM_WORKERS", "5")
+            .output()
+            .expect("run range/List artifact");
+        assert_eq!(
+            artifact_output.status.code(),
+            Some(0),
+            "{backend} artifact: stdout={} stderr={}",
+            String::from_utf8_lossy(&artifact_output.stdout),
+            String::from_utf8_lossy(&artifact_output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&artifact_output.stdout), "Unit\n");
     }
 }
 
