@@ -13,6 +13,7 @@ members = [
     "crates/loom-driver",
     "crates/loom-cli",
     "crates/loom-lsp",
+    "crates/loom-quality",
 ]
 
 [workspace.package]

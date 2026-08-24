@@ -350,3 +350,6 @@ Core 0.3 的新增关门条件：
 17. async descriptor 和 join runtime edge进入 root graph，未构造的 task/conformance 仍可被 DCE；
 18. manifest path dependency、SemVer、cycle、bin/test target 与稳定 dependency source label 通过 driver/CLI 回归；
 19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。
+20. development/release 机器 IR 回归证明常量折叠、内联与不可达函数删除真实发生，不只比较 profile 名称；
+21. 三个冻结 Core task 在解释器与 release LLVM main/test oracle 上一致，并满足 [性能、增量与 C2 implementation-controlled 门](09-quality-and-controlled-evidence.md)；
+22. lossless syntax/recovery 与 artifact decoder/checked-MIR validator 的 libFuzzer target 在 CI 持续运行。

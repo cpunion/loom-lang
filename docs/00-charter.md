@@ -1,6 +1,6 @@
 # loom-lang 项目章程
 
-状态：Active / Core 0.1–0.3 C1 Executable Reference
+状态：Active / Core 0.1–0.3 C1 Executable Reference + C2 Implementation-Controlled Evidence
 
 日期：2026-08-24
 
@@ -112,7 +112,7 @@ Core 0.1 区分三条失败轨：
 | C2 controlled tasks | 固定任务上正确性与效率差异 | 大型工程长期收益 |
 | C3 real repository | 一个真实项目中能持续使用 | 对所有领域普适 |
 
-Core 0.1–0.3 的 C0 规范已经闭合；当前 C1 reference implementation 已把 parser、checker、typed MIR、合同运行时、concept witness、erased interface、moving GC、词法 cleanup、结构化 Task、LLVM object/native artifact、CLI、formatter 和 LSP 接入同一 source/analysis pipeline。`examples/core01`、`examples/core02` 与 `examples/core03` 均由回归测试真实通过 check/build/test/source-run/artifact-run。这里的证据仍是 C1 executable core，不等同于 C2 controlled tasks 或 C3 real repository。
+Core 0.1–0.3 的 C0 规范已经闭合；C1 reference implementation 已把 parser、checker、typed MIR、合同运行时、concept witness、erased interface、moving GC、词法 cleanup、结构化 Task、LLVM object/native artifact、CLI、formatter 和 LSP 接入同一 source/analysis pipeline。`examples/core01`、`examples/core02` 与 `examples/core03` 均真实通过 check/build/test/source-run/artifact-run，并以冻结 SHA-256、解释器/native 双 oracle、root 统计、性能上界和增量结构门形成 [C2 implementation-controlled evidence](09-quality-and-controlled-evidence.md)。这仍不等于人类开发效率对照或 C3 real repository。
 
 ## 7. 裁决原则
 

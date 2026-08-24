@@ -70,3 +70,29 @@ jobs:
         run: |
           llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
           llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'
+      - name: C2 controlled correctness and performance gates
+        run: cargo run --release -p loom-quality | tee target/c2-evidence.json
+      - name: Upload C2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2-evidence-linux-llvm19
+          path: target/c2-evidence.json
+          if-no-files-found: error
+
+  fuzz-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.1
+      - name: Fuzz lossless syntax and recovery
+        run: cargo +nightly fuzz run syntax -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
+      - name: Fuzz artifact decoding and MIR validation
+        run: cargo +nightly fuzz run artifact -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048

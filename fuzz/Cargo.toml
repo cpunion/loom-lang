@@ -1,0 +1,31 @@
+[package]
+name = "loom-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+loom-core = { path = "../crates/loom-core" }
+loom-mir = { path = "../crates/loom-mir" }
+loom-syntax = { path = "../crates/loom-syntax" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "syntax"
+path = "fuzz_targets/syntax.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact"
+path = "fuzz_targets/artifact.rs"
+test = false
+doc = false
+bench = false

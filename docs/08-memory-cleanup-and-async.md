@@ -415,4 +415,4 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 - native precise moving heap 在 resume 之间以 Task slots/runtime results 为 roots，追踪 `Value` 与 `ValueNode`，回收不可达对象、复制存活对象并重写指针；Task identity 与 immutable witness metadata 非移动。fixture 直接验证旧/新地址不同和垃圾回收计数；
 - `examples/core03` 以及专用 stored/dynamic join、nested await、取消 cleanup、fd readiness、moving-GC fixtures 均真实通过 check/build/test/source-run/native-run。runtime 全部使用 Rust 实现，不再保留 C++ wait/float runtime。
 
-这关闭的是 C1 executable reference；package/path dependency、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口与 Linux CI 已另行接入。当前 file/socket 是已执行闭环的最小文本 I/O 表面，不表示完整标准库。多线程 executor、Loom 值专用 pretty-printer、正式性能门或 C2/C3 证据仍需后续证据。
+这关闭的是 C1 executable reference；package/path dependency、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口、[正式性能/增量门与 C2 implementation-controlled evidence](09-quality-and-controlled-evidence.md)及 Linux CI 已另行接入。当前 file/socket 是已执行闭环的最小文本 I/O 表面，不表示完整标准库。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与 C3 real-repository 证据仍需后续证据。

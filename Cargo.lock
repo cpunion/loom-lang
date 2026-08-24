@@ -318,6 +318,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-quality"
+version = "0.1.0"
+dependencies = [
+ "loom-codegen-llvm",
+ "loom-core",
+ "loom-driver",
+ "loom-interpreter",
+ "loom-mir",
+ "loom-syntax",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "loom-runtime"
 version = "0.1.0"
 dependencies = [

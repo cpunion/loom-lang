@@ -1,8 +1,8 @@
 # loom-lang
 
-状态：**Core 0.1–0.3 Executable Reference**
+状态：**Core 0.1–0.3 Executable Reference + C2 Implementation-Controlled Gates**
 
-阶段：Core 0.1–0.3 已接入同一条 source → package graph → checked MIR → LLVM object → native executable 工具链；解释器保留为显式语义对照后端
+阶段：Core 0.1–0.3 已接入同一条 source → package graph → checked MIR → LLVM object → native executable 工具链；解释器保留为显式语义对照后端，冻结任务的正确性/性能、优化 IR 与 fuzz smoke 已进入 CI
 
 日期：2026-08-25
 
@@ -63,6 +63,7 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 | Core 0.1–0.3 parser/checker/runtime 可执行合同 | [Core 0.1–0.3 可执行合同](docs/06-executable-contract.md) |
 | root graph、LLVM、artifact、缓存边界 | [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md) |
 | GC、scoped/defer、Task、coroutine 与 join | [GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md) |
+| 优化、性能预算、fuzz 与受控任务证据 | [质量与受控证据](docs/09-quality-and-controlled-evidence.md) |
 | 实现顺序与开放问题 | [核心能力分期](docs/04-capability-stages.md) |
 
 [历史设计草案](docs/draft/README.md)保存此前的声明式组合、AOP-like 与 desired-state/operator 方案；其中 [Checkout 对照实验](docs/draft/03-checkout-composition-experiment.md)及其 [fixture](docs/draft/04-checkout-composition-fixture.md) 均不是当前语言规范。
@@ -112,3 +113,5 @@ LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；p
 LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。长驻 `AnalysisHost` 已按 module interface/semantic-shape/body 指纹复用未改 module 的 typed-HIR body semantics；任一声明形状变化会安全退回整图检查。跨进程仍以 validated checked-MIR 整图缓存为边界，不声称序列化 typed-HIR body。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。
 
 `loomc debug` 固定使用 LLVM development profile，在项目根目录启动 macOS 默认 LLDB、其他平台默认 GDB，也可用 `--debugger PROGRAM` 接入包装器。LLDB 收到 `EXECUTABLE -- ARGS...`，GDB 收到 `--args EXECUTABLE ARGS...`；调试进程继承终端，临时 executable 与 dSYM 在整个会话中保持有效。解释器、release、JSON 和交叉目标模式会显式拒绝，不伪装成源码调试。
+
+`cargo run --release -p loom-quality` 执行冻结的 Core 0.1–0.3 双后端 main/test oracle、release LLVM root/DCE 统计、1.8 MB parser、32 次 artifact decode/validate、64-module 单 body 增量复用与 wall-clock 上界，并输出可归档 JSON。独立 `fuzz/` workspace 为 lossless syntax/recovery 和 checked-MIR artifact decoder/validator 提供 libFuzzer target；两者都在 Linux CI 持续运行。

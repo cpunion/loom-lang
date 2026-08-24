@@ -1,0 +1,23 @@
+[package]
+name = "loom-quality"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+loom-codegen-llvm.workspace = true
+loom-core.workspace = true
+loom-driver.workspace = true
+loom-interpreter.workspace = true
+loom-mir.workspace = true
+loom-syntax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

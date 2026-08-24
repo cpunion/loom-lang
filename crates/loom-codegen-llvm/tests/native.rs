@@ -53,6 +53,62 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
     assert_eq!(error.code(), "CrossLinkUnavailable");
 }
 
+#[test]
+fn release_pipeline_folds_live_constants_and_eliminates_machine_dead_code() {
+    let source = r"module optimize
+
+fn folded() Int {
+    40 + 2
+}
+
+fn unreachable() Int {
+    100 + 23
+}
+
+pub fn main() Unit {
+    let value = folded()
+    assert value == 42
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create optimization project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load project")
+        .snapshot()
+        .expect("analyze project");
+    assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower executable MIR");
+
+    let development_ir = project.path().join("development.ll");
+    let development_object = project.path().join("development.o");
+    let mut development = EmitOptions::run("main");
+    development.emit_ir = Some(development_ir.clone());
+    emit_native_object(program, &development_object, &development).expect("emit development IR");
+
+    let release_ir = project.path().join("release.ll");
+    let release_object = project.path().join("release.o");
+    let mut release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    release.emit_ir = Some(release_ir.clone());
+    emit_native_object(program, &release_object, &release).expect("emit release IR");
+
+    let development = std::fs::read_to_string(development_ir).expect("read development IR");
+    let release = std::fs::read_to_string(release_ir).expect("read release IR");
+    let development_definitions = development
+        .lines()
+        .filter(|line| line.starts_with("define "))
+        .collect::<Vec<_>>();
+    assert!(
+        development.contains("define internal i32 @loom.fn.0.optimize_folded"),
+        "{development_definitions:#?}"
+    );
+    assert!(!development.contains("define internal i32 @loom.fn.1.optimize_unreachable"));
+    assert!(development.contains("llvm.sadd.with.overflow.i64"));
+    assert!(!release.contains("define internal i32 @loom.fn.0.optimize_folded"));
+    assert!(!release.contains("define internal i32 @loom.fn.1.optimize_unreachable"));
+    assert!(!release.contains("llvm.sadd.with.overflow.i64"));
+}
+
 fn unit_program() -> Program {
     let mut program = Program::default();
     program.functions.push(Function {
