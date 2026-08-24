@@ -295,6 +295,35 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     assert_eq!(artifact_run.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&artifact_run.stdout), "Unit\n");
 
+    let interpreted_artifact = project.0.join("application.loomi");
+    let interpreted_build = loomc()
+        .args([
+            "--backend",
+            "interpreter",
+            "build",
+            "--target",
+            "app",
+            "--output",
+        ])
+        .arg(&interpreted_artifact)
+        .arg(&root)
+        .output()
+        .expect("build interpreted manifest target");
+    assert_eq!(
+        interpreted_build.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&interpreted_build.stdout),
+        String::from_utf8_lossy(&interpreted_build.stderr)
+    );
+    let interpreted_run = loomc()
+        .args(["--backend", "interpreter", "run", "--artifact"])
+        .arg(&interpreted_artifact)
+        .output()
+        .expect("run interpreted manifest artifact");
+    assert_eq!(interpreted_run.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&interpreted_run.stdout), "Unit\n");
+
     let wrong_kind = loomc()
         .args(["--json", "run", "--target", "unit"])
         .arg(&root)

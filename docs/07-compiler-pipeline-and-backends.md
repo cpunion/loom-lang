@@ -50,7 +50,7 @@ source files
 
 ### `loomc build --entry main` / `--target name`
 
-无 manifest 时默认 root 是 export `main`，显式 `--entry name` 选择另一个 export。manifest bin target 通过 `--target name` 选择其 entry；仅有一个 bin target 时可以省略。`--target` 与 `--entry` 互斥。native artifact 固定该入口；运行已构建 artifact 时不重新选择入口。
+无 manifest 时默认 root 是 export `main`，显式 `--entry name` 选择另一个 export。manifest bin target 通过 `--target name` 选择其 entry；仅有一个 bin target 时可以省略。`--target` 与 `--entry` 互斥。native 与解释器 artifact 都固定该入口；`.loomi` 在 versioned envelope 中保存并校验所选 export，运行已构建 artifact 时不重新选择入口。
 
 ### `loomc test`
 

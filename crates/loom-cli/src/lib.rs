@@ -316,13 +316,7 @@ pub fn run(
         Command::Test => run_test(&options, stdout, stderr),
         Command::Run { entry, artifact } => {
             if let Some(artifact) = artifact {
-                run_artifact(
-                    &options,
-                    artifact,
-                    entry.as_deref().unwrap_or("main"),
-                    stdout,
-                    stderr,
-                )
+                run_artifact(&options, artifact, entry.as_deref(), stdout, stderr)
             } else {
                 run_program(&options, entry.as_deref(), stdout, stderr)
             }
@@ -359,6 +353,16 @@ fn run_build(
             return Ok(EXIT_USAGE);
         }
     };
+    if !program.exports.contains_key(&entry) {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "UnknownEntry",
+            &format!("no exported entry named `{entry}`"),
+        )?;
+        return Ok(EXIT_FAILURE);
+    }
     // An explicit artifact path follows ordinary CLI rules and is resolved
     // from the caller's working directory, independently of the source root.
     let output = output.to_path_buf();
@@ -418,7 +422,7 @@ fn run_build(
             }
         }
         Backend::Interpreter => {
-            let bytes = match loom_mir::encode_interpreted_artifact(program) {
+            let bytes = match loom_mir::encode_interpreted_executable_artifact(program, &entry) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     emit_tool_error(
@@ -649,21 +653,21 @@ fn run_program(
 fn run_artifact(
     options: &Options,
     artifact: &Path,
-    entry: &str,
+    explicit_entry: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
+    if explicit_entry.is_some() {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "ArtifactEntryFixedAtBuild",
+            "an artifact's entry is selected by `build --entry` or `build --target`, not `run --entry`",
+        )?;
+        return Ok(EXIT_USAGE);
+    }
     if options.backend == Backend::Llvm {
-        if entry != "main" {
-            emit_tool_error(
-                options.json,
-                stdout,
-                stderr,
-                "NativeEntryFixedAtBuild",
-                "a native artifact's entry is selected by `build --entry`, not `run --entry`",
-            )?;
-            return Ok(EXIT_USAGE);
-        }
         return execute_native(options.json, artifact, stdout, stderr);
     }
     let json_output = options.json;
@@ -680,8 +684,8 @@ fn run_artifact(
             return Ok(EXIT_USAGE);
         }
     };
-    let program = match loom_mir::decode_interpreted_artifact(&bytes) {
-        Ok(program) => program,
+    let (program, entry) = match loom_mir::decode_interpreted_executable_artifact(&bytes) {
+        Ok(artifact) => artifact,
         Err(error) => {
             let code = if matches!(error, loom_mir::ArtifactError::VersionMismatch { .. }) {
                 "ArtifactVersionMismatch"
@@ -692,7 +696,7 @@ fn run_artifact(
             return Ok(EXIT_USAGE);
         }
     };
-    invoke_program(program.as_program(), entry, json_output, stdout, stderr)
+    invoke_program(program.as_program(), &entry, json_output, stdout, stderr)
 }
 
 fn execute_native(
@@ -1099,7 +1103,7 @@ fn final_artifact_key(
         ),
         Backend::Interpreter => (
             compilation.key()?.clone(),
-            "loom-interpreted-artifact-writer-v1".to_owned(),
+            "loom-interpreted-artifact-writer-v2".to_owned(),
             "loom-interpreter-runtime-v1".to_owned(),
         ),
     };

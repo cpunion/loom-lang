@@ -9,8 +9,8 @@ use loom_mir::{
     LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place, PreludeIds, Program, Receiver,
     RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, Statement,
     StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId,
-    WitnessParam, WitnessRef, decode_interpreted_artifact, encode_interpreted_artifact,
-    validate_program,
+    WitnessParam, WitnessRef, decode_interpreted_artifact, decode_interpreted_executable_artifact,
+    encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
 };
 
 fn span() -> Span {
@@ -437,6 +437,28 @@ fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
         encode_interpreted_artifact(decoded.as_program()).expect("re-encode"),
         first
     );
+}
+
+#[test]
+fn interpreted_executable_artifact_round_trips_and_validates_its_fixed_entry() {
+    let program = float_program(1.0_f64.to_bits());
+    let bytes =
+        encode_interpreted_executable_artifact(&program, "main").expect("encode executable");
+    let (decoded, entry) =
+        decode_interpreted_executable_artifact(&bytes).expect("decode executable");
+    assert_eq!(entry, "main");
+    assert!(decoded.exports.contains_key(&entry));
+
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["entry"] = serde_json::json!("missing");
+    let error = decode_interpreted_executable_artifact(
+        &serde_json::to_vec(&value).expect("tampered executable"),
+    )
+    .expect_err("unknown artifact entry must fail closed");
+    assert!(matches!(
+        error,
+        ArtifactError::UnknownEntry { entry } if entry == "missing"
+    ));
 }
 
 #[test]

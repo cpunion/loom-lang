@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 6;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 7;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
@@ -25,6 +25,10 @@ pub enum ArtifactError {
     VersionMismatch {
         expected: u32,
         found: u64,
+    },
+    MissingEntry,
+    UnknownEntry {
+        entry: String,
     },
     FloatTableMismatch {
         slots: usize,
@@ -49,6 +53,13 @@ impl fmt::Display for ArtifactError {
                 formatter,
                 "artifact version {found} is incompatible with supported version {expected}"
             ),
+            Self::MissingEntry => write!(formatter, "executable artifact has no fixed entry"),
+            Self::UnknownEntry { entry } => {
+                write!(
+                    formatter,
+                    "artifact entry `{entry}` is not exported by the program"
+                )
+            }
             Self::FloatTableMismatch { slots, entries } => write!(
                 formatter,
                 "artifact contains {slots} Float slot(s) but {entries} bit-table entry/entries"
@@ -82,6 +93,7 @@ impl From<MirValidationErrors> for ArtifactError {
 struct Envelope {
     format: String,
     version: u32,
+    entry: Option<String>,
     program: Program,
     float_bits: Vec<u64>,
 }
@@ -97,7 +109,28 @@ struct Envelope {
 /// Returns [`ArtifactError::InvalidProgram`] when `program` has not crossed the
 /// checked MIR boundary, or [`ArtifactError::Encode`] on serialization failure.
 pub fn encode_interpreted_artifact(program: &Program) -> Result<Vec<u8>, ArtifactError> {
+    encode_interpreted_artifact_envelope(program, None)
+}
+
+/// Encodes an interpreted executable whose entry is fixed at build time.
+///
+/// # Errors
+///
+/// Returns [`ArtifactError::UnknownEntry`] when `entry` is not exported, in
+/// addition to the ordinary MIR validation and serialization failures.
+pub fn encode_interpreted_executable_artifact(
+    program: &Program,
+    entry: &str,
+) -> Result<Vec<u8>, ArtifactError> {
+    encode_interpreted_artifact_envelope(program, Some(entry))
+}
+
+fn encode_interpreted_artifact_envelope(
+    program: &Program,
+    entry: Option<&str>,
+) -> Result<Vec<u8>, ArtifactError> {
     validate_program(program)?;
+    validate_entry(program, entry)?;
     let mut normalized = program.clone();
     let mut float_bits = Vec::new();
     visit_program_constants(&mut normalized, &mut |constant| {
@@ -109,6 +142,7 @@ pub fn encode_interpreted_artifact(program: &Program) -> Result<Vec<u8>, Artifac
     let bytes = serde_json::to_vec(&Envelope {
         format: INTERPRETED_ARTIFACT_FORMAT.to_owned(),
         version: INTERPRETED_ARTIFACT_VERSION,
+        entry: entry.map(str::to_owned),
         program: normalized,
         float_bits,
     })
@@ -126,6 +160,26 @@ pub fn encode_interpreted_artifact(program: &Program) -> Result<Vec<u8>, Artifac
 /// Rejects malformed envelopes, format/version mismatches, non-canonical Float
 /// tables, and any decoded program which fails MIR validation.
 pub fn decode_interpreted_artifact(bytes: &[u8]) -> Result<CheckedProgram, ArtifactError> {
+    decode_interpreted_artifact_envelope(bytes).map(|(program, _entry)| program)
+}
+
+/// Decodes an interpreted executable and returns its build-time entry.
+///
+/// # Errors
+///
+/// Returns [`ArtifactError::MissingEntry`] for a validated MIR/cache artifact
+/// which was not built as an executable, or any ordinary artifact error.
+pub fn decode_interpreted_executable_artifact(
+    bytes: &[u8],
+) -> Result<(CheckedProgram, String), ArtifactError> {
+    let (program, entry) = decode_interpreted_artifact_envelope(bytes)?;
+    let entry = entry.ok_or(ArtifactError::MissingEntry)?;
+    Ok((program, entry))
+}
+
+fn decode_interpreted_artifact_envelope(
+    bytes: &[u8],
+) -> Result<(CheckedProgram, Option<String>), ArtifactError> {
     validate_json_nesting(bytes).map_err(ArtifactError::Malformed)?;
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     deserializer.disable_recursion_limit();
@@ -158,7 +212,20 @@ pub fn decode_interpreted_artifact(bytes: &[u8]) -> Result<CheckedProgram, Artif
             *value = f64::from_bits(next);
         }
     });
-    check_program(envelope.program).map_err(ArtifactError::InvalidProgram)
+    let program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
+    validate_entry(program.as_program(), envelope.entry.as_deref())?;
+    Ok((program, envelope.entry))
+}
+
+fn validate_entry(program: &Program, entry: Option<&str>) -> Result<(), ArtifactError> {
+    if let Some(entry) = entry
+        && !program.exports.contains_key(entry)
+    {
+        return Err(ArtifactError::UnknownEntry {
+            entry: entry.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_json_nesting(bytes: &[u8]) -> Result<(), String> {
