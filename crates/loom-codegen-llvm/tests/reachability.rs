@@ -75,6 +75,153 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
 }
 
 #[test]
+fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
+    let mut program = Program::default();
+    program.concepts.push(ConceptDef {
+        id: ConceptId(0),
+        name: "Display".into(),
+        span: Default::default(),
+        dynamic: true,
+        associated_types: Vec::new(),
+        requirements: vec![RequirementId(0)],
+    });
+    program.requirements.push(RequirementDef {
+        id: RequirementId(0),
+        concept: ConceptId(0),
+        name: "display".into(),
+        span: Default::default(),
+        receiver: Some(Receiver::Readonly),
+        method_type_parameters: 0,
+        params: vec![RequirementType::SelfType],
+        return_ty: RequirementType::Unit,
+        witness_params: Vec::new(),
+    });
+    let view_ty = Type::View {
+        mutable: false,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+    };
+    let live_view = make_view(
+        WitnessId(0),
+        Expr {
+            kind: ExprKind::Constant(Constant::Int(7)),
+            ty: Type::Int,
+            span: Default::default(),
+        },
+        view_ty.clone(),
+    );
+    let independently_live_view = make_view(
+        WitnessId(1),
+        Expr {
+            kind: ExprKind::Constant(Constant::Text("unused receiver".into())),
+            ty: Type::Text,
+            span: Default::default(),
+        },
+        view_ty.clone(),
+    );
+    let dynamic_call = Expr {
+        kind: ExprKind::Call {
+            target: CallTarget::Dynamic {
+                requirement: RequirementId(0),
+            },
+            type_arguments: Vec::new(),
+            arguments: vec![CallArgument::Value(Expr {
+                kind: ExprKind::Copy(Place::local(LocalId(0))),
+                ty: view_ty.clone(),
+                span: Default::default(),
+            })],
+            witnesses: Vec::new(),
+        },
+        ty: Type::Unit,
+        span: Default::default(),
+    };
+    program.functions = vec![
+        Function {
+            id: FunctionId(0),
+            name: "main".into(),
+            span: Default::default(),
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            locals: vec![LocalDecl {
+                id: LocalId(0),
+                name: "display".into(),
+                ty: view_ty,
+                mutable: false,
+                span: Default::default(),
+            }],
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::Let {
+                            local: LocalId(0),
+                            value: live_view,
+                        },
+                        span: Default::default(),
+                    },
+                    Statement {
+                        kind: StatementKind::Evaluate(independently_live_view),
+                        span: Default::default(),
+                    },
+                    Statement {
+                        kind: StatementKind::Evaluate(dynamic_call),
+                        span: Default::default(),
+                    },
+                ],
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Constant(Constant::Unit),
+                    ty: Type::Unit,
+                    span: Default::default(),
+                })),
+                span: Default::default(),
+            },
+            call_plan: CallPlan::default(),
+        },
+        unit_function(FunctionId(1), "int.display"),
+        unit_function(FunctionId(2), "text.display"),
+    ];
+    program.witnesses = vec![
+        Witness {
+            id: WitnessId(0),
+            concept: ConceptId(0),
+            concrete: Type::Int,
+            methods: BTreeMap::from([(RequirementId(0), FunctionId(1))]),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        },
+        Witness {
+            id: WitnessId(1),
+            concept: ConceptId(0),
+            concrete: Type::Text,
+            methods: BTreeMap::from([(RequirementId(0), FunctionId(2))]),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        },
+    ];
+
+    let reachable =
+        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    assert_eq!(
+        reachable.functions.into_iter().collect::<Vec<_>>(),
+        vec![FunctionId(0), FunctionId(1)]
+    );
+    assert_eq!(
+        reachable.witnesses.into_iter().collect::<Vec<_>>(),
+        vec![WitnessId(0), WitnessId(1)]
+    );
+    assert_eq!(
+        reachable.witness_methods,
+        BTreeMap::from([(WitnessId(0), [RequirementId(0)].into_iter().collect())])
+    );
+}
+
+#[test]
 fn object_fingerprint_excludes_unreachable_function_bodies() {
     let mut program = Program {
         functions: vec![
@@ -167,6 +314,20 @@ fn root_function() -> Function {
             span: Default::default(),
         },
         call_plan: CallPlan::default(),
+    }
+}
+
+fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
+    Expr {
+        kind: ExprKind::MakeView {
+            value: Box::new(value),
+            writeback: None,
+            witness: WitnessRef::Concrete(witness),
+            mutable: false,
+            token: 0,
+        },
+        ty,
+        span: Default::default(),
     }
 }
 

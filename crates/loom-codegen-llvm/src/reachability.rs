@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use loom_mir::{
-    Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, FunctionId, Program, RequirementId,
-    StatementKind, WitnessId, WitnessRef,
+    Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, FunctionId, LocalId, Program,
+    RequirementId, StatementKind, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,13 @@ struct FunctionEdges {
     builtins: BTreeSet<Builtin>,
     dynamic: BTreeSet<RequirementId>,
     concrete_methods: BTreeSet<(WitnessId, RequirementId)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WitnessFlow {
+    /// `None` means a value may carry any runtime witness. A concrete set is
+    /// retained only while straight-line MIR proves every reaching value.
+    locals: BTreeMap<LocalId, Option<BTreeSet<WitnessId>>>,
 }
 
 /// Traverses calls from the selected roots and closes dynamic edges through
@@ -200,71 +207,122 @@ fn require_function(
 }
 
 fn scan_block(block: &Block, edges: &mut FunctionEdges) {
+    scan_block_with_flow(block, edges, &mut WitnessFlow::default());
+}
+
+fn scan_block_with_flow(block: &Block, edges: &mut FunctionEdges, flow: &mut WitnessFlow) {
     for statement in &block.statements {
         match &statement.kind {
-            StatementKind::Let { value, .. }
-            | StatementKind::LetTuple { value, .. }
-            | StatementKind::Assign { value, .. }
-            | StatementKind::Assert { condition: value }
-            | StatementKind::Evaluate(value) => scan_expr(value, edges),
+            StatementKind::Let { local, value } => {
+                let witnesses = expression_witnesses(value, flow);
+                scan_expr(value, edges, flow);
+                flow.locals.insert(*local, witnesses);
+            }
+            StatementKind::LetTuple { locals, value } => {
+                let elements = match &value.kind {
+                    ExprKind::Tuple(elements) if elements.len() == locals.len() => Some(
+                        elements
+                            .iter()
+                            .map(|element| expression_witnesses(element, flow))
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                };
+                scan_expr(value, edges, flow);
+                for (index, local) in locals.iter().enumerate() {
+                    flow.locals.insert(
+                        *local,
+                        elements
+                            .as_ref()
+                            .and_then(|elements| elements.get(index).cloned())
+                            .flatten(),
+                    );
+                }
+            }
+            StatementKind::Assign { place, value } => {
+                let witnesses = expression_witnesses(value, flow);
+                scan_expr(value, edges, flow);
+                if place.projection.is_empty() {
+                    flow.locals.insert(place.local, witnesses);
+                } else {
+                    flow.locals.insert(place.local, None);
+                }
+            }
+            StatementKind::Assert { condition: value } | StatementKind::Evaluate(value) => {
+                scan_expr(value, edges, flow);
+            }
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
-                scan_expr(start, edges);
-                scan_expr(end, edges);
-                scan_block(body, edges);
+                scan_expr(start, edges, flow);
+                scan_expr(end, edges, flow);
+                let mut body_flow = flow.clone();
+                scan_block_with_flow(body, edges, &mut body_flow);
+                invalidate_flow(flow);
             }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    scan_expr(value, edges);
+                    scan_expr(value, edges, flow);
                 }
             }
-            StatementKind::Defer(cleanup) => scan_block(cleanup, edges),
+            StatementKind::Defer(cleanup) => {
+                let mut cleanup_flow = flow.clone();
+                scan_block_with_flow(cleanup, edges, &mut cleanup_flow);
+            }
         }
     }
     if let Some(tail) = &block.tail {
-        scan_expr(tail, edges);
+        scan_expr(tail, edges, flow);
     }
 }
 
-fn scan_expr(expression: &Expr, edges: &mut FunctionEdges) {
+fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlow) {
     match &expression.kind {
         ExprKind::Tuple(elements) | ExprKind::List(elements) => {
             for element in elements {
-                scan_expr(element, edges);
+                scan_expr(element, edges, flow);
             }
         }
         ExprKind::Unary(_, value) | ExprKind::Unrefine(value) | ExprKind::Refine { value, .. } => {
-            scan_expr(value, edges);
+            scan_expr(value, edges, flow);
         }
         ExprKind::Binary(_, left, right) => {
-            scan_expr(left, edges);
-            scan_expr(right, edges);
+            scan_expr(left, edges, flow);
+            scan_expr(right, edges, flow);
         }
-        ExprKind::Block(block) => scan_block(block, edges),
+        ExprKind::Block(block) => {
+            let mut block_flow = flow.clone();
+            scan_block_with_flow(block, edges, &mut block_flow);
+            invalidate_flow(flow);
+        }
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            scan_expr(condition, edges);
-            scan_block(then_branch, edges);
-            scan_block(else_branch, edges);
+            scan_expr(condition, edges, flow);
+            let mut then_flow = flow.clone();
+            let mut else_flow = flow.clone();
+            scan_block_with_flow(then_branch, edges, &mut then_flow);
+            scan_block_with_flow(else_branch, edges, &mut else_flow);
+            invalidate_flow(flow);
         }
         ExprKind::Match { scrutinee, arms } => {
-            scan_expr(scrutinee, edges);
+            scan_expr(scrutinee, edges, flow);
             for arm in arms {
-                scan_expr(&arm.value, edges);
+                let mut arm_flow = flow.clone();
+                scan_expr(&arm.value, edges, &mut arm_flow);
             }
+            invalidate_flow(flow);
         }
         ExprKind::Record { fields, .. } => {
             for field in fields {
-                scan_expr(field, edges);
+                scan_expr(field, edges, flow);
             }
         }
         ExprKind::Variant { payload, .. } => {
             for value in payload {
-                scan_expr(value, edges);
+                scan_expr(value, edges, flow);
             }
         }
         ExprKind::Call {
@@ -290,15 +348,32 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges) {
                     }
                 }
                 CallTarget::Dynamic { requirement } => {
-                    edges.dynamic.insert(*requirement);
+                    let receiver_witnesses =
+                        arguments.first().and_then(|argument| match argument {
+                            CallArgument::Value(receiver) => expression_witnesses(receiver, flow),
+                            CallArgument::InOut(place) if place.projection.is_empty() => {
+                                flow.locals.get(&place.local).cloned().flatten()
+                            }
+                            CallArgument::InOut(_) => None,
+                        });
+                    if let Some(witnesses) = receiver_witnesses.filter(|set| !set.is_empty()) {
+                        edges
+                            .concrete_methods
+                            .extend(witnesses.into_iter().map(|witness| (witness, *requirement)));
+                    } else {
+                        edges.dynamic.insert(*requirement);
+                    }
                 }
                 CallTarget::Builtin(builtin) => {
                     edges.builtins.insert(*builtin);
                 }
             }
             for argument in arguments {
-                if let CallArgument::Value(value) = argument {
-                    scan_expr(value, edges);
+                match argument {
+                    CallArgument::Value(value) => scan_expr(value, edges, flow),
+                    CallArgument::InOut(place) => {
+                        flow.locals.insert(place.local, None);
+                    }
                 }
             }
             for witness in witnesses {
@@ -306,21 +381,42 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges) {
             }
         }
         ExprKind::MakeView { value, witness, .. } => {
-            scan_expr(value, edges);
+            scan_expr(value, edges, flow);
             collect_witness(witness, &mut edges.witnesses);
         }
-        ExprKind::Await { task, .. } => scan_expr(task, edges),
+        ExprKind::Await { task, .. } => scan_expr(task, edges, flow),
         ExprKind::TaskJoin { arguments, .. } => {
             for argument in arguments {
-                scan_expr(argument, edges);
+                scan_expr(argument, edges, flow);
             }
         }
-        ExprKind::Sleep { milliseconds } => scan_expr(milliseconds, edges),
-        ExprKind::WaitFd { descriptor, .. } => scan_expr(descriptor, edges),
+        ExprKind::Sleep { milliseconds } => scan_expr(milliseconds, edges, flow),
+        ExprKind::WaitFd { descriptor, .. } => scan_expr(descriptor, edges, flow),
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
         | ExprKind::ReborrowView { .. } => {}
+    }
+}
+
+fn expression_witnesses(expression: &Expr, flow: &WitnessFlow) -> Option<BTreeSet<WitnessId>> {
+    match &expression.kind {
+        ExprKind::MakeView { witness, .. } => {
+            concrete_witness(witness).map(|witness| BTreeSet::from([witness]))
+        }
+        ExprKind::Copy(place) | ExprKind::Move(place) if place.projection.is_empty() => {
+            flow.locals.get(&place.local).cloned().flatten()
+        }
+        ExprKind::ReborrowView { owner, .. } if owner.projection.is_empty() => {
+            flow.locals.get(&owner.local).cloned().flatten()
+        }
+        _ => None,
+    }
+}
+
+fn invalidate_flow(flow: &mut WitnessFlow) {
+    for witnesses in flow.locals.values_mut() {
+        *witnesses = None;
     }
 }
 
