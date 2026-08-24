@@ -80,7 +80,7 @@ source → parser → HIR → sema → checked MIR
 - 平台 object 与 linker 产物；
 - root-scoped Float parse/format native runtime；
 - native test harness；
-- formatter、JSON diagnostics 和 LSP；
+- formatter、JSON diagnostics，以及带 definition/references/hover、语义 completion、document/workspace symbols 和全局或 callable-local rename 的 LSP；
 - 仅通过 `--backend interpreter` 显式选择的语义对照后端。
 
 `build` 不再以解释程序镜像冒充编译产物。默认 artifact 必须能被操作系统直接识别并执行。

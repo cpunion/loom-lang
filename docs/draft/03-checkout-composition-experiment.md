@@ -246,7 +246,7 @@ T4 是候选语言的机制门，不进入 Loom/TypeScript 完成时间或 diff 
 - [ ] baseline 技术栈、版本和惯用性审阅者确定；
 - [ ] A/B fixture 的行为与顺序 oracle 冻结；
 - [ ] raw input 建立、closed errors、capability/provider 和 pipeline subset matrix 冻结；
-- [ ] E2 所需最低 LSP parity 有可执行门禁；
+- [x] E2 所需最低 LSP parity 有可执行门禁（协议测试覆盖 diagnostics、definition、references、prepare rename/rename、completion 与 document/workspace symbols）；
 - [ ] T1–T3 对照任务、T4 候选机制门和 B1 边界探针可由未参与设计者独立理解；
 - [ ] 指标计数脚本/表格设计完成；
 - [ ] kill criteria 获得项目负责人确认；

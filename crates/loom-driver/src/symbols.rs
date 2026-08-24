@@ -1,5 +1,10 @@
+use std::collections::BTreeSet;
+
 use loom_core::{FileId, ModuleName, Span};
-use loom_hir::{DefId, DefinitionTag, Expr, ModuleId, Path, Pattern, TypeRef};
+use loom_hir::{
+    BodyId, DefId, DefinitionTag, Expr, GenericParamId, LocalId, ModuleId, ParamId, Path, Pattern,
+    TypeRef, Visibility,
+};
 use loom_sema::{CallTarget, Namespace, PlaceProjection, Resolution, TyData};
 use loom_syntax::TokenKind;
 
@@ -13,15 +18,30 @@ pub fn is_valid_identifier(text: &str) -> bool {
         && matches!(lexed.tokens.as_slice(), [token, eof] if token.kind == TokenKind::Ident && eof.kind == TokenKind::Eof)
 }
 
-/// A globally named declaration resolved by semantic identity.
+/// A named global or callable-local declaration resolved by semantic identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolInfo {
-    pub id: DefId,
+    pub id: SymbolId,
     pub name: String,
     pub module: String,
     pub kind: &'static str,
     /// Exact declaration-name span, rather than the declaration body.
     pub definition: Span,
+}
+
+/// Stable semantic identity for global and callable-local source names.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum SymbolId {
+    Definition(DefId),
+    GenericParam(GenericParamId),
+    Param(ParamId),
+    Local { body: BodyId, local: LocalId },
+}
+
+impl From<DefId> for SymbolId {
+    fn from(value: DefId) -> Self {
+        Self::Definition(value)
+    }
 }
 
 /// One semantically resolved source occurrence.
@@ -33,14 +53,13 @@ pub struct SymbolReference {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Occurrence {
-    target: DefId,
+    target: SymbolId,
     span: Span,
     declaration: bool,
 }
 
 impl AnalysisSnapshot {
-    /// Resolves a global declaration at a source position. Locals and
-    /// parameters deliberately remain outside this first rename index.
+    /// Resolves a global or callable-local declaration at a source position.
     #[must_use]
     pub fn definition_at(&self, file: FileId, byte: u32) -> Option<SymbolInfo> {
         let mut targets = self
@@ -61,8 +80,8 @@ impl AnalysisSnapshot {
         self.symbol_info(*target)
     }
 
-    /// Returns every indexed global occurrence for the declaration at the
-    /// requested position. The result is stable in path/span order.
+    /// Returns every indexed occurrence for the declaration at the requested
+    /// position. The result is stable in path/span order.
     #[must_use]
     pub fn references_at(
         &self,
@@ -86,16 +105,120 @@ impl AnalysisSnapshot {
         )
     }
 
-    fn symbol_info(&self, target: DefId) -> Option<SymbolInfo> {
-        let definition = self.hir().definitions.get(target)?;
-        let name = definition.name.as_ref()?;
-        let declaration = self.hir().source_map.definition(target)?;
-        let definition_span = self.ident_span(declaration, name.as_str(), false)?;
+    /// Returns every indexed declaration in deterministic source order.
+    #[must_use]
+    pub fn symbols(&self) -> Vec<SymbolInfo> {
+        self.symbol_occurrences()
+            .into_iter()
+            .filter(|occurrence| occurrence.declaration)
+            .filter_map(|occurrence| self.symbol_info(occurrence.target))
+            .collect()
+    }
+
+    /// Returns indexed declarations whose exact name span belongs to `file`.
+    #[must_use]
+    pub fn document_symbols(&self, file: FileId) -> Vec<SymbolInfo> {
+        self.symbols()
+            .into_iter()
+            .filter(|symbol| symbol.definition.file == file)
+            .collect()
+    }
+
+    /// Returns declarations which are useful completion candidates at a
+    /// source position. Callable-local names are limited to their body and to
+    /// declarations preceding the cursor; global private names stay module-local.
+    #[must_use]
+    pub fn completion_symbols(&self, file: FileId, byte: u32) -> Vec<SymbolInfo> {
+        let modules = self
+            .hir()
+            .modules
+            .iter()
+            .filter_map(|(module, data)| data.files.contains(&file).then_some(module))
+            .collect::<BTreeSet<_>>();
+        self.symbols()
+            .into_iter()
+            .filter(|symbol| match symbol.id {
+                SymbolId::Definition(definition) => {
+                    let definition = &self.hir().definitions[definition];
+                    definition.visibility == Visibility::Public
+                        || modules.contains(&definition.module)
+                }
+                SymbolId::Local { body, .. } => {
+                    self.hir().source_map.body(body).is_some_and(|span| {
+                        span.file == file
+                            && span.range.start <= byte
+                            && byte <= span.range.end
+                            && symbol.definition.range.start <= byte
+                    })
+                }
+                SymbolId::Param(parameter) => {
+                    self.owner_body_contains(self.hir().params[parameter].owner, file, byte)
+                }
+                SymbolId::GenericParam(parameter) => {
+                    self.owner_body_contains(self.hir().generic_params[parameter].owner, file, byte)
+                }
+            })
+            .collect()
+    }
+
+    fn owner_body_contains(&self, owner: DefId, file: FileId, byte: u32) -> bool {
+        self.hir().bodies.iter().any(|(body, data)| {
+            data.owner == owner
+                && self.hir().source_map.body(body).is_some_and(|span| {
+                    span.file == file && span.range.start <= byte && byte <= span.range.end
+                })
+        })
+    }
+
+    fn symbol_info(&self, target: SymbolId) -> Option<SymbolInfo> {
+        let (name, module, kind, declaration) = match target {
+            SymbolId::Definition(target) => {
+                let definition = self.hir().definitions.get(target)?;
+                (
+                    definition.name.as_ref()?.as_str(),
+                    definition.module,
+                    definition_kind_name(definition.kind.tag()),
+                    self.hir().source_map.definition(target)?,
+                )
+            }
+            SymbolId::GenericParam(target) => {
+                let parameter = self.hir().generic_params.get(target)?;
+                (
+                    parameter.name.as_str(),
+                    self.hir().definitions[parameter.owner].module,
+                    "type parameter",
+                    self.hir().source_map.generic_param(target)?,
+                )
+            }
+            SymbolId::Param(target) => {
+                let parameter = self.hir().params.get(target)?;
+                (
+                    parameter.name.as_str(),
+                    self.hir().definitions[parameter.owner].module,
+                    "parameter",
+                    self.hir().source_map.param(target)?,
+                )
+            }
+            SymbolId::Local {
+                body,
+                local: local_id,
+            } => {
+                let body = self.hir().bodies.get(body)?;
+                let local = body.locals.get(local_id)?;
+                (
+                    local.name.as_str(),
+                    self.hir().definitions[body.owner].module,
+                    if local.mutable { "variable" } else { "local" },
+                    body.source_map.local(local_id)?,
+                )
+            }
+        };
+        let definition_span = self.ident_span(declaration, name, false)?;
         Some(SymbolInfo {
             id: target,
-            name: name.to_string(),
-            module: self.hir().modules[definition.module].name.to_string(),
-            kind: definition_kind_name(definition.kind.tag()),
+            name: name.to_owned(),
+            module: self.hir().modules[module].name.to_string(),
+            kind,
             definition: definition_span,
         })
     }
@@ -115,7 +238,7 @@ impl AnalysisSnapshot {
                 path,
                 occurrence.span.range.start,
                 occurrence.span.range.end,
-                occurrence.target.raw(),
+                occurrence.target,
                 occurrence.declaration,
             )
         });
@@ -133,10 +256,56 @@ impl AnalysisSnapshot {
             };
             if let Some(span) = self.ident_span(span, name.as_str(), false) {
                 occurrences.push(Occurrence {
-                    target,
+                    target: target.into(),
                     span,
                     declaration: true,
                 });
+            }
+        }
+        for (target, parameter) in self.hir().generic_params.iter() {
+            if let Some(span) = self
+                .hir()
+                .source_map
+                .generic_param(target)
+                .and_then(|span| self.ident_span(span, parameter.name.as_str(), false))
+            {
+                occurrences.push(Occurrence {
+                    target: SymbolId::GenericParam(target),
+                    span,
+                    declaration: true,
+                });
+            }
+        }
+        for (target, parameter) in self.hir().params.iter() {
+            if let Some(span) = self
+                .hir()
+                .source_map
+                .param(target)
+                .and_then(|span| self.ident_span(span, parameter.name.as_str(), false))
+            {
+                occurrences.push(Occurrence {
+                    target: SymbolId::Param(target),
+                    span,
+                    declaration: true,
+                });
+            }
+        }
+        for (body_id, body) in self.hir().bodies.iter() {
+            for (local_id, local) in body.locals.iter() {
+                if let Some(span) = body
+                    .source_map
+                    .local(local_id)
+                    .and_then(|span| self.ident_span(span, local.name.as_str(), false))
+                {
+                    occurrences.push(Occurrence {
+                        target: SymbolId::Local {
+                            body: body_id,
+                            local: local_id,
+                        },
+                        span,
+                        declaration: true,
+                    });
+                }
             }
         }
     }
@@ -149,7 +318,7 @@ impl AnalysisSnapshot {
                 };
                 for target in self.resolve_across_namespaces(module, &import.path) {
                     occurrences.push(Occurrence {
-                        target,
+                        target: target.into(),
                         span,
                         declaration: false,
                     });
@@ -170,11 +339,12 @@ impl AnalysisSnapshot {
                 continue;
             };
             let target = match self.semantic_analysis().typed.types.data(ty) {
-                TyData::Nominal { definition, .. } => Some(*definition),
-                TyData::DynTarget(instance) => Some(instance.concept),
+                TyData::Nominal { definition, .. } => Some((*definition).into()),
+                TyData::DynTarget(instance) => Some(instance.concept.into()),
+                TyData::Param(parameter) => Some(SymbolId::GenericParam(*parameter)),
                 TyData::Projection {
                     associated_type, ..
-                } => Some(*associated_type),
+                } => Some((*associated_type).into()),
                 _ => None,
             };
             let Some(target) = target else {
@@ -217,10 +387,12 @@ impl AnalysisSnapshot {
             for (expression, source) in body.expressions.iter() {
                 match source {
                     Expr::Path(path) => {
-                        if let Some(Resolution::Definition(target)) =
-                            semantics.expression_resolutions.get(expression)
+                        if let Some(target) = semantics
+                            .expression_resolutions
+                            .get(expression)
+                            .and_then(|resolution| resolution_symbol(*resolution, body_id))
                         {
-                            push_path(occurrences, *target, path);
+                            push_symbol_path(occurrences, target, path);
                         }
                     }
                     Expr::Call { callee, .. } => {
@@ -248,7 +420,7 @@ impl AnalysisSnapshot {
                         };
                         if let Some(span) = self.ident_span(source_span, method.as_str(), true) {
                             occurrences.push(Occurrence {
-                                target,
+                                target: target.into(),
                                 span,
                                 declaration: false,
                             });
@@ -270,7 +442,7 @@ impl AnalysisSnapshot {
                         };
                         if let Some(span) = self.ident_span(source_span, name.as_str(), true) {
                             occurrences.push(Occurrence {
-                                target,
+                                target: target.into(),
                                 span,
                                 declaration: false,
                             });
@@ -297,7 +469,7 @@ impl AnalysisSnapshot {
                                     self.ident_span(field.span, field.name.as_str(), false)
                                 {
                                     occurrences.push(Occurrence {
-                                        target: *target,
+                                        target: (*target).into(),
                                         span,
                                         declaration: false,
                                     });
@@ -323,7 +495,7 @@ impl AnalysisSnapshot {
                             && let Some(span) = self.ident_span(source_span, method.as_str(), true)
                         {
                             occurrences.push(Occurrence {
-                                target,
+                                target: target.into(),
                                 span,
                                 declaration: false,
                             });
@@ -404,12 +576,29 @@ impl AnalysisSnapshot {
 }
 
 fn push_path(occurrences: &mut Vec<Occurrence>, target: DefId, path: &Path) {
+    push_symbol_path(occurrences, target.into(), path);
+}
+
+fn push_symbol_path(occurrences: &mut Vec<Occurrence>, target: SymbolId, path: &Path) {
     if let Some(segment) = path.segments.last() {
         occurrences.push(Occurrence {
             target,
             span: segment.span,
             declaration: false,
         });
+    }
+}
+
+const fn resolution_symbol(resolution: Resolution, body: BodyId) -> Option<SymbolId> {
+    match resolution {
+        Resolution::Definition(definition) => Some(SymbolId::Definition(definition)),
+        Resolution::GenericParam(parameter) => Some(SymbolId::GenericParam(parameter)),
+        Resolution::Param(parameter) => Some(SymbolId::Param(parameter)),
+        Resolution::Local(local) => Some(SymbolId::Local { body, local }),
+        Resolution::SelfValue
+        | Resolution::ResultValue
+        | Resolution::Builtin(_)
+        | Resolution::Error => None,
     }
 }
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Barrier};
 use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, LockMode, PersistentCache, PipelineStage, Position,
-    ProjectGraph, ProjectOptions, TargetKind, discover_loom_files, format_source,
+    ProjectGraph, ProjectOptions, SymbolId, TargetKind, discover_loom_files, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -1229,4 +1229,87 @@ fn conditional_conformance_proof_executes_from_source() {
     let results = snapshot.run_tests().expect("execute conditional proof");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
+}
+
+#[test]
+fn semantic_symbol_index_covers_generics_parameters_and_locals() {
+    let project = TestProject::new();
+    let source =
+        "module sample\n\npub fn identity[T](value T) T {\n    let copy = value\n    copy\n}\n";
+    project.write("main.loom", source);
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open symbol project")
+        .snapshot()
+        .expect("analyze symbol project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let file = FileId(0);
+
+    let generic_declaration = u32::try_from(source.find("[T]").expect("generic declaration") + 1)
+        .expect("source offset fits u32");
+    let parameter_declaration =
+        u32::try_from(source.find("value T").expect("parameter")).expect("source offset fits u32");
+    let parameter_use = u32::try_from(source.rfind("value").expect("parameter use"))
+        .expect("source offset fits u32");
+    let local_declaration = u32::try_from(source.find("copy =").expect("local declaration"))
+        .expect("source offset fits u32");
+    let local_use =
+        u32::try_from(source.rfind("copy").expect("local use")).expect("source offset fits u32");
+
+    assert!(matches!(
+        snapshot
+            .definition_at(file, generic_declaration)
+            .expect("generic symbol")
+            .id,
+        SymbolId::GenericParam(_)
+    ));
+    assert!(matches!(
+        snapshot
+            .definition_at(file, parameter_use)
+            .expect("parameter symbol")
+            .id,
+        SymbolId::Param(_)
+    ));
+    assert_eq!(
+        snapshot
+            .references_at(file, parameter_declaration, true)
+            .expect("parameter references")
+            .len(),
+        2
+    );
+    assert!(matches!(
+        snapshot
+            .definition_at(file, local_use)
+            .expect("local symbol")
+            .id,
+        SymbolId::Local { .. }
+    ));
+    assert_eq!(
+        snapshot
+            .references_at(file, local_declaration, true)
+            .expect("local references")
+            .len(),
+        2
+    );
+
+    let names = snapshot
+        .document_symbols(file)
+        .into_iter()
+        .map(|symbol| symbol.name)
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| name == "identity"), "{names:?}");
+    assert!(names.iter().any(|name| name == "T"), "{names:?}");
+    assert!(names.iter().any(|name| name == "value"), "{names:?}");
+    assert!(names.iter().any(|name| name == "copy"), "{names:?}");
+
+    let completions = snapshot
+        .completion_symbols(file, local_use)
+        .into_iter()
+        .map(|symbol| symbol.name)
+        .collect::<Vec<_>>();
+    assert!(
+        ["identity", "T", "value", "copy"]
+            .iter()
+            .all(|expected| completions.iter().any(|name| name == expected)),
+        "{completions:?}"
+    );
 }

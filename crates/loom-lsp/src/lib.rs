@@ -105,15 +105,18 @@ impl<R: BufRead, W: Write> Server<R, W> {
                                     },
                                     "definitionProvider": true,
                                     "referencesProvider": true,
-                                    "renameProvider": true,
-                                    "hoverProvider": true
+                                    "renameProvider": {"prepareProvider": true},
+                                    "hoverProvider": true,
+                                    "completionProvider": {"triggerCharacters": ["."]},
+                                    "documentSymbolProvider": true,
+                                    "workspaceSymbolProvider": true
                                 },
                                 "serverInfo": {
                                     "name": "loom-lsp",
                                     "version": env!("CARGO_PKG_VERSION")
                                 },
                                 "experimental": {
-                                    "loomSemanticReferences": "global-declarations"
+                                    "loomSemanticReferences": "project-and-callable-locals"
                                 }
                             }),
                         )?;
@@ -157,6 +160,26 @@ impl<R: BufRead, W: Write> Server<R, W> {
             "textDocument/references" => {
                 if let Some(id) = id {
                     self.references(id, &params)?;
+                }
+            }
+            "textDocument/completion" => {
+                if let Some(id) = id {
+                    self.completion(id, &params)?;
+                }
+            }
+            "textDocument/documentSymbol" => {
+                if let Some(id) = id {
+                    self.document_symbols(id, &params)?;
+                }
+            }
+            "workspace/symbol" => {
+                if let Some(id) = id {
+                    self.workspace_symbols(id, &params)?;
+                }
+            }
+            "textDocument/prepareRename" => {
+                if let Some(id) = id {
+                    self.prepare_rename(id, &params)?;
                 }
             }
             "textDocument/rename" => {
@@ -347,6 +370,149 @@ impl<R: BufRead, W: Write> Server<R, W> {
         self.respond(id, json!(locations))
     }
 
+    fn completion(&mut self, id: Value, params: &Value) -> io::Result<()> {
+        let Some((uri, position)) = text_position(params) else {
+            return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
+        };
+        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+            return Ok(());
+        };
+        let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
+            return self.respond(id, json!({"isIncomplete": false, "items": []}));
+        };
+        let mut items = snapshot
+            .completion_symbols(file, byte)
+            .into_iter()
+            .map(|symbol| {
+                json!({
+                    "label": symbol.name,
+                    "kind": completion_kind(symbol.kind),
+                    "detail": format!("{} · {}", symbol.kind, symbol.module),
+                    "insertText": symbol.name,
+                    "sortText": format!("0-{}-{}", symbol.name, symbol.module)
+                })
+            })
+            .collect::<Vec<_>>();
+        items.extend(COMPLETION_KEYWORDS.iter().map(|keyword| {
+            json!({
+                "label": keyword,
+                "kind": 14,
+                "detail": "Loom keyword",
+                "sortText": format!("1-{keyword}")
+            })
+        }));
+        items.sort_by(|left, right| {
+            left.pointer("/sortText")
+                .and_then(Value::as_str)
+                .cmp(&right.pointer("/sortText").and_then(Value::as_str))
+        });
+        items.dedup_by(|left, right| {
+            left.get("label") == right.get("label") && left.get("detail") == right.get("detail")
+        });
+        self.respond(id, json!({"isIncomplete": false, "items": items}))
+    }
+
+    fn document_symbols(&mut self, id: Value, params: &Value) -> io::Result<()> {
+        let Some(uri) = pointer_str(params, "/textDocument/uri") else {
+            return self.respond_error(id, INVALID_PARAMS, "missing textDocument.uri", None);
+        };
+        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+            return Ok(());
+        };
+        let Ok(path) = file_uri_to_path(uri) else {
+            return self.respond(id, json!([]));
+        };
+        let Some(file) = snapshot.sources().file_id(&path) else {
+            return self.respond(id, json!([]));
+        };
+        let Some(source) = snapshot.sources().document(file) else {
+            return self.respond(id, json!([]));
+        };
+        let symbols = snapshot
+            .document_symbols(file)
+            .into_iter()
+            .map(|symbol| {
+                let range =
+                    source.utf16_range(symbol.definition.range.start, symbol.definition.range.end);
+                json!({
+                    "name": symbol.name,
+                    "detail": format!("{} · {}", symbol.kind, symbol.module),
+                    "kind": symbol_kind(symbol.kind),
+                    "range": range,
+                    "selectionRange": range
+                })
+            })
+            .collect::<Vec<_>>();
+        self.respond(id, json!(symbols))
+    }
+
+    fn workspace_symbols(&mut self, id: Value, params: &Value) -> io::Result<()> {
+        let query = params
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+            return Ok(());
+        };
+        let symbols = snapshot
+            .symbols()
+            .into_iter()
+            .filter(|symbol| {
+                query.is_empty()
+                    || symbol.name.to_lowercase().contains(&query)
+                    || symbol.module.to_lowercase().contains(&query)
+            })
+            .filter_map(|symbol| {
+                let source = snapshot.sources().document(symbol.definition.file)?;
+                Some(json!({
+                    "name": symbol.name,
+                    "kind": symbol_kind(symbol.kind),
+                    "location": {
+                        "uri": self.uri_for_path(source.absolute_path()),
+                        "range": source.utf16_range(
+                            symbol.definition.range.start,
+                            symbol.definition.range.end
+                        )
+                    },
+                    "containerName": symbol.module
+                }))
+            })
+            .collect::<Vec<_>>();
+        self.respond(id, json!(symbols))
+    }
+
+    fn prepare_rename(&mut self, id: Value, params: &Value) -> io::Result<()> {
+        let Some((uri, position)) = text_position(params) else {
+            return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
+        };
+        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+            return Ok(());
+        };
+        if snapshot.has_errors() {
+            return self.incomplete_index(id);
+        }
+        let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
+            return self.respond(id, Value::Null);
+        };
+        let Some(symbol) = snapshot.definition_at(file, byte) else {
+            return self.respond(id, Value::Null);
+        };
+        let Some(source) = snapshot.sources().document(symbol.definition.file) else {
+            return self.respond(id, Value::Null);
+        };
+        self.respond(
+            id,
+            json!({
+                "range": source.utf16_range(
+                    symbol.definition.range.start,
+                    symbol.definition.range.end
+                ),
+                "placeholder": symbol.name
+            }),
+        )
+    }
+
     fn rename(&mut self, id: Value, params: &Value) -> io::Result<()> {
         let Some((uri, position)) = text_position(params) else {
             return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
@@ -502,6 +668,64 @@ impl<R: BufRead, W: Write> Server<R, W> {
         write!(self.writer, "Content-Length: {}\r\n\r\n", bytes.len())?;
         self.writer.write_all(&bytes)?;
         self.writer.flush()
+    }
+}
+
+const COMPLETION_KEYWORDS: &[&str] = &[
+    "async",
+    "assert",
+    "concept",
+    "defer",
+    "dyn",
+    "else",
+    "enum",
+    "ensures",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "import",
+    "invariant",
+    "let",
+    "match",
+    "module",
+    "pub",
+    "record",
+    "requires",
+    "return",
+    "scoped",
+    "test",
+    "true",
+    "var",
+    "where",
+];
+
+fn symbol_kind(kind: &str) -> u8 {
+    match kind {
+        "function" | "test" => 12,
+        "method" => 6,
+        "record" | "constrained type" => 23,
+        "enum" => 10,
+        "enum variant" => 22,
+        "concept" | "conformance" | "impl" => 11,
+        "field" => 8,
+        "associated type" | "type parameter" => 26,
+        _ => 13,
+    }
+}
+
+fn completion_kind(kind: &str) -> u8 {
+    match kind {
+        "function" | "test" => 3,
+        "method" => 2,
+        "record" | "constrained type" => 22,
+        "enum" => 13,
+        "enum variant" => 20,
+        "concept" | "conformance" | "impl" => 8,
+        "field" => 5,
+        "associated type" | "type parameter" => 25,
+        _ => 6,
     }
 }
 

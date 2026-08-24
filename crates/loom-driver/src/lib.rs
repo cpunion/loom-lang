@@ -28,7 +28,7 @@ pub use project::{
 };
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
 pub use source::{DriverError, SourceDocument, SourceMap, discover_loom_files};
-pub use symbols::{SymbolInfo, SymbolReference, is_valid_identifier};
+pub use symbols::{SymbolId, SymbolInfo, SymbolReference, is_valid_identifier};
 
 /// Successful command completion.
 pub const EXIT_SUCCESS: i32 = 0;
