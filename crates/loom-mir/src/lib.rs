@@ -62,6 +62,8 @@ pub struct PreludeIds {
     pub violation: Option<TypeId>,
     pub parse_float_error: Option<TypeId>,
     pub parse_int_error: Option<TypeId>,
+    pub task_fault: Option<TypeId>,
+    pub task_outcome: Option<TypeId>,
 }
 
 impl Program {
@@ -554,6 +556,8 @@ pub enum Builtin {
     ProcessArguments,
     ProcessEnvironment,
     ParseInt,
+    TaskFaultCode,
+    TaskFaultMessage,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

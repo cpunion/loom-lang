@@ -3811,7 +3811,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             BuiltinValue::ListNew
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
-            | BuiltinValue::ListGet => {
+            | BuiltinValue::ListGet
+            | BuiltinValue::TaskFaultCode
+            | BuiltinValue::TaskFaultMessage => {
                 self.error_at(
                     "TypeMismatch",
                     "List builtin is only available through List construction or methods",
@@ -3824,7 +3826,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ParseFloatInvalidSyntax
             | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::ParseIntInvalidSyntax
-            | BuiltinValue::ParseIntOutOfRange => {
+            | BuiltinValue::ParseIntOutOfRange
+            | BuiltinValue::TaskCompleted
+            | BuiltinValue::TaskFaulted
+            | BuiltinValue::TaskCancelled => {
                 self.error_at(
                     "TypeMismatch",
                     "value constructor is not callable",
@@ -3998,6 +4003,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 expression,
                 receiver,
                 element,
+                method_name,
+                type_arguments,
+                arguments,
+            )
+        {
+            return result;
+        }
+        if self.types().data(receiver_ty) == &TyData::Builtin(BuiltinType::TaskFault)
+            && let Some(result) = self.check_task_fault_method_call(
+                expression,
                 method_name,
                 type_arguments,
                 arguments,
@@ -4263,6 +4278,40 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         Some(result)
+    }
+
+    fn check_task_fault_method_call(
+        &mut self,
+        expression: ExprId,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let builtin = match method_name.as_str() {
+            "code" => BuiltinValue::TaskFaultCode,
+            "message" => BuiltinValue::TaskFaultMessage,
+            _ => return None,
+        };
+        if !type_arguments.is_empty() {
+            self.error_at(
+                "TypeMismatch",
+                "TaskFault accessors do not accept explicit type arguments",
+                expression,
+            );
+        }
+        self.check_fixed_arguments(expression, arguments, &[]);
+        self.finish_call_arguments(arguments);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::Builtin(builtin),
+                substitution: Substitution::default(),
+                dispatch_witness: None,
+                witnesses: Vec::new(),
+                receiver: Some(ReceiverPassing::Value),
+            },
+        );
+        Some(self.types().builtin(BuiltinType::Text))
     }
 
     fn find_concrete_concept_candidates(
@@ -5263,6 +5312,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "Err" => Some(PatternVariant::Err),
                 _ => None,
             },
+            TyData::TaskOutcome(_) => match name.as_str() {
+                "Completed" => Some(PatternVariant::TaskCompleted),
+                "Faulted" => Some(PatternVariant::TaskFaulted),
+                "Cancelled" if payload.is_empty() => Some(PatternVariant::TaskCancelled),
+                _ => None,
+            },
             TyData::Builtin(BuiltinType::ParseFloatError) => match name.as_str() {
                 "InvalidSyntax" if payload.is_empty() => {
                     Some(PatternVariant::ParseFloatInvalidSyntax)
@@ -5301,6 +5356,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             (PatternVariant::Some, TyData::Option(element)) => vec![element],
             (PatternVariant::Ok, TyData::Result { ok, .. }) => vec![ok],
             (PatternVariant::Err, TyData::Result { error, .. }) => vec![error],
+            (PatternVariant::TaskCompleted, TyData::TaskOutcome(output)) => vec![output],
+            (PatternVariant::TaskFaulted, TyData::TaskOutcome(_)) => {
+                vec![self.types().builtin(BuiltinType::TaskFault)]
+            }
             (
                 PatternVariant::User(variant),
                 TyData::Nominal {
@@ -5342,6 +5401,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Result { .. } => {
                 coverage.variants.contains(&PatternVariant::Ok)
                     && coverage.variants.contains(&PatternVariant::Err)
+            }
+            TyData::TaskOutcome(_) => {
+                coverage.variants.contains(&PatternVariant::TaskCompleted)
+                    && coverage.variants.contains(&PatternVariant::TaskFaulted)
+                    && coverage.variants.contains(&PatternVariant::TaskCancelled)
             }
             TyData::Builtin(BuiltinType::ParseFloatError) => {
                 coverage
@@ -5657,6 +5721,9 @@ enum PatternVariant {
     ParseFloatOutOfRange,
     ParseIntInvalidSyntax,
     ParseIntOutOfRange,
+    TaskCompleted,
+    TaskFaulted,
+    TaskCancelled,
     User(DefId),
 }
 
@@ -5676,6 +5743,9 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
             Resolution::Builtin(BuiltinValue::ParseIntInvalidSyntax)
         }
         PatternVariant::ParseIntOutOfRange => Resolution::Builtin(BuiltinValue::ParseIntOutOfRange),
+        PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
+        PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
+        PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
         PatternVariant::User(definition) => Resolution::Definition(definition),
     }
 }
@@ -5911,6 +5981,7 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Unit" => Some(BuiltinType::Unit),
         "Violation" => Some(BuiltinType::Violation),
         "ContractFault" => Some(BuiltinType::ContractFault),
+        "TaskFault" => Some(BuiltinType::TaskFault),
         _ => None,
     }
 }

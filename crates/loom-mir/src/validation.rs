@@ -489,6 +489,8 @@ impl<'program> Validator<'program> {
                 self.program.prelude.parse_int_error,
                 "enum",
             ),
+            ("task_fault", self.program.prelude.task_fault, "record"),
+            ("task_outcome", self.program.prelude.task_outcome, "enum"),
         ];
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
@@ -533,6 +535,62 @@ impl<'program> Validator<'program> {
                     "prelude Result must use variants #0(T) and #1(E)",
                     definition.span,
                     "prelude.result",
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
+            .task_fault
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Record { fields, invariant: None }
+                    if definition.type_parameters == 0
+                        && fields.len() == 2
+                        && fields[0].name == "code"
+                        && fields[0].ty == Type::Text
+                        && fields[1].name == "message"
+                        && fields[1].ty == Type::Text
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::RecordShape,
+                    "prelude TaskFault must be a { code Text, message Text } record",
+                    definition.span,
+                    "prelude.task_fault",
+                );
+            }
+        }
+        if let (Some(task_fault), Some(definition)) = (
+            self.program.prelude.task_fault,
+            self.program
+                .prelude
+                .task_outcome
+                .and_then(|id| self.program.type_def(id)),
+        ) {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 1
+                        && variants.len() == 3
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "Completed"
+                        && variants[0].payload == [Type::Parameter(0)]
+                        && variants[1].id == VariantId(1)
+                        && variants[1].name == "Faulted"
+                        && variants[1].payload == [Type::Nominal(task_fault, Vec::new())]
+                        && variants[2].id == VariantId(2)
+                        && variants[2].name == "Cancelled"
+                        && variants[2].payload.is_empty()
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude TaskOutcome must use Completed#0(T), Faulted#1(TaskFault), and Cancelled#2",
+                    definition.span,
+                    "prelude.task_outcome",
                 );
             }
         }
@@ -2916,10 +2974,10 @@ impl<'program> Validator<'program> {
                     Some(Type::Task(Box::new(match mode {
                         TaskJoinMode::All => Type::List(Box::new(output)),
                         TaskJoinMode::Settled => {
-                            Type::List(Box::new(Type::TaskOutcome(Box::new(output))))
+                            Type::List(Box::new(self.task_outcome_type(output)))
                         }
                         TaskJoinMode::Any => output,
-                        TaskJoinMode::Race => Type::TaskOutcome(Box::new(output)),
+                        TaskJoinMode::Race => self.task_outcome_type(output),
                     })))
                 } else {
                     let mut outputs = Vec::with_capacity(argument_types.len());
@@ -2941,7 +2999,7 @@ impl<'program> Validator<'program> {
                         TaskJoinMode::Settled => Type::Tuple(
                             outputs
                                 .into_iter()
-                                .map(|output| Type::TaskOutcome(Box::new(output)))
+                                .map(|output| self.task_outcome_type(output))
                                 .collect(),
                         ),
                         TaskJoinMode::Any | TaskJoinMode::Race => {
@@ -2958,7 +3016,7 @@ impl<'program> Validator<'program> {
                                 );
                             }
                             if *mode == TaskJoinMode::Race {
-                                Type::TaskOutcome(Box::new(output))
+                                self.task_outcome_type(output)
                             } else {
                                 output
                             }
@@ -4142,7 +4200,9 @@ impl<'program> Validator<'program> {
             | Builtin::FormatFloat
             | Builtin::ListLength
             | Builtin::ProcessEnvironment
-            | Builtin::ParseInt => 1,
+            | Builtin::ParseInt
+            | Builtin::TaskFaultCode
+            | Builtin::TaskFaultMessage => 1,
         };
         if types.len() != expected_arity {
             self.push(
@@ -4185,6 +4245,15 @@ impl<'program> Validator<'program> {
                     path,
                 ),
             Builtin::FormatFloat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
+            Builtin::TaskFaultCode | Builtin::TaskFaultMessage
+                if self.program.prelude.task_fault.is_some_and(|task_fault| {
+                    types[0]
+                        .as_ref()
+                        .is_some_and(|actual| nominal_is(actual, task_fault))
+                }) =>
+            {
+                Some(Type::Text)
+            }
             Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet => {
                 self.validate_list_builtin(builtin, arguments, &types, expression.span, path)
             }
@@ -5483,6 +5552,13 @@ impl<'program> Validator<'program> {
             result_id,
             vec![success, Type::Nominal(error_id, Vec::new())],
         ))
+    }
+
+    fn task_outcome_type(&self, output: Type) -> Type {
+        self.program
+            .prelude
+            .task_outcome
+            .map_or(Type::Error, |id| Type::Nominal(id, vec![output]))
     }
 
     fn validate_function_dataflow(&mut self, function: &Function, path: &str) {

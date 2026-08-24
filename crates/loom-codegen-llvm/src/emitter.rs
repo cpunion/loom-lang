@@ -5804,6 +5804,31 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         ) {
             return self.emit_process_builtin(builtin, &values, destination);
         }
+        if matches!(builtin, Builtin::TaskFaultCode | Builtin::TaskFaultMessage) {
+            let [fault] = values.as_slice() else {
+                return Err(CodegenError::new(
+                    "InvalidBuiltinCall",
+                    "TaskFault accessor expects one receiver",
+                ));
+            };
+            let fault = self.unwrap(*fault)?;
+            let data = self.backend.load_pointer_field(
+                self.backend.value_type,
+                fault,
+                VALUE_FIELD_DATA,
+                "task.fault.fields",
+            )?;
+            let index = u32::from(builtin == Builtin::TaskFaultMessage);
+            let node = self.value_node_at(data, index)?;
+            let field = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_VALUE,
+                "task.fault.field",
+            )?;
+            self.clone_value(destination, field)?;
+            return Ok(true);
+        }
         match (builtin, values.as_slice()) {
             (Builtin::IsFinite, [value]) => {
                 let number = self.float_scalar(*value)?;

@@ -167,6 +167,81 @@ pub async fn main() Unit {
 }
 
 #[test]
+fn task_outcomes_match_and_expose_fault_details_natively() {
+    let source = r#"module outcomes
+
+async fn completed() Int {
+    7
+}
+
+async fn faulted() Int {
+    assert false
+    0
+}
+
+pub async fn main() Unit {
+    let success, failure = Task.settled(completed(), faulted()).await
+    match success {
+        Completed(value) => {
+            assert value == 7
+            Unit
+        }
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match failure {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "TaskFault"
+            assert message == "task execution failed"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+"#;
+    let project = tempfile::tempdir().expect("create outcome project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write outcome source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load outcome project")
+        .snapshot()
+        .expect("analyze outcome project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower outcome MIR");
+    let executable = project.path().join("program");
+    emit_native(program, &executable, &EmitOptions::run("main"))
+        .expect("emit native outcome executable");
+    let output = Command::new(executable)
+        .output()
+        .expect("run native outcomes");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "AssertionFault\nUnit\n"
+    );
+}
+
+#[test]
 fn cancellation_resumes_the_suspended_state_and_runs_cleanup() {
     let source = r"module cancellation
 

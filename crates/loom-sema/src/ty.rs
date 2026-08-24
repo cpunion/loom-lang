@@ -38,6 +38,7 @@ pub enum BuiltinType {
     Unit,
     Violation,
     ContractFault,
+    TaskFault,
     ParseFloatError,
     ParseIntError,
 }

@@ -656,6 +656,70 @@ test async fn stored_and_dynamic_joins() {
 }
 
 #[test]
+fn task_outcomes_are_closed_source_values_with_fault_details() {
+    let project = TestProject::new();
+    project.write(
+        "outcomes.loom",
+        r#"module outcomes
+
+async fn completed() Int {
+    7
+}
+
+async fn faulted() Int {
+    assert false
+    0
+}
+
+test async fn inspect_outcomes() {
+    let success, failure = Task.settled(completed(), faulted()).await
+    match success {
+        Completed(value) => {
+            assert value == 7
+            Unit
+        }
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match failure {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+"#,
+    );
+
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open outcome project")
+        .snapshot()
+        .expect("compile outcome project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let results = snapshot.run_tests().expect("execute outcome test");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
+}
+
+#[test]
 fn cancellation_runs_registered_cleanup_before_join_finishes() {
     let project = TestProject::new();
     project.write(

@@ -28,7 +28,9 @@ const VIOLATION_TYPE: TypeId = TypeId(2);
 const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
 const PARSE_FLOAT_ERROR_TYPE: TypeId = TypeId(4);
 const PARSE_INT_ERROR_TYPE: TypeId = TypeId(5);
-const SYNTHETIC_TYPE_COUNT: u32 = 6;
+const TASK_FAULT_TYPE: TypeId = TypeId(6);
+const TASK_OUTCOME_TYPE: TypeId = TypeId(7);
+const SYNTHETIC_TYPE_COUNT: u32 = 8;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -268,6 +270,8 @@ impl<'a> Compiler<'a> {
                 violation: Some(VIOLATION_TYPE),
                 parse_float_error: Some(PARSE_FLOAT_ERROR_TYPE),
                 parse_int_error: Some(PARSE_INT_ERROR_TYPE),
+                task_fault: Some(TASK_FAULT_TYPE),
+                task_outcome: Some(TASK_OUTCOME_TYPE),
             },
         };
         program.types.shrink_to_fit();
@@ -401,17 +405,7 @@ impl<'a> Compiler<'a> {
         match self.analysis.typed.types.data(ty) {
             TyData::Error => Err(defect("recovery Error type reached MIR lowering", span)),
             TyData::Never => Ok(Type::Never),
-            TyData::Builtin(builtin) => Ok(match builtin {
-                BuiltinType::Bool => Type::Bool,
-                BuiltinType::Int => Type::Int,
-                BuiltinType::Float => Type::Float,
-                BuiltinType::Text => Type::Text,
-                BuiltinType::Unit => Type::Unit,
-                BuiltinType::Violation => Type::Nominal(VIOLATION_TYPE, Vec::new()),
-                BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
-                BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
-                BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
-            }),
+            TyData::Builtin(builtin) => Ok(lower_builtin_type(*builtin)),
             TyData::Tuple(elements) => Ok(Type::Tuple(
                 elements
                     .iter()
@@ -435,9 +429,10 @@ impl<'a> Compiler<'a> {
             TyData::Task(output) => Ok(Type::Task(Box::new(
                 self.lower_ty(*output, parameters, span)?,
             ))),
-            TyData::TaskOutcome(output) => Ok(Type::TaskOutcome(Box::new(
-                self.lower_ty(*output, parameters, span)?,
-            ))),
+            TyData::TaskOutcome(output) => Ok(Type::Nominal(
+                TASK_OUTCOME_TYPE,
+                vec![self.lower_ty(*output, parameters, span)?],
+            )),
             TyData::Nominal {
                 definition,
                 arguments,
@@ -766,6 +761,7 @@ impl<'a> Compiler<'a> {
                 BuiltinType::ContractFault => {
                     RequirementType::Nominal(CONTRACT_FAULT_TYPE, Vec::new())
                 }
+                BuiltinType::TaskFault => RequirementType::Nominal(TASK_FAULT_TYPE, Vec::new()),
                 BuiltinType::ParseFloatError => {
                     RequirementType::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new())
                 }
@@ -1598,6 +1594,9 @@ impl ContractLowerer<'_, '_> {
                             BuiltinValue::ParseIntOutOfRange => {
                                 (PARSE_INT_ERROR_TYPE, VariantId(1))
                             }
+                            BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
+                            BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
+                            BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
                             _ => {
                                 return Err(defect(
                                     "non-variant builtin resolved as contract pattern",
@@ -2856,7 +2855,10 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ParseFloatInvalidSyntax
             | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::ParseIntInvalidSyntax
-            | BuiltinValue::ParseIntOutOfRange => {
+            | BuiltinValue::ParseIntOutOfRange
+            | BuiltinValue::TaskCompleted
+            | BuiltinValue::TaskFaulted
+            | BuiltinValue::TaskCancelled => {
                 let (enum_ty, variant) = match builtin {
                     BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
                     BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
@@ -2865,6 +2867,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
+                    BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
+                    BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
+                    BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
                     _ => unreachable!(),
                 };
                 ExprKind::Variant {
@@ -2885,7 +2890,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ListGet
             | BuiltinValue::ProcessArguments
             | BuiltinValue::ProcessEnvironment
-            | BuiltinValue::ParseInt => {
+            | BuiltinValue::ParseInt
+            | BuiltinValue::TaskFaultCode
+            | BuiltinValue::TaskFaultMessage => {
                 let target = match builtin {
                     BuiltinValue::ParseFloat => Builtin::ParseFloat,
                     BuiltinValue::FormatFloat => Builtin::FormatFloat,
@@ -2896,6 +2903,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::ProcessArguments => Builtin::ProcessArguments,
                     BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
                     BuiltinValue::ParseInt => Builtin::ParseInt,
+                    BuiltinValue::TaskFaultCode => Builtin::TaskFaultCode,
+                    BuiltinValue::TaskFaultMessage => Builtin::TaskFaultMessage,
                     _ => unreachable!(),
                 };
                 let mut lowered =
@@ -3502,7 +3511,79 @@ fn synthetic_types() -> Vec<TypeDef> {
         },
         parse_error_type(PARSE_FLOAT_ERROR_TYPE, "ParseFloatError", span),
         parse_error_type(PARSE_INT_ERROR_TYPE, "ParseIntError", span),
+        task_fault_type(span),
+        task_outcome_type(span),
     ]
+}
+
+fn lower_builtin_type(builtin: BuiltinType) -> Type {
+    match builtin {
+        BuiltinType::Bool => Type::Bool,
+        BuiltinType::Int => Type::Int,
+        BuiltinType::Float => Type::Float,
+        BuiltinType::Text => Type::Text,
+        BuiltinType::Unit => Type::Unit,
+        BuiltinType::Violation => Type::Nominal(VIOLATION_TYPE, Vec::new()),
+        BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
+        BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
+        BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
+        BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
+    }
+}
+
+fn task_fault_type(span: Span) -> TypeDef {
+    TypeDef {
+        id: TASK_FAULT_TYPE,
+        name: "TaskFault".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "code".into(),
+                    ty: Type::Text,
+                    span,
+                },
+                FieldDef {
+                    name: "message".into(),
+                    ty: Type::Text,
+                    span,
+                },
+            ],
+            invariant: None,
+        },
+    }
+}
+
+fn task_outcome_type(span: Span) -> TypeDef {
+    TypeDef {
+        id: TASK_OUTCOME_TYPE,
+        name: "TaskOutcome".into(),
+        span,
+        type_parameters: 1,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "Completed".into(),
+                    payload: vec![Type::Parameter(0)],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "Faulted".into(),
+                    payload: vec![Type::Nominal(TASK_FAULT_TYPE, Vec::new())],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(2),
+                    name: "Cancelled".into(),
+                    payload: Vec::new(),
+                    span,
+                },
+            ],
+        },
+    }
 }
 
 fn parse_error_type(id: TypeId, name: &str, span: Span) -> TypeDef {
@@ -3631,6 +3712,9 @@ fn lower_pattern(
                         }
                         BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
                         BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
+                        BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
+                        BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
+                        BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
                         _ => {
                             return Err(defect("non-variant builtin resolved as a pattern", span));
                         }

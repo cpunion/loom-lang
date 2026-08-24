@@ -1048,22 +1048,16 @@ impl<'program> Interpreter<'program> {
         for child in &children {
             match self.tasks.get(child).map(|task| task.status.clone()) {
                 Some(TaskStatus::Completed(value)) => {
-                    outcomes.push(Value::TaskOutcome {
-                        outcome: TaskOutcomeValue::Completed(Box::new(value.clone())),
-                    });
+                    outcomes.push(self.task_outcome_completed(value.clone(), awaited.span)?);
                     values.push(Some(value));
                 }
                 Some(TaskStatus::Failed(child_failure)) => {
-                    outcomes.push(Value::TaskOutcome {
-                        outcome: TaskOutcomeValue::Faulted,
-                    });
+                    outcomes.push(self.task_outcome_faulted(&child_failure, awaited.span)?);
                     failure.get_or_insert(child_failure);
                     values.push(None);
                 }
                 Some(TaskStatus::Cancelled) => {
-                    outcomes.push(Value::TaskOutcome {
-                        outcome: TaskOutcomeValue::Cancelled,
-                    });
+                    outcomes.push(self.task_outcome_cancelled(awaited.span)?);
                     values.push(None);
                 }
                 Some(TaskStatus::Runnable | TaskStatus::Waiting) => {
@@ -2395,6 +2389,20 @@ impl<'program> Interpreter<'program> {
                     self.result_value(false, error, span)
                 }
             },
+            (
+                Builtin::TaskFaultCode | Builtin::TaskFaultMessage,
+                [Value::Record { ty, fields }],
+            ) if self.program.prelude.task_fault == Some(*ty) => {
+                let index = usize::from(builtin == Builtin::TaskFaultMessage);
+                fields.get(index).cloned().ok_or_else(|| {
+                    self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "TaskFault record is missing an accessor field",
+                        span,
+                    )
+                    .into()
+                })
+            }
             (Builtin::ListAdd, _) => Err(self
                 .runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -2429,6 +2437,80 @@ impl<'program> Interpreter<'program> {
             ty: option_type.id,
             variant: VariantId(u32::from(payload.is_some())),
             payload: payload.into_iter().collect(),
+        })
+    }
+
+    fn task_outcome_completed(&self, value: Value, span: Span) -> Result<Value, ExecutionFailure> {
+        if self.program.prelude.task_outcome.is_none() {
+            return Ok(Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Completed(Box::new(value)),
+            });
+        }
+        self.task_outcome_variant(VariantId(0), vec![value], span)
+    }
+
+    fn task_outcome_faulted(
+        &self,
+        failure: &ExecutionFailure,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        if self.program.prelude.task_outcome.is_none() {
+            return Ok(Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Faulted,
+            });
+        }
+        let task_fault = self.program.prelude.task_fault.ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude TaskFault type is missing",
+                span,
+            ))
+        })?;
+        let (code, message) = match failure {
+            ExecutionFailure::Contract { fault } => (&fault.code, &fault.message),
+            ExecutionFailure::Runtime { fault } => (&fault.code, &fault.message),
+            ExecutionFailure::Defect { defect } => (&defect.code, &defect.message),
+        };
+        let fault = Value::Record {
+            ty: task_fault,
+            fields: vec![
+                Value::Text {
+                    value: code.clone(),
+                },
+                Value::Text {
+                    value: message.clone(),
+                },
+            ],
+        };
+        self.task_outcome_variant(VariantId(1), vec![fault], span)
+    }
+
+    fn task_outcome_cancelled(&self, span: Span) -> Result<Value, ExecutionFailure> {
+        if self.program.prelude.task_outcome.is_none() {
+            return Ok(Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Cancelled,
+            });
+        }
+        self.task_outcome_variant(VariantId(2), Vec::new(), span)
+    }
+
+    fn task_outcome_variant(
+        &self,
+        variant: VariantId,
+        payload: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let task_outcome = self.program.prelude.task_outcome.ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude TaskOutcome type is missing",
+                span,
+            ))
+        })?;
+        Ok(Value::Enum {
+            ty: task_outcome,
+            variant,
+            payload,
         })
     }
 

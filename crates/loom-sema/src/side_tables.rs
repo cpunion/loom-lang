@@ -45,6 +45,11 @@ pub enum BuiltinValue {
     ParseFloatOutOfRange,
     ParseIntInvalidSyntax,
     ParseIntOutOfRange,
+    TaskCompleted,
+    TaskFaulted,
+    TaskCancelled,
+    TaskFaultCode,
+    TaskFaultMessage,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

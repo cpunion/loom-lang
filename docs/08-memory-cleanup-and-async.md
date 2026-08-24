@@ -352,7 +352,15 @@ tuple 与 list 不隐式互转。
 | `Task.any` | 首个 value-completed | 取消并 drain 其余；无成功时产生组合失败 |
 | `Task.race` | 首个 completion/fault/cancel | 取消并 drain 其余 |
 
-`TaskOutcome[T]` 概念上包含 `Completed(T)`、`Faulted(fault)`、`Cancelled`。业务 `Result.Err` 是普通 `T` value，不被 join mode 解释为 task failure。OOM 等进程级 fault 绕过 `TaskOutcome`。
+`TaskOutcome[T]` 是源码可见的闭合标准 enum，固定包含 `Completed(T)`、`Faulted(TaskFault)`、`Cancelled`，必须穷尽匹配。`TaskFault.code()` 与 `TaskFault.message()` 暴露稳定文本信息；它只描述 task-local fault，不提供恢复或重新抛出入口。业务 `Result.Err` 是普通 `T` value，不被 join mode 解释为 task failure。OOM 等不可捕获的进程级 fault 绕过 `TaskOutcome`。
+
+```loom
+match Task.race(primary(), fallback()).await {
+    Completed(value) => use(value)
+    Faulted(fault) => report(fault.code(), fault.message())
+    Cancelled => Unit
+}
+```
 
 `all`/`settled` 对空 list 立即返回空 list；`any`/`race` 要求非空，静态已知为空时编译报错，否则触发合同失败。
 
@@ -394,9 +402,9 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 
 ## 7. 当前 reference implementation 状态
 
-截至 2026-08-24，Core 0.3 C1 native 门已关闭：
+截至 2026-08-25，Core 0.3 C1 native 门已关闭：
 
-- lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、`TaskOutcome[T]`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
+- lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、可穷尽匹配的 `TaskOutcome[T]`/`TaskFault`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
 - `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、未消费 Task 和 interface access across await 均由静态检查器执行；
 - lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复；取消 state 保存挂起时已注册的 cleanup；
 - interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；

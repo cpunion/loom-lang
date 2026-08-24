@@ -372,6 +372,8 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             violation: Some(TypeId(1)),
             parse_float_error: None,
             parse_int_error: None,
+            task_fault: None,
+            task_outcome: None,
         },
         ..Program::default()
     };

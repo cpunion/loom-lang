@@ -13,11 +13,23 @@ use crate::{
 };
 
 const NO_JOIN_WINNER: u64 = u64::MAX;
+const VALUE_TAG_TEXT: u64 = 4;
+const VALUE_TAG_RECORD: u64 = 5;
+const VALUE_TAG_ENUM: u64 = 6;
 const VALUE_TAG_TASK: u64 = 11;
 const VALUE_TAG_LIST: u64 = 12;
-const VALUE_TAG_TASK_OUTCOME: u64 = 13;
 const VALUE_TAG_TUPLE: u64 = 10;
 const TASK_VALUE_DIRECT: u64 = 0;
+
+// Compiler-private synthetic prelude ids. Keep these synchronized with
+// loom-lowering until the native value ABI becomes self-describing.
+const TASK_FAULT_TYPE: u64 = 6;
+const TASK_OUTCOME_TYPE: u64 = 7;
+const TASK_OUTCOME_COMPLETED: u64 = 0;
+const TASK_OUTCOME_FAULTED: u64 = 1;
+const TASK_OUTCOME_CANCELLED: u64 = 2;
+const TASK_FAULT_CODE: &[u8] = b"TaskFault";
+const TASK_FAULT_MESSAGE: &[u8] = b"task execution failed";
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;
@@ -714,24 +726,61 @@ unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut V
         return WAIT_INVALID_ARGUMENT;
     }
     let step = terminal_step(unsafe { (&(*parent).join_children)[index] });
-    let Ok(step_word) = u64::try_from(step) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
+    let executor = unsafe { &mut *(*parent).executor };
     let mut value = ValueSlot::default();
-    value.words[0] = VALUE_TAG_TASK_OUTCOME;
-    value.words[2] = step_word;
-    if step == TASK_COMPLETED {
-        let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
-        if result.is_null() {
-            return WAIT_INVALID_ARGUMENT;
+    value.words[0] = VALUE_TAG_ENUM;
+    value.words[1] = TASK_OUTCOME_TYPE;
+    match step {
+        TASK_COMPLETED => {
+            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
+            if result.is_null() {
+                return WAIT_INVALID_ARGUMENT;
+            }
+            value.words[2] = TASK_OUTCOME_COMPLETED;
+            value.words[3] = 1;
+            value.words[4] =
+                retain_result_node(executor, unsafe { *result }, ptr::null_mut()) as u64;
         }
-        let executor = unsafe { &mut *(*parent).executor };
-        let mut inner = Box::new(unsafe { *result });
-        value.words[4] = (&raw mut *inner) as u64;
-        executor.result_values.push(inner);
+        TASK_CANCELLED => {
+            value.words[2] = TASK_OUTCOME_CANCELLED;
+        }
+        _ => {
+            let message = text_value(TASK_FAULT_MESSAGE);
+            let message_node = retain_result_node(executor, message, ptr::null_mut());
+            let code = text_value(TASK_FAULT_CODE);
+            let code_node = retain_result_node(executor, code, message_node);
+            let mut fault = ValueSlot::default();
+            fault.words[0] = VALUE_TAG_RECORD;
+            fault.words[1] = TASK_FAULT_TYPE;
+            fault.words[2] = 2;
+            fault.words[4] = code_node as u64;
+            let fault_node = retain_result_node(executor, fault, ptr::null_mut());
+            value.words[2] = TASK_OUTCOME_FAULTED;
+            value.words[3] = 1;
+            value.words[4] = fault_node as u64;
+        }
     }
     unsafe { destination.write(value) };
     WAIT_OK
+}
+
+fn text_value(bytes: &'static [u8]) -> ValueSlot {
+    let mut value = ValueSlot::default();
+    value.words[0] = VALUE_TAG_TEXT;
+    value.words[2] = bytes.len() as u64;
+    value.words[4] = bytes.as_ptr() as u64;
+    value
+}
+
+fn retain_result_node(
+    executor: &mut LoomExecutor,
+    value: ValueSlot,
+    next: *mut ValueNode,
+) -> *mut ValueNode {
+    let mut node = Box::new(ValueNode { value, next });
+    let pointer = &raw mut *node;
+    executor.result_nodes.push(node);
+    pointer
 }
 
 #[unsafe(export_name = "loom_task_write_join_result")]
