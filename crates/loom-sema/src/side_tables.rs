@@ -34,6 +34,10 @@ pub enum BuiltinValue {
     ParseFloat,
     FormatFloat,
     IsFinite,
+    ListNew,
+    ListAdd,
+    ListLength,
+    ListGet,
     ParseFloatInvalidSyntax,
     ParseFloatOutOfRange,
 }

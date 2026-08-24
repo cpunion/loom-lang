@@ -445,12 +445,23 @@ pub struct Block {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum BlockItem {
     Local(LocalBinding),
+    ForRange(ForRange),
     Defer(Block),
     Return(ReturnExpr),
     Assert(Expr),
     Assignment(Assignment),
     Expr(Expr),
     Error(ErrorNode),
+}
+
+/// A half-open integer range loop: `for name in start..end { ... }`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForRange {
+    pub binding: Ident,
+    pub start: Expr,
+    pub end: Expr,
+    pub body: Block,
+    pub range: TextRange,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

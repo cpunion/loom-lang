@@ -112,7 +112,9 @@ fn stored_tasks_dynamic_lists_and_join_modes_run_natively() {
     let source = r"module joins
 
 async fn one() Int {
-    Task.sleep(2).await
+    // Keep the completion ordering deterministic even when the full test
+    // workspace is CPU-saturated and both timers are observed in one poll.
+    Task.sleep(50).await
     1
 }
 

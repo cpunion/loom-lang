@@ -78,6 +78,7 @@ pub enum TokenKind {
     StaticKw,
     AsKw,
     ForKw,
+    InKw,
     ViewKw,
     BoxKw,
     SharedKw,
@@ -90,6 +91,7 @@ pub enum TokenKind {
     RBrace,
     Comma,
     Dot,
+    DotDot,
     Colon,
     Eq,
     FatArrow,
@@ -163,6 +165,7 @@ impl TokenKind {
                 | Self::StaticKw
                 | Self::AsKw
                 | Self::ForKw
+                | Self::InKw
                 | Self::ViewKw
                 | Self::BoxKw
                 | Self::SharedKw
@@ -177,6 +180,7 @@ impl TokenKind {
                 | Self::LBrace
                 | Self::Comma
                 | Self::Dot
+                | Self::DotDot
                 | Self::Colon
                 | Self::Eq
                 | Self::FatArrow
@@ -570,7 +574,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_punctuation_or_unknown(&mut self, start: usize, ch: char) {
-        let (kind, bytes) = if self.rest().starts_with("=>") {
+        let (kind, bytes) = if self.rest().starts_with("..") {
+            (TokenKind::DotDot, 2)
+        } else if self.rest().starts_with("=>") {
             (TokenKind::FatArrow, 2)
         } else if self.rest().starts_with("==") {
             (TokenKind::EqEq, 2)
@@ -714,6 +720,7 @@ fn keyword(text: &str) -> TokenKind {
         "static" => TokenKind::StaticKw,
         "as" => TokenKind::AsKw,
         "for" => TokenKind::ForKw,
+        "in" => TokenKind::InKw,
         "view" => TokenKind::ViewKw,
         "box" => TokenKind::BoxKw,
         "shared" => TokenKind::SharedKw,

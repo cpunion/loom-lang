@@ -72,6 +72,76 @@ pub extern "C" fn allocate_value_node() -> *mut c_void {
     pointer
 }
 
+/// Appends one already-evaluated value to a checked native List.
+///
+/// The generated-code ABI passes uniform value slots. A nonzero result means
+/// the caller violated the checked MIR contract; allocation failure remains a
+/// process-level OOM fault.
+#[unsafe(export_name = "loom_runtime_list_add")]
+pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot) -> i32 {
+    if list.is_null() || value.is_null() {
+        return 1;
+    }
+    // SAFETY: generated checked MIR provides live, aligned ValueSlot pointers.
+    let list = unsafe { &mut *list };
+    if list.words[0] != VALUE_TAG_LIST {
+        return 1;
+    }
+    let node = allocate_value_node().cast::<ValueNode>();
+    if node.is_null() {
+        return 1;
+    }
+    // SAFETY: allocate_value_node returns a fresh initialized ValueNode and
+    // `value` remains live for the duration of this call.
+    unsafe {
+        (*node).value = *value;
+        (*node).next = ptr::null_mut();
+    }
+    let mut current = list.words[4] as *mut ValueNode;
+    if current.is_null() {
+        list.words[4] = node as u64;
+    } else {
+        // SAFETY: the List data word is a runtime-owned, null-terminated chain.
+        unsafe {
+            while !(*current).next.is_null() {
+                current = (*current).next;
+            }
+            (*current).next = node;
+        }
+    }
+    list.words[2] = list.words[2]
+        .checked_add(1)
+        .unwrap_or_else(|| std::process::abort());
+    0
+}
+
+/// Returns a borrowed pointer to a List element, or null when out of range.
+#[unsafe(export_name = "loom_runtime_list_get")]
+pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const ValueSlot {
+    if list.is_null() || index < 0 {
+        return ptr::null();
+    }
+    // SAFETY: generated checked MIR provides a live, aligned ValueSlot pointer.
+    let list = unsafe { &*list };
+    if list.words[0] != VALUE_TAG_LIST || index.cast_unsigned() >= list.words[2] {
+        return ptr::null();
+    }
+    let mut node = list.words[4] as *const ValueNode;
+    for _ in 0..index {
+        if node.is_null() {
+            return ptr::null();
+        }
+        // SAFETY: List chains are runtime-owned and null-terminated.
+        node = unsafe { (*node).next };
+    }
+    if node.is_null() {
+        ptr::null()
+    } else {
+        // SAFETY: node is non-null and belongs to the live List chain.
+        unsafe { &raw const (*node).value }
+    }
+}
+
 /// Witness argument lists are immutable compiler metadata. They are kept in a
 /// non-moving executor arena because generated call sites can hold their raw
 /// address transiently; they never contain user heap values.

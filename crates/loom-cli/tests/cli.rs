@@ -389,6 +389,28 @@ fn test_and_run_execute_native_code() {
 }
 
 #[test]
+fn range_and_growable_list_run_on_both_backends() {
+    let project = TestProject::new(
+        "module dynamic\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() Unit {\n    let count = 5\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n    Unit\n}\n",
+    );
+    for backend in ["interpreter", "llvm"] {
+        let output = loomc()
+            .args(["--backend", backend, "run"])
+            .arg(&project.0)
+            .output()
+            .expect("run range/List program");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{backend}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "Unit\n");
+    }
+}
+
+#[test]
 fn build_writes_a_runnable_native_artifact() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
     let artifact = project.0.join("out.native");

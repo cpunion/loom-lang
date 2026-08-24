@@ -640,6 +640,25 @@ impl<'a> BodyLower<'a> {
                         }
                     });
                 }
+                syntax::BlockItem::ForRange(loop_) => {
+                    let local = self.builder.alloc_local(
+                        Local {
+                            name: Name::new(loop_.binding.text.clone()),
+                            mutable: false,
+                            annotation: None,
+                        },
+                        self.span(loop_.binding.range),
+                    );
+                    let start = self.lower_expr(&loop_.start);
+                    let end = self.lower_expr(&loop_.end);
+                    let body = self.lower_block(&loop_.body);
+                    statements.push(Statement::ForRange {
+                        local,
+                        start,
+                        end,
+                        body,
+                    });
+                }
                 syntax::BlockItem::Defer(block) => {
                     statements.push(Statement::Defer {
                         body: self.lower_block(block),

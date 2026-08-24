@@ -2682,6 +2682,39 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         }
                     }
                 }
+                Statement::ForRange {
+                    local,
+                    start,
+                    end,
+                    body,
+                } => {
+                    let int = self.types().builtin(BuiltinType::Int);
+                    let start_ty =
+                        self.check_suspendable_expr(*start, Some(int), ExpressionContext::Value);
+                    let end_ty =
+                        self.check_suspendable_expr(*end, Some(int), ExpressionContext::Value);
+                    self.semantics.expression_types.insert(*start, start_ty);
+                    self.semantics.expression_types.insert(*end, end_ty);
+                    self.semantics.local_types.insert(*local, int);
+
+                    // The iteration binding belongs to the loop body's lexical
+                    // environment. Keep an outer binding with the same name
+                    // intact after checking the nested block.
+                    let name = self.source().locals[*local].name.clone();
+                    let previous = self
+                        .scopes
+                        .last_mut()
+                        .expect("loop is inside a block scope")
+                        .insert(name.clone(), *local);
+                    let unit = self.types().builtin(BuiltinType::Unit);
+                    self.check_expr(*body, Some(unit), ExpressionContext::Value);
+                    let scope = self.scopes.last_mut().expect("loop block scope exists");
+                    if let Some(previous) = previous {
+                        scope.insert(name, previous);
+                    } else {
+                        scope.remove(&name);
+                    }
+                }
                 Statement::Defer { body } => {
                     if self.cleanup_depth > 0 {
                         self.error_at(
@@ -3565,6 +3598,35 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return self.types().error();
         };
+        if path.segments.len() == 1 && path.segments[0].name.as_str() == "List" {
+            if !arguments.is_empty() {
+                self.call_arity(expression, 0, arguments.len());
+            }
+            let explicit = self.resolve_call_type_arguments(type_arguments);
+            let element = if explicit.len() == 1 {
+                explicit[0]
+            } else {
+                self.error_at(
+                    "TypeMismatch",
+                    "List construction requires exactly one element type: `List[T]()`",
+                    expression,
+                );
+                self.types().error()
+            };
+            let result = self.types().intern(TyData::List(element));
+            self.semantics.calls.insert(
+                expression,
+                CallResolution {
+                    target: CallTarget::Builtin(BuiltinValue::ListNew),
+                    substitution: Substitution::default(),
+                    dispatch_witness: None,
+                    witnesses: Vec::new(),
+                    receiver: None,
+                },
+            );
+            self.finish_call_arguments(arguments);
+            return result;
+        }
         if path.segments.len() == 1 {
             let builtin = match path.segments[0].name.as_str() {
                 "Some" => Some(BuiltinValue::Some),
@@ -3746,6 +3808,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.check_fixed_arguments(expression, arguments, &[float]);
                 self.types().builtin(BuiltinType::Bool)
             }
+            BuiltinValue::ListNew
+            | BuiltinValue::ListAdd
+            | BuiltinValue::ListLength
+            | BuiltinValue::ListGet => {
+                self.error_at(
+                    "TypeMismatch",
+                    "List builtin is only available through List construction or methods",
+                    expression,
+                );
+                self.types().error()
+            }
             BuiltinValue::Unit
             | BuiltinValue::None
             | BuiltinValue::ParseFloatInvalidSyntax
@@ -3873,6 +3946,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let receiver_ty = self.check_expr(receiver, None, ExpressionContext::Value);
         self.allow_dirty_self_projection = previous;
         self.checking_scoped_receiver = previous_scoped;
+        if let TyData::List(element) = self.types().data(receiver_ty).clone()
+            && let Some(result) = self.check_list_method_call(
+                expression,
+                receiver,
+                element,
+                method_name,
+                type_arguments,
+                arguments,
+            )
+        {
+            return result;
+        }
         if self.self_dirty
             && self
                 .semantics
@@ -4057,6 +4142,80 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         return_ty
+    }
+
+    fn check_list_method_call(
+        &mut self,
+        expression: ExprId,
+        receiver: ExprId,
+        element: TyId,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let (builtin, receiver_passing, result) = match method_name.as_str() {
+            "add" => {
+                if arguments.len() != 1 {
+                    self.call_arity(expression, 1, arguments.len());
+                }
+                if let Some(argument) = arguments.first() {
+                    self.check_expr(*argument, Some(element), ExpressionContext::Value);
+                }
+                if self
+                    .semantics
+                    .expression_places
+                    .get(receiver)
+                    .is_none_or(|place| place.mutability != Mutability::Mutable)
+                {
+                    self.error_at(
+                        "MutReceiverRequiresVar",
+                        "List.add requires a mutable `var` receiver",
+                        receiver,
+                    );
+                }
+                (
+                    BuiltinValue::ListAdd,
+                    ReceiverPassing::InOut,
+                    self.types().builtin(BuiltinType::Unit),
+                )
+            }
+            "length" => {
+                if !arguments.is_empty() {
+                    self.call_arity(expression, 0, arguments.len());
+                }
+                (
+                    BuiltinValue::ListLength,
+                    ReceiverPassing::Value,
+                    self.types().builtin(BuiltinType::Int),
+                )
+            }
+            "get" => {
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[int]);
+                let result = self.types().intern(TyData::Option(element));
+                (BuiltinValue::ListGet, ReceiverPassing::Value, result)
+            }
+            _ => return None,
+        };
+        if !type_arguments.is_empty() {
+            self.error_at(
+                "TypeMismatch",
+                "List methods do not accept explicit type arguments",
+                expression,
+            );
+        }
+        self.finish_call_arguments(arguments);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::Builtin(builtin),
+                substitution: Substitution::default(),
+                dispatch_witness: None,
+                witnesses: Vec::new(),
+                receiver: Some(receiver_passing),
+            },
+        );
+        Some(result)
     }
 
     fn find_concrete_concept_candidates(

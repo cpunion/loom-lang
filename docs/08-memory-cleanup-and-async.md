@@ -312,7 +312,7 @@ Task.all(taskA, taskB).await       (A, B)
 运行时数量必须使用同构 task list：
 
 ```loom
-let tasks = List[Task[Report]]()
+var tasks = List[Task[Report]]()
 for i in 0..workerCount {
     tasks.add(runWorker(i))
 }
@@ -330,6 +330,8 @@ Task.race(List[Task[T]])      Task[TaskOutcome[T]]
 ```
 
 `Task.all(tasks)` 在调用时快照 task handles；之后加入原 list 的 task 不属于该 join。结果保持加入顺序。动态 task 数量不会产生动态代码：同一个 worker coroutine descriptor/resume function 可以实例化任意多个 frame。
+
+区间是 `Int` 的半开 `[start, end)`，上下界只求值一次。`List.add` 要求 `var` receiver；`length` 和 `get` 只读，`get` 对负数或越界 index 返回 `None`。这些形状已贯通 parser、静态检查、checked MIR、解释器与 LLVM native runtime，不是 join 测试中的预制 list literal 替身。
 
 固定数量也可以通过显式 list literal 请求 list 结果：
 
@@ -394,7 +396,7 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 
 截至 2026-08-24，Core 0.3 C1 native 门已关闭：
 
-- lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、`List[T]` 与 `TaskOutcome[T]`；旧前缀 await 只产生普通语法错误；
+- lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、`TaskOutcome[T]`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
 - `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、未消费 Task 和 interface access across await 均由静态检查器执行；
 - lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复；取消 state 保存挂起时已注册的 cleanup；
 - interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；

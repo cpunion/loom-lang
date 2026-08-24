@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 7;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 8;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
@@ -364,6 +364,13 @@ fn visit_block(block: &mut Block, visitor: &mut impl FnMut(&mut Constant)) {
             | StatementKind::Assign { value, .. }
             | StatementKind::Assert { condition: value }
             | StatementKind::Evaluate(value) => visit_expr(value, visitor),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                visit_expr(start, visitor);
+                visit_expr(end, visitor);
+                visit_block(body, visitor);
+            }
             StatementKind::Defer(block) => visit_block(block, visitor),
             StatementKind::Return(value) => {
                 if let Some(value) = value {

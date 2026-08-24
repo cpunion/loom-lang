@@ -375,6 +375,13 @@ pub enum StatementKind {
         locals: Vec<LocalId>,
         value: Expr,
     },
+    /// Iterates `local` over the half-open integer range `[start, end)`.
+    ForRange {
+        local: LocalId,
+        start: Box<Expr>,
+        end: Box<Expr>,
+        body: Box<Block>,
+    },
     Assign {
         place: Place,
         value: Expr,
@@ -540,6 +547,9 @@ pub enum Builtin {
     IsFinite,
     ParseFloat,
     FormatFloat,
+    ListAdd,
+    ListLength,
+    ListGet,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

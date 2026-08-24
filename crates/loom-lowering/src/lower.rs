@@ -1931,6 +1931,29 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span: self.expr_span(*value),
                 });
             }
+            HirStatement::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => {
+                let local = required(
+                    self.hir_locals.get(local).copied(),
+                    "range binding has no MIR local",
+                    self.expr_span(*body),
+                )?;
+                let start = self.lower_suspendable_expr(*start, output, false)?;
+                let end = self.lower_suspendable_expr(*end, output, false)?;
+                output.push(Statement {
+                    kind: StatementKind::ForRange {
+                        local,
+                        start: Box::new(start),
+                        end: Box::new(end),
+                        body: Box::new(self.lower_as_block(*body)?),
+                    },
+                    span: self.expr_span(*body),
+                });
+            }
             HirStatement::Defer { body } => output.push(Statement {
                 kind: StatementKind::Defer(self.lower_as_block(*body)?),
                 span: self.expr_span(*body),
@@ -2650,7 +2673,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 });
             }
             SemaCallTarget::Builtin(builtin) => {
-                return self.lower_builtin_call(id, builtin, source_arguments);
+                return self.lower_builtin_call(id, builtin, receiver, source_arguments);
             }
             _ => {}
         }
@@ -2808,11 +2831,13 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         &mut self,
         id: ExprId,
         builtin: BuiltinValue,
+        receiver: Option<ExprId>,
         arguments: &[ExprId],
     ) -> LowerResult<Expr> {
         let span = self.expr_span(id);
         let ty = self.expression_ty(id)?;
         let kind = match builtin {
+            BuiltinValue::ListNew => ExprKind::List(Vec::new()),
             BuiltinValue::Some
             | BuiltinValue::Ok
             | BuiltinValue::Err
@@ -2836,20 +2861,51 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                         .collect::<LowerResult<_>>()?,
                 }
             }
-            BuiltinValue::ParseFloat | BuiltinValue::FormatFloat | BuiltinValue::IsFinite => {
+            BuiltinValue::ParseFloat
+            | BuiltinValue::FormatFloat
+            | BuiltinValue::IsFinite
+            | BuiltinValue::ListAdd
+            | BuiltinValue::ListLength
+            | BuiltinValue::ListGet => {
                 let target = match builtin {
                     BuiltinValue::ParseFloat => Builtin::ParseFloat,
                     BuiltinValue::FormatFloat => Builtin::FormatFloat,
                     BuiltinValue::IsFinite => Builtin::IsFinite,
+                    BuiltinValue::ListAdd => Builtin::ListAdd,
+                    BuiltinValue::ListLength => Builtin::ListLength,
+                    BuiltinValue::ListGet => Builtin::ListGet,
                     _ => unreachable!(),
                 };
+                let mut lowered =
+                    Vec::with_capacity(arguments.len() + usize::from(receiver.is_some()));
+                if let Some(receiver) = receiver {
+                    match self.call(id)?.receiver {
+                        Some(loom_sema::ReceiverPassing::InOut) => {
+                            lowered.push(CallArgument::InOut(self.expression_place(receiver)?));
+                        }
+                        Some(loom_sema::ReceiverPassing::Value) => {
+                            lowered.push(CallArgument::Value(
+                                self.lower_expr_mode(receiver, ReadMode::MethodReceiver)?,
+                            ));
+                        }
+                        None => {
+                            return Err(defect(
+                                "builtin method has no receiver passing mode",
+                                span,
+                            ));
+                        }
+                    }
+                }
+                lowered.extend(
+                    arguments
+                        .iter()
+                        .map(|argument| self.lower_expr(*argument).map(CallArgument::Value))
+                        .collect::<LowerResult<Vec<_>>>()?,
+                );
                 ExprKind::Call {
                     target: CallTarget::Builtin(target),
                     type_arguments: Vec::new(),
-                    arguments: arguments
-                        .iter()
-                        .map(|argument| self.lower_expr(*argument).map(CallArgument::Value))
-                        .collect::<LowerResult<_>>()?,
+                    arguments: lowered,
                     witnesses: Vec::new(),
                 }
             }

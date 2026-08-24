@@ -207,6 +207,13 @@ fn scan_block(block: &Block, edges: &mut FunctionEdges) {
             | StatementKind::Assign { value, .. }
             | StatementKind::Assert { condition: value }
             | StatementKind::Evaluate(value) => scan_expr(value, edges),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                scan_expr(start, edges);
+                scan_expr(end, edges);
+                scan_block(body, edges);
+            }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
                     scan_expr(value, edges);

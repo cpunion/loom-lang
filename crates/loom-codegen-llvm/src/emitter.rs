@@ -1421,6 +1421,31 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_list_add(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_list_add")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_runtime_list_add", function_type, None)
+            })
+    }
+
+    fn native_list_get(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_list_get")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function("loom_runtime_list_get", function_type, None)
+            })
+    }
+
     fn native_gc_alloc_witness_node(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_gc_alloc_witness_node")
@@ -3049,6 +3074,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 }
                 Ok(true)
             }
+            StatementKind::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => self.emit_for_range(*local, start, end, body),
             StatementKind::Assign { place, value } => {
                 let temporary = self.alloc_value("assign");
                 if !self.emit_expr(value, temporary)? {
@@ -3102,6 +3133,67 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(false)
             }
         }
+    }
+
+    fn emit_for_range(
+        &self,
+        local: LocalId,
+        start: &Expr,
+        end: &Expr,
+        body: &Block,
+    ) -> Result<bool, CodegenError> {
+        let start_value = self.alloc_value("range.start");
+        if !self.emit_expr(start, start_value)? {
+            return Ok(false);
+        }
+        let end_value = self.alloc_value("range.end");
+        if !self.emit_expr(end, end_value)? {
+            return Ok(false);
+        }
+        let current = self.local(local)?;
+        self.shallow_copy(current, start_value)?;
+
+        let header = self.append_block("range.header");
+        let iteration = self.append_block("range.iteration");
+        let exit = self.append_block("range.exit");
+        self.backend.branch(header)?;
+
+        self.backend.builder.position_at_end(header);
+        let current_scalar = self.int_scalar(current)?;
+        let end_scalar = self.int_scalar(end_value)?;
+        let has_next = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::SLT, current_scalar, end_scalar, "range.more")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(has_next, iteration, exit)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(iteration);
+        let ignored = self.alloc_value("range.body");
+        if self.emit_block(body, ignored)? {
+            let current_scalar = self.int_scalar(current)?;
+            let next = self
+                .backend
+                .builder
+                .build_int_add(
+                    current_scalar,
+                    self.backend.i64_type.const_int(1, false),
+                    "range.next",
+                )
+                .map_err(builder_error)?;
+            self.backend.store_i64_field(
+                self.backend.value_type,
+                current,
+                VALUE_FIELD_SCALAR,
+                next,
+            )?;
+            self.backend.branch(header)?;
+        }
+        self.backend.builder.position_at_end(exit);
+        Ok(true)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5628,6 +5720,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
+        if matches!(
+            builtin,
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
+        ) {
+            return self.emit_list_builtin(builtin, &values, destination);
+        }
         match (builtin, values.as_slice()) {
             (Builtin::IsFinite, [value]) => {
                 let number = self.float_scalar(*value)?;
@@ -5674,6 +5772,91 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
                 "builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
+    fn emit_list_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        match (builtin, values) {
+            (Builtin::ListAdd, [list, value]) => {
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_list_add(),
+                    &[(*list).into(), (*value).into()],
+                    "list.add",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "list.add.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ListRuntimeFault")?;
+                self.emit_constant(&Constant::Unit, destination)?;
+                Ok(true)
+            }
+            (Builtin::ListLength, [list]) => {
+                let list = self.unwrap(*list)?;
+                let length = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    list,
+                    VALUE_FIELD_AUX,
+                    "list.length",
+                )?;
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    length,
+                )?;
+                Ok(true)
+            }
+            (Builtin::ListGet, [list, index]) => {
+                let list = self.unwrap(*list)?;
+                let index = self.int_scalar(*index)?;
+                let element = call_pointer(
+                    &self.backend.builder,
+                    self.backend.native_list_get(),
+                    &[list.into(), index.into()],
+                    "list.get",
+                )?;
+                let found = self
+                    .backend
+                    .builder
+                    .build_is_not_null(element, "list.get.found")
+                    .map_err(builder_error)?;
+                let some = self.append_block("list.get.some");
+                let none = self.append_block("list.get.none");
+                let merge = self.append_block("list.get.merge");
+                self.backend
+                    .builder
+                    .build_conditional_branch(found, some, none)
+                    .map_err(builder_error)?;
+
+                self.backend.builder.position_at_end(some);
+                self.emit_variant_from_pointers(TypeId(0), 1, &[element], destination)?;
+                self.backend.branch(merge)?;
+
+                self.backend.builder.position_at_end(none);
+                self.emit_variant_from_pointers(TypeId(0), 0, &[], destination)?;
+                self.backend.branch(merge)?;
+
+                self.backend.builder.position_at_end(merge);
+                Ok(true)
+            }
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "List builtin argument shape does not match checked MIR",
             )),
         }
     }

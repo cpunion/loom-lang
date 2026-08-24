@@ -466,10 +466,28 @@ pub enum TaskJoinMode {
 
 #[derive(Clone, Debug)]
 pub enum Statement {
-    Let { local: LocalId, value: ExprId },
-    LetTuple { locals: Vec<LocalId>, value: ExprId },
-    Scoped { local: LocalId, value: ExprId },
-    Defer { body: ExprId },
+    Let {
+        local: LocalId,
+        value: ExprId,
+    },
+    LetTuple {
+        locals: Vec<LocalId>,
+        value: ExprId,
+    },
+    Scoped {
+        local: LocalId,
+        value: ExprId,
+    },
+    /// Iterates an immutable `Int` binding over `[start, end)`.
+    ForRange {
+        local: LocalId,
+        start: ExprId,
+        end: ExprId,
+        body: ExprId,
+    },
+    Defer {
+        body: ExprId,
+    },
     Expr(ExprId),
     Assert(ExprId),
 }

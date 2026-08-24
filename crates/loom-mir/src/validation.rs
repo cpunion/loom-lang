@@ -2416,6 +2416,47 @@ impl<'program> Validator<'program> {
                     }
                 }
             }
+            StatementKind::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => {
+                let Some(declared) = Self::local_decl(function, *local) else {
+                    self.invalid_local(*local, statement.span, format!("{path}.local"));
+                    return;
+                };
+                if !function
+                    .locals
+                    .iter()
+                    .any(|candidate| candidate.id == *local)
+                {
+                    self.push(
+                        MirValidationCode::InvalidLocalReference,
+                        "ForRange binding must be a declared non-parameter local",
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                }
+                if !types_compatible(&Type::Int, &declared.ty) {
+                    self.type_mismatch(&Type::Int, &declared.ty, statement.span, path);
+                }
+                let start_ty = self.validate_expr(function, start, &format!("{path}.start"), depth);
+                let end_ty = self.validate_expr(function, end, &format!("{path}.end"), depth);
+                if !types_compatible(&Type::Int, &start_ty) {
+                    self.type_mismatch(&Type::Int, &start_ty, start.span, path);
+                }
+                if !types_compatible(&Type::Int, &end_ty) {
+                    self.type_mismatch(&Type::Int, &end_ty, end.span, path);
+                }
+                self.validate_block(
+                    function,
+                    body,
+                    Some(&Type::Unit),
+                    &format!("{path}.body"),
+                    depth + 1,
+                );
+            }
             StatementKind::Assign { place, value } => {
                 let place_ty = self.validate_place(
                     function,
@@ -4061,19 +4102,25 @@ impl<'program> Validator<'program> {
         depth: u16,
     ) -> Option<Type> {
         let types = self.validate_untyped_arguments(function, arguments, path, depth);
-        if types.len() != 1 {
+        let expected_arity = match builtin {
+            Builtin::ListAdd | Builtin::ListGet => 2,
+            Builtin::IsFinite
+            | Builtin::ParseFloat
+            | Builtin::FormatFloat
+            | Builtin::ListLength => 1,
+        };
+        if types.len() != expected_arity {
             self.push(
                 MirValidationCode::CallArity,
-                format!("builtin {builtin:?} expects exactly one argument"),
+                format!("builtin {builtin:?} expects exactly {expected_arity} argument(s)"),
                 expression.span,
                 format!("{path}.arguments"),
             );
             return None;
         }
-        let argument = types[0].as_ref()?;
         match builtin {
-            Builtin::IsFinite if self.is_float_like(argument) => Some(Type::Bool),
-            Builtin::ParseFloat if types_compatible(&Type::Text, argument) => self
+            Builtin::IsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
+            Builtin::ParseFloat if types_compatible(&Type::Text, types[0].as_ref()?) => self
                 .expected_result_type(
                     Type::Float,
                     self.program.prelude.parse_float_error,
@@ -4081,8 +4128,68 @@ impl<'program> Validator<'program> {
                     expression.span,
                     path,
                 ),
-            Builtin::FormatFloat if self.is_float_like(argument) => Some(Type::Text),
+            Builtin::FormatFloat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
+            Builtin::ListAdd => {
+                let Type::List(element) = types[0].as_ref()? else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListAdd receiver must be List",
+                        expression.span,
+                        path,
+                    );
+                    return None;
+                };
+                if !matches!(arguments.first(), Some(CallArgument::InOut(_))) {
+                    self.push(
+                        MirValidationCode::ReceiverShape,
+                        "ListAdd receiver must be passed inout",
+                        expression.span,
+                        format!("{path}.arguments[0]"),
+                    );
+                }
+                if !types_compatible(element, types[1].as_ref()?) {
+                    self.type_mismatch(element, types[1].as_ref()?, expression.span, path);
+                }
+                Some(Type::Unit)
+            }
+            Builtin::ListLength => match types[0].as_ref()? {
+                Type::List(_) => Some(Type::Int),
+                argument => {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        format!("builtin {builtin:?} cannot accept {argument:?}"),
+                        expression.span,
+                        path,
+                    );
+                    None
+                }
+            },
+            Builtin::ListGet => {
+                let Type::List(element) = types[0].as_ref()? else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListGet receiver must be List",
+                        expression.span,
+                        path,
+                    );
+                    return None;
+                };
+                if !types_compatible(&Type::Int, types[1].as_ref()?) {
+                    self.type_mismatch(&Type::Int, types[1].as_ref()?, expression.span, path);
+                }
+                let Some(option) = self.program.prelude.option else {
+                    self.push(
+                        MirValidationCode::InvalidTypeReference,
+                        "ListGet returns Option, but prelude.option is absent",
+                        expression.span,
+                        path,
+                    );
+                    return None;
+                };
+                Some(Type::Nominal(option, vec![element.as_ref().clone()]))
+            }
             _ => {
+                let argument = types[0].as_ref()?;
                 self.push(
                     MirValidationCode::BuiltinShape,
                     format!("builtin {builtin:?} cannot accept {argument:?}"),
@@ -5444,6 +5551,46 @@ impl<'program> Validator<'program> {
                 }
                 false
             }
+            StatementKind::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => {
+                let start = self.dataflow_expr(
+                    function,
+                    start,
+                    state,
+                    tokens,
+                    &format!("{path}.start"),
+                    depth,
+                );
+                if start.diverges {
+                    return true;
+                }
+                let end =
+                    self.dataflow_expr(function, end, state, tokens, &format!("{path}.end"), depth);
+                if end.diverges {
+                    return true;
+                }
+
+                // The loop may execute zero times. Model one iteration and
+                // join it with the entry state; source scoping prevents use of
+                // the potentially uninitialized iteration binding afterward.
+                let entry = state.clone();
+                let mut iteration = state.clone();
+                Self::dataflow_store(local.0 as usize, Vec::new(), &mut iteration);
+                let _ = self.dataflow_block(
+                    function,
+                    body,
+                    &mut iteration,
+                    tokens,
+                    &format!("{path}.body"),
+                    depth + 1,
+                );
+                *state = join_dataflow_states(&[entry, iteration]);
+                false
+            }
             StatementKind::Assign { place, value } => {
                 let value = self.dataflow_expr(
                     function,
@@ -6240,6 +6387,10 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
             | StatementKind::Evaluate(value) => expr_definitely_diverges(value, depth + 1),
+            StatementKind::ForRange { start, end, .. } => {
+                expr_definitely_diverges(start, depth + 1)
+                    || expr_definitely_diverges(end, depth + 1)
+            }
             StatementKind::Assert { condition } => expr_definitely_diverges(condition, depth + 1),
             StatementKind::Defer(_) => false,
         };
@@ -6266,6 +6417,13 @@ fn cleanup_contains_forbidden_control(block: &Block, depth: u16) -> bool {
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
             | StatementKind::Evaluate(value) => expr_contains_await(value, depth + 1),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                expr_contains_await(start, depth + 1)
+                    || expr_contains_await(end, depth + 1)
+                    || cleanup_contains_forbidden_control(body, depth + 1)
+            }
             StatementKind::Assert { condition } => expr_contains_await(condition, depth + 1),
         })
         || block

@@ -7,8 +7,8 @@ use crate::ast::{
     Assignment, AssociatedBinding, AssociatedTypeBinding, AssociatedTypeRequirement, BinaryOp,
     Block, BlockItem, CallableSignature, CarrierKind, ConceptDecl, ConceptMember, ConceptRef,
     ConformanceMember, ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch,
-    EnumDecl, EnumVariant, ErrorNode, Expr, ExprKind, FunctionDecl, GenericParam, Ident, ImplDecl,
-    ImplKind, ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement,
+    EnumDecl, EnumVariant, ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident,
+    ImplDecl, ImplKind, ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement,
     ModuleDecl, Parameter, Path, Pattern, PatternKind, Receiver, RecordDecl, RecordField,
     RecordLiteralField, ReturnExpr, SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp,
     Visibility,
@@ -1860,6 +1860,7 @@ impl<'a> Parser<'a> {
             TokenKind::LetKw | TokenKind::VarKw | TokenKind::ScopedKw => {
                 BlockItem::Local(self.parse_local_at(nesting))
             }
+            TokenKind::ForKw => BlockItem::ForRange(self.parse_for_range_at(nesting)),
             TokenKind::DeferKw => {
                 self.bump();
                 BlockItem::Defer(self.parse_block_at(nesting))
@@ -1883,6 +1884,26 @@ impl<'a> Parser<'a> {
                     BlockItem::Expr(left)
                 }
             }
+        }
+    }
+
+    fn parse_for_range_at(&mut self, nesting: SyntaxNesting) -> ForRange {
+        let start = self.start();
+        self.bump();
+        let binding = self.parse_ident("loop binding after `for`");
+        self.expect(TokenKind::InKw, "`in` after loop binding");
+        let range_start = self.parse_expr_at(true, nesting);
+        self.expect(TokenKind::DotDot, "`..` in half-open range");
+        // As with `if` and `match` scrutinees, the following `{` starts the
+        // loop body rather than a record literal on the range-end expression.
+        let end = self.parse_expr_at(false, nesting);
+        let body = self.parse_block_at(nesting);
+        ForRange {
+            binding,
+            start: range_start,
+            end,
+            body,
+            range: self.finish(start),
         }
     }
 

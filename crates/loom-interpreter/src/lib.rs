@@ -837,6 +837,7 @@ impl<'program> Interpreter<'program> {
                     }
                     StatementKind::Assign { .. }
                     | StatementKind::Assert { .. }
+                    | StatementKind::ForRange { .. }
                     | StatementKind::Return(None)
                     | StatementKind::Defer(_) => None,
                 };
@@ -1625,6 +1626,37 @@ impl<'program> Interpreter<'program> {
                 self.bind_tuple(frame, locals, value, statement.span)
                     .map_err(EvalAbort::from)
             }
+            StatementKind::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => {
+                let start = self.eval_expr(frame, start)?;
+                let end = self.eval_expr(frame, end)?;
+                let (Value::Int { value: mut current }, Value::Int { value: end }) =
+                    (unrefined(start), unrefined(end))
+                else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "range bounds did not produce Int",
+                        statement.span,
+                    )));
+                };
+                while current < end {
+                    self.set_slot(
+                        frame,
+                        *local,
+                        Slot::Value(Value::Int { value: current }),
+                        statement.span,
+                    )
+                    .map_err(EvalAbort::from)?;
+                    self.eval_block(frame, body)?;
+                    // `current < end` means current cannot be i64::MAX.
+                    current += 1;
+                }
+                Ok(())
+            }
             StatementKind::Assign { place, value } => {
                 let value = self.eval_expr(frame, value)?;
                 let location = Location::from_place(frame, place);
@@ -2027,6 +2059,29 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, EvalAbort> {
         if let CallTarget::Builtin(builtin) = target {
+            if *builtin == Builtin::ListAdd {
+                let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "List.add has an invalid checked argument shape",
+                        span,
+                    )));
+                };
+                let value = self.eval_expr(frame, value)?;
+                let location = Location::from_place(frame, place);
+                let list = self.read_place(&location, span)?;
+                let Value::List { mut elements } = unrefined(list) else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "List.add receiver is not a List",
+                        span,
+                    )));
+                };
+                elements.push(value);
+                self.write_place(&location, Value::List { elements }, span)
+                    .map_err(EvalAbort::from)?;
+                return Ok(Value::Unit);
+            }
             let values = arguments
                 .iter()
                 .map(|argument| match argument {
@@ -2289,6 +2344,30 @@ impl<'program> Interpreter<'program> {
                     })
                 },
             ),
+            (Builtin::ListLength, [Value::List { elements }]) => {
+                let value = i64::try_from(elements.len()).map_err(|_| {
+                    ExecutionFailure::from(self.runtime_fault(
+                        "ListTooLarge",
+                        "List length exceeds Int",
+                        span,
+                    ))
+                })?;
+                Ok(Value::Int { value })
+            }
+            (Builtin::ListGet, [Value::List { elements }, Value::Int { value }]) => {
+                let element = usize::try_from(*value)
+                    .ok()
+                    .and_then(|index| elements.get(index))
+                    .cloned();
+                self.option_value(element, span)
+            }
+            (Builtin::ListAdd, _) => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "List.add did not receive an inout receiver",
+                    span,
+                )
+                .into()),
             _ => Err(self
                 .runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -2297,6 +2376,26 @@ impl<'program> Interpreter<'program> {
                 )
                 .into()),
         }
+    }
+
+    fn option_value(&self, payload: Option<Value>, span: Span) -> Result<Value, ExecutionFailure> {
+        let option_type = self
+            .program
+            .prelude
+            .option
+            .and_then(|id| self.program.type_def(id))
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude Option type is missing",
+                    span,
+                ))
+            })?;
+        Ok(Value::Enum {
+            ty: option_type.id,
+            variant: VariantId(u32::from(payload.is_some())),
+            payload: payload.into_iter().collect(),
+        })
     }
 
     fn checked_refine(

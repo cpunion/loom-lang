@@ -335,7 +335,7 @@ let user, settings = Task.all(loadUser(), loadSettings()).await
 动态数量使用同构 task list：
 
 ```loom
-let tasks = List[Task[Report]]()
+var tasks = List[Task[Report]]()
 // 根据运行时输入加入任意多个 Task[Report]
 let reports = Task.all(tasks).await
 ```

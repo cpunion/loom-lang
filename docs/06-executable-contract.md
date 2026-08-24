@@ -540,11 +540,15 @@ PropagateSuffix := "?"
 TupleType      := "(" Type "," (Type ("," Type)*)? ")"
 TupleExpr      := "(" Expression "," (Expression ("," Expression)*)? ")"
 TupleBinding   := "let" Identifier ("," Identifier)+ "=" Expression
+ForRangeItem   := "for" Identifier "in" Expression ".." Expression Block
+EmptyList      := "List" "[" Type "]" "(" ")"
 TaskJoin       := "Task" "." ("all" | "settled" | "any" | "race")
                   "(" Expression ("," Expression)* ")"
 TaskSleep      := "Task" "." "sleep" "(" Expression ")"
 TaskWait       := "Task" "." ("waitReadable" | "waitWritable") "(" Expression ")"
 ```
+
+`for` 的区间是 `Int` 上的半开区间 `[start, end)`；上下界各求值一次，iteration binding 不可修改。每轮 body 是独立词法 scope，因此该轮注册的 `defer`/`scoped` 在进入下一轮前已经完成。`List[T]()` 建立空的可增长同构 list；`var list` 可调用 `list.add(value)`，所有 list 可调用 `length() Int` 与 `get(index Int) Option[T]`。越界和负 index 返回 `None`。
 
 `pub async fn` 合法；method/concept requirement 的 async 形式当前拒绝。`scoped` 不与 `let`/`var` 连写。显式类型仍写 `scoped name Type = value`，不增加 `name: Type`。
 
