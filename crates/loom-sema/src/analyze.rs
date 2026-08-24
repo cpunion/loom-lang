@@ -3045,8 +3045,122 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         "equality operands have incompatible types",
                         expression,
                     );
+                } else if !self.supports_value_equality(left_ty)
+                    || !self.supports_value_equality(right_ty)
+                {
+                    self.error_at(
+                        "InvalidGenericOperation",
+                        "equality is unavailable because an operand type does not support value equality",
+                        expression,
+                    );
                 }
                 bool_ty
+            }
+        }
+    }
+
+    fn supports_value_equality(&mut self, ty: TyId) -> bool {
+        self.supports_value_equality_inner(ty, &mut BTreeSet::new(), 0)
+    }
+
+    fn supports_value_equality_inner(
+        &mut self,
+        ty: TyId,
+        active: &mut BTreeSet<TyId>,
+        depth: u16,
+    ) -> bool {
+        if depth >= 128 {
+            return false;
+        }
+        match self.analyzer.typed.types.data(ty).clone() {
+            TyData::Error | TyData::Never => true,
+            TyData::Builtin(
+                BuiltinType::Bool
+                | BuiltinType::Int
+                | BuiltinType::Float
+                | BuiltinType::Text
+                | BuiltinType::Unit
+                | BuiltinType::ConstraintError
+                | BuiltinType::TaskFault
+                | BuiltinType::Duration
+                | BuiltinType::ParseFloatError
+                | BuiltinType::ParseIntError,
+            ) => true,
+            TyData::Builtin(
+                BuiltinType::ContractFault | BuiltinType::File | BuiltinType::Socket,
+            )
+            | TyData::Param(_)
+            | TyData::SelfType(_)
+            | TyData::Projection { .. }
+            | TyData::DynTarget(_)
+            | TyData::View { .. }
+            | TyData::Task(_) => false,
+            TyData::Tuple(elements) => elements.into_iter().all(|element| {
+                self.supports_value_equality_inner(element, active, depth + 1)
+            }),
+            TyData::List(element) | TyData::Option(element) | TyData::TaskOutcome(element) => {
+                self.supports_value_equality_inner(element, active, depth + 1)
+            }
+            TyData::Result { ok, error } => {
+                self.supports_value_equality_inner(ok, active, depth + 1)
+                    && self.supports_value_equality_inner(error, active, depth + 1)
+            }
+            TyData::Nominal {
+                definition,
+                arguments,
+            } => {
+                if !active.insert(ty) {
+                    // Recursive values are finite at runtime. Re-entering the
+                    // same instantiated nominal therefore closes this
+                    // coinductive derivation instead of making equality
+                    // unavailable solely because the declaration is recursive.
+                    return true;
+                }
+                let parameters = self.analyzer.type_generic_params(definition);
+                let substitution = substitution_for(&parameters, &arguments);
+                let kind = self.analyzer.program.definitions[definition].kind.clone();
+                let result = match kind {
+                    DefinitionKind::RefinedType(refined) => self
+                        .analyzer
+                        .typed
+                        .resolved_type_refs
+                        .get(refined.base)
+                        .copied()
+                        .is_some_and(|base| {
+                            let base = self.types().substitute(base, &substitution);
+                            self.supports_value_equality_inner(base, active, depth + 1)
+                        }),
+                    DefinitionKind::Record(record) => record.fields.into_iter().all(|field| {
+                        let Some(Signature::Field { ty, .. }) =
+                            self.analyzer.typed.signatures.get(field).cloned()
+                        else {
+                            return false;
+                        };
+                        let field_ty = self.types().substitute(ty, &substitution);
+                        self.supports_value_equality_inner(field_ty, active, depth + 1)
+                    }),
+                    DefinitionKind::Enum(enumeration) => {
+                        enumeration.variants.into_iter().all(|variant| {
+                            let Some(Signature::Variant { payload, .. }) =
+                                self.analyzer.typed.signatures.get(variant).cloned()
+                            else {
+                                return false;
+                            };
+                            payload.into_iter().all(|payload_ty| {
+                                let payload_ty =
+                                    self.types().substitute(payload_ty, &substitution);
+                                self.supports_value_equality_inner(
+                                    payload_ty,
+                                    active,
+                                    depth + 1,
+                                )
+                            })
+                        })
+                    }
+                    _ => false,
+                };
+                active.remove(&ty);
+                result
             }
         }
     }
@@ -7467,6 +7581,113 @@ fn unwrap_some(value Option[Int]) Int {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "NonExhaustiveMatch")
         );
+    }
+
+    #[test]
+    fn equality_requires_a_statically_derivable_value_equality_capability() {
+        let (_, generic) = analyze_source(
+            r"
+module sample
+
+fn same[T](left T, right T) Bool {
+    left == right
+}
+",
+        );
+        assert!(
+            generic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
+            "{:#?}",
+            generic.diagnostics
+        );
+
+        let (_, aggregate) = analyze_source(
+            r"
+module sample
+
+record Boxed[T] {
+    value T
+}
+
+fn same[T](left Boxed[T], right Boxed[T]) Bool {
+    left == right
+}
+",
+        );
+        assert!(
+            aggregate
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
+            "{:#?}",
+            aggregate.diagnostics
+        );
+
+        let (_, resources) = analyze_source(
+            r"
+module sample
+
+fn same_file(left File, right File) Bool {
+    left == right
+}
+",
+        );
+        assert!(
+            resources
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
+            "{:#?}",
+            resources.diagnostics
+        );
+
+        let (_, dynamic) = analyze_source(
+            r"
+module sample
+
+dyn concept Display {
+    method display(self) Text
+}
+
+fn same_view(left dyn Display, right dyn Display) Bool {
+    left == right
+}
+",
+        );
+        assert!(
+            dynamic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
+            "{:#?}",
+            dynamic.diagnostics
+        );
+    }
+
+    #[test]
+    fn structural_values_derive_equality_when_every_component_supports_it() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+record Pair {
+    names List[Text]
+    count Int
+}
+
+enum MaybePair {
+    Missing
+    Present(Pair)
+}
+
+fn same(left MaybePair, right MaybePair) Bool {
+    left == right
+}
+",
+        );
+        assert!(analysis.diagnostics.is_empty(), "{:#?}", analysis.diagnostics);
     }
 
     #[test]

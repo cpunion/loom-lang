@@ -3136,7 +3136,9 @@ impl<'program> Validator<'program> {
     ) -> Option<Type> {
         let same = types_compatible(left, right);
         let valid = match operator {
-            BinaryOp::Equal | BinaryOp::NotEqual => same,
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                same && self.supports_value_equality(left) && self.supports_value_equality(right)
+            }
             BinaryOp::Add
             | BinaryOp::Subtract
             | BinaryOp::Multiply
@@ -3169,6 +3171,72 @@ impl<'program> Validator<'program> {
             | BinaryOp::And
             | BinaryOp::Or => Type::Bool,
         })
+    }
+
+    fn supports_value_equality(&self, ty: &Type) -> bool {
+        self.supports_value_equality_inner(ty, &mut Vec::new(), 0)
+    }
+
+    fn supports_value_equality_inner(
+        &self,
+        ty: &Type,
+        active: &mut Vec<Type>,
+        depth: u16,
+    ) -> bool {
+        if depth >= MAX_VALIDATION_DEPTH {
+            return false;
+        }
+        match ty {
+            Type::Never
+            | Type::Error
+            | Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Text => true,
+            Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::Task(_)
+            | Type::View { .. } => false,
+            Type::Tuple(elements) => elements.iter().all(|element| {
+                self.supports_value_equality_inner(element, active, depth + 1)
+            }),
+            Type::List(element) | Type::TaskOutcome(element) => {
+                self.supports_value_equality_inner(element, active, depth + 1)
+            }
+            Type::Nominal(type_id, arguments) => {
+                if self.program.prelude.file == Some(*type_id)
+                    || self.program.prelude.socket == Some(*type_id)
+                {
+                    return false;
+                }
+                if active.contains(ty) {
+                    return true;
+                }
+                let Some(definition) = self.program.type_def(*type_id) else {
+                    return false;
+                };
+                active.push(ty.clone());
+                let result = match &definition.kind {
+                    TypeDefKind::Record { fields, .. } => fields.iter().all(|field| {
+                        let field_ty = substitute_type(&field.ty, arguments);
+                        self.supports_value_equality_inner(&field_ty, active, depth + 1)
+                    }),
+                    TypeDefKind::Enum { variants } => variants.iter().all(|variant| {
+                        variant.payload.iter().all(|payload| {
+                            let payload = substitute_type(payload, arguments);
+                            self.supports_value_equality_inner(&payload, active, depth + 1)
+                        })
+                    }),
+                    TypeDefKind::Refined { base, .. } => {
+                        let base = substitute_type(base, arguments);
+                        self.supports_value_equality_inner(&base, active, depth + 1)
+                    }
+                };
+                active.pop();
+                result
+            }
+        }
     }
 
     fn validate_contract_binary(

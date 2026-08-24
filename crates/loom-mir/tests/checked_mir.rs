@@ -104,6 +104,40 @@ fn valid_program_crosses_checked_boundary() {
 }
 
 #[test]
+fn generic_equality_cannot_cross_the_checked_mir_boundary() {
+    let parameter = Type::Parameter(0);
+    let mut generic = function(
+        0,
+        vec![
+            local(0, parameter.clone(), false),
+            local(1, parameter.clone(), false),
+        ],
+        Vec::new(),
+        Type::Bool,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(Expr {
+                kind: ExprKind::Binary(
+                    loom_mir::BinaryOp::Equal,
+                    Box::new(copy(0, parameter.clone())),
+                    Box::new(copy(1, parameter)),
+                ),
+                ty: Type::Bool,
+                span: span(),
+            })),
+            span: span(),
+        },
+    );
+    generic.type_parameters = 1;
+    let program = Program {
+        functions: vec![generic],
+        ..Program::default()
+    };
+    let errors = validation_errors(&program);
+    assert!(errors.contains(MirValidationCode::ExpressionShape));
+}
+
+#[test]
 fn direct_indices_are_validated_before_interpretation() {
     let mut program = simple_program();
     program.functions[0].id = FunctionId(9);
