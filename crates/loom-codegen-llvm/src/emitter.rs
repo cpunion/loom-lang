@@ -2167,6 +2167,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.set_debug_location(constructor, source.span.file.0, source.span.range.start);
         let output = parameter_pointer(constructor, 0)?;
         let mut argument = parameter_pointer(constructor, 1)?;
+        let mut witness_argument = parameter_pointer(constructor, 2)?;
         let executor = parameter_pointer(constructor, 3)?;
         let entry = self.context.append_basic_block(constructor, "entry");
         let ready = self.context.append_basic_block(constructor, "task.ready");
@@ -2244,6 +2245,34 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 argument,
                 ARG_NODE_FIELD_NEXT,
                 "task.argument.next",
+            )?;
+        }
+        for index in 0..source.witness_params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
+            let witness = self.load_pointer_field(
+                self.witness_node_type,
+                witness_argument,
+                WITNESS_NODE_FIELD_VALUE,
+                "task.witness",
+            )?;
+            let slot = call_pointer(
+                &self.builder,
+                self.native_task_slot(),
+                &[
+                    task.into(),
+                    self.i64_type
+                        .const_int(layout.witness_slots[&index], false)
+                        .into(),
+                ],
+                "task.witness.slot",
+            )?;
+            self.store_pointer_field(self.value_type, slot, VALUE_FIELD_DATA, witness)?;
+            witness_argument = self.load_pointer_field(
+                self.witness_node_type,
+                witness_argument,
+                WITNESS_NODE_FIELD_NEXT,
+                "task.witness.next",
             )?;
         }
         self.builder
@@ -2883,6 +2912,7 @@ struct CompletionWait<'ctx> {
 struct AsyncLayout {
     local_slots: BTreeMap<LocalId, u64>,
     old_parameter_slots: BTreeMap<LocalId, u64>,
+    witness_slots: BTreeMap<u32, u64>,
     result_slot: u64,
     slot_count: u64,
 }
@@ -2904,6 +2934,15 @@ impl AsyncLayout {
                 .checked_add(1)
                 .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
         }
+        let mut witness_slots = BTreeMap::new();
+        for index in 0..function.witness_params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
+            witness_slots.insert(index, next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
+        }
         let result_slot = next;
         let slot_count = next
             .checked_add(1)
@@ -2911,6 +2950,7 @@ impl AsyncLayout {
         Ok(Self {
             local_slots,
             old_parameter_slots,
+            witness_slots,
             result_slot,
             slot_count,
         })
@@ -2922,7 +2962,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     source: &'program Function,
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
-    witness_arguments: PointerValue<'ctx>,
+    witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     executor: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -2949,7 +2989,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let function = backend.functions[&id];
         let output = parameter_pointer(function, 0)?;
         let arguments = parameter_pointer(function, 1)?;
-        let witness_arguments = parameter_pointer(function, 2)?;
+        let mut witness_argument = parameter_pointer(function, 2)?;
         let executor = parameter_pointer(function, 3)?;
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
@@ -3010,12 +3050,30 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .map_err(builder_error)?;
             old_parameters.insert(parameter.id, snapshot);
         }
+        let mut witness_parameters = BTreeMap::new();
+        for index in 0..source.witness_params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many witnesses"))?;
+            let witness = backend.load_pointer_field(
+                backend.witness_node_type,
+                witness_argument,
+                WITNESS_NODE_FIELD_VALUE,
+                "witness.value",
+            )?;
+            witness_parameters.insert(index, witness);
+            witness_argument = backend.load_pointer_field(
+                backend.witness_node_type,
+                witness_argument,
+                WITNESS_NODE_FIELD_NEXT,
+                "witness.next",
+            )?;
+        }
         Ok(Self {
             backend,
             source,
             function,
             output,
-            witness_arguments,
+            witness_parameters,
             executor,
             task: None,
             resume_blocks: BTreeMap::new(),
@@ -3104,6 +3162,30 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?;
             old_parameters.insert(parameter.id, slot);
         }
+        let mut witness_parameters = BTreeMap::new();
+        for index in 0..source.witness_params.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
+            let slot = call_pointer(
+                &backend.builder,
+                backend.native_task_slot(),
+                &[
+                    task.into(),
+                    backend
+                        .i64_type
+                        .const_int(layout.witness_slots[&index], false)
+                        .into(),
+                ],
+                "task.witness.slot",
+            )?;
+            let witness = backend.load_pointer_field(
+                backend.value_type,
+                slot,
+                VALUE_FIELD_DATA,
+                "task.witness",
+            )?;
+            witness_parameters.insert(index, witness);
+        }
         let is_cancelled = call_int(
             &backend.builder,
             backend.native_task_is_cancelled(),
@@ -3163,7 +3245,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            witness_arguments: backend.ptr_type.const_null(),
+            witness_parameters,
             executor,
             task: Some(task),
             resume_blocks,
@@ -6286,21 +6368,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     )
                 }),
             WitnessRef::Parameter(index) => {
-                let mut node = self.witness_arguments;
-                for _ in 0..*index {
-                    node = self.backend.load_pointer_field(
-                        self.backend.witness_node_type,
-                        node,
-                        WITNESS_NODE_FIELD_NEXT,
-                        "witness.next",
-                    )?;
-                }
-                self.backend.load_pointer_field(
-                    self.backend.witness_node_type,
-                    node,
-                    WITNESS_NODE_FIELD_VALUE,
-                    "witness.value",
-                )
+                self.witness_parameters.get(index).copied().ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidWitnessReference",
+                        format!("witness parameter #{index} does not exist"),
+                    )
+                })
             }
             WitnessRef::Apply { witness, arguments } => {
                 let base = self
