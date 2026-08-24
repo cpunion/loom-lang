@@ -51,6 +51,14 @@ impl ImplIndex {
         self.by_concept.get(&concept).map_or(&[], Vec::as_slice)
     }
 
+    #[must_use]
+    pub fn header(&self, definition: DefId) -> Option<&ImplHeader> {
+        self.by_concept
+            .values()
+            .flatten()
+            .find(|header| header.definition == definition)
+    }
+
     /// Returns all pairs whose target heads might overlap. Conditions are
     /// intentionally ignored, as required by Core 0.2's conservative rule.
     #[must_use]

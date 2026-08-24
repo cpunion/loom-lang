@@ -925,13 +925,22 @@ impl Analyzer<'_> {
                     _ => None,
                 }
             }
-            DefinitionKind::AssociatedType(associated)
-                if matches!(
-                    self.program.definitions[associated.owner].kind,
-                    DefinitionKind::Concept(_)
-                ) =>
-            {
-                Some(self.typed.types.intern(TyData::SelfType(associated.owner)))
+            DefinitionKind::AssociatedType(associated) => {
+                match &self.program.definitions[associated.owner].kind {
+                    DefinitionKind::Concept(_) => {
+                        Some(self.typed.types.intern(TyData::SelfType(associated.owner)))
+                    }
+                    DefinitionKind::Conformance(conformance) => {
+                        let context = TypeContext {
+                            module: self.program.definitions[associated.owner].module,
+                            generic_params: generic_params.clone(),
+                            self_ty: None,
+                            self_concept: None,
+                        };
+                        Some(self.resolve_type_ref(conformance.target, &context))
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -949,11 +958,18 @@ impl Analyzer<'_> {
                 }
                 _ => None,
             },
-            DefinitionKind::AssociatedType(associated) => matches!(
-                self.program.definitions[associated.owner].kind,
-                DefinitionKind::Concept(_)
-            )
-            .then_some(associated.owner),
+            DefinitionKind::AssociatedType(associated) => {
+                match &self.program.definitions[associated.owner].kind {
+                    DefinitionKind::Concept(_) => Some(associated.owner),
+                    DefinitionKind::Conformance(conformance) => {
+                        let module = self.program.definitions[associated.owner].module;
+                        crate::Resolver::new(self.program, self.def_maps, module)
+                            .resolve_definition(&conformance.concept.path, Namespace::Concept)
+                            .ok()
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -1168,6 +1184,7 @@ impl Analyzer<'_> {
             self.build_conformance(definition);
         }
         self.impl_index.finish();
+        self.validate_associated_type_bindings();
         for (left, right) in self.impl_index.overlapping_pairs(&self.typed.types) {
             let left_target = self.conformance_target(left);
             let right_target = self.conformance_target(right);
@@ -1188,6 +1205,132 @@ impl Analyzer<'_> {
                 )
                 .with_label(self.definition_span(left), "conflicting conformance"),
             );
+        }
+    }
+
+    fn validate_associated_type_bindings(&mut self) {
+        let conformances = self
+            .typed
+            .conformances
+            .iter()
+            .map(|(definition, semantics)| (definition, semantics.clone()))
+            .collect::<Vec<_>>();
+        let projection_bindings = conformances
+            .iter()
+            .flat_map(|(definition, semantics)| {
+                semantics.associated_types.iter().map(|binding| {
+                    (
+                        (
+                            semantics.target,
+                            semantics.concept.concept,
+                            binding.associated_type,
+                        ),
+                        (*definition, binding.ty),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let cyclic = projection_bindings
+            .iter()
+            .filter_map(|(key, (definition, _))| {
+                projection_binding_has_cycle(
+                    *key,
+                    &projection_bindings,
+                    &self.typed.types,
+                    &mut BTreeSet::new(),
+                    0,
+                )
+                .then_some(*definition)
+            })
+            .collect::<BTreeSet<_>>();
+        for definition in &cyclic {
+            self.error(
+                "ConformanceResolutionCycle",
+                "associated type bindings form a projection cycle",
+                self.definition_span(*definition),
+            );
+        }
+
+        for (definition, semantics) in conformances {
+            if cyclic.contains(&definition) {
+                continue;
+            }
+            let environment = ParamEnv {
+                bounds: self
+                    .impl_index
+                    .header(definition)
+                    .map_or_else(Vec::new, |header| header.conditions.clone()),
+            };
+            for binding in &semantics.associated_types {
+                let Some(Signature::AssociatedType { bounds, .. }) =
+                    self.typed.signatures.get(binding.associated_type).cloned()
+                else {
+                    continue;
+                };
+                for bound in bounds {
+                    let self_ty = self.instantiate_concept_type(
+                        bound.self_ty,
+                        semantics.target,
+                        &semantics.concept,
+                    );
+                    let bindings = bound
+                        .concept
+                        .bindings
+                        .into_iter()
+                        .map(|binding| AssociatedTypeBinding {
+                            associated_type: binding.associated_type,
+                            ty: self.instantiate_concept_type(
+                                binding.ty,
+                                semantics.target,
+                                &semantics.concept,
+                            ),
+                        })
+                        .collect();
+                    let goal = Goal {
+                        self_ty,
+                        concept: ConceptInstance {
+                            concept: bound.concept.concept,
+                            bindings,
+                        },
+                    };
+                    let result = {
+                        let mut solver =
+                            crate::ConformanceSolver::new(&self.impl_index, &mut self.typed.types);
+                        solver.solve(&goal, &environment)
+                    };
+                    if let Err(failure) = result {
+                        let associated_name = self.program.definitions[binding.associated_type]
+                            .name
+                            .as_ref()
+                            .map_or("<error>", Name::as_str);
+                        let bound_name = self.program.definitions[goal.concept.concept]
+                            .name
+                            .as_ref()
+                            .map_or("<error>", Name::as_str);
+                        let reason = match failure {
+                            SolveFailure::Missing => "no matching conformance exists",
+                            SolveFailure::Ambiguous(_) => "more than one conformance matches",
+                            SolveFailure::Cycle(_) => "proof search entered a cycle",
+                            SolveFailure::AssociatedTypeMismatch { .. } => {
+                                "an associated binding does not match"
+                            }
+                        };
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "AssociatedTypeBoundNotSatisfied",
+                                format!(
+                                    "associated type `{associated_name}` must satisfy `{bound_name}` ({reason})"
+                                ),
+                                self.definition_span(definition),
+                            )
+                            .with_label(
+                                self.definition_span(binding.associated_type),
+                                "bound declared here",
+                            ),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1497,6 +1640,17 @@ impl Analyzer<'_> {
                 let element = self.instantiate_concept_type(element, concrete_self, instance);
                 self.typed.types.intern(TyData::Option(element))
             }
+            TyData::Tuple(elements) => {
+                let elements = elements
+                    .into_iter()
+                    .map(|element| self.instantiate_concept_type(element, concrete_self, instance))
+                    .collect();
+                self.typed.types.intern(TyData::Tuple(elements))
+            }
+            TyData::List(element) => {
+                let element = self.instantiate_concept_type(element, concrete_self, instance);
+                self.typed.types.intern(TyData::List(element))
+            }
             TyData::Result { ok, error } => {
                 let ok = self.instantiate_concept_type(ok, concrete_self, instance);
                 let error = self.instantiate_concept_type(error, concrete_self, instance);
@@ -1516,6 +1670,32 @@ impl Analyzer<'_> {
                     definition,
                     arguments,
                 })
+            }
+            TyData::Task(output) => {
+                let output = self.instantiate_concept_type(output, concrete_self, instance);
+                self.typed.types.intern(TyData::Task(output))
+            }
+            TyData::TaskOutcome(output) => {
+                let output = self.instantiate_concept_type(output, concrete_self, instance);
+                self.typed.types.intern(TyData::TaskOutcome(output))
+            }
+            TyData::DynTarget(target) => {
+                let bindings = target
+                    .bindings
+                    .into_iter()
+                    .map(|binding| AssociatedTypeBinding {
+                        associated_type: binding.associated_type,
+                        ty: self.instantiate_concept_type(binding.ty, concrete_self, instance),
+                    })
+                    .collect();
+                self.typed.types.intern(TyData::DynTarget(ConceptInstance {
+                    concept: target.concept,
+                    bindings,
+                }))
+            }
+            TyData::View { mutability, target } => {
+                let target = self.instantiate_concept_type(target, concrete_self, instance);
+                self.typed.types.intern(TyData::View { mutability, target })
             }
             _ => ty,
         }
@@ -3090,11 +3270,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 BuiltinType::ContractFault | BuiltinType::File | BuiltinType::Socket,
             )
             | TyData::Param(_)
-            | TyData::SelfType(_)
-            | TyData::Projection { .. }
             | TyData::DynTarget(_)
             | TyData::View { .. }
             | TyData::Task(_) => false,
+            TyData::SelfType(_) | TyData::Projection { .. } => {
+                self.symbolic_concept_contract_equality_allowed()
+            }
             TyData::Tuple(elements) => elements
                 .into_iter()
                 .all(|element| self.supports_value_equality_inner(element, active, depth + 1)),
@@ -3158,6 +3339,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 result
             }
         }
+    }
+
+    fn symbolic_concept_contract_equality_allowed(&self) -> bool {
+        if self.environment.contract == ContractMode::None {
+            return false;
+        }
+        let DefinitionKind::Method(method) =
+            &self.analyzer.program.definitions[self.environment.owner].kind
+        else {
+            return false;
+        };
+        matches!(
+            self.analyzer.program.definitions[method.owner].kind,
+            DefinitionKind::Concept(_)
+        )
     }
 
     fn check_assignment(&mut self, expression: ExprId, target: ExprId, value: ExprId) -> TyId {
@@ -7370,6 +7566,85 @@ fn substitution_for(parameters: &[GenericParamId], arguments: &[TyId]) -> Substi
     substitution
 }
 
+type ProjectionBindingKey = (TyId, DefId, DefId);
+
+fn projection_binding_has_cycle(
+    key: ProjectionBindingKey,
+    bindings: &BTreeMap<ProjectionBindingKey, (DefId, TyId)>,
+    types: &crate::TyInterner,
+    active: &mut BTreeSet<ProjectionBindingKey>,
+    depth: u16,
+) -> bool {
+    if depth >= 128 || !active.insert(key) {
+        return true;
+    }
+    let cyclic = bindings.get(&key).is_some_and(|(_, ty)| {
+        let mut references = BTreeSet::new();
+        collect_projection_bindings(types, *ty, &mut references, &mut BTreeSet::new(), 0);
+        references.into_iter().any(|reference| {
+            bindings.contains_key(&reference)
+                && projection_binding_has_cycle(reference, bindings, types, active, depth + 1)
+        })
+    });
+    active.remove(&key);
+    cyclic
+}
+
+fn collect_projection_bindings(
+    types: &crate::TyInterner,
+    ty: TyId,
+    output: &mut BTreeSet<ProjectionBindingKey>,
+    visited: &mut BTreeSet<TyId>,
+    depth: u16,
+) {
+    if depth >= 128 || !visited.insert(ty) {
+        return;
+    }
+    match types.data(ty) {
+        TyData::Projection {
+            self_ty,
+            concept,
+            associated_type,
+        } => {
+            output.insert((*self_ty, *concept, *associated_type));
+            collect_projection_bindings(types, *self_ty, output, visited, depth + 1);
+        }
+        TyData::Tuple(elements) => {
+            for element in elements {
+                collect_projection_bindings(types, *element, output, visited, depth + 1);
+            }
+        }
+        TyData::List(element)
+        | TyData::Option(element)
+        | TyData::Task(element)
+        | TyData::TaskOutcome(element) => {
+            collect_projection_bindings(types, *element, output, visited, depth + 1);
+        }
+        TyData::Result { ok, error } => {
+            collect_projection_bindings(types, *ok, output, visited, depth + 1);
+            collect_projection_bindings(types, *error, output, visited, depth + 1);
+        }
+        TyData::Nominal { arguments, .. } => {
+            for argument in arguments {
+                collect_projection_bindings(types, *argument, output, visited, depth + 1);
+            }
+        }
+        TyData::DynTarget(instance) => {
+            for binding in &instance.bindings {
+                collect_projection_bindings(types, binding.ty, output, visited, depth + 1);
+            }
+        }
+        TyData::View { target, .. } => {
+            collect_projection_bindings(types, *target, output, visited, depth + 1);
+        }
+        TyData::Error
+        | TyData::Never
+        | TyData::Builtin(_)
+        | TyData::Param(_)
+        | TyData::SelfType(_) => {}
+    }
+}
+
 fn type_parameters_in(types: &crate::TyInterner, ty: TyId) -> BTreeSet<GenericParamId> {
     let mut parameters = BTreeSet::new();
     collect_type_parameters(types, ty, &mut parameters);
@@ -8125,6 +8400,135 @@ fn read[T: Source](source T) T.Item {
                 .resolved_type_refs
                 .values()
                 .any(|ty| matches!(analysis.typed.types.data(*ty), TyData::Projection { .. }))
+        );
+    }
+
+    #[test]
+    fn associated_type_bindings_must_satisfy_declared_bounds() {
+        let (_, valid) = analyze_source(
+            r"
+module sample
+
+concept Display {
+    method display(self) Text
+}
+
+record Label {
+    value Text
+}
+
+impl Display for Label {
+    method display(self) Text { self.value }
+}
+
+concept Source {
+    associated type Item: Display
+    method read(self) Self.Item
+}
+
+record Labels {
+    value Label
+}
+
+impl Source for Labels {
+    associated type Item = Label
+    method read(self) Label { self.value }
+}
+",
+        );
+        assert!(valid.diagnostics.is_empty(), "{:#?}", valid.diagnostics);
+
+        let (_, invalid) = analyze_source(
+            r"
+module sample
+
+concept Display {
+    method display(self) Text
+}
+
+concept Source {
+    associated type Item: Display
+    method read(self) Self.Item
+}
+
+record Number {
+    value Int
+}
+
+impl Source for Number {
+    associated type Item = Int
+    method read(self) Int { self.value }
+}
+",
+        );
+        assert!(
+            invalid
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "AssociatedTypeBoundNotSatisfied"),
+            "{:#?}",
+            invalid.diagnostics
+        );
+    }
+
+    #[test]
+    fn associated_type_bounds_use_conditional_conformance_proofs() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+concept Display {
+    method display(self) Text
+}
+
+concept Source {
+    associated type Item: Display
+    method read(self) Self.Item
+}
+
+record Boxed[T] {
+    value T
+}
+
+impl[T: Display] Source for Boxed[T] {
+    associated type Item = T
+    method read(self) T { self.value }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn associated_projection_cycles_are_rejected() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+concept Pair {
+    associated type First
+    associated type Second
+}
+
+record Broken {}
+
+impl Pair for Broken {
+    associated type First = Self.Second
+    associated type Second = Self.First
+}
+",
+        );
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ConformanceResolutionCycle"),
+            "{:#?}",
+            analysis.diagnostics
         );
     }
 
