@@ -1255,38 +1255,28 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
                     kind: ContractExprKind::Value(ContractValue::Argument(0)),
                     span: span(),
                 }),
-                arms: vec![
-                    ContractArm {
-                        pattern: Pattern::Variant {
-                            ty: TypeId(1),
-                            variant: VariantId(0),
-                            payload: vec![Pattern::Binding],
-                        },
-                        bindings: vec![Type::Int],
-                        value: ContractExpr {
-                            kind: ContractExprKind::Binary(
-                                loom_mir::BinaryOp::GreaterEqual,
-                                Box::new(ContractExpr {
-                                    kind: ContractExprKind::Binding(0),
-                                    span: span(),
-                                }),
-                                Box::new(ContractExpr {
-                                    kind: ContractExprKind::Constant(Constant::Int(0)),
-                                    span: span(),
-                                }),
-                            ),
-                            span: span(),
-                        },
+                arms: vec![ContractArm {
+                    pattern: Pattern::Variant {
+                        ty: TypeId(1),
+                        variant: VariantId(0),
+                        payload: vec![Pattern::Binding],
                     },
-                    ContractArm {
-                        pattern: Pattern::Wildcard,
-                        bindings: Vec::new(),
-                        value: ContractExpr {
-                            kind: ContractExprKind::Constant(Constant::Bool(false)),
-                            span: span(),
-                        },
+                    bindings: vec![Type::Int],
+                    value: ContractExpr {
+                        kind: ContractExprKind::Binary(
+                            loom_mir::BinaryOp::GreaterEqual,
+                            Box::new(ContractExpr {
+                                kind: ContractExprKind::Binding(0),
+                                span: span(),
+                            }),
+                            Box::new(ContractExpr {
+                                kind: ContractExprKind::Constant(Constant::Int(0)),
+                                span: span(),
+                            }),
+                        ),
+                        span: span(),
                     },
-                ],
+                }],
             },
             span: span(),
         },
@@ -2438,6 +2428,41 @@ fn match_must_be_exhaustive_and_nested_return_flow_is_never() {
         ..Program::default()
     })
     .expect("all nested branches return, so the enclosing block diverges");
+}
+
+#[test]
+fn checked_mir_rejects_an_unreachable_match_arm() {
+    let arm = |value: bool, result: i64| MatchArm {
+        pattern: Pattern::Constant(Constant::Bool(value)),
+        bindings: Vec::new(),
+        value: constant(Constant::Int(result), Type::Int),
+    };
+    let duplicate = function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(Expr {
+                kind: ExprKind::Match {
+                    scrutinee: Box::new(copy(0, Type::Bool)),
+                    arms: vec![arm(true, 1), arm(true, 2), arm(false, 0)],
+                },
+                ty: Type::Int,
+                span: span(),
+            })),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        functions: vec![duplicate],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::PatternShape
+            && error.message.contains("match arm is unreachable")
+    }));
 }
 
 #[test]

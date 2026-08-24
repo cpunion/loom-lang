@@ -3177,12 +3177,7 @@ impl<'program> Validator<'program> {
         self.supports_value_equality_inner(ty, &mut Vec::new(), 0)
     }
 
-    fn supports_value_equality_inner(
-        &self,
-        ty: &Type,
-        active: &mut Vec<Type>,
-        depth: u16,
-    ) -> bool {
+    fn supports_value_equality_inner(&self, ty: &Type, active: &mut Vec<Type>, depth: u16) -> bool {
         if depth >= MAX_VALIDATION_DEPTH {
             return false;
         }
@@ -3198,9 +3193,9 @@ impl<'program> Validator<'program> {
             | Type::AssociatedProjection { .. }
             | Type::Task(_)
             | Type::View { .. } => false,
-            Type::Tuple(elements) => elements.iter().all(|element| {
-                self.supports_value_equality_inner(element, active, depth + 1)
-            }),
+            Type::Tuple(elements) => elements
+                .iter()
+                .all(|element| self.supports_value_equality_inner(element, active, depth + 1)),
             Type::List(element) | Type::TaskOutcome(element) => {
                 self.supports_value_equality_inner(element, active, depth + 1)
             }
@@ -4784,8 +4779,23 @@ impl<'program> Validator<'program> {
         depth: u16,
     ) -> Type {
         let mut joined = Type::Never;
+        let mut previous_patterns = Vec::new();
         for (index, arm) in arms.iter().enumerate() {
             let arm_path = format!("{path}.arms[{index}]");
+            if !self.pattern_vector_useful(
+                std::slice::from_ref(scrutinee),
+                &previous_patterns,
+                std::slice::from_ref(&arm.pattern),
+                0,
+            ) {
+                self.push(
+                    MirValidationCode::PatternShape,
+                    "match arm is unreachable because previous arms already cover it",
+                    arm.value.span,
+                    &arm_path,
+                );
+            }
+            previous_patterns.push(vec![arm.pattern.clone()]);
             let mut bindings = Vec::new();
             self.validate_pattern(
                 &arm.pattern,
@@ -5098,8 +5108,23 @@ impl<'program> Validator<'program> {
         depth: u16,
     ) -> Option<Type> {
         let mut result = None;
+        let mut previous_patterns = Vec::new();
         for (index, arm) in arms.iter().enumerate() {
             let arm_path = format!("{path}.arms[{index}]");
+            if !self.pattern_vector_useful(
+                std::slice::from_ref(scrutinee),
+                &previous_patterns,
+                std::slice::from_ref(&arm.pattern),
+                0,
+            ) {
+                self.push(
+                    MirValidationCode::ContractShape,
+                    "contract match arm is unreachable because previous arms already cover it",
+                    arm.value.span,
+                    &arm_path,
+                );
+            }
+            previous_patterns.push(vec![arm.pattern.clone()]);
             let mut bindings = Vec::new();
             self.validate_pattern(
                 &arm.pattern,
@@ -5183,6 +5208,120 @@ impl<'program> Validator<'program> {
             .map(|pattern| vec![pattern.clone()])
             .collect::<Vec<_>>();
         self.pattern_matrix_exhaustive(std::slice::from_ref(expected), &rows, 0)
+    }
+
+    fn pattern_vector_useful(
+        &self,
+        expected: &[Type],
+        rows: &[Vec<Pattern>],
+        candidate: &[Pattern],
+        depth: u16,
+    ) -> bool {
+        if expected.is_empty() || candidate.is_empty() {
+            return rows.is_empty();
+        }
+        if depth >= MAX_VALIDATION_DEPTH {
+            return true;
+        }
+
+        let tail = &expected[1..];
+        let candidate_tail = &candidate[1..];
+        match &candidate[0] {
+            Pattern::Wildcard | Pattern::Binding => match &expected[0] {
+                Type::Bool => [false, true].into_iter().any(|value| {
+                    let specialized = specialize_constant_rows(rows, &Constant::Bool(value));
+                    self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+                }),
+                Type::Unit => {
+                    let specialized = specialize_constant_rows(rows, &Constant::Unit);
+                    self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+                }
+                Type::Nominal(type_id, arguments) => {
+                    let Some(TypeDef {
+                        kind: TypeDefKind::Enum { variants },
+                        ..
+                    }) = self.program.type_def(*type_id)
+                    else {
+                        let default = default_pattern_rows(rows);
+                        return self.pattern_vector_useful(
+                            tail,
+                            &default,
+                            candidate_tail,
+                            depth + 1,
+                        );
+                    };
+                    variants.iter().any(|variant| {
+                        let mut specialized_types = variant
+                            .payload
+                            .iter()
+                            .map(|ty| substitute_type(ty, arguments))
+                            .collect::<Vec<_>>();
+                        let payload_arity = specialized_types.len();
+                        specialized_types.extend_from_slice(tail);
+                        let specialized =
+                            specialize_variant_rows(rows, *type_id, variant.id, payload_arity);
+                        let mut specialized_candidate = vec![Pattern::Wildcard; payload_arity];
+                        specialized_candidate.extend_from_slice(candidate_tail);
+                        self.pattern_vector_useful(
+                            &specialized_types,
+                            &specialized,
+                            &specialized_candidate,
+                            depth + 1,
+                        )
+                    })
+                }
+                Type::Never => false,
+                Type::Int
+                | Type::Float
+                | Type::Text
+                | Type::Tuple(_)
+                | Type::List(_)
+                | Type::Task(_)
+                | Type::TaskOutcome(_)
+                | Type::Parameter(_)
+                | Type::AssociatedProjection { .. }
+                | Type::View { .. }
+                | Type::Error => {
+                    let default = default_pattern_rows(rows);
+                    self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1)
+                }
+            },
+            Pattern::Constant(constant) => {
+                let specialized = specialize_constant_rows(rows, constant);
+                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+            }
+            Pattern::Variant {
+                ty,
+                variant,
+                payload,
+            } => {
+                let Some(definition) = self.variant(*ty, *variant) else {
+                    return true;
+                };
+                let arguments = match &expected[0] {
+                    Type::Nominal(expected_id, arguments) if expected_id == ty => arguments,
+                    _ => return true,
+                };
+                if payload.len() != definition.payload.len() {
+                    return true;
+                }
+                let mut specialized_types = definition
+                    .payload
+                    .iter()
+                    .map(|ty| substitute_type(ty, arguments))
+                    .collect::<Vec<_>>();
+                specialized_types.extend_from_slice(tail);
+                let specialized = specialize_variant_rows(rows, *ty, *variant, payload.len());
+                let mut specialized_candidate = payload.clone();
+                specialized_candidate.extend_from_slice(candidate_tail);
+                self.pattern_vector_useful(
+                    &specialized_types,
+                    &specialized,
+                    &specialized_candidate,
+                    depth + 1,
+                )
+            }
+        }
     }
 
     fn pattern_matrix_exhaustive(

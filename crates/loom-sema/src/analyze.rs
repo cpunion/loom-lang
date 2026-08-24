@@ -3095,9 +3095,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | TyData::DynTarget(_)
             | TyData::View { .. }
             | TyData::Task(_) => false,
-            TyData::Tuple(elements) => elements.into_iter().all(|element| {
-                self.supports_value_equality_inner(element, active, depth + 1)
-            }),
+            TyData::Tuple(elements) => elements
+                .into_iter()
+                .all(|element| self.supports_value_equality_inner(element, active, depth + 1)),
             TyData::List(element) | TyData::Option(element) | TyData::TaskOutcome(element) => {
                 self.supports_value_equality_inner(element, active, depth + 1)
             }
@@ -3147,13 +3147,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                                 return false;
                             };
                             payload.into_iter().all(|payload_ty| {
-                                let payload_ty =
-                                    self.types().substitute(payload_ty, &substitution);
-                                self.supports_value_equality_inner(
-                                    payload_ty,
-                                    active,
-                                    depth + 1,
-                                )
+                                let payload_ty = self.types().substitute(payload_ty, &substitution);
+                                self.supports_value_equality_inner(payload_ty, active, depth + 1)
                             })
                         })
                     }
@@ -3311,17 +3306,28 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     ) -> TyId {
         let scrutinee_ty = self.check_expr(scrutinee, None, ExpressionContext::Value);
         let mut result = expected;
-        let mut coverage = PatternCoverage::default();
+        let mut pattern_rows = Vec::new();
         let entry = self.flow_state();
         let mut exits = Vec::new();
         let mut has_reachable_arm = false;
         for arm in arms {
             self.restore_flow(&entry);
             self.scopes.push(BTreeMap::new());
-            self.check_pattern(arm.pattern, scrutinee_ty, &mut coverage);
+            let pattern = self.check_pattern(arm.pattern, scrutinee_ty);
+            let useful = self.pattern_is_useful(scrutinee_ty, &pattern_rows, &pattern);
+            if !useful {
+                self.error(
+                    "UnreachableMatchArm",
+                    "match arm is unreachable because previous arms already cover it",
+                    self.pattern_span(arm.pattern),
+                );
+            }
+            if !matches!(pattern, CheckedPattern::Invalid) {
+                pattern_rows.push(vec![pattern]);
+            }
             let arm_ty = self.check_expr(arm.value, result, context);
             self.scopes.pop();
-            if !self.expression_diverges(arm.value) {
+            if useful && !self.expression_diverges(arm.value) {
                 has_reachable_arm = true;
                 result = Some(match result {
                     Some(previous) => self.join_types(previous, arm_ty, arm.span),
@@ -3335,7 +3341,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         } else {
             self.join_flow_states(exits);
         }
-        self.check_exhaustive(scrutinee_ty, &coverage, scrutinee);
+        self.check_exhaustive(scrutinee_ty, &pattern_rows, scrutinee);
         if !has_reachable_arm && !arms.is_empty() {
             self.types().never()
         } else {
@@ -3343,21 +3349,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn check_pattern(
-        &mut self,
-        pattern: PatternId,
-        expected: TyId,
-        coverage: &mut PatternCoverage,
-    ) {
+    fn check_pattern(&mut self, pattern: PatternId, expected: TyId) -> CheckedPattern {
         self.semantics.pattern_types.insert(pattern, expected);
         match self.source().patterns[pattern].clone() {
             Pattern::Error => {
                 self.semantics
                     .pattern_resolutions
                     .insert(pattern, Resolution::Error);
+                CheckedPattern::Invalid
             }
-            Pattern::Wildcard => coverage.catch_all = true,
-            Pattern::Binding(local) => self.bind_pattern(pattern, local, expected, coverage),
+            Pattern::Wildcard => CheckedPattern::Wildcard,
+            Pattern::Binding(local) => {
+                self.bind_pattern(pattern, local, expected);
+                CheckedPattern::Wildcard
+            }
             Pattern::Literal(literal) => {
                 let literal_ty = match literal {
                     Literal::Bool(_) => self.types().builtin(BuiltinType::Bool),
@@ -3367,9 +3372,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     Literal::Unit => self.types().builtin(BuiltinType::Unit),
                 };
                 self.expect_compatible(pattern, literal_ty, expected);
-                if let Literal::Bool(value) = literal {
-                    coverage.bool_values.insert(value);
-                }
+                CheckedPattern::Literal(literal)
             }
             Pattern::Name {
                 path,
@@ -3380,7 +3383,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics
                         .pattern_resolutions
                         .insert(pattern, pattern_variant_resolution(variant));
-                    coverage.variants.insert(variant);
                     let payload_types = self.variant_payload(variant, expected);
                     if payload_types.len() != payload.len() {
                         self.error(
@@ -3389,11 +3391,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             self.pattern_span(pattern),
                         );
                     }
-                    for (child, ty) in payload.iter().zip(payload_types) {
-                        self.check_pattern(*child, ty, &mut PatternCoverage::default());
+                    let valid_arity = payload_types.len() == payload.len();
+                    let children = payload
+                        .iter()
+                        .enumerate()
+                        .map(|(index, child)| {
+                            let ty = payload_types
+                                .get(index)
+                                .copied()
+                                .unwrap_or_else(|| self.types().error());
+                            self.check_pattern(*child, ty)
+                        })
+                        .collect();
+                    if valid_arity {
+                        CheckedPattern::Variant(variant, children)
+                    } else {
+                        CheckedPattern::Invalid
                     }
                 } else if let Some(binding) = binding {
-                    self.bind_pattern(pattern, binding, expected, coverage);
+                    self.bind_pattern(pattern, binding, expected);
+                    CheckedPattern::Wildcard
                 } else {
                     self.error(
                         "UnknownName",
@@ -3403,6 +3420,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics
                         .pattern_resolutions
                         .insert(pattern, Resolution::Error);
+                    CheckedPattern::Invalid
                 }
             }
             Pattern::Variant { path, payload } => {
@@ -3410,19 +3428,47 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics
                         .pattern_resolutions
                         .insert(pattern, pattern_variant_resolution(variant));
+                    let payload_types = self.variant_payload(variant, expected);
+                    if payload_types.len() != payload.len() {
+                        self.error(
+                            "TypeMismatch",
+                            "variant pattern payload has the wrong arity",
+                            self.pattern_span(pattern),
+                        );
+                    }
+                    let valid_arity = payload_types.len() == payload.len();
+                    let children = payload
+                        .iter()
+                        .enumerate()
+                        .map(|(index, child)| {
+                            let ty = payload_types
+                                .get(index)
+                                .copied()
+                                .unwrap_or_else(|| self.types().error());
+                            self.check_pattern(*child, ty)
+                        })
+                        .collect();
+                    if valid_arity {
+                        CheckedPattern::Variant(variant, children)
+                    } else {
+                        CheckedPattern::Invalid
+                    }
+                } else {
+                    self.error(
+                        "UnknownName",
+                        format!("unknown variant `{}`", path.as_string()),
+                        self.pattern_span(pattern),
+                    );
+                    self.semantics
+                        .pattern_resolutions
+                        .insert(pattern, Resolution::Error);
+                    CheckedPattern::Invalid
                 }
             }
         }
     }
 
-    fn bind_pattern(
-        &mut self,
-        pattern: PatternId,
-        local: LocalId,
-        expected: TyId,
-        coverage: &mut PatternCoverage,
-    ) {
-        coverage.catch_all = true;
+    fn bind_pattern(&mut self, pattern: PatternId, local: LocalId, expected: TyId) {
         self.semantics
             .pattern_resolutions
             .insert(pattern, Resolution::Local(local));
@@ -6665,64 +6711,197 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn check_exhaustive(
         &mut self,
         scrutinee: TyId,
-        coverage: &PatternCoverage,
+        rows: &[Vec<CheckedPattern>],
         expression: ExprId,
     ) {
-        if coverage.catch_all {
-            return;
-        }
-        let exhaustive = match self.analyzer.typed.types.data(scrutinee) {
-            TyData::Builtin(BuiltinType::Bool) => coverage.bool_values.len() == 2,
-            TyData::Option(_) => {
-                coverage.variants.contains(&PatternVariant::None)
-                    && coverage.variants.contains(&PatternVariant::Some)
-            }
-            TyData::Result { .. } => {
-                coverage.variants.contains(&PatternVariant::Ok)
-                    && coverage.variants.contains(&PatternVariant::Err)
-            }
-            TyData::TaskOutcome(_) => {
-                coverage.variants.contains(&PatternVariant::TaskCompleted)
-                    && coverage.variants.contains(&PatternVariant::TaskFaulted)
-                    && coverage.variants.contains(&PatternVariant::TaskCancelled)
-            }
-            TyData::Builtin(BuiltinType::ParseFloatError) => {
-                coverage
-                    .variants
-                    .contains(&PatternVariant::ParseFloatInvalidSyntax)
-                    && coverage
-                        .variants
-                        .contains(&PatternVariant::ParseFloatOutOfRange)
-            }
-            TyData::Builtin(BuiltinType::ParseIntError) => {
-                coverage
-                    .variants
-                    .contains(&PatternVariant::ParseIntInvalidSyntax)
-                    && coverage
-                        .variants
-                        .contains(&PatternVariant::ParseIntOutOfRange)
-            }
-            TyData::Nominal { definition, .. } => {
-                if let DefinitionKind::Enum(enumeration) =
-                    &self.analyzer.program.definitions[*definition].kind
-                {
-                    enumeration
-                        .variants
-                        .iter()
-                        .all(|variant| coverage.variants.contains(&PatternVariant::User(*variant)))
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-        if !exhaustive {
+        if self.pattern_vector_useful(&[scrutinee], rows, &[CheckedPattern::Wildcard], 0) {
             self.error_at(
                 "NonExhaustiveMatch",
                 "match does not cover every possible value",
                 expression,
             );
         }
+    }
+
+    fn pattern_is_useful(
+        &mut self,
+        scrutinee: TyId,
+        rows: &[Vec<CheckedPattern>],
+        candidate: &CheckedPattern,
+    ) -> bool {
+        self.pattern_vector_useful(&[scrutinee], rows, std::slice::from_ref(candidate), 0)
+    }
+
+    fn pattern_vector_useful(
+        &mut self,
+        expected: &[TyId],
+        rows: &[Vec<CheckedPattern>],
+        candidate: &[CheckedPattern],
+        depth: u16,
+    ) -> bool {
+        if expected.is_empty() || candidate.is_empty() {
+            return rows.is_empty();
+        }
+        if depth >= 128 {
+            // Analysis limits must never make a valid arm look unreachable.
+            return true;
+        }
+        let expected_head = expected[0];
+        let expected_tail = &expected[1..];
+        let candidate_tail = &candidate[1..];
+        match &candidate[0] {
+            CheckedPattern::Invalid => true,
+            CheckedPattern::Wildcard => {
+                if let Some(constructors) = self.finite_pattern_constructors(expected_head) {
+                    constructors.into_iter().any(|(head, payload_types)| {
+                        let specialized_rows =
+                            specialize_checked_rows(rows, &head, payload_types.len());
+                        let mut specialized_types = payload_types;
+                        specialized_types.extend_from_slice(expected_tail);
+                        let mut specialized_candidate = vec![
+                            CheckedPattern::Wildcard;
+                            specialized_types.len()
+                                - expected_tail.len()
+                        ];
+                        specialized_candidate.extend_from_slice(candidate_tail);
+                        self.pattern_vector_useful(
+                            &specialized_types,
+                            &specialized_rows,
+                            &specialized_candidate,
+                            depth + 1,
+                        )
+                    })
+                } else {
+                    let default_rows = default_checked_rows(rows);
+                    self.pattern_vector_useful(
+                        expected_tail,
+                        &default_rows,
+                        candidate_tail,
+                        depth + 1,
+                    )
+                }
+            }
+            CheckedPattern::Literal(literal) => {
+                let head = CheckedPatternHead::Literal(literal.clone());
+                let specialized_rows = specialize_checked_rows(rows, &head, 0);
+                self.pattern_vector_useful(
+                    expected_tail,
+                    &specialized_rows,
+                    candidate_tail,
+                    depth + 1,
+                )
+            }
+            CheckedPattern::Variant(variant, payload) => {
+                let payload_types = self.variant_payload(*variant, expected_head);
+                if payload_types.len() != payload.len() {
+                    return true;
+                }
+                let head = CheckedPatternHead::Variant(*variant);
+                let specialized_rows = specialize_checked_rows(rows, &head, payload_types.len());
+                let mut specialized_types = payload_types;
+                specialized_types.extend_from_slice(expected_tail);
+                let mut specialized_candidate = payload.clone();
+                specialized_candidate.extend_from_slice(candidate_tail);
+                self.pattern_vector_useful(
+                    &specialized_types,
+                    &specialized_rows,
+                    &specialized_candidate,
+                    depth + 1,
+                )
+            }
+        }
+    }
+
+    fn finite_pattern_constructors(
+        &mut self,
+        expected: TyId,
+    ) -> Option<Vec<(CheckedPatternHead, Vec<TyId>)>> {
+        let constructors = match self.analyzer.typed.types.data(expected).clone() {
+            TyData::Error | TyData::Never => Vec::new(),
+            TyData::Builtin(BuiltinType::Bool) => vec![
+                (
+                    CheckedPatternHead::Literal(Literal::Bool(false)),
+                    Vec::new(),
+                ),
+                (CheckedPatternHead::Literal(Literal::Bool(true)), Vec::new()),
+            ],
+            TyData::Builtin(BuiltinType::Unit) => {
+                vec![(CheckedPatternHead::Literal(Literal::Unit), Vec::new())]
+            }
+            TyData::Option(_) => [PatternVariant::None, PatternVariant::Some]
+                .into_iter()
+                .map(|variant| {
+                    (
+                        CheckedPatternHead::Variant(variant),
+                        self.variant_payload(variant, expected),
+                    )
+                })
+                .collect(),
+            TyData::Result { .. } => [PatternVariant::Ok, PatternVariant::Err]
+                .into_iter()
+                .map(|variant| {
+                    (
+                        CheckedPatternHead::Variant(variant),
+                        self.variant_payload(variant, expected),
+                    )
+                })
+                .collect(),
+            TyData::TaskOutcome(_) => [
+                PatternVariant::TaskCompleted,
+                PatternVariant::TaskFaulted,
+                PatternVariant::TaskCancelled,
+            ]
+            .into_iter()
+            .map(|variant| {
+                (
+                    CheckedPatternHead::Variant(variant),
+                    self.variant_payload(variant, expected),
+                )
+            })
+            .collect(),
+            TyData::Builtin(BuiltinType::ParseFloatError) => [
+                PatternVariant::ParseFloatInvalidSyntax,
+                PatternVariant::ParseFloatOutOfRange,
+            ]
+            .into_iter()
+            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
+            .collect(),
+            TyData::Builtin(BuiltinType::ParseIntError) => [
+                PatternVariant::ParseIntInvalidSyntax,
+                PatternVariant::ParseIntOutOfRange,
+            ]
+            .into_iter()
+            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
+            .collect(),
+            TyData::Nominal { definition, .. } => {
+                let DefinitionKind::Enum(enumeration) =
+                    self.analyzer.program.definitions[definition].kind.clone()
+                else {
+                    return None;
+                };
+                enumeration
+                    .variants
+                    .into_iter()
+                    .map(|definition| {
+                        let variant = PatternVariant::User(definition);
+                        (
+                            CheckedPatternHead::Variant(variant),
+                            self.variant_payload(variant, expected),
+                        )
+                    })
+                    .collect()
+            }
+            TyData::Builtin(_)
+            | TyData::Tuple(_)
+            | TyData::List(_)
+            | TyData::Task(_)
+            | TyData::Param(_)
+            | TyData::SelfType(_)
+            | TyData::Projection { .. }
+            | TyData::DynTarget(_)
+            | TyData::View { .. } => return None,
+        };
+        Some(constructors)
     }
 
     fn expect_compatible(&mut self, pattern: PatternId, actual: TyId, expected: TyId) {
@@ -6941,11 +7120,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 }
 
-#[derive(Default)]
-struct PatternCoverage {
-    catch_all: bool,
-    bool_values: BTreeSet<bool>,
-    variants: BTreeSet<PatternVariant>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CheckedPattern {
+    Invalid,
+    Wildcard,
+    Literal(Literal),
+    Variant(PatternVariant, Vec<Self>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CheckedPatternHead {
+    Literal(Literal),
+    Variant(PatternVariant),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -6962,6 +7148,44 @@ enum PatternVariant {
     TaskFaulted,
     TaskCancelled,
     User(DefId),
+}
+
+fn default_checked_rows(rows: &[Vec<CheckedPattern>]) -> Vec<Vec<CheckedPattern>> {
+    rows.iter()
+        .filter(|row| matches!(row.first(), Some(CheckedPattern::Wildcard)))
+        .map(|row| row.iter().skip(1).cloned().collect())
+        .collect()
+}
+
+fn specialize_checked_rows(
+    rows: &[Vec<CheckedPattern>],
+    expected: &CheckedPatternHead,
+    payload_arity: usize,
+) -> Vec<Vec<CheckedPattern>> {
+    rows.iter()
+        .filter_map(|row| match row.first() {
+            Some(CheckedPattern::Wildcard) => {
+                let mut specialized = vec![CheckedPattern::Wildcard; payload_arity];
+                specialized.extend(row.iter().skip(1).cloned());
+                Some(specialized)
+            }
+            Some(CheckedPattern::Literal(actual))
+                if expected == &CheckedPatternHead::Literal(actual.clone()) =>
+            {
+                Some(row.iter().skip(1).cloned().collect())
+            }
+            Some(CheckedPattern::Variant(actual, payload))
+                if expected == &CheckedPatternHead::Variant(*actual)
+                    && payload.len() == payload_arity =>
+            {
+                let mut specialized = payload.clone();
+                specialized.extend(row.iter().skip(1).cloned());
+                Some(specialized)
+            }
+            Some(CheckedPattern::Invalid) | None => None,
+            _ => None,
+        })
+        .collect()
 }
 
 fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
@@ -7584,6 +7808,106 @@ fn unwrap_some(value Option[Int]) Int {
     }
 
     #[test]
+    fn nested_boolean_variant_patterns_require_every_payload_case() {
+        let (_, incomplete) = analyze_source(
+            r"
+module sample
+
+fn classify(value Option[Bool]) Int {
+    match value {
+        Some(true) => 1
+        None => 0
+    }
+}
+",
+        );
+        assert!(
+            incomplete
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NonExhaustiveMatch"),
+            "{:#?}",
+            incomplete.diagnostics
+        );
+
+        let (_, complete) = analyze_source(
+            r"
+module sample
+
+fn classify(value Option[Bool]) Int {
+    match value {
+        Some(true) => 1
+        Some(false) => 2
+        None => 0
+    }
+}
+",
+        );
+        assert!(
+            complete.diagnostics.is_empty(),
+            "{:#?}",
+            complete.diagnostics
+        );
+    }
+
+    #[test]
+    fn match_usefulness_reports_duplicate_and_shadowed_arms() {
+        let (_, duplicate) = analyze_source(
+            r"
+module sample
+
+fn classify(value Option[Bool]) Int {
+    match value {
+        Some(true) => 1
+        Some(true) => 2
+        Some(false) => 3
+        None => 0
+    }
+}
+",
+        );
+        assert_eq!(
+            duplicate
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "UnreachableMatchArm")
+                .count(),
+            1,
+            "{:#?}",
+            duplicate.diagnostics
+        );
+        assert!(
+            duplicate
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "NonExhaustiveMatch"),
+            "{:#?}",
+            duplicate.diagnostics
+        );
+
+        let (_, shadowed) = analyze_source(
+            r"
+module sample
+
+fn classify(value Option[Int]) Int {
+    match value {
+        _ => 1
+        None => 0
+    }
+}
+",
+        );
+        assert!(
+            shadowed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "UnreachableMatchArm"),
+            "{:#?}",
+            shadowed.diagnostics
+        );
+    }
+
+    #[test]
     fn equality_requires_a_statically_derivable_value_equality_capability() {
         let (_, generic) = analyze_source(
             r"
@@ -7687,7 +8011,11 @@ fn same(left MaybePair, right MaybePair) Bool {
 }
 ",
         );
-        assert!(analysis.diagnostics.is_empty(), "{:#?}", analysis.diagnostics);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
     }
 
     #[test]
