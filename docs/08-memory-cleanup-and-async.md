@@ -411,7 +411,8 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 - Task 是单个 runtime pointer；单 Task、组合 Task 与 `Task.sleep/waitReadable/waitWritable` 都可先存储再等待。静态异构参数返回 tuple，动态同构 list 返回 list，`all/settled/any/race` 共享真实 composite Task/JoinState；
 - Rust runtime 实现 version 1 `WaitSource`/generation-checked one-shot `Registration`/`ReadyNotification` ABI，macOS 用 kqueue、Linux 用 epoll。timer、Unix socket、completion、重复通知和取消均有 runtime fixture；源码 fd writable wait 同时通过 interpreter 与 native artifact；
 - scheduler 只在 notification 后 enqueue，coroutine `resume` 真正返回 `Pending`，不会在 callback 栈重入或忙轮询；
+- `Duration`、真实文件和 TCP socket 已接入同一 Task ABI；native `Socket.read_text/write_text` 在 `WouldBlock` 时通过 kqueue/epoll registration 挂起，`File`/`Socket` 是 compiler-known `MustScope`，退出最内层 block 时自动关闭；解释器执行相同源码语义；
 - native precise moving heap 在 resume 之间以 Task slots/runtime results 为 roots，追踪 `Value` 与 `ValueNode`，回收不可达对象、复制存活对象并重写指针；Task identity 与 immutable witness metadata 非移动。fixture 直接验证旧/新地址不同和垃圾回收计数；
 - `examples/core03` 以及专用 stored/dynamic join、nested await、取消 cleanup、fd readiness、moving-GC fixtures 均真实通过 check/build/test/source-run/native-run。runtime 全部使用 Rust 实现，不再保留 C++ wait/float runtime。
 
-这关闭的是 C1 executable reference；package/path dependency、分层 cache、LLVM line-table/dSYM 与 Linux CI 已另行接入。它仍不表示多线程 executor、完整 file/socket 标准库、完整源码级 debugger/value inspection、正式性能门或 C2/C3 证据已经完成。
+这关闭的是 C1 executable reference；package/path dependency、分层 cache、LLVM line-table/dSYM 与 Linux CI 已另行接入。当前 file/socket 是已执行闭环的最小文本 I/O 表面，不表示完整标准库。多线程 executor、完整源码级 debugger/value inspection、正式性能门或 C2/C3 证据仍需后续证据。

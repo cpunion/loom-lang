@@ -5,6 +5,8 @@ pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use loom_core::Span;
@@ -427,6 +429,9 @@ pub struct Interpreter<'program> {
     active_root: Option<u64>,
     gc_stats: GcStats,
     process_arguments: Vec<String>,
+    files: BTreeMap<u64, std::fs::File>,
+    sockets: BTreeMap<u64, TcpStream>,
+    next_resource: u64,
 }
 
 impl<'program> Interpreter<'program> {
@@ -452,6 +457,9 @@ impl<'program> Interpreter<'program> {
             active_root: None,
             gc_stats: GcStats::default(),
             process_arguments: Vec::new(),
+            files: BTreeMap::new(),
+            sockets: BTreeMap::new(),
+            next_resource: 0,
         }
     }
 
@@ -484,6 +492,9 @@ impl<'program> Interpreter<'program> {
             self.active_task = None;
             self.active_root = None;
             self.gc_stats = GcStats::default();
+            self.files.clear();
+            self.sockets.clear();
+            self.next_resource = 0;
             self.fuel = self.fuel_limit;
         }
         let value = self.invoke_bound(
@@ -1009,6 +1020,17 @@ impl<'program> Interpreter<'program> {
                 if let Some(child_task) = self.tasks.get_mut(&child) {
                     child_task.parent = Some(task_id);
                 }
+            }
+            let ready = self.tasks.get(&task_id).is_some_and(|parent| {
+                parent.children.iter().all(|child| {
+                    self.tasks
+                        .get(child)
+                        .is_some_and(|child| task_terminal(&child.status))
+                })
+            });
+            if ready {
+                self.tasks.get_mut(&task_id).expect("task exists").status = TaskStatus::Runnable;
+                self.enqueue_task(task_id);
             }
             return Ok(AwaitPoll::Pending);
         }
@@ -1872,15 +1894,18 @@ impl<'program> Interpreter<'program> {
             ExprKind::Await { .. } => self.eval_nested_await(frame, expression),
             ExprKind::Sleep { milliseconds } => {
                 let duration = self.eval_expr(frame, milliseconds)?;
-                let Value::Int {
-                    value: milliseconds,
-                } = duration
-                else {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "Task.sleep duration did not produce Int",
-                        expression.span,
-                    )));
+                let milliseconds = match duration {
+                    Value::Int { value } => value,
+                    Value::Record { ty, fields } if self.program.prelude.duration == Some(ty) => {
+                        record_descriptor(&fields, expression.span)?
+                    }
+                    _ => {
+                        return Err(EvalAbort::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Task.sleep duration did not produce Int or Duration",
+                            expression.span,
+                        )));
+                    }
                 };
                 if milliseconds < 0 {
                     return Err(EvalAbort::from(self.runtime_fault(
@@ -2063,41 +2088,7 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, EvalAbort> {
         if let CallTarget::Builtin(builtin) = target {
-            if *builtin == Builtin::ListAdd {
-                let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "List.add has an invalid checked argument shape",
-                        span,
-                    )));
-                };
-                let value = self.eval_expr(frame, value)?;
-                let location = Location::from_place(frame, place);
-                let list = self.read_place(&location, span)?;
-                let Value::List { mut elements } = unrefined(list) else {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "List.add receiver is not a List",
-                        span,
-                    )));
-                };
-                elements.push(value);
-                self.write_place(&location, Value::List { elements }, span)
-                    .map_err(EvalAbort::from)?;
-                return Ok(Value::Unit);
-            }
-            let values = arguments
-                .iter()
-                .map(|argument| match argument {
-                    CallArgument::Value(value) => self.eval_expr(frame, value),
-                    CallArgument::InOut(place) => {
-                        Ok(self.read_place(&Location::from_place(frame, place), span)?)
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return self
-                .eval_builtin(*builtin, &values, span)
-                .map_err(EvalAbort::from);
+            return self.eval_builtin_call(frame, *builtin, arguments, span);
         }
 
         if let CallTarget::Dynamic { requirement } = target {
@@ -2143,6 +2134,118 @@ impl<'program> Interpreter<'program> {
             .collect::<Result<Vec<_>, _>>()?;
         self.invoke_bound(function, values, witness_values, span)
             .map_err(EvalAbort::from)
+    }
+
+    fn eval_builtin_call(
+        &mut self,
+        frame: u64,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        if builtin == Builtin::ListAdd {
+            return self.eval_list_add(frame, arguments, span);
+        }
+        if matches!(builtin, Builtin::FileClose | Builtin::SocketClose) {
+            return self.eval_resource_close(frame, builtin, arguments, span);
+        }
+        let values = arguments
+            .iter()
+            .map(|argument| match argument {
+                CallArgument::Value(value) => self.eval_expr(frame, value),
+                CallArgument::InOut(place) => {
+                    Ok(self.read_place(&Location::from_place(frame, place), span)?)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.eval_builtin(builtin, &values, span)
+            .map_err(EvalAbort::from)
+    }
+
+    fn eval_list_add(
+        &mut self,
+        frame: u64,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "List.add has an invalid checked argument shape",
+                span,
+            )));
+        };
+        let value = self.eval_expr(frame, value)?;
+        let location = Location::from_place(frame, place);
+        let list = self.read_place(&location, span)?;
+        let Value::List { mut elements } = unrefined(list) else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "List.add receiver is not a List",
+                span,
+            )));
+        };
+        elements.push(value);
+        self.write_place(&location, Value::List { elements }, span)
+            .map_err(EvalAbort::from)?;
+        Ok(Value::Unit)
+    }
+
+    fn eval_resource_close(
+        &mut self,
+        frame: u64,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let [CallArgument::InOut(place)] = arguments else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "resource close has an invalid checked argument shape",
+                span,
+            )));
+        };
+        let location = Location::from_place(frame, place);
+        let value = self.read_place(&location, span)?;
+        let Value::Record { ty, mut fields } = unrefined(value) else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "resource close receiver is not a record",
+                span,
+            )));
+        };
+        let file = builtin == Builtin::FileClose;
+        let expected = if file {
+            self.program.prelude.file
+        } else {
+            self.program.prelude.socket
+        };
+        if expected != Some(ty) {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "resource close receiver has the wrong nominal type",
+                span,
+            )));
+        }
+        let descriptor = record_descriptor(&fields, span)?;
+        if descriptor >= 0 {
+            let handle = u64::try_from(descriptor).map_err(|_| {
+                EvalAbort::from(self.runtime_fault(
+                    "InvalidResourceHandle",
+                    "resource handle exceeds the interpreter range",
+                    span,
+                ))
+            })?;
+            if file {
+                self.files.remove(&handle);
+            } else {
+                self.sockets.remove(&handle);
+            }
+            fields[0] = Value::Int { value: -1 };
+            self.write_place(&location, Value::Record { ty, fields }, span)
+                .map_err(EvalAbort::from)?;
+        }
+        Ok(Value::Unit)
     }
 
     fn eval_static_concept_call(
@@ -2316,11 +2419,44 @@ impl<'program> Interpreter<'program> {
     }
 
     fn eval_builtin(
-        &self,
+        &mut self,
         builtin: Builtin,
         arguments: &[Value],
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
+        if matches!(
+            builtin,
+            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds
+        ) {
+            return self.eval_duration_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::FileOpenRead
+                | Builtin::FileCreate
+                | Builtin::FileReadText
+                | Builtin::FileWriteText
+        ) {
+            return self.eval_file_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::SocketConnect | Builtin::SocketReadText | Builtin::SocketWriteText
+        ) {
+            return self.eval_socket_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
+        ) {
+            return self.eval_list_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::ProcessArguments | Builtin::ProcessEnvironment
+        ) {
+            return self.eval_process_builtin(builtin, arguments, span);
+        }
         match (builtin, arguments) {
             (Builtin::IsFinite, [value]) => Ok(Value::Bool {
                 value: as_float(value).is_some_and(f64::is_finite),
@@ -2348,35 +2484,6 @@ impl<'program> Interpreter<'program> {
                     })
                 },
             ),
-            (Builtin::ListLength, [Value::List { elements }]) => {
-                let value = i64::try_from(elements.len()).map_err(|_| {
-                    ExecutionFailure::from(self.runtime_fault(
-                        "ListTooLarge",
-                        "List length exceeds Int",
-                        span,
-                    ))
-                })?;
-                Ok(Value::Int { value })
-            }
-            (Builtin::ListGet, [Value::List { elements }, Value::Int { value }]) => {
-                let element = usize::try_from(*value)
-                    .ok()
-                    .and_then(|index| elements.get(index))
-                    .cloned();
-                self.option_value(element, span)
-            }
-            (Builtin::ProcessArguments, []) => Ok(Value::List {
-                elements: self
-                    .process_arguments
-                    .iter()
-                    .cloned()
-                    .map(|value| Value::Text { value })
-                    .collect(),
-            }),
-            (Builtin::ProcessEnvironment, [Value::Text { value: name }]) => self.option_value(
-                std::env::var(name).ok().map(|value| Value::Text { value }),
-                span,
-            ),
             (Builtin::ParseInt, [Value::Text { value }]) => match value.parse::<i64>() {
                 Ok(number) => self.result_value(true, Value::Int { value: number }, span),
                 Err(error) => {
@@ -2403,13 +2510,6 @@ impl<'program> Interpreter<'program> {
                     .into()
                 })
             }
-            (Builtin::ListAdd, _) => Err(self
-                .runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "List.add did not receive an inout receiver",
-                    span,
-                )
-                .into()),
             _ => Err(self
                 .runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -2418,6 +2518,226 @@ impl<'program> Interpreter<'program> {
                 )
                 .into()),
         }
+    }
+
+    fn eval_list_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::ListLength, [Value::List { elements }]) => {
+                let value = i64::try_from(elements.len()).map_err(|_| {
+                    ExecutionFailure::from(self.runtime_fault(
+                        "ListTooLarge",
+                        "List length exceeds Int",
+                        span,
+                    ))
+                })?;
+                Ok(Value::Int { value })
+            }
+            (Builtin::ListGet, [Value::List { elements }, Value::Int { value }]) => {
+                let element = usize::try_from(*value)
+                    .ok()
+                    .and_then(|index| elements.get(index))
+                    .cloned();
+                self.option_value(element, span)
+            }
+            (Builtin::ListAdd, _) => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "List.add did not receive an inout receiver",
+                    span,
+                )
+                .into()),
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn eval_process_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::ProcessArguments, []) => Ok(Value::List {
+                elements: self
+                    .process_arguments
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::Text { value })
+                    .collect(),
+            }),
+            (Builtin::ProcessEnvironment, [Value::Text { value: name }]) => self.option_value(
+                std::env::var(name).ok().map(|value| Value::Text { value }),
+                span,
+            ),
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn eval_duration_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::DurationMilliseconds, [Value::Int { value }]) => {
+                if *value < 0 {
+                    return Err(self
+                        .runtime_fault(
+                            "InvalidDuration",
+                            "Duration milliseconds cannot be negative",
+                            span,
+                        )
+                        .into());
+                }
+                self.opaque_record(self.program.prelude.duration, *value, "Duration", span)
+            }
+            (Builtin::DurationAsMilliseconds, [Value::Record { ty, fields }])
+                if self.program.prelude.duration == Some(*ty) =>
+            {
+                fields.first().cloned().ok_or_else(|| {
+                    self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "Duration record is missing its value",
+                        span,
+                    )
+                    .into()
+                })
+            }
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn eval_file_builtin(
+        &mut self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let outcome = match (builtin, arguments) {
+            (Builtin::FileOpenRead, [Value::Text { value: path }]) => std::fs::File::open(path)
+                .map_err(|error| io_failure("FileOpenFault", &error, span))
+                .and_then(|file| self.insert_file(file, span)),
+            (Builtin::FileCreate, [Value::Text { value: path }]) => std::fs::File::create(path)
+                .map_err(|error| io_failure("FileCreateFault", &error, span))
+                .and_then(|file| self.insert_file(file, span)),
+            (Builtin::FileReadText, [Value::Record { ty, fields }])
+                if self.program.prelude.file == Some(*ty) =>
+            {
+                let handle = checked_resource_handle(fields, span)?;
+                let mut value = String::new();
+                self.files.get_mut(&handle).map_or_else(
+                    || Err(resource_closed("File", span)),
+                    |file| {
+                        file.read_to_string(&mut value)
+                            .map(|_| Value::Text { value })
+                            .map_err(|error| io_failure("FileReadFault", &error, span))
+                    },
+                )
+            }
+            (Builtin::FileWriteText, [Value::Record { ty, fields }, Value::Text { value }])
+                if self.program.prelude.file == Some(*ty) =>
+            {
+                let handle = checked_resource_handle(fields, span)?;
+                self.files.get_mut(&handle).map_or_else(
+                    || Err(resource_closed("File", span)),
+                    |file| {
+                        file.write_all(value.as_bytes())
+                            .map(|()| Value::Unit)
+                            .map_err(|error| io_failure("FileWriteFault", &error, span))
+                    },
+                )
+            }
+            _ => return Err(self.invalid_builtin_fault(span)),
+        };
+        self.spawn_terminal_task(outcome, span)
+    }
+
+    fn eval_socket_builtin(
+        &mut self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let outcome = match (builtin, arguments) {
+            (Builtin::SocketConnect, [Value::Text { value: host }, Value::Int { value: port }]) => {
+                self.connect_socket(host, *port, span)
+            }
+            (Builtin::SocketReadText, [Value::Record { ty, fields }])
+                if self.program.prelude.socket == Some(*ty) =>
+            {
+                let handle = checked_resource_handle(fields, span)?;
+                let mut value = String::new();
+                self.sockets.get_mut(&handle).map_or_else(
+                    || Err(resource_closed("Socket", span)),
+                    |socket| {
+                        socket
+                            .read_to_string(&mut value)
+                            .map(|_| Value::Text { value })
+                            .map_err(|error| io_failure("SocketReadFault", &error, span))
+                    },
+                )
+            }
+            (Builtin::SocketWriteText, [Value::Record { ty, fields }, Value::Text { value }])
+                if self.program.prelude.socket == Some(*ty) =>
+            {
+                let handle = checked_resource_handle(fields, span)?;
+                self.sockets.get_mut(&handle).map_or_else(
+                    || Err(resource_closed("Socket", span)),
+                    |socket| {
+                        socket
+                            .write_all(value.as_bytes())
+                            .map(|()| Value::Unit)
+                            .map_err(|error| io_failure("SocketWriteFault", &error, span))
+                    },
+                )
+            }
+            _ => return Err(self.invalid_builtin_fault(span)),
+        };
+        self.spawn_terminal_task(outcome, span)
+    }
+
+    fn connect_socket(
+        &mut self,
+        host: &str,
+        port: i64,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let port = u16::try_from(port).map_err(|_| {
+            ExecutionFailure::from(self.runtime_fault(
+                "InvalidPort",
+                "socket port must fit UInt16",
+                span,
+            ))
+        })?;
+        let address = (host, port)
+            .to_socket_addrs()
+            .map_err(|error| io_failure("SocketResolveFault", &error, span))?
+            .next()
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "SocketResolveFault",
+                    "host resolved to no addresses",
+                    span,
+                ))
+            })?;
+        let socket = TcpStream::connect(address)
+            .map_err(|error| io_failure("SocketConnectFault", &error, span))?;
+        self.insert_socket(socket, span)
+    }
+
+    fn invalid_builtin_fault(&self, span: Span) -> ExecutionFailure {
+        self.runtime_fault(
+            "LOOM_RUNTIME_INVALID_MIR",
+            "builtin called with invalid arguments",
+            span,
+        )
+        .into()
     }
 
     fn option_value(&self, payload: Option<Value>, span: Span) -> Result<Value, ExecutionFailure> {
@@ -2512,6 +2832,113 @@ impl<'program> Interpreter<'program> {
             variant,
             payload,
         })
+    }
+
+    fn opaque_record(
+        &self,
+        ty: Option<TypeId>,
+        raw: i64,
+        name: &str,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let ty = ty.ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                format!("prelude {name} type is missing"),
+                span,
+            ))
+        })?;
+        Ok(Value::Record {
+            ty,
+            fields: vec![Value::Int { value: raw }],
+        })
+    }
+
+    fn insert_file(&mut self, file: std::fs::File, span: Span) -> Result<Value, ExecutionFailure> {
+        let handle = self.allocate_resource_handle(span)?;
+        self.files.insert(handle, file);
+        self.opaque_record(
+            self.program.prelude.file,
+            i64::try_from(handle).expect("resource handle is bounded by i64"),
+            "File",
+            span,
+        )
+    }
+
+    fn insert_socket(&mut self, socket: TcpStream, span: Span) -> Result<Value, ExecutionFailure> {
+        let handle = self.allocate_resource_handle(span)?;
+        self.sockets.insert(handle, socket);
+        self.opaque_record(
+            self.program.prelude.socket,
+            i64::try_from(handle).expect("resource handle is bounded by i64"),
+            "Socket",
+            span,
+        )
+    }
+
+    fn allocate_resource_handle(&mut self, span: Span) -> Result<u64, ExecutionFailure> {
+        let handle = self.next_resource;
+        if handle > i64::MAX.cast_unsigned() {
+            return Err(self
+                .runtime_fault(
+                    "ResourceHandleExhausted",
+                    "interpreter resource handle space was exhausted",
+                    span,
+                )
+                .into());
+        }
+        self.next_resource = self.next_resource.checked_add(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "ResourceHandleExhausted",
+                "interpreter resource handle space was exhausted",
+                span,
+            ))
+        })?;
+        Ok(handle)
+    }
+
+    fn spawn_terminal_task(
+        &mut self,
+        outcome: Result<Value, ExecutionFailure>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let task_id = self.next_task;
+        self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "TaskIdExhausted",
+                "async task identity space was exhausted",
+                span,
+            ))
+        })?;
+        let status = match outcome {
+            Ok(value) => TaskStatus::Completed(value),
+            Err(failure) => TaskStatus::Failed(failure),
+        };
+        self.tasks.insert(
+            task_id,
+            ManagedTask {
+                function: FunctionId(u32::MAX),
+                frame: u64::MAX,
+                parent: self.active_task,
+                children: Vec::new(),
+                cursor: 0,
+                awaiting_state: None,
+                cleanups: Vec::new(),
+                status,
+                queued: false,
+                marked: false,
+                timer_deadline: None,
+                fd_wait: None,
+                join_mode: TaskJoinMode::All,
+                join_dynamic: false,
+                join_combined: false,
+                join_winner: None,
+                cancel_requested: false,
+            },
+        );
+        self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+        self.gc_stats.live = self.tasks.len() as u64;
+        Ok(Value::Task { id: task_id })
     }
 
     fn checked_refine(
@@ -3550,6 +3977,65 @@ fn pattern_matches(pattern: &Pattern, value: &Value, bindings: &mut Vec<Value>) 
                     .all(|(pattern, value)| pattern_matches(pattern, value, bindings))
         }
     }
+}
+
+fn record_descriptor(fields: &[Value], span: Span) -> Result<i64, EvalAbort> {
+    match fields.first() {
+        Some(Value::Int { value }) => Ok(*value),
+        _ => Err(EvalAbort::from(RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "opaque standard value is missing its raw integer field".into(),
+            span,
+        })),
+    }
+}
+
+fn checked_resource_handle(fields: &[Value], span: Span) -> Result<u64, ExecutionFailure> {
+    let value = match fields.first() {
+        Some(Value::Int { value }) => *value,
+        _ => {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "resource value is missing its descriptor".into(),
+                span,
+            }
+            .into());
+        }
+    };
+    if value < 0 {
+        return Err(RuntimeFault {
+            code: "ResourceClosed".into(),
+            message: "resource is already closed".into(),
+            span,
+        }
+        .into());
+    }
+    u64::try_from(value).map_err(|_| {
+        RuntimeFault {
+            code: "InvalidResourceHandle".into(),
+            message: "resource handle exceeds the interpreter range".into(),
+            span,
+        }
+        .into()
+    })
+}
+
+fn io_failure(code: &str, error: &std::io::Error, span: Span) -> ExecutionFailure {
+    RuntimeFault {
+        code: code.into(),
+        message: error.to_string(),
+        span,
+    }
+    .into()
+}
+
+fn resource_closed(name: &str, span: Span) -> ExecutionFailure {
+    RuntimeFault {
+        code: "ResourceClosed".into(),
+        message: format!("{name} is already closed"),
+        span,
+    }
+    .into()
 }
 
 fn read_value_projection(

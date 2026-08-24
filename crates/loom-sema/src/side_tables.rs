@@ -50,6 +50,17 @@ pub enum BuiltinValue {
     TaskCancelled,
     TaskFaultCode,
     TaskFaultMessage,
+    DurationMilliseconds,
+    DurationAsMilliseconds,
+    FileOpenRead,
+    FileCreate,
+    FileReadText,
+    FileWriteText,
+    FileClose,
+    SocketConnect,
+    SocketReadText,
+    SocketWriteText,
+    SocketClose,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,9 +162,12 @@ pub struct BodySemantics {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopedDisposal {
-    pub requirement: DefId,
-    pub witness: WitnessSelection,
+pub enum ScopedDisposal {
+    Concept {
+        requirement: DefId,
+        witness: WitnessSelection,
+    },
+    Builtin(BuiltinValue),
 }
 
 #[derive(Clone, Debug)]

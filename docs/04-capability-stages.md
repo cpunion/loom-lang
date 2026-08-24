@@ -161,6 +161,7 @@ source → parser → HIR → sema → checked MIR
 范围：
 
 - `async fn`、后缀关键字 `.await`、`Task[T]`；
+- `Duration` 以及通过同一等待注册 ABI 执行的最小 File/TCP Socket 文本 I/O；
 - MIR suspension state、live-local frame promotion 和 cancellation state；
 - ready queue、wait registration，以及“通知 push、执行 pull”；
 - parent/child structured concurrency，无 detached task；

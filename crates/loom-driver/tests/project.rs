@@ -720,6 +720,114 @@ test async fn inspect_outcomes() {
 }
 
 #[test]
+fn duration_file_and_socket_tasks_execute_from_source() {
+    use std::io::{Read, Write};
+
+    let project = TestProject::new();
+    let file = project.root.join("round-trip.txt");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept test client");
+        let mut request = [0_u8; 4];
+        socket.read_exact(&mut request).expect("read request");
+        assert_eq!(&request, b"ping");
+        socket.write_all(b"pong").expect("write response");
+    });
+    let source = format!(
+        r#"module standard_io
+
+import standard.time.milliseconds
+import standard.file.open_read
+import standard.file.create
+import standard.net.connect
+
+test async fn real_io() {{
+    let delay = milliseconds(1)
+    let observed = delay.as_milliseconds()
+    assert observed == 1
+    Task.sleep(delay).await
+    {{
+        scoped output = create("{}").await
+        output.write_text("hello from loom").await
+        Unit
+    }}
+    {{
+        scoped input = open_read("{}").await
+        let content = input.read_text().await
+        assert content == "hello from loom"
+        Unit
+    }}
+    {{
+        scoped socket = connect("127.0.0.1", {}).await
+        socket.write_text("ping").await
+        let response = socket.read_text().await
+        assert response == "pong"
+        Unit
+    }}
+    Unit
+}}
+"#,
+        file.display(),
+        file.display(),
+        port,
+    );
+    project.write("io.loom", &source);
+
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open I/O project")
+        .snapshot()
+        .expect("compile I/O project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let results = snapshot.run_tests().expect("execute I/O test");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
+    server.join().expect("join test server");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "hello from loom");
+}
+
+#[test]
+fn compiler_known_resources_require_scoped_and_reject_manual_close() {
+    let project = TestProject::new();
+    project.write(
+        "resources.loom",
+        r#"module resources
+
+import standard.file.open_read
+import standard.net.connect
+
+async fn leakedFile() Unit {
+    let file = open_read("missing.txt").await
+    Unit
+}
+
+async fn discardedSocket() Unit {
+    connect("127.0.0.1", 1).await
+    Unit
+}
+
+async fn closedTwice() Unit {
+    scoped file = open_read("missing.txt").await
+    file.close()
+    Unit
+}
+"#,
+    );
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open resource diagnostics project")
+        .snapshot()
+        .expect("analyze resource diagnostics project");
+    let codes = snapshot
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"MustScopeRequiresScoped"), "{codes:?}");
+    assert!(codes.contains(&"ManualDisposeOfScopedValue"), "{codes:?}");
+    assert!(snapshot.executable().is_err());
+}
+
+#[test]
 fn cancellation_runs_registered_cleanup_before_join_finishes() {
     let project = TestProject::new();
     project.write(

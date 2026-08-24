@@ -237,6 +237,10 @@ pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
             | "standard.process.arguments"
             | "standard.process.environment"
             | "standard.int.parse_int"
+            | "standard.time.milliseconds"
+            | "standard.file.open_read"
+            | "standard.file.create"
+            | "standard.net.connect"
     )
 }
 

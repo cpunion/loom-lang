@@ -19,7 +19,8 @@ use loom_mir::{
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
     CallTarget as SemaCallTarget, Coercion, Mutability, Place as SemaPlace, PlaceProjection,
-    PlaceRoot, Resolution, Signature, TyData, TyId, WitnessSelection, WitnessSource,
+    PlaceRoot, Resolution, ScopedDisposal, Signature, TyData, TyId, WitnessSelection,
+    WitnessSource,
 };
 
 const OPTION_TYPE: TypeId = TypeId(0);
@@ -30,7 +31,10 @@ const PARSE_FLOAT_ERROR_TYPE: TypeId = TypeId(4);
 const PARSE_INT_ERROR_TYPE: TypeId = TypeId(5);
 const TASK_FAULT_TYPE: TypeId = TypeId(6);
 const TASK_OUTCOME_TYPE: TypeId = TypeId(7);
-const SYNTHETIC_TYPE_COUNT: u32 = 8;
+const DURATION_TYPE: TypeId = TypeId(8);
+const FILE_TYPE: TypeId = TypeId(9);
+const SOCKET_TYPE: TypeId = TypeId(10);
+const SYNTHETIC_TYPE_COUNT: u32 = 11;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +276,9 @@ impl<'a> Compiler<'a> {
                 parse_int_error: Some(PARSE_INT_ERROR_TYPE),
                 task_fault: Some(TASK_FAULT_TYPE),
                 task_outcome: Some(TASK_OUTCOME_TYPE),
+                duration: Some(DURATION_TYPE),
+                file: Some(FILE_TYPE),
+                socket: Some(SOCKET_TYPE),
             },
         };
         program.types.shrink_to_fit();
@@ -762,6 +769,9 @@ impl<'a> Compiler<'a> {
                     RequirementType::Nominal(CONTRACT_FAULT_TYPE, Vec::new())
                 }
                 BuiltinType::TaskFault => RequirementType::Nominal(TASK_FAULT_TYPE, Vec::new()),
+                BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
+                BuiltinType::File => RequirementType::Nominal(FILE_TYPE, Vec::new()),
+                BuiltinType::Socket => RequirementType::Nominal(SOCKET_TYPE, Vec::new()),
                 BuiltinType::ParseFloatError => {
                     RequirementType::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new())
                 }
@@ -1871,37 +1881,51 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                         "scoped binding has no selected Dispose witness",
                         self.expr_span(*value),
                     )?;
-                    let requirement = required(
-                        self.compiler
-                            .indices
-                            .requirements
-                            .get(&disposal.requirement)
-                            .copied(),
-                        "Dispose requirement has no MIR id",
-                        self.expr_span(*value),
-                    )?;
-                    let dispatch_type = self
-                        .params
-                        .iter()
-                        .chain(&self.locals)
-                        .find(|declaration| declaration.id == mir_local)
-                        .map(|declaration| declaration.ty.clone())
-                        .ok_or_else(|| {
-                            defect(
-                                "scoped MIR local has no declaration",
+                    let target = match disposal {
+                        ScopedDisposal::Concept {
+                            requirement,
+                            witness,
+                        } => {
+                            let requirement = required(
+                                self.compiler.indices.requirements.get(requirement).copied(),
+                                "Dispose requirement has no MIR id",
                                 self.expr_span(*value),
-                            )
-                        })?;
+                            )?;
+                            let dispatch_type = self
+                                .params
+                                .iter()
+                                .chain(&self.locals)
+                                .find(|declaration| declaration.id == mir_local)
+                                .map(|declaration| declaration.ty.clone())
+                                .ok_or_else(|| {
+                                    defect(
+                                        "scoped MIR local has no declaration",
+                                        self.expr_span(*value),
+                                    )
+                                })?;
+                            CallTarget::StaticConcept {
+                                requirement,
+                                witness: self
+                                    .lower_witness_selection(witness, self.expr_span(*value))?,
+                                dispatch_type,
+                            }
+                        }
+                        ScopedDisposal::Builtin(BuiltinValue::FileClose) => {
+                            CallTarget::Builtin(Builtin::FileClose)
+                        }
+                        ScopedDisposal::Builtin(BuiltinValue::SocketClose) => {
+                            CallTarget::Builtin(Builtin::SocketClose)
+                        }
+                        ScopedDisposal::Builtin(_) => {
+                            return Err(defect(
+                                "invalid intrinsic scoped disposal",
+                                self.expr_span(*value),
+                            ));
+                        }
+                    };
                     let call = Expr {
                         kind: ExprKind::Call {
-                            target: CallTarget::StaticConcept {
-                                requirement,
-                                witness: self.lower_witness_selection(
-                                    &disposal.witness,
-                                    self.expr_span(*value),
-                                )?,
-                                dispatch_type,
-                            },
+                            target,
                             type_arguments: Vec::new(),
                             arguments: vec![CallArgument::InOut(loom_mir::Place::local(mir_local))],
                             witnesses: Vec::new(),
@@ -2892,21 +2916,20 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ProcessEnvironment
             | BuiltinValue::ParseInt
             | BuiltinValue::TaskFaultCode
-            | BuiltinValue::TaskFaultMessage => {
-                let target = match builtin {
-                    BuiltinValue::ParseFloat => Builtin::ParseFloat,
-                    BuiltinValue::FormatFloat => Builtin::FormatFloat,
-                    BuiltinValue::IsFinite => Builtin::IsFinite,
-                    BuiltinValue::ListAdd => Builtin::ListAdd,
-                    BuiltinValue::ListLength => Builtin::ListLength,
-                    BuiltinValue::ListGet => Builtin::ListGet,
-                    BuiltinValue::ProcessArguments => Builtin::ProcessArguments,
-                    BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
-                    BuiltinValue::ParseInt => Builtin::ParseInt,
-                    BuiltinValue::TaskFaultCode => Builtin::TaskFaultCode,
-                    BuiltinValue::TaskFaultMessage => Builtin::TaskFaultMessage,
-                    _ => unreachable!(),
-                };
+            | BuiltinValue::TaskFaultMessage
+            | BuiltinValue::DurationMilliseconds
+            | BuiltinValue::DurationAsMilliseconds
+            | BuiltinValue::FileOpenRead
+            | BuiltinValue::FileCreate
+            | BuiltinValue::FileReadText
+            | BuiltinValue::FileWriteText
+            | BuiltinValue::FileClose
+            | BuiltinValue::SocketConnect
+            | BuiltinValue::SocketReadText
+            | BuiltinValue::SocketWriteText
+            | BuiltinValue::SocketClose => {
+                let target = executable_builtin(builtin)
+                    .ok_or_else(|| defect("non-executable builtin reached call lowering", span))?;
                 let mut lowered =
                     Vec::with_capacity(arguments.len() + usize::from(receiver.is_some()));
                 if let Some(receiver) = receiver {
@@ -3284,6 +3307,34 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
     }
 }
 
+fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
+    Some(match builtin {
+        BuiltinValue::ParseFloat => Builtin::ParseFloat,
+        BuiltinValue::FormatFloat => Builtin::FormatFloat,
+        BuiltinValue::IsFinite => Builtin::IsFinite,
+        BuiltinValue::ListAdd => Builtin::ListAdd,
+        BuiltinValue::ListLength => Builtin::ListLength,
+        BuiltinValue::ListGet => Builtin::ListGet,
+        BuiltinValue::ProcessArguments => Builtin::ProcessArguments,
+        BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
+        BuiltinValue::ParseInt => Builtin::ParseInt,
+        BuiltinValue::TaskFaultCode => Builtin::TaskFaultCode,
+        BuiltinValue::TaskFaultMessage => Builtin::TaskFaultMessage,
+        BuiltinValue::DurationMilliseconds => Builtin::DurationMilliseconds,
+        BuiltinValue::DurationAsMilliseconds => Builtin::DurationAsMilliseconds,
+        BuiltinValue::FileOpenRead => Builtin::FileOpenRead,
+        BuiltinValue::FileCreate => Builtin::FileCreate,
+        BuiltinValue::FileReadText => Builtin::FileReadText,
+        BuiltinValue::FileWriteText => Builtin::FileWriteText,
+        BuiltinValue::FileClose => Builtin::FileClose,
+        BuiltinValue::SocketConnect => Builtin::SocketConnect,
+        BuiltinValue::SocketReadText => Builtin::SocketReadText,
+        BuiltinValue::SocketWriteText => Builtin::SocketWriteText,
+        BuiltinValue::SocketClose => Builtin::SocketClose,
+        _ => return None,
+    })
+}
+
 fn contract_parameter_indices(
     program: &HirProgram,
     owner: DefId,
@@ -3513,6 +3564,9 @@ fn synthetic_types() -> Vec<TypeDef> {
         parse_error_type(PARSE_INT_ERROR_TYPE, "ParseIntError", span),
         task_fault_type(span),
         task_outcome_type(span),
+        opaque_record_type(DURATION_TYPE, "Duration", Type::Int, span),
+        opaque_record_type(FILE_TYPE, "File", Type::Int, span),
+        opaque_record_type(SOCKET_TYPE, "Socket", Type::Int, span),
     ]
 }
 
@@ -3526,8 +3580,28 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Violation => Type::Nominal(VIOLATION_TYPE, Vec::new()),
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
         BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
+        BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
+        BuiltinType::File => Type::Nominal(FILE_TYPE, Vec::new()),
+        BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
         BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
         BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
+    }
+}
+
+fn opaque_record_type(id: TypeId, name: &str, field: Type, span: Span) -> TypeDef {
+    TypeDef {
+        id,
+        name: name.into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "raw".into(),
+                ty: field,
+                span,
+            }],
+            invariant: None,
+        },
     }
 }
 

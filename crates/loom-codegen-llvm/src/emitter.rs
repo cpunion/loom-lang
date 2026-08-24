@@ -1506,6 +1506,99 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_file_open_read(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_text("loom_file_open_read")
+    }
+
+    fn native_file_create(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_text("loom_file_create")
+    }
+
+    fn native_socket_connect(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_socket_connect")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_socket_connect", function_type, None)
+            })
+    }
+
+    fn native_file_read_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_descriptor("loom_file_read_text")
+    }
+
+    fn native_socket_read_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_descriptor("loom_socket_read_text")
+    }
+
+    fn native_file_write_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_write("loom_file_write_text")
+    }
+
+    fn native_socket_write_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_write("loom_socket_write_text")
+    }
+
+    fn native_io_close(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_io_close")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_io_close", function_type, None)
+            })
+    }
+
+    fn native_io_task_text(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.ptr_type.fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
+    fn native_io_task_descriptor(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self
+                .ptr_type
+                .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
+    fn native_io_task_write(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.ptr_type.fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
     fn native_gc_alloc_witness_node(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_gc_alloc_witness_node")
@@ -3522,7 +3615,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if !self.emit_expr(milliseconds, duration_value)? {
             return Ok(false);
         }
-        let milliseconds = self.int_scalar(duration_value)?;
+        let milliseconds = self.duration_scalar(milliseconds, duration_value)?;
         let negative = self
             .backend
             .builder
@@ -3819,7 +3912,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if !self.emit_expr(milliseconds, duration_value)? {
             return Ok(false);
         }
-        let milliseconds = self.int_scalar(duration_value)?;
+        let milliseconds = self.duration_scalar(milliseconds, duration_value)?;
         let negative = self
             .backend
             .builder
@@ -3902,7 +3995,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             if !self.emit_expr(milliseconds, duration_value)? {
                 return Ok(false);
             }
-            let milliseconds = self.int_scalar(duration_value)?;
+            let milliseconds = self.duration_scalar(milliseconds, duration_value)?;
             let negative = self
                 .backend
                 .builder
@@ -5805,29 +5898,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return self.emit_process_builtin(builtin, &values, destination);
         }
         if matches!(builtin, Builtin::TaskFaultCode | Builtin::TaskFaultMessage) {
-            let [fault] = values.as_slice() else {
-                return Err(CodegenError::new(
-                    "InvalidBuiltinCall",
-                    "TaskFault accessor expects one receiver",
-                ));
-            };
-            let fault = self.unwrap(*fault)?;
-            let data = self.backend.load_pointer_field(
-                self.backend.value_type,
-                fault,
-                VALUE_FIELD_DATA,
-                "task.fault.fields",
-            )?;
-            let index = u32::from(builtin == Builtin::TaskFaultMessage);
-            let node = self.value_node_at(data, index)?;
-            let field = self.backend.struct_pointer(
-                self.backend.value_node_type,
-                node,
-                VALUE_NODE_FIELD_VALUE,
-                "task.fault.field",
-            )?;
-            self.clone_value(destination, field)?;
-            return Ok(true);
+            return self.emit_task_fault_builtin(builtin, &values, destination);
+        }
+        if matches!(
+            builtin,
+            Builtin::DurationMilliseconds
+                | Builtin::DurationAsMilliseconds
+                | Builtin::FileOpenRead
+                | Builtin::FileCreate
+                | Builtin::FileReadText
+                | Builtin::FileWriteText
+                | Builtin::FileClose
+                | Builtin::SocketConnect
+                | Builtin::SocketReadText
+                | Builtin::SocketWriteText
+                | Builtin::SocketClose
+        ) {
+            return self.emit_standard_io_builtin(builtin, &values, destination);
         }
         match (builtin, values.as_slice()) {
             (Builtin::IsFinite, [value]) => {
@@ -5878,6 +5965,37 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "builtin argument shape does not match checked MIR",
             )),
         }
+    }
+
+    fn emit_task_fault_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let [fault] = values else {
+            return Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "TaskFault accessor expects one receiver",
+            ));
+        };
+        let fault = self.unwrap(*fault)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            fault,
+            VALUE_FIELD_DATA,
+            "task.fault.fields",
+        )?;
+        let index = u32::from(builtin == Builtin::TaskFaultMessage);
+        let node = self.value_node_at(data, index)?;
+        let field = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            node,
+            VALUE_NODE_FIELD_VALUE,
+            "task.fault.field",
+        )?;
+        self.clone_value(destination, field)?;
+        Ok(true)
     }
 
     fn emit_list_builtin(
@@ -6066,6 +6184,286 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "process builtin argument shape does not match checked MIR",
             )),
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_standard_io_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        match (builtin, values) {
+            (Builtin::DurationMilliseconds, [value]) => {
+                let milliseconds = self.int_scalar(*value)?;
+                let negative = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        milliseconds,
+                        self.backend.i64_type.const_zero(),
+                        "duration.negative",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(negative, "InvalidDuration")?;
+                let ty =
+                    self.backend.program.prelude.duration.ok_or_else(|| {
+                        CodegenError::new("InvalidPrelude", "Duration is missing")
+                    })?;
+                self.emit_opaque_record(ty, *value, destination)?;
+                Ok(true)
+            }
+            (Builtin::DurationAsMilliseconds, [duration]) => {
+                let value = self.opaque_record_field(*duration, "duration.value")?;
+                self.clone_value(destination, value)?;
+                Ok(true)
+            }
+            (Builtin::FileOpenRead | Builtin::FileCreate, [path]) => {
+                let (data, length) = self.text_parts(*path, "file.path")?;
+                let function = if builtin == Builtin::FileOpenRead {
+                    self.backend.native_file_open_read()
+                } else {
+                    self.backend.native_file_create()
+                };
+                let task = call_pointer(
+                    &self.backend.builder,
+                    function,
+                    &[self.executor.into(), data.into(), length.into()],
+                    "file.task",
+                )?;
+                self.store_io_task(task, destination, "FileTaskAllocationFault")?;
+                Ok(true)
+            }
+            (Builtin::FileReadText | Builtin::SocketReadText, [resource]) => {
+                let descriptor = self.resource_descriptor(*resource)?;
+                let function = if builtin == Builtin::FileReadText {
+                    self.backend.native_file_read_text()
+                } else {
+                    self.backend.native_socket_read_text()
+                };
+                let task = call_pointer(
+                    &self.backend.builder,
+                    function,
+                    &[self.executor.into(), descriptor.into()],
+                    "io.read.task",
+                )?;
+                self.store_io_task(task, destination, "IoTaskAllocationFault")?;
+                Ok(true)
+            }
+            (Builtin::FileWriteText | Builtin::SocketWriteText, [resource, text]) => {
+                let descriptor = self.resource_descriptor(*resource)?;
+                let (data, length) = self.text_parts(*text, "io.write.text")?;
+                let function = if builtin == Builtin::FileWriteText {
+                    self.backend.native_file_write_text()
+                } else {
+                    self.backend.native_socket_write_text()
+                };
+                let task = call_pointer(
+                    &self.backend.builder,
+                    function,
+                    &[
+                        self.executor.into(),
+                        descriptor.into(),
+                        data.into(),
+                        length.into(),
+                    ],
+                    "io.write.task",
+                )?;
+                self.store_io_task(task, destination, "IoTaskAllocationFault")?;
+                Ok(true)
+            }
+            (Builtin::SocketConnect, [host, port]) => {
+                let (data, length) = self.text_parts(*host, "socket.host")?;
+                let port = self.int_scalar(*port)?;
+                let negative = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        port,
+                        self.backend.i64_type.const_zero(),
+                        "socket.port.negative",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(negative, "InvalidPort")?;
+                let too_large = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SGT,
+                        port,
+                        self.backend.i64_type.const_int(u64::from(u16::MAX), false),
+                        "socket.port.large",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(too_large, "InvalidPort")?;
+                let task = call_pointer(
+                    &self.backend.builder,
+                    self.backend.native_socket_connect(),
+                    &[
+                        self.executor.into(),
+                        data.into(),
+                        length.into(),
+                        port.into(),
+                    ],
+                    "socket.connect.task",
+                )?;
+                self.store_io_task(task, destination, "SocketTaskAllocationFault")?;
+                Ok(true)
+            }
+            (Builtin::FileClose | Builtin::SocketClose, [resource]) => {
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_io_close(),
+                    &[(*resource).into()],
+                    "io.close",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "io.close.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ResourceCloseFault")?;
+                self.emit_constant(&Constant::Unit, destination)?;
+                Ok(true)
+            }
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "standard I/O builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
+    fn emit_opaque_record(
+        &self,
+        ty: TypeId,
+        value: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.initialize(destination, VALUE_TAG_RECORD)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(ty.0)),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(1),
+        )?;
+        let data = self.build_value_nodes(&[value])?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            data,
+        )
+    }
+
+    fn opaque_record_field(
+        &self,
+        record: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let record = self.unwrap(record)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            record,
+            VALUE_FIELD_DATA,
+            name,
+        )?;
+        let node = self.value_node_at(data, 0)?;
+        self.backend.struct_pointer(
+            self.backend.value_node_type,
+            node,
+            VALUE_NODE_FIELD_VALUE,
+            name,
+        )
+    }
+
+    fn resource_descriptor(
+        &self,
+        resource: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let value = self.opaque_record_field(resource, "resource.raw")?;
+        self.int_scalar(value)
+    }
+
+    fn duration_scalar(
+        &self,
+        expression: &Expr,
+        value: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        if matches!(expression.ty, Type::Int) {
+            return self.int_scalar(value);
+        }
+        if let Type::Nominal(id, arguments) = &expression.ty
+            && arguments.is_empty()
+            && self.backend.program.prelude.duration == Some(*id)
+        {
+            let value = self.opaque_record_field(value, "duration.raw")?;
+            return self.int_scalar(value);
+        }
+        Err(CodegenError::new(
+            "InvalidDuration",
+            "Task.sleep received neither Int nor Duration",
+        ))
+    }
+
+    fn text_parts(
+        &self,
+        text: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let text = self.unwrap(text)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_DATA,
+            &format!("{name}.data"),
+        )?;
+        let length = self.backend.load_i64_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_AUX,
+            &format!("{name}.length"),
+        )?;
+        Ok((data, length))
+    }
+
+    fn store_io_task(
+        &self,
+        task: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+        fault: &str,
+    ) -> Result<(), CodegenError> {
+        let missing = self
+            .backend
+            .builder
+            .build_is_null(task, "io.task.missing")
+            .map_err(builder_error)?;
+        self.fail_if(missing, fault)?;
+        self.initialize(destination, VALUE_TAG_TASK)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(TASK_VALUE_DIRECT),
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            task,
+        )
     }
 
     fn emit_parse_float(

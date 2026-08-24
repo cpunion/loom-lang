@@ -2132,8 +2132,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn check_sleep(&mut self, expression: ExprId, arguments: &[ExprId]) -> TyId {
-        let int = self.types().builtin(BuiltinType::Int);
-        self.check_fixed_arguments(expression, arguments, &[int]);
+        if arguments.len() != 1 {
+            self.call_arity(expression, 1, arguments.len());
+        }
+        if let Some(argument) = arguments.first() {
+            let actual = self.check_expr(*argument, None, ExpressionContext::Value);
+            if !matches!(
+                self.types().data(actual),
+                TyData::Builtin(BuiltinType::Int | BuiltinType::Duration)
+            ) {
+                self.error_at(
+                    "TypeMismatch",
+                    "Task.sleep expects Int milliseconds or Duration",
+                    *argument,
+                );
+            }
+        }
+        self.finish_call_arguments(arguments);
         let unit = self.types().builtin(BuiltinType::Unit);
         self.types().intern(TyData::Task(unit))
     }
@@ -2596,10 +2611,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics.local_types.insert(*local, ty);
                     if scoped {
                         self.check_scoped_binding(*local, *value, ty, region);
-                    } else if self
-                        .has_marker_conformance(ty, MUST_SCOPE_CONCEPT)
-                        .is_some()
-                    {
+                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
                         self.error(
                             "MustScopeRequiresScoped",
                             "this value has a MustScope obligation and must be bound with `scoped`",
@@ -2658,10 +2670,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     };
                     for (local, element_ty) in locals.iter().zip(element_types) {
                         self.semantics.local_types.insert(*local, element_ty);
-                        if self
-                            .has_marker_conformance(element_ty, MUST_SCOPE_CONCEPT)
-                            .is_some()
-                        {
+                        if self.has_marker_obligation(element_ty, MUST_SCOPE_CONCEPT) {
                             self.error(
                                 "MustScopeRequiresScoped",
                                 "a tuple element with a MustScope obligation cannot be bound by ordinary `let`",
@@ -2739,10 +2748,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     if self.analyzer.typed.types.data(ty) == &TyData::Never {
                         diverges = true;
                     } else {
-                        if self
-                            .has_marker_conformance(ty, MUST_SCOPE_CONCEPT)
-                            .is_some()
-                        {
+                        if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
                             self.error_at(
                                 "MustScopeRequiresScoped",
                                 "discarding a MustScope value would lose its cleanup obligation",
@@ -2811,6 +2817,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         ty: TyId,
         region: RegionId,
     ) {
+        let intrinsic = match self.types().data(ty) {
+            TyData::Builtin(BuiltinType::File) => Some(BuiltinValue::FileClose),
+            TyData::Builtin(BuiltinType::Socket) => Some(BuiltinValue::SocketClose),
+            _ => None,
+        };
+        if let Some(dispose) = intrinsic {
+            self.semantics
+                .scoped_disposals
+                .insert(local, ScopedDisposal::Builtin(dispose));
+            self.scoped_locals.insert(local);
+            return;
+        }
         let Some(dispose) = self.language_concept(DISPOSE_CONCEPT) else {
             self.error(
                 "MissingDisposeConcept",
@@ -2844,7 +2862,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         self.semantics.scoped_disposals.insert(
             local,
-            ScopedDisposal {
+            ScopedDisposal::Concept {
                 requirement,
                 witness,
             },
@@ -3650,6 +3668,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "parse_int" if self.builtin_is_imported("standard.int.parse_int") => {
                     Some(BuiltinValue::ParseInt)
                 }
+                "milliseconds" if self.builtin_is_imported("standard.time.milliseconds") => {
+                    Some(BuiltinValue::DurationMilliseconds)
+                }
+                "open_read" if self.builtin_is_imported("standard.file.open_read") => {
+                    Some(BuiltinValue::FileOpenRead)
+                }
+                "create" if self.builtin_is_imported("standard.file.create") => {
+                    Some(BuiltinValue::FileCreate)
+                }
+                "connect" if self.builtin_is_imported("standard.net.connect") => {
+                    Some(BuiltinValue::SocketConnect)
+                }
                 _ => None,
             };
             if let Some(builtin) = builtin {
@@ -3755,57 +3785,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         expected: Option<TyId>,
     ) -> TyId {
         let result = match builtin {
-            BuiltinValue::Some => {
-                if arguments.len() == 1 {
-                    let element_expected =
-                        expected.and_then(|expected| match self.types().data(expected) {
-                            TyData::Option(element) => Some(*element),
-                            _ => None,
-                        });
-                    let element =
-                        self.check_expr(arguments[0], element_expected, ExpressionContext::Value);
-                    self.types().intern(TyData::Option(element))
-                } else {
-                    self.call_arity(expression, 1, arguments.len());
-                    self.types().error()
-                }
-            }
+            BuiltinValue::Some => self.check_some_call(expression, arguments, expected),
             BuiltinValue::Ok | BuiltinValue::Err => {
-                if arguments.len() != 1 {
-                    self.call_arity(expression, 1, arguments.len());
-                    self.types().error()
-                } else if let Some(expected) = expected {
-                    if let TyData::Result { ok, error } = self.types().data(expected).clone() {
-                        let payload = if builtin == BuiltinValue::Ok {
-                            ok
-                        } else {
-                            error
-                        };
-                        self.check_expr(arguments[0], Some(payload), ExpressionContext::Value);
-                        expected
-                    } else {
-                        self.error_at(
-                            "TypeMismatch",
-                            "Ok/Err require an expected Result type",
-                            expression,
-                        );
-                        self.types().error()
-                    }
-                } else {
-                    self.error_at(
-                        "CannotInferType",
-                        "Ok/Err require an expected Result type",
-                        expression,
-                    );
-                    self.types().error()
-                }
+                self.check_result_constructor_call(expression, builtin, arguments, expected)
             }
             BuiltinValue::ParseFloat
             | BuiltinValue::FormatFloat
             | BuiltinValue::IsFinite
             | BuiltinValue::ProcessArguments
             | BuiltinValue::ProcessEnvironment
-            | BuiltinValue::ParseInt => {
+            | BuiltinValue::ParseInt
+            | BuiltinValue::DurationMilliseconds
+            | BuiltinValue::FileOpenRead
+            | BuiltinValue::FileCreate
+            | BuiltinValue::SocketConnect => {
                 self.check_standard_builtin_call(expression, builtin, arguments)
             }
             BuiltinValue::ListNew
@@ -3813,7 +3806,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
             | BuiltinValue::TaskFaultCode
-            | BuiltinValue::TaskFaultMessage => {
+            | BuiltinValue::TaskFaultMessage
+            | BuiltinValue::DurationAsMilliseconds
+            | BuiltinValue::FileReadText
+            | BuiltinValue::FileWriteText
+            | BuiltinValue::FileClose
+            | BuiltinValue::SocketReadText
+            | BuiltinValue::SocketWriteText
+            | BuiltinValue::SocketClose => {
                 self.error_at(
                     "TypeMismatch",
                     "List builtin is only available through List construction or methods",
@@ -3850,6 +3850,60 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         );
         self.finish_call_arguments(arguments);
         result
+    }
+
+    fn check_some_call(
+        &mut self,
+        expression: ExprId,
+        arguments: &[ExprId],
+        expected: Option<TyId>,
+    ) -> TyId {
+        if arguments.len() != 1 {
+            self.call_arity(expression, 1, arguments.len());
+            return self.types().error();
+        }
+        let element_expected = expected.and_then(|expected| match self.types().data(expected) {
+            TyData::Option(element) => Some(*element),
+            _ => None,
+        });
+        let element = self.check_expr(arguments[0], element_expected, ExpressionContext::Value);
+        self.types().intern(TyData::Option(element))
+    }
+
+    fn check_result_constructor_call(
+        &mut self,
+        expression: ExprId,
+        builtin: BuiltinValue,
+        arguments: &[ExprId],
+        expected: Option<TyId>,
+    ) -> TyId {
+        if arguments.len() != 1 {
+            self.call_arity(expression, 1, arguments.len());
+            return self.types().error();
+        }
+        let Some(expected) = expected else {
+            self.error_at(
+                "CannotInferType",
+                "Ok/Err require an expected Result type",
+                expression,
+            );
+            return self.types().error();
+        };
+        let TyData::Result { ok, error } = self.types().data(expected).clone() else {
+            self.error_at(
+                "TypeMismatch",
+                "Ok/Err require an expected Result type",
+                expression,
+            );
+            return self.types().error();
+        };
+        let payload = if builtin == BuiltinValue::Ok {
+            ok
+        } else {
+            error
+        };
+        self.check_expr(arguments[0], Some(payload), ExpressionContext::Value);
+        expected
     }
 
     fn check_standard_builtin_call(
@@ -3892,6 +3946,24 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let int = self.types().builtin(BuiltinType::Int);
                 let error = self.types().builtin(BuiltinType::ParseIntError);
                 self.types().intern(TyData::Result { ok: int, error })
+            }
+            BuiltinValue::DurationMilliseconds => {
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[int]);
+                self.types().builtin(BuiltinType::Duration)
+            }
+            BuiltinValue::FileOpenRead | BuiltinValue::FileCreate => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                let file = self.types().builtin(BuiltinType::File);
+                self.types().intern(TyData::Task(file))
+            }
+            BuiltinValue::SocketConnect => {
+                let text = self.types().builtin(BuiltinType::Text);
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[text, int]);
+                let socket = self.types().builtin(BuiltinType::Socket);
+                self.types().intern(TyData::Task(socket))
             }
             _ => unreachable!("caller filters standard builtins"),
         }
@@ -4013,6 +4085,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         if self.types().data(receiver_ty) == &TyData::Builtin(BuiltinType::TaskFault)
             && let Some(result) = self.check_task_fault_method_call(
                 expression,
+                method_name,
+                type_arguments,
+                arguments,
+            )
+        {
+            return result;
+        }
+        if let TyData::Builtin(builtin) = self.types().data(receiver_ty).clone()
+            && let Some(result) = self.check_standard_value_method_call(
+                expression,
+                receiver,
+                builtin,
                 method_name,
                 type_arguments,
                 arguments,
@@ -4312,6 +4396,116 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         Some(self.types().builtin(BuiltinType::Text))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_standard_value_method_call(
+        &mut self,
+        expression: ExprId,
+        receiver: ExprId,
+        receiver_type: BuiltinType,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let unit = self.types().builtin(BuiltinType::Unit);
+        let text = self.types().builtin(BuiltinType::Text);
+        let (builtin, receiver_passing, parameters, result) =
+            match (receiver_type, method_name.as_str()) {
+                (BuiltinType::Duration, "as_milliseconds") => (
+                    BuiltinValue::DurationAsMilliseconds,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    self.types().builtin(BuiltinType::Int),
+                ),
+                (BuiltinType::File, "read_text") => (
+                    BuiltinValue::FileReadText,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    self.types().intern(TyData::Task(text)),
+                ),
+                (BuiltinType::File, "write_text") => (
+                    BuiltinValue::FileWriteText,
+                    ReceiverPassing::Value,
+                    vec![text],
+                    self.types().intern(TyData::Task(unit)),
+                ),
+                (BuiltinType::File, "close") => (
+                    BuiltinValue::FileClose,
+                    ReceiverPassing::InOut,
+                    Vec::new(),
+                    unit,
+                ),
+                (BuiltinType::Socket, "read_text") => (
+                    BuiltinValue::SocketReadText,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    self.types().intern(TyData::Task(text)),
+                ),
+                (BuiltinType::Socket, "write_text") => (
+                    BuiltinValue::SocketWriteText,
+                    ReceiverPassing::Value,
+                    vec![text],
+                    self.types().intern(TyData::Task(unit)),
+                ),
+                (BuiltinType::Socket, "close") => (
+                    BuiltinValue::SocketClose,
+                    ReceiverPassing::InOut,
+                    Vec::new(),
+                    unit,
+                ),
+                _ => return None,
+            };
+        if !type_arguments.is_empty() {
+            self.error_at(
+                "TypeMismatch",
+                "standard value methods do not accept explicit type arguments",
+                expression,
+            );
+        }
+        self.check_fixed_arguments(expression, arguments, &parameters);
+        if receiver_passing == ReceiverPassing::InOut {
+            let mutable = self
+                .semantics
+                .expression_places
+                .get(receiver)
+                .is_some_and(|place| place.mutability == Mutability::Mutable);
+            if !mutable {
+                self.error_at(
+                    "MutReceiverRequiresVar",
+                    "close requires a mutable receiver place",
+                    receiver,
+                );
+            }
+            if self
+                .semantics
+                .expression_places
+                .get(receiver)
+                .and_then(|place| match place.root {
+                    PlaceRoot::Local(local) if place.projections.is_empty() => Some(local),
+                    _ => None,
+                })
+                .is_some_and(|local| self.scoped_locals.contains(&local))
+            {
+                self.error_at(
+                    "ManualDisposeOfScopedValue",
+                    "a scoped resource is closed automatically and cannot be closed manually",
+                    receiver,
+                );
+            }
+        }
+        self.finish_call_arguments(arguments);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::Builtin(builtin),
+                substitution: Substitution::default(),
+                dispatch_witness: None,
+                witnesses: Vec::new(),
+                receiver: Some(receiver_passing),
+            },
+        );
+        Some(result)
     }
 
     fn find_concrete_concept_candidates(
@@ -5118,6 +5312,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 bindings: Vec::new(),
             },
         )
+    }
+
+    fn has_marker_obligation(&mut self, ty: TyId, marker: &str) -> bool {
+        if marker == MUST_SCOPE_CONCEPT
+            && matches!(
+                self.types().data(ty),
+                TyData::Builtin(BuiltinType::File | BuiltinType::Socket)
+            )
+        {
+            return true;
+        }
+        self.has_marker_conformance(ty, marker).is_some()
     }
 
     fn resolve_bound_witnesses(
@@ -5982,6 +6188,9 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Violation" => Some(BuiltinType::Violation),
         "ContractFault" => Some(BuiltinType::ContractFault),
         "TaskFault" => Some(BuiltinType::TaskFault),
+        "Duration" => Some(BuiltinType::Duration),
+        "File" => Some(BuiltinType::File),
+        "Socket" => Some(BuiltinType::Socket),
         _ => None,
     }
 }

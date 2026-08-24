@@ -64,6 +64,9 @@ pub struct PreludeIds {
     pub parse_int_error: Option<TypeId>,
     pub task_fault: Option<TypeId>,
     pub task_outcome: Option<TypeId>,
+    pub duration: Option<TypeId>,
+    pub file: Option<TypeId>,
+    pub socket: Option<TypeId>,
 }
 
 impl Program {
@@ -558,6 +561,17 @@ pub enum Builtin {
     ParseInt,
     TaskFaultCode,
     TaskFaultMessage,
+    DurationMilliseconds,
+    DurationAsMilliseconds,
+    FileOpenRead,
+    FileCreate,
+    FileReadText,
+    FileWriteText,
+    FileClose,
+    SocketConnect,
+    SocketReadText,
+    SocketWriteText,
+    SocketClose,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -491,6 +491,9 @@ impl<'program> Validator<'program> {
             ),
             ("task_fault", self.program.prelude.task_fault, "record"),
             ("task_outcome", self.program.prelude.task_outcome, "enum"),
+            ("duration", self.program.prelude.duration, "record"),
+            ("file", self.program.prelude.file, "record"),
+            ("socket", self.program.prelude.socket, "record"),
         ];
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
@@ -591,6 +594,31 @@ impl<'program> Validator<'program> {
                     "prelude TaskOutcome must use Completed#0(T), Faulted#1(TaskFault), and Cancelled#2",
                     definition.span,
                     "prelude.task_outcome",
+                );
+            }
+        }
+        for (name, id) in [
+            ("Duration", self.program.prelude.duration),
+            ("File", self.program.prelude.file),
+            ("Socket", self.program.prelude.socket),
+        ] {
+            let Some(definition) = id.and_then(|id| self.program.type_def(id)) else {
+                continue;
+            };
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Record { fields, invariant: None }
+                    if definition.type_parameters == 0
+                        && fields.len() == 1
+                        && fields[0].name == "raw"
+                        && fields[0].ty == Type::Int
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::RecordShape,
+                    format!("prelude {name} must be a non-generic {{ raw Int }} record"),
+                    definition.span,
+                    format!("prelude.{}", name.to_ascii_lowercase()),
                 );
             }
         }
@@ -2927,9 +2955,18 @@ impl<'program> Validator<'program> {
                     &format!("{path}.milliseconds"),
                     depth + 1,
                 );
-                if !types_compatible(&Type::Int, &actual) {
+                let duration = self
+                    .program
+                    .prelude
+                    .duration
+                    .is_some_and(|duration| nominal_is(&actual, duration));
+                if !types_compatible(&Type::Int, &actual) && !duration {
                     self.type_mismatch(
-                        &Type::Int,
+                        &self
+                            .program
+                            .prelude
+                            .duration
+                            .map_or(Type::Int, |id| Type::Nominal(id, Vec::new())),
                         &actual,
                         milliseconds.span,
                         &format!("{path}.milliseconds"),
@@ -4192,26 +4229,36 @@ impl<'program> Validator<'program> {
         depth: u16,
     ) -> Option<Type> {
         let types = self.validate_untyped_arguments(function, arguments, path, depth);
-        let expected_arity = match builtin {
-            Builtin::ListAdd | Builtin::ListGet => 2,
-            Builtin::ProcessArguments => 0,
-            Builtin::IsFinite
-            | Builtin::ParseFloat
-            | Builtin::FormatFloat
-            | Builtin::ListLength
-            | Builtin::ProcessEnvironment
-            | Builtin::ParseInt
-            | Builtin::TaskFaultCode
-            | Builtin::TaskFaultMessage => 1,
-        };
-        if types.len() != expected_arity {
-            self.push(
-                MirValidationCode::CallArity,
-                format!("builtin {builtin:?} expects exactly {expected_arity} argument(s)"),
-                expression.span,
-                format!("{path}.arguments"),
-            );
+        if !self.validate_builtin_arity_and_mode(builtin, arguments, expression.span, path) {
             return None;
+        }
+        if matches!(
+            builtin,
+            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds
+        ) {
+            let result = self.validate_duration_builtin(builtin, &types);
+            if result.is_none() {
+                self.invalid_builtin_shape(builtin, &types, expression.span, path);
+            }
+            return result;
+        }
+        if matches!(
+            builtin,
+            Builtin::FileOpenRead
+                | Builtin::FileCreate
+                | Builtin::FileReadText
+                | Builtin::FileWriteText
+                | Builtin::FileClose
+                | Builtin::SocketConnect
+                | Builtin::SocketReadText
+                | Builtin::SocketWriteText
+                | Builtin::SocketClose
+        ) {
+            let result = self.validate_io_builtin(builtin, &types);
+            if result.is_none() {
+                self.invalid_builtin_shape(builtin, &types, expression.span, path);
+            }
+            return result;
         }
         match builtin {
             Builtin::ProcessArguments => Some(Type::List(Box::new(Type::Text))),
@@ -4268,6 +4315,148 @@ impl<'program> Validator<'program> {
                 None
             }
         }
+    }
+
+    fn validate_builtin_arity_and_mode(
+        &mut self,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        span: Span,
+        path: &str,
+    ) -> bool {
+        let expected_arity = match builtin {
+            Builtin::ListAdd
+            | Builtin::ListGet
+            | Builtin::FileWriteText
+            | Builtin::SocketConnect
+            | Builtin::SocketWriteText => 2,
+            Builtin::ProcessArguments => 0,
+            Builtin::IsFinite
+            | Builtin::ParseFloat
+            | Builtin::FormatFloat
+            | Builtin::ListLength
+            | Builtin::ProcessEnvironment
+            | Builtin::ParseInt
+            | Builtin::TaskFaultCode
+            | Builtin::TaskFaultMessage
+            | Builtin::DurationMilliseconds
+            | Builtin::DurationAsMilliseconds
+            | Builtin::FileOpenRead
+            | Builtin::FileCreate
+            | Builtin::FileReadText
+            | Builtin::FileClose
+            | Builtin::SocketReadText
+            | Builtin::SocketClose => 1,
+        };
+        if arguments.len() != expected_arity {
+            self.push(
+                MirValidationCode::CallArity,
+                format!("builtin {builtin:?} expects exactly {expected_arity} argument(s)"),
+                span,
+                format!("{path}.arguments"),
+            );
+            return false;
+        }
+        if matches!(builtin, Builtin::FileClose | Builtin::SocketClose)
+            && !matches!(arguments.first(), Some(CallArgument::InOut(_)))
+        {
+            self.push(
+                MirValidationCode::ReceiverShape,
+                format!("builtin {builtin:?} requires an inout resource place"),
+                span,
+                format!("{path}.arguments[0]"),
+            );
+        }
+        true
+    }
+
+    fn validate_duration_builtin(&self, builtin: Builtin, types: &[Option<Type>]) -> Option<Type> {
+        match builtin {
+            Builtin::DurationMilliseconds if types_compatible(&Type::Int, types[0].as_ref()?) => {
+                self.program
+                    .prelude
+                    .duration
+                    .map(|id| Type::Nominal(id, Vec::new()))
+            }
+            Builtin::DurationAsMilliseconds
+                if Self::nominal_builtin_argument(types, 0, self.program.prelude.duration) =>
+            {
+                Some(Type::Int)
+            }
+            _ => None,
+        }
+    }
+
+    fn validate_io_builtin(&self, builtin: Builtin, types: &[Option<Type>]) -> Option<Type> {
+        let file = self.program.prelude.file;
+        let socket = self.program.prelude.socket;
+        match builtin {
+            Builtin::FileOpenRead | Builtin::FileCreate
+                if types_compatible(&Type::Text, types[0].as_ref()?) =>
+            {
+                file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
+            }
+            Builtin::FileReadText if Self::nominal_builtin_argument(types, 0, file) => {
+                Some(Type::Task(Box::new(Type::Text)))
+            }
+            Builtin::FileWriteText
+                if Self::nominal_builtin_argument(types, 0, file)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(Type::Task(Box::new(Type::Unit)))
+            }
+            Builtin::FileClose if Self::nominal_builtin_argument(types, 0, file) => {
+                Some(Type::Unit)
+            }
+            Builtin::SocketConnect
+                if types_compatible(&Type::Text, types[0].as_ref()?)
+                    && types_compatible(&Type::Int, types[1].as_ref()?) =>
+            {
+                socket.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
+            }
+            Builtin::SocketReadText if Self::nominal_builtin_argument(types, 0, socket) => {
+                Some(Type::Task(Box::new(Type::Text)))
+            }
+            Builtin::SocketWriteText
+                if Self::nominal_builtin_argument(types, 0, socket)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(Type::Task(Box::new(Type::Unit)))
+            }
+            Builtin::SocketClose if Self::nominal_builtin_argument(types, 0, socket) => {
+                Some(Type::Unit)
+            }
+            _ => None,
+        }
+    }
+
+    fn nominal_builtin_argument(
+        types: &[Option<Type>],
+        index: usize,
+        expected: Option<crate::TypeId>,
+    ) -> bool {
+        expected.is_some_and(|id| {
+            types
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|actual| nominal_is(actual, id))
+        })
+    }
+
+    fn invalid_builtin_shape(
+        &mut self,
+        builtin: Builtin,
+        types: &[Option<Type>],
+        span: Span,
+        path: &str,
+    ) {
+        let argument = types.first().and_then(Option::as_ref);
+        self.push(
+            MirValidationCode::BuiltinShape,
+            format!("builtin {builtin:?} cannot accept {argument:?}"),
+            span,
+            path,
+        );
     }
 
     fn validate_list_builtin(

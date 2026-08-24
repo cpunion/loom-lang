@@ -39,6 +39,9 @@ pub enum BuiltinType {
     Violation,
     ContractFault,
     TaskFault,
+    Duration,
+    File,
+    Socket,
     ParseFloatError,
     ParseIntError,
 }

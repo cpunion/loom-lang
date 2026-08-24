@@ -324,6 +324,7 @@ let document = load(1).await
 let decoded = load(1).await.decode()
 let document = load(1).await?
 Task.sleep(10).await // 10 milliseconds
+Task.sleep(milliseconds(10)).await
 ```
 
 固定元数的并发 join 返回 tuple：
@@ -340,7 +341,9 @@ var tasks = List[Task[Report]]()
 let reports = Task.all(tasks).await
 ```
 
-`.await` 是不可重载的后缀关键字，不是普通零参数 method；写 `.await`，不写 `.await()`，旧前缀 `await task` 按普通非法语法报错。`?` 是与 async 无关的独立后缀传播运算符：`task.await?` 先取得 `Result[T, E]`，再在 `Ok` 时产生 `T`、在 `Err` 时从当前 callable 返回 `Err`。当前不做隐式错误转换，`E` 必须与当前 callable 的 `Result[_, E]` 完全一致；`!` 不构成强制 await/unwrap 语法。`Task.sleep(milliseconds)` 要求非负 `Int`；`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)` 等待借用 descriptor 的一次 readiness，均返回可存储的 `Task[Unit]`。仍未终结的 Task 必须在词法 scope 结束前被 await、加入 join 或返回。`Task.all(...)` 等组合本身也只产生 Task，取得结果仍须显式 `.await`。tuple 与 list 不隐式互转；异构动态集合必须使用显式 enum/tagged union 或共同 `dyn C`，不得自动擦除为 `any`。
+`.await` 是不可重载的后缀关键字，不是普通零参数 method；写 `.await`，不写 `.await()`，旧前缀 `await task` 按普通非法语法报错。`?` 是与 async 无关的独立后缀传播运算符：`task.await?` 先取得 `Result[T, E]`，再在 `Ok` 时产生 `T`、在 `Err` 时从当前 callable 返回 `Err`。当前不做隐式错误转换，`E` 必须与当前 callable 的 `Result[_, E]` 完全一致；`!` 不构成强制 await/unwrap 语法。`Task.sleep(delay)` 接受非负毫秒 `Int` 或 `Duration`；`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)` 等待借用 descriptor 的一次 readiness，均返回可存储的 `Task[Unit]`。仍未终结的 Task 必须在词法 scope 结束前被 await、加入 join 或返回。`Task.all(...)` 等组合本身也只产生 Task，取得结果仍须显式 `.await`。tuple 与 list 不隐式互转；异构动态集合必须使用显式 enum/tagged union 或共同 `dyn C`，不得自动擦除为 `any`。
+
+第一批真实异步资源 API 保持小而显式：`standard.file.open_read(path)`、`standard.file.create(path)` 与 `standard.net.connect(host, port)` 返回 Task；`File`/`Socket` 提供 `read_text`、`write_text`，并且必须立即绑定为 `scoped`。它们的 `close` 由 compiler-known 块级 cleanup 调用；对 scoped 变量手动 `close` 会被静态拒绝。
 
 ## 11. 当前没有写法的方向
 

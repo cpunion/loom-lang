@@ -4,7 +4,7 @@
 
 阶段：Core 0.1–0.3 已接入同一条 source → package graph → checked MIR → LLVM object → native executable 工具链；解释器保留为显式语义对照后端
 
-日期：2026-08-24
+日期：2026-08-25
 
 `loom-lang` 先实现一组小而完整的 Core 0.1：代数数据类型、函数与方法、显式失败、穷尽匹配、模块、基本泛型、普通测试、受约束值与契约编程。在此基础上，Core 0.2 已确认由同一个 `concept` 同时支持静态泛型约束和显式动态派发。
 
@@ -35,7 +35,7 @@
 
 Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-baseline.md)，具体书写见 [核心表面与代码风格](docs/03-surface-and-style.md)；Core 0.2 的行为抽象见 [concept 与多态规范](docs/05-concepts-and-dynamic-polymorphism.md)。lexer/parser、数值、failure、Task 表面、native artifact 和工具边界见 [Core 0.1–0.3 可执行合同](docs/06-executable-contract.md)，完整编译流程见 [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md)。
 
-已确认的下一条普通语言扩展是 [GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md)：自动且地址不可观察的可移动 GC；块级 `scoped`/`defer`；stackless coroutine；单指针 `Task[T]`；显式后缀 `.await`；ready-queue executor；静态异构 tuple join、动态同构 list join，以及 `all/settled/any/race`。源码仍不增加 ownership、borrow、lifetime、`Pin` 或用户可实现的 coroutine trait。
+[GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md)已经进入 Core 0.3：自动且地址不可观察的可移动 GC；块级 `scoped`/`defer`；stackless coroutine；单指针 `Task[T]`；显式后缀 `.await`；ready-queue executor；静态异构 tuple join、动态同构 list join，以及 `all/settled/any/race`。源码仍不增加 ownership、borrow、lifetime、`Pin` 或用户可实现的 coroutine trait。
 
 ## 尚未确认
 
@@ -101,6 +101,6 @@ cargo run -p loom-cli -- run --target app examples/packages/application
 
 源码命令默认使用项目内 `target/loom/cache/v1` 的内容寻址缓存；`--cache-dir DIR` 可改位置，`--no-cache` 可做冷路径对照。缓存当前真实复用逐文件 lossless token/AST、canonical module public-interface、经过 decoder 与 MIR validator 的整图 checked MIR、按 root/witness reachability 裁剪的 LLVM target object，以及最终 native/`.loomi` artifact。不可达私有函数的等长实现修改会使 checked MIR miss，但可继续命中 object/final-link；损坏 ref/blob 只会安全 miss 并重建。
 
-`llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、scheduler、reactor 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、CLI 和 LSP 的回归证据。
+`llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。`standard.time.milliseconds` 提供平台无关 `Duration`；`standard.file.open_read/create` 和 `standard.net.connect` 返回真实异步 `File`/`Socket` task，这两类 `MustScope` 资源由块级 `scoped` 自动关闭。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、scheduler、reactor、I/O 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、CLI 和 LSP 的回归证据。
 
 LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。当前仍不声称跨进程复用 typed-HIR body checking：整图 checked-MIR miss 后 sema 会检查所有 declaration/body；module interface 已是稳定依赖键，但把它接成 selective semantic query 是后续性能工作。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。

@@ -242,6 +242,83 @@ pub async fn main() Unit {
 }
 
 #[test]
+fn duration_file_and_socket_tasks_run_natively() {
+    use std::io::{Read, Write};
+
+    let project = tempfile::tempdir().expect("create I/O project");
+    let file = project.path().join("round-trip.txt");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept test client");
+        let mut request = [0_u8; 4];
+        socket.read_exact(&mut request).expect("read request");
+        assert_eq!(&request, b"ping");
+        socket.write_all(b"pong").expect("write response");
+    });
+    let source = format!(
+        r#"module standard_io
+
+import standard.time.milliseconds
+import standard.file.open_read
+import standard.file.create
+import standard.net.connect
+
+pub async fn main() Unit {{
+    let delay = milliseconds(1)
+    let observed = delay.as_milliseconds()
+    assert observed == 1
+    Task.sleep(delay).await
+    {{
+        scoped output = create("{}").await
+        output.write_text("hello from loom").await
+        Unit
+    }}
+    {{
+        scoped input = open_read("{}").await
+        let content = input.read_text().await
+        assert content == "hello from loom"
+        Unit
+    }}
+    {{
+        scoped socket = connect("127.0.0.1", {}).await
+        socket.write_text("ping").await
+        let response = socket.read_text().await
+        assert response == "pong"
+        Unit
+    }}
+    Unit
+}}
+"#,
+        file.display(),
+        file.display(),
+        port,
+    );
+    std::fs::write(project.path().join("main.loom"), source).expect("write I/O source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load I/O project")
+        .snapshot()
+        .expect("analyze I/O project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower I/O MIR");
+    let executable = project.path().join("program");
+    emit_native(program, &executable, &EmitOptions::run("main"))
+        .expect("emit native I/O executable");
+    let output = Command::new(executable)
+        .output()
+        .expect("run native I/O program");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    server.join().expect("join test server");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "hello from loom");
+}
+
+#[test]
 fn cancellation_resumes_the_suspended_state_and_runs_cleanup() {
     let source = r"module cancellation
 

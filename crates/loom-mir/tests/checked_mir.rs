@@ -374,12 +374,102 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             parse_int_error: None,
             task_fault: None,
             task_outcome: None,
+            duration: None,
+            file: None,
+            socket: None,
         },
         ..Program::default()
     };
     let errors = validation_errors(&program);
     assert!(errors.contains(MirValidationCode::InvalidTypeReference));
     assert!(errors.contains(MirValidationCode::RecordShape));
+}
+
+#[test]
+fn opaque_resource_prelude_shapes_are_checked() {
+    let mut program = Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "File".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Text,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        prelude: PreludeIds {
+            file: Some(TypeId(0)),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::RecordShape));
+    let TypeDefKind::Record { fields, .. } = &mut program.types[0].kind else {
+        unreachable!();
+    };
+    fields[0].ty = Type::Int;
+    validate_program(&program).expect("canonical opaque resource shape");
+}
+
+#[test]
+fn resource_close_requires_an_inout_place() {
+    let file = TypeId(0);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let mut program = Program {
+        types: vec![TypeDef {
+            id: file,
+            name: "File".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![function(
+            0,
+            vec![local(0, file_ty.clone(), true)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::FileClose),
+                        type_arguments: Vec::new(),
+                        arguments: vec![CallArgument::Value(copy(0, file_ty))],
+                        witnesses: Vec::new(),
+                    },
+                    ty: Type::Unit,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            file: Some(file),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::ReceiverShape));
+    let Some(tail) = &mut program.functions[0].body.tail else {
+        unreachable!();
+    };
+    let ExprKind::Call { arguments, .. } = &mut tail.kind else {
+        unreachable!();
+    };
+    arguments[0] = CallArgument::InOut(Place::local(LocalId(0)));
+    validate_program(&program).expect("resource close through inout place");
 }
 
 fn float_program(bits: u64) -> Program {
