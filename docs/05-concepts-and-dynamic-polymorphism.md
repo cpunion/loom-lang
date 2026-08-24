@@ -210,7 +210,7 @@ source Source[Item = Int]
 
 witness 可以降低成 table，也可以降低成单独函数引用或被完全常量折叠。若使用 table，它由 `(concrete type, concept, associated bindings)` 决定，并且只允许引用该 concept 的 live method slots 与必要 proof metadata。concrete record 不嵌入 C++ 风格 vptr；派发不依赖 Java 对象头、GC、class loader、反射或全局 conformance registry。
 
-layout、slot order、symbol name 和是否存在 materialized interface object 都是 compiler-private，不承诺 FFI/plugin 稳定性。任何表示都必须保持相同的值、mutation、Violation、ContractFault 和 RuntimeFault。
+layout、slot order、symbol name 和是否存在 materialized interface object 都是 compiler-private，不承诺 FFI/plugin 稳定性。任何表示都必须保持相同的值、mutation、ConstraintError、ContractFault 和 RuntimeFault。
 
 ## 9. contract 顺序
 

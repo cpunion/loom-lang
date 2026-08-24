@@ -29,7 +29,7 @@ Core 0.1 包含：
 
 ### 1.1 Core prelude 与 `Float`
 
-Core prelude 自动提供：`Bool`、`Int`、`Float`、`Text`、`Unit`、`Option`、`Result`、`Violation`、`ContractFault`，以及 `Some`、`None`、`Ok`、`Err`、`Unit` 构造。其他类型和函数必须显式 import。
+Core prelude 自动提供：`Bool`、`Int`、`Float`、`Text`、`Unit`、`Option`、`Result`、`ConstraintError`、`ContractFault`，以及 `Some`、`None`、`Ok`、`Err`、`Unit` 构造。其他类型和函数必须显式 import。
 
 Core 0.1 的 `Float` 固定为 IEEE 754 binary64：
 
@@ -85,7 +85,7 @@ record PairOfPrices {
 - 字段对外只读，只能由该类型的 `mut self` method 修改；
 - record 使用值语义；修改一个值不得改变其其他逻辑副本；
 - 没有 invariant 的 record literal 构造出 `T`；
-- 有 invariant 的 record literal 构造出 `Result[T, Violation]`；
+- 有 invariant 的 record literal 采用与受约束类型相同的三态规则：静态证明成立直接得到 `T`，静态证明不成立产生编译诊断，无法证明时得到 `Result[T, ConstraintError]`；
 - Core 0.1 每个 record 最多声明一个 invariant clause；多个条件必须在该 clause 中用布尔组合明确写出；
 - 增加或删除 invariant 会改变构造 API，属于有意的 breaking change；
 - Core 0.1 没有继承、结构子类型、开放字段或对象 identity。
@@ -97,7 +97,7 @@ record PairOfPrices {
 ```loom
 enum PriceInputError {
     InvalidNumber(ParseFloatError)
-    OutOfRange(Violation)
+    OutOfRange(ConstraintError)
 }
 ```
 
@@ -158,7 +158,7 @@ fn value_or[T](value Option[T], fallback T) T {
 ## 7. 函数与 method
 
 ```loom
-fn add_tax(price Price, rate Float) Result[Price, Violation] {
+fn add_tax(price Price, rate Float) Result[Price, ConstraintError] {
     Price(price * (1.0 + rate))
 }
 ```
@@ -229,30 +229,37 @@ type Price = Float where self >= 0.0
 
 `Price` 是名义类型，不是 `Float` 的别名。即使两个类型拥有相同 base 和 predicate，它们仍不相等。
 
-唯一构造规则是：
+构造规则是：
 
 ```loom
-Price(value) : Result[Price, Violation]
+Price(value) : Price                         // predicate 静态可证明
+Price(value) : Result[Price, ConstraintError] // predicate 无法静态判定
 ```
 
 其规范步骤为：
 
 ```text
 value 恰好求值一次
-→ 对该值求 where predicate
-→ true 产生 Ok(Price value)
-→ false 产生 Err(Violation)
+→ 在固定的 Core proof domain 中判定 where predicate
+→ 静态证明 true：直接产生 Price value，不生成运行期 predicate 分支
+→ 静态证明 false：ConstraintUnsatisfied 编译诊断
+→ unknown：运行期求 predicate，true 产生 Ok(Price value)，false 产生 Err(ConstraintError)
 ```
 
 因此：
 
-- `Price(expr)` 的静态类型始终是 `Result[Price, Violation]`；
-- 编译器证明 predicate 时可以消除运行期检查，但不得改变表达式类型；
+- `Price(10.0)` 一类已证明表达式的静态类型是 `Price`；
+- 来自参数、解析、I/O、FFI 或其他未知边界的 `Price(expr)` 通常仍是 `Result[Price, ConstraintError]`；
+- proof classification 是语言语义的一部分，不允许由 LLVM optimization profile 决定；
 - `Float` 不能隐式缩窄成 `Price`；
 - `Price` 可以按其 base value 读取为 `Float`；
 - 普通 Float 运算结果仍为 Float，除非未来规则证明闭包，否则必须重新构造 Price；
 - record 构造、反序列化、FFI 和泛型代码不得绕过检查；
 - `parse_float(text)` 若返回 Result，必须先显式处理，语言不自动展平嵌套失败。
+
+Core proof domain 是闭合且保守的：常量与无溢出的常量算术、局部值与 tuple binding 传播、参数/局部/pattern binding/函数结果已经建立的 constrained 或 record 类型事实、成功执行后的 `requires`/`assert`/receiver invariant、proof-pure `if` 路径的布尔合取，以及同一数值项上的简单有序边界蕴含。赋值和 `mut self` 调用会使重叠事实失效；控制流 join 只保留所有可达出口共有的事实，循环还必须包含零轮路径。Float 的 false comparison 不反推出相反 comparison，因为 NaN 会使两边都为 false；`is_finite` 必须由常量求值或显式已建立事实证明。match 的值关系、用户函数 body、一般代数化简、循环不变量和跨函数 body 证明不在本版 proof domain；函数调用只使用其声明返回类型已经保证的事实，无法证明时必须保留运行期路径。
+
+同一语言版本内 proof domain 不得静默扩大，因为从 `Result[T, ConstraintError]` 变成 `T` 会改变局部推断类型；扩展 proof domain 必须作为显式语言版本变化。无论分类如何，argument 仍按源码顺序恰好求值一次。
 
 约束只保证声明的 predicate。按第 1.1 节规则，`NaN >= 0.0` 为 false，因此被拒绝；正无穷会通过。若价格还必须有限，必须显式 import 并使用标准库 predicate：
 
@@ -262,9 +269,9 @@ import standard.float.is_finite
 type Price = Float where is_finite(self) && self >= 0.0
 ```
 
-### 9.1 `Violation`
+### 9.1 `ConstraintError`
 
-约束或 invariant 建立失败返回结构化 `Violation`，至少包含：
+约束或 invariant 建立失败返回结构化 `ConstraintError`，至少包含：
 
 - 目标类型；
 - 失败的 predicate/code；
@@ -272,7 +279,7 @@ type Price = Float where is_finite(self) && self >= 0.0
 - 安全的值摘要；
 - 源码中的合同位置。
 
-Violation 是数据建立失败，可以由普通程序通过 Result 处理。
+ConstraintError 是数据建立失败，可以由普通程序通过 Result 处理。它不是所有业务错误的共同父类型；Core 不提供名为 `Error` 的万能错误类型或隐式错误转换。使用具体名称可避免把约束失败与 `ParseFloatError`、领域 enum 或 ContractFault 混为一谈。
 
 ## 10. record invariant
 
@@ -290,13 +297,13 @@ record Order {
 规则：
 
 - invariant 是 record 全值合法性；
-- 带 invariant 的外部构造返回 `Result[Order, Violation]`；
+- 带 invariant 的构造遵循同一 proof 三态；未知外部输入返回 `Result[Order, ConstraintError]`；
 - 构造时先求值全部字段，再检查唯一的 invariant clause；
 - 一个已经建立的 Order 在每个 method 入口都必须满足 invariant；
 - `mut self` method 可以在自己的 body 内暂时改变字段，但 invariant 失效期间 receiver 被隔离：不得复制、传参、存储、返回、捕获，也不得作为 receiver 调用任何 method；
 - 调用另一个 private 或 public method 前必须先恢复 invariant；
 - 每个正常出口，包括返回 `Err` 的出口，都必须重新满足 invariant；
-- 实现破坏一个已建立对象的 invariant 是 `InvariantFault`，不是普通 Violation。
+- 实现破坏一个已建立对象的 invariant 是 `InvariantFault`，不是普通 ConstraintError。
 
 ## 11. `requires`、`ensures` 与 `assert`
 
@@ -316,8 +323,8 @@ impl Order {
 
 | 合同 | 语义 | 失败 |
 |---|---|---|
-| `where` | 单值合法性 | 构造返回 `Err(Violation)` |
-| `invariant` | record 整体合法性 | 外部构造返回 Violation；实现破坏产生 `InvariantFault` |
+| `where` | 单值合法性 | 已证明直接建立；已否证编译失败；unknown 构造可返回 `Err(ConstraintError)` |
+| `invariant` | record 整体合法性 | 构造采用同一 proof 三态；实现破坏产生 `InvariantFault` |
 | `requires` | 调用者义务 | `PreconditionFault`，blame caller |
 | `ensures` | 实现正常返回承诺 | `PostconditionFault`，blame callee |
 | `assert` | 实现声明当前位置必然成立 | `AssertionFault`，blame 当前实现 |
@@ -341,7 +348,9 @@ Core 0.1 的合同中不允许用户函数调用、索引、Int 算术或其他�
 - `old(expr)` 只允许出现在 ensures，表示当前 fn/method 调用入口时的逻辑值快照；其中表达式只能引用在入口已存在的参数，以及 method 的 `self`/字段；
 - 多条合同按逻辑与解释；
 - 合同在所有 build mode 中有效；
-- 只有静态证明成立时，编译器才能消除相应运行期检查。
+- 只有静态证明成立时，编译器才能消除相应运行期检查；当前 sema 会消除由既有 nominal 类型事实、前序成功合同或闭合常量证明的 `requires`、`ensures`、receiver invariant 与 `assert`；
+- 合同自身不能循环证明自己：分类某条 `requires` 时不预先假设该条 requires，分类 record invariant 时不预先假设该 invariant；无法证明或静态为 false 的合同仍保留运行期检查与原 blame/fault 行为。
+- `mut self` 的 requires 只建立入口快照事实，可以证明 ensures 中的 `old(self...)`，不能证明可能已被修改的当前 `self...`；不可变参数的当前值与 `old(parameter)` 都保留各自的等价入口事实。
 
 ### 11.2 fn 与 method 的检查顺序
 
@@ -370,8 +379,12 @@ method 在同一规则上增加 receiver invariant 边界，所有 public/privat
 ## 12. 普通 test
 
 ```loom
+fn checked_price(raw Float) Result[Price, ConstraintError] {
+    Price(raw)
+}
+
 test fn negative_price_is_rejected() {
-    let rejected = match Price(-0.01) {
+    let rejected = match checked_price(-0.01) {
         Err(_) => true
         Ok(_) => false
     }

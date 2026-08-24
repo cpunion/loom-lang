@@ -109,6 +109,87 @@ pub fn main() Unit {
     assert!(!release.contains("llvm.sadd.with.overflow.i64"));
 }
 
+#[test]
+fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
+    let source = r"module construction
+
+import standard.float.is_finite
+
+type Money = Float where is_finite(self) && self >= 0.0
+
+fn direct() Money
+    requires true
+    ensures result >= 0.0
+{
+    assert true
+    Money(10.0)
+}
+
+fn checked(raw Float) Result[Money, ConstraintError] {
+    Money(raw)
+}
+
+pub fn main() Unit {
+    let money = direct()
+    assert money == 10.0
+    match checked(-1.0) {
+        Err(_) => Unit
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+";
+    let project = tempfile::tempdir().expect("create construction project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load construction project")
+        .snapshot()
+        .expect("analyze construction project");
+    assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower construction MIR");
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit construction executable");
+
+    let ir = std::fs::read_to_string(ir).expect("read construction IR");
+    let direct = llvm_function(&ir, "construction_direct");
+    let checked = llvm_function(&ir, "construction_checked");
+    assert!(!direct.contains("constraint.ok"), "{direct}");
+    assert!(!direct.contains("constraint.error"), "{direct}");
+    assert!(!direct.contains("PreconditionFault"), "{direct}");
+    assert!(!direct.contains("PostconditionFault"), "{direct}");
+    assert!(!direct.contains("assert.fail"), "{direct}");
+    assert!(checked.contains("constraint.ok"), "{checked}");
+    assert!(checked.contains("constraint.error"), "{checked}");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run construction executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+}
+
+fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
+    let marker = "define internal i32 @loom.fn.";
+    let start = ir
+        .match_indices(&marker)
+        .map(|(index, _)| index)
+        .find(|index| {
+            ir[*index..]
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(symbol_suffix))
+        })
+        .unwrap_or_else(|| panic!("missing LLVM function containing `{symbol_suffix}`"));
+    let rest = &ir[start + marker.len()..];
+    let end = rest.find("\ndefine ").unwrap_or(rest.len());
+    &ir[start..start + marker.len() + end]
+}
+
 fn unit_program() -> Program {
     let mut program = Program::default();
     program.functions.push(Function {

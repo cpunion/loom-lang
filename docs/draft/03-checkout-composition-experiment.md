@@ -80,7 +80,7 @@ checkout 同时包含局部业务逻辑和典型横向规则，但不需要分�
 初始 fixture 包含：
 
 1. 可容纳非法值的 `CheckoutInput` / `RawCartLine`，以及恒有效的 `Cart`、`CartLine`、`Money`、`Order`、`Region` 等领域声明；
-2. 唯一 `CheckoutRequest.from(raw)` 建立路径，把数量、金额、空购物车等 Violation 映射为 `CheckoutError.Validation`；
+2. 唯一 `CheckoutRequest.from(raw)` 建立路径，把数量、金额、空购物车等 ConstraintError 映射为 `CheckoutError.Validation`；
 3. `validate -> price -> tax -> authorize -> persist` 的基础 checkout，以及定价、授权前检查、授权拒绝处理三个 closed-error pipeline；
 4. 可控且每 scenario fresh 的 Authorization、Risk、Tax、OrderStore、AuditSink host provider；
 5. 初始 active `ProductPromotions` pricing contribution，供 T2 形成真实 A+B 组合；
@@ -99,7 +99,7 @@ checkout 同时包含局部业务逻辑和典型横向规则，但不需要分�
 
 ### T1：增加地区约束
 
-要求：新增 `CheckoutRequest` invariant：EU customer 必须持有 `Some(VatIdentity)`；既有 `VatIdentity` constraint 只负责长度 8 至 12（含边界）。`CheckoutRequest.from(raw)` 只负责统一触发这些声明并把 Violation 映射为 `CheckoutError.Validation`，不得在 constructor、flow 或调用点再手写一份 VAT 条件。失败不进入 flow，capability trace 为空。TypeScript 基线使用同一 raw/schema constructor 边界和单一 schema 规则来源。
+要求：新增 `CheckoutRequest` invariant：EU customer 必须持有 `Some(VatIdentity)`；既有 `VatIdentity` constraint 只负责长度 8 至 12（含边界）。`CheckoutRequest.from(raw)` 只负责统一触发这些声明并把 ConstraintError 映射为 `CheckoutError.Validation`，不得在 constructor、flow 或调用点再手写一份 VAT 条件。失败不进入 flow，capability trace 为空。TypeScript 基线使用同一 raw/schema constructor 边界和单一 schema 规则来源。
 
 观察重点：约束写几处、边界是否遗漏、失败顺序是否正确。
 

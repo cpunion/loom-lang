@@ -152,6 +152,26 @@ pub enum Coercion {
     NeverToAny,
 }
 
+/// Whether a constrained value or invariant-bearing record still needs its
+/// runtime validation boundary.  `Proven` is emitted only by the closed,
+/// deterministic proof engine; it changes the construction expression from a
+/// `Result` into the established nominal value itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConstructionCheck {
+    Proven,
+    Runtime,
+}
+
+/// Whether a pure, total contract predicate must still execute at runtime.
+/// A disproven predicate remains `Runtime`: unlike invalid checked
+/// construction, an assertion or callable contract may intentionally expose a
+/// faulting path and must retain its blame/reporting behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeCheck {
+    Proven,
+    Runtime,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BodySemantics {
     pub expression_resolutions: ArenaMap<ExprId, Resolution>,
@@ -159,6 +179,15 @@ pub struct BodySemantics {
     pub expression_places: ArenaMap<ExprId, Place>,
     pub expression_coercions: ArenaMap<ExprId, Coercion>,
     pub calls: ArenaMap<ExprId, CallResolution>,
+    /// Proof disposition for constrained constructors and invariant-bearing
+    /// record literals. Expressions without a declared constraint/invariant
+    /// are absent.
+    pub construction_checks: ArenaMap<ExprId, ConstructionCheck>,
+    /// Per-assert proof disposition, keyed by the assertion condition.
+    pub assertion_checks: ArenaMap<ExprId, RuntimeCheck>,
+    /// Proof disposition of this body when it is a refinement predicate,
+    /// record invariant, requires, or ensures body.
+    pub contract_check: Option<RuntimeCheck>,
     /// Source expressions mapped into definition field order. HIR retains the
     /// original source order so MIR can evaluate into temporaries first.
     pub record_fields: ArenaMap<ExprId, Vec<(DefId, ExprId)>>,

@@ -9,6 +9,7 @@ mod analyze;
 mod conformance;
 mod def_map;
 mod module_graph;
+mod proof;
 mod resolver;
 mod side_tables;
 mod ty;

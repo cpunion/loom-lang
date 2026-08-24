@@ -10,22 +10,22 @@ use loom_hir::{
 };
 use loom_mir::{
     AssociatedTypeDef, BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef,
-    ConceptId, Constant, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue,
-    Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern,
-    PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
+    ConceptId, Constant, ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind,
+    ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MatchArm,
+    Pattern, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
     RequirementWitnessParam, Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind,
     TypeId, UnaryOp, VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
-    CallTarget as SemaCallTarget, Coercion, Mutability, Place as SemaPlace, PlaceProjection,
-    PlaceRoot, Resolution, ScopedDisposal, Signature, TyData, TyId, ViewSource, WitnessSelection,
-    WitnessSource,
+    CallTarget as SemaCallTarget, Coercion, ConstructionCheck, Mutability, Place as SemaPlace,
+    PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal, Signature, TyData, TyId,
+    ViewSource, WitnessSelection, WitnessSource,
 };
 
 const OPTION_TYPE: TypeId = TypeId(0);
 const RESULT_TYPE: TypeId = TypeId(1);
-const VIOLATION_TYPE: TypeId = TypeId(2);
+const CONSTRAINT_ERROR_TYPE: TypeId = TypeId(2);
 const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
 const PARSE_FLOAT_ERROR_TYPE: TypeId = TypeId(4);
 const PARSE_INT_ERROR_TYPE: TypeId = TypeId(5);
@@ -271,7 +271,7 @@ impl<'a> Compiler<'a> {
             prelude: PreludeIds {
                 result: Some(RESULT_TYPE),
                 option: Some(OPTION_TYPE),
-                violation: Some(VIOLATION_TYPE),
+                constraint_error: Some(CONSTRAINT_ERROR_TYPE),
                 parse_float_error: Some(PARSE_FLOAT_ERROR_TYPE),
                 parse_int_error: Some(PARSE_INT_ERROR_TYPE),
                 task_fault: Some(TASK_FAULT_TYPE),
@@ -764,7 +764,9 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Float => RequirementType::Float,
                 BuiltinType::Text => RequirementType::Text,
                 BuiltinType::Unit => RequirementType::Unit,
-                BuiltinType::Violation => RequirementType::Nominal(VIOLATION_TYPE, Vec::new()),
+                BuiltinType::ConstraintError => {
+                    RequirementType::Nominal(CONSTRAINT_ERROR_TYPE, Vec::new())
+                }
                 BuiltinType::ContractFault => {
                     RequirementType::Nominal(CONTRACT_FAULT_TYPE, Vec::new())
                 }
@@ -1195,7 +1197,7 @@ impl<'a> Compiler<'a> {
                 }
             };
         let source = callable_source(self.hir, contract_owner)?;
-        let receiver_invariant = if matches!(
+        let receiver_invariant_body = if matches!(
             implementation_signature.receiver,
             Some(ReceiverKind::ReadOnly | ReceiverKind::Mutable)
         ) {
@@ -1204,7 +1206,7 @@ impl<'a> Compiler<'a> {
                 "receiver method call plan has no receiver target type",
                 span,
             )?;
-            let invariant = match self.analysis.typed.types.data(target) {
+            match self.analysis.typed.types.data(target) {
                 TyData::Nominal { definition, .. } => {
                     if let DefinitionKind::Record(record) = &self.hir.definitions[*definition].kind
                     {
@@ -1214,43 +1216,44 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 _ => None,
-            };
-            invariant
-                .map(|body| {
-                    let parameters =
-                        self.invariant_contract_parameters(target, &function_parameters, span)?;
-                    self.lower_contract_with_parameters(body, "invariant", parameters)
-                })
-                .transpose()?
+            }
         } else {
             None
         };
-        let requires = source
-            .contracts
-            .requires
-            .iter()
-            .enumerate()
-            .map(|(index, body)| {
-                self.lower_contract_with_parameters(
+        let receiver_invariant = if let Some(body) = receiver_invariant_body
+            && !self.contract_is_proven(body)?
+        {
+            let target = required(
+                target,
+                "receiver invariant has no receiver target type",
+                span,
+            )?;
+            let parameters =
+                self.invariant_contract_parameters(target, &function_parameters, span)?;
+            Some(self.lower_contract_with_parameters(body, "invariant", parameters)?)
+        } else {
+            None
+        };
+        let mut requires = Vec::new();
+        for (index, body) in source.contracts.requires.iter().enumerate() {
+            if !self.contract_is_proven(*body)? {
+                requires.push(self.lower_contract_with_parameters(
                     *body,
                     &format!("requires[{index}]"),
                     contract_parameters.clone(),
-                )
-            })
-            .collect::<LowerResult<_>>()?;
-        let ensures = source
-            .contracts
-            .ensures
-            .iter()
-            .enumerate()
-            .map(|(index, body)| {
-                self.lower_contract_with_parameters(
+                )?);
+            }
+        }
+        let mut ensures = Vec::new();
+        for (index, body) in source.contracts.ensures.iter().enumerate() {
+            if !self.contract_is_proven(*body)? {
+                ensures.push(self.lower_contract_with_parameters(
                     *body,
                     &format!("ensures[{index}]"),
                     contract_parameters.clone(),
-                )
-            })
-            .collect::<LowerResult<_>>()?;
+                )?);
+            }
+        }
         Ok(CallPlan {
             receiver_invariant,
             requires,
@@ -1302,6 +1305,20 @@ impl<'a> Compiler<'a> {
             self.hir.bodies[body_id].owner,
         )?;
         self.lower_contract_with_parameters(body_id, kind, parameters)
+    }
+
+    fn contract_is_proven(&self, body_id: BodyId) -> LowerResult<bool> {
+        let semantics = required(
+            self.analysis.typed.body(body_id),
+            "contract body has no semantic side table",
+            self.hir.source_map.body(body_id).unwrap_or_default(),
+        )?;
+        let check = required(
+            semantics.contract_check,
+            "contract body has no proof disposition",
+            self.hir.source_map.body(body_id).unwrap_or_default(),
+        )?;
+        Ok(check == RuntimeCheck::Proven)
     }
 
     fn lower_contract_with_parameters(
@@ -1994,6 +2011,14 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 span: self.expr_span(*body),
             }),
             HirStatement::Assert(condition) => {
+                let check = required(
+                    self.semantics.assertion_checks.get(*condition).copied(),
+                    "assertion has no proof disposition",
+                    self.expr_span(*condition),
+                )?;
+                if check == RuntimeCheck::Proven {
+                    return Ok(());
+                }
                 let condition = self.lower_suspendable_expr(*condition, output, false)?;
                 output.push(Statement {
                     span: condition.span,
@@ -2115,7 +2140,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 ty,
                 type_arguments,
                 fields,
-                checked,
+                construction,
             } => ExprKind::Record {
                 ty,
                 type_arguments,
@@ -2123,7 +2148,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     .into_iter()
                     .map(|field| self.extract_nested_awaits(field, output, false))
                     .collect::<LowerResult<_>>()?,
-                checked,
+                construction,
             },
             ExprKind::Variant {
                 ty,
@@ -2139,9 +2164,14 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     .map(|value| self.extract_nested_awaits(value, output, false))
                     .collect::<LowerResult<_>>()?,
             },
-            ExprKind::Refine { ty, value } => ExprKind::Refine {
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => ExprKind::Refine {
                 ty,
                 value: Box::new(self.extract_nested_awaits(*value, output, false)?),
+                construction,
             },
             ExprKind::Unrefine(value) => {
                 ExprKind::Unrefine(Box::new(self.extract_nested_awaits(*value, output, false)?))
@@ -2741,6 +2771,14 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                             span,
                         )?,
                         value: Box::new(self.lower_expr(value)?),
+                        construction: match required(
+                            self.semantics.construction_checks.get(id).copied(),
+                            "refined constructor has no proof disposition",
+                            span,
+                        )? {
+                            ConstructionCheck::Proven => ConstructionMode::Proven,
+                            ConstructionCheck::Runtime => ConstructionMode::Runtime,
+                        },
                     },
                     ty,
                     span,
@@ -3160,6 +3198,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         Ok(ExprKind::Copy(place))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_record_literal(
         &mut self,
         id: ExprId,
@@ -3237,16 +3276,28 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 })
             })
             .collect::<LowerResult<_>>()?;
-        let checked = matches!(
-            &self.compiler.hir.definitions[definition].kind,
-            DefinitionKind::Record(record) if record.invariant.is_some()
-        );
+        let construction = match &self.compiler.hir.definitions[definition].kind {
+            DefinitionKind::Record(record) if record.invariant.is_some() => {
+                match required(
+                    self.semantics.construction_checks.get(id).copied(),
+                    "invariant-bearing record has no proof disposition",
+                    span,
+                )? {
+                    ConstructionCheck::Proven => ConstructionMode::Proven,
+                    ConstructionCheck::Runtime => ConstructionMode::Runtime,
+                }
+            }
+            DefinitionKind::Record(_) => ConstructionMode::Plain,
+            _ => {
+                return Err(defect("record literal definition is not a record", span));
+            }
+        };
         let record = Expr {
             kind: ExprKind::Record {
                 ty,
                 type_arguments: Self::nominal_type_arguments(&expression_ty, ty, span)?,
                 fields,
-                checked,
+                construction,
             },
             ty: expression_ty.clone(),
             span,
@@ -3601,8 +3652,8 @@ fn synthetic_types() -> Vec<TypeDef> {
             },
         },
         TypeDef {
-            id: VIOLATION_TYPE,
-            name: "Violation".into(),
+            id: CONSTRAINT_ERROR_TYPE,
+            name: "ConstraintError".into(),
             span,
             type_parameters: 0,
             kind: TypeDefKind::Record {
@@ -3637,7 +3688,7 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Float => Type::Float,
         BuiltinType::Text => Type::Text,
         BuiltinType::Unit => Type::Unit,
-        BuiltinType::Violation => Type::Nominal(VIOLATION_TYPE, Vec::new()),
+        BuiltinType::ConstraintError => Type::Nominal(CONSTRAINT_ERROR_TYPE, Vec::new()),
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
         BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
         BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),

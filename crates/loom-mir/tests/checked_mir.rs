@@ -4,12 +4,13 @@ use std::process::Command;
 use loom_core::Span;
 use loom_mir::{
     ArtifactError, AssociatedTypeDef, Block, CallArgument, CallPlan, CallTarget, CheckedProgram,
-    ConceptDef, ConceptId, Constant, Contract, ContractArm, ContractExpr, ContractExprKind,
-    ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId, INTERPRETED_ARTIFACT_VERSION,
-    LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place, PreludeIds, Program, Receiver,
-    RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, Statement,
-    StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId,
-    WitnessParam, WitnessRef, decode_interpreted_artifact, decode_interpreted_executable_artifact,
+    ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm, ContractExpr,
+    ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
+    INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place,
+    PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
+    RequirementWitnessParam, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId,
+    VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
+    decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
 };
 
@@ -227,7 +228,7 @@ fn record_and_variant_shapes_are_validated() {
             ty: TypeId(0),
             type_arguments: Vec::new(),
             fields: Vec::new(),
-            checked: false,
+            construction: ConstructionMode::Plain,
         },
         ty: Type::Nominal(TypeId(0), Vec::new()),
         span: span(),
@@ -269,6 +270,212 @@ fn record_and_variant_shapes_are_validated() {
     let errors = validation_errors(&program);
     assert!(errors.contains(MirValidationCode::RecordShape));
     assert!(errors.contains(MirValidationCode::InvalidVariantReference));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn checked_construction_modes_are_a_validated_trust_boundary() {
+    let always = || Contract {
+        code: "always".to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Constant(Constant::Bool(true)),
+            span: span(),
+        },
+    };
+    let result = TypeId(0);
+    let constraint_error = TypeId(1);
+    let money = TypeId(2);
+    let guarded = TypeId(3);
+    let plain = TypeId(4);
+    let types = vec![
+        TypeDef {
+            id: result,
+            name: "Result".to_owned(),
+            span: span(),
+            type_parameters: 2,
+            kind: TypeDefKind::Enum {
+                variants: vec![
+                    VariantDef {
+                        id: VariantId(0),
+                        name: "Ok".to_owned(),
+                        payload: vec![Type::Parameter(0)],
+                        span: span(),
+                    },
+                    VariantDef {
+                        id: VariantId(1),
+                        name: "Err".to_owned(),
+                        payload: vec![Type::Parameter(1)],
+                        span: span(),
+                    },
+                ],
+            },
+        },
+        TypeDef {
+            id: constraint_error,
+            name: "ConstraintError".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: Vec::new(),
+                invariant: None,
+            },
+        },
+        TypeDef {
+            id: money,
+            name: "Money".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Refined {
+                base: Type::Float,
+                predicate: always(),
+            },
+        },
+        TypeDef {
+            id: guarded,
+            name: "Guarded".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: Some(always()),
+            },
+        },
+        TypeDef {
+            id: plain,
+            name: "Plain".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        },
+    ];
+    let result_of = |success| {
+        Type::Nominal(
+            result,
+            vec![
+                Type::Nominal(success, Vec::new()),
+                Type::Nominal(constraint_error, Vec::new()),
+            ],
+        )
+    };
+    let expressions = vec![
+        Expr {
+            kind: ExprKind::Refine {
+                ty: money,
+                value: Box::new(constant(Constant::Float(1.0), Type::Float)),
+                construction: ConstructionMode::Proven,
+            },
+            ty: Type::Nominal(money, Vec::new()),
+            span: span(),
+        },
+        Expr {
+            kind: ExprKind::Refine {
+                ty: money,
+                value: Box::new(constant(Constant::Float(1.0), Type::Float)),
+                construction: ConstructionMode::Runtime,
+            },
+            ty: result_of(money),
+            span: span(),
+        },
+        Expr {
+            kind: ExprKind::Record {
+                ty: guarded,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(1), Type::Int)],
+                construction: ConstructionMode::Proven,
+            },
+            ty: Type::Nominal(guarded, Vec::new()),
+            span: span(),
+        },
+        Expr {
+            kind: ExprKind::Record {
+                ty: guarded,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(1), Type::Int)],
+                construction: ConstructionMode::Runtime,
+            },
+            ty: result_of(guarded),
+            span: span(),
+        },
+        Expr {
+            kind: ExprKind::Record {
+                ty: plain,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(1), Type::Int)],
+                construction: ConstructionMode::Plain,
+            },
+            ty: Type::Nominal(plain, Vec::new()),
+            span: span(),
+        },
+    ];
+    let mut program = Program {
+        types,
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: expressions
+                    .into_iter()
+                    .map(|expression| Statement {
+                        kind: StatementKind::Evaluate(expression),
+                        span: span(),
+                    })
+                    .collect(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            result: Some(result),
+            constraint_error: Some(constraint_error),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    validate_program(&program).expect("valid checked construction modes");
+
+    if let StatementKind::Evaluate(Expr {
+        kind: ExprKind::Refine { construction, .. },
+        ..
+    }) = &mut program.functions[0].body.statements[0].kind
+    {
+        *construction = ConstructionMode::Plain;
+    } else {
+        unreachable!();
+    }
+    assert!(validation_errors(&program).contains(MirValidationCode::ExpressionShape));
+
+    if let StatementKind::Evaluate(Expr {
+        kind: ExprKind::Refine { construction, .. },
+        ..
+    }) = &mut program.functions[0].body.statements[0].kind
+    {
+        *construction = ConstructionMode::Proven;
+    } else {
+        unreachable!();
+    }
+    let StatementKind::Evaluate(expression) = &mut program.functions[0].body.statements[4].kind
+    else {
+        unreachable!();
+    };
+    let ExprKind::Record { construction, .. } = &mut expression.kind else {
+        unreachable!();
+    };
+    *construction = ConstructionMode::Proven;
+    assert!(validation_errors(&program).contains(MirValidationCode::RecordShape));
 }
 
 #[test]
@@ -370,7 +577,7 @@ fn prelude_ids_are_explicit_and_shape_checked() {
         prelude: PreludeIds {
             result: Some(TypeId(0)),
             option: Some(TypeId(99)),
-            violation: Some(TypeId(1)),
+            constraint_error: Some(TypeId(1)),
             parse_float_error: None,
             parse_int_error: None,
             task_fault: None,
@@ -2082,7 +2289,7 @@ fn generic_calls_and_constructors_share_one_strict_substitution() {
                 constant(Constant::Int(1), Type::Int),
                 constant(Constant::Text("bad".to_owned()), Type::Text),
             ],
-            checked: false,
+            construction: ConstructionMode::Plain,
         },
         ty: Type::Nominal(TypeId(0), vec![Type::Int]),
         span: span(),

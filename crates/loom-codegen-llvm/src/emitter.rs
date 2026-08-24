@@ -19,10 +19,10 @@ use inkwell::values::{
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, Contract, ContractArm,
-    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function, FunctionId, LocalId,
-    MatchArm, Pattern, Place, Program, RequirementId, Statement, StatementKind, TaskJoinMode, Type,
-    TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, ConstructionMode, Contract,
+    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, Statement,
+    StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
 
 use crate::abi::{
@@ -33,10 +33,10 @@ use crate::abi::{
     READY_NOTIFICATION_FIELD_FRAME, TASK_STEP_CANCELLED, TASK_STEP_COMPLETED, TASK_STEP_FAULTED,
     TASK_STEP_PENDING, TASK_VALUE_DIRECT, VALUE_FIELD_AUX, VALUE_FIELD_DATA, VALUE_FIELD_NOMINAL,
     VALUE_FIELD_SCALAR, VALUE_FIELD_TAG, VALUE_FIELD_WITNESS, VALUE_NODE_FIELD_NEXT,
-    VALUE_NODE_FIELD_VALUE, VALUE_TAG_BOOL, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT,
-    VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK,
-    VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_TAG_UNIT, VALUE_TAG_VIOLATION,
-    WAIT_ABI_VERSION, WAIT_INTEREST_READABLE, WAIT_INTEREST_WRITABLE,
+    VALUE_NODE_FIELD_VALUE, VALUE_TAG_BOOL, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN,
+    VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD,
+    VALUE_TAG_REFINED, VALUE_TAG_TASK, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE,
+    VALUE_TAG_UNIT, WAIT_ABI_VERSION, WAIT_INTEREST_READABLE, WAIT_INTEREST_WRITABLE,
     WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE, WAIT_SOURCE_FIELD_HANDLE,
     WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND, WAIT_SOURCE_FIELD_RESERVED,
     WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD, WAIT_SOURCE_KIND_TIMER,
@@ -1065,7 +1065,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     (self.tag(VALUE_TAG_LIST), record),
                     (self.tag(VALUE_TAG_ENUM), enumeration),
                     (self.tag(VALUE_TAG_REFINED), refined),
-                    (self.tag(VALUE_TAG_VIOLATION), record),
+                    (self.tag(VALUE_TAG_CONSTRAINT_ERROR), record),
                     (self.tag(VALUE_TAG_TASK_OUTCOME), outcome),
                 ],
             )
@@ -3439,16 +3439,20 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ExprKind::Record {
                 ty,
                 fields,
-                checked,
+                construction,
                 ..
-            } => self.emit_record(*ty, fields, *checked, destination),
+            } => self.emit_record(*ty, fields, *construction, destination),
             ExprKind::Variant {
                 ty,
                 variant,
                 payload,
                 ..
             } => self.emit_variant(*ty, variant.0, payload, destination),
-            ExprKind::Refine { ty, value } => self.emit_refine(*ty, value, destination),
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => self.emit_refine(*ty, value, *construction, destination),
             ExprKind::Unrefine(value) => {
                 let refined = self.alloc_value("refined");
                 if !self.emit_expr(value, refined)? {
@@ -5139,10 +5143,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         ty: TypeId,
         fields: &[Expr],
-        checked: bool,
+        construction: ConstructionMode,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let record = if checked {
+        let record = if construction == ConstructionMode::Runtime {
             self.alloc_value("record.candidate")
         } else {
             destination
@@ -5170,7 +5174,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_DATA,
             head,
         )?;
-        if !checked {
+        if construction != ConstructionMode::Runtime {
             return Ok(true);
         }
         let definition = self.backend.program.type_def(ty).ok_or_else(|| {
@@ -5257,6 +5261,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         ty: TypeId,
         expression: &Expr,
+        construction: ConstructionMode,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let value = self.alloc_value("refine.value");
@@ -5275,7 +5280,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 format!("{} is not a refined type", definition.name),
             ));
         };
-        let refined = self.alloc_value("refined.candidate");
+        let refined = if construction == ConstructionMode::Runtime {
+            self.alloc_value("refined.candidate")
+        } else {
+            destination
+        };
         self.initialize(refined, VALUE_TAG_REFINED)?;
         self.backend.store_i64_field(
             self.backend.value_type,
@@ -5296,6 +5305,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_DATA,
             inner,
         )?;
+        if construction != ConstructionMode::Runtime {
+            return Ok(true);
+        }
         let context = ContractContext {
             receiver: Some(TypedPointer {
                 pointer: value,
@@ -5334,15 +5346,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_result(true, accepted_value, destination)?;
         self.backend.branch(merge)?;
         self.backend.builder.position_at_end(error);
-        let violation = self.alloc_value("violation");
-        self.initialize(violation, VALUE_TAG_VIOLATION)?;
+        let constraint_error = self.alloc_value("constraint_error");
+        self.initialize(constraint_error, VALUE_TAG_CONSTRAINT_ERROR)?;
         self.backend.store_i64_field(
             self.backend.value_type,
-            violation,
+            constraint_error,
             VALUE_FIELD_NOMINAL,
             self.backend.tag(u64::from(target_type.0)),
         )?;
-        self.emit_result(false, violation, destination)?;
+        self.emit_result(false, constraint_error, destination)?;
         self.backend.branch(merge)?;
         self.backend.builder.position_at_end(merge);
         Ok(true)

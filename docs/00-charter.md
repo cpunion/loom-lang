@@ -97,7 +97,7 @@ Core 只有一套行为抽象：`concept`。`T: C` 是定义处检查的静态�
 
 Core 0.1 区分三条失败轨：
 
-- 不可信数据无法建立受约束值或带 invariant 的 record，是可处理的 `Violation`，通过 `Result` 返回；
+- 不可信数据无法建立受约束值或带 invariant 的 record，是可处理的 `ConstraintError`，通过 `Result` 返回；
 - `requires`、`ensures`、已建立对象的 invariant 或 `assert` 被程序实现破坏，是不可作为业务分支捕获的结构化 `ContractFault`。
 - checked Int 算术的溢出或非法除法是不可捕获的结构化 `RuntimeFault`，不伪装成业务 `Err` 或合同失败。
 

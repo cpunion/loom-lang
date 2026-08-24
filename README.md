@@ -22,6 +22,8 @@
 - rank-1 基本泛型；
 - 普通 `test`；
 - `type Price = Float where self >= 0` 一类名义受约束类型；
+- proof-classified construction：`Price(10.0)` 静态成立时直接得到 `Price`，未知输入才得到 `Result[Price, ConstraintError]`；
+- proven contract elimination：有独立类型/路径依据的 `requires`、`ensures`、invariant 与 `assert` 不进入 checked MIR，unknown/failing 路径仍保留完整 fault/blame；
 - `invariant`、`requires`、`ensures`、`assert`；
 - 默认只读 receiver 与显式 `mut self`。
 

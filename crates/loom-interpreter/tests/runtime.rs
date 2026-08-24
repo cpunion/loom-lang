@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use loom_core::Span;
 use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptId, Constant, Contract,
-    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
-    LocalDecl, LocalId, Place, PreludeIds, Program, Receiver, RequirementId, Statement,
-    StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId,
-    WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptId, Constant,
+    ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind,
+    FieldDef, Function, FunctionId, LocalDecl, LocalId, Place, PreludeIds, Program, Receiver,
+    RequirementId, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef,
+    VariantId, Witness, WitnessId, WitnessRef,
 };
 
 fn span() -> Span {
@@ -159,6 +159,7 @@ fn refined_construction_returns_language_result() {
                 kind: ExprKind::Refine {
                     ty: TypeId(1),
                     value: Box::new(copy(Place::local(LocalId(0)), Type::Float)),
+                    construction: ConstructionMode::Runtime,
                 },
                 ty: Type::Nominal(TypeId(0), Vec::new()),
                 span: span(),
@@ -191,14 +192,14 @@ fn refined_construction_returns_language_result() {
 
     let rejected = interpreter
         .invoke(FunctionId(0), vec![Value::Float { value: -0.01 }], span())
-        .expect("violation is data, not a runtime failure");
+        .expect("constraint_error is data, not a runtime failure");
     assert!(matches!(
         rejected,
         Value::Enum {
             variant: VariantId(1),
             payload,
             ..
-        } if matches!(payload.as_slice(), [Value::Violation { .. }])
+        } if matches!(payload.as_slice(), [Value::ConstraintError { .. }])
     ));
 }
 

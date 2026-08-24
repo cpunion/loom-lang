@@ -75,7 +75,7 @@ Core 0.1 的常用拼写为：
 
 - 参数和字段采用 `name Type`；
 - 返回类型写在参数列表之后，不使用 `->`；
-- 泛型实参使用方括号，如 `Result[Price, Violation]`；
+- 泛型实参使用方括号，如 `Result[Price, ConstraintError]`；
 - 缺失值写作 `Option[T]`，Core 0.1 不引入 `T?` 糖；
 - `let` 声明不可变局部，`var` 声明可变局部；
 - block 的尾表达式是返回值，`return` 只用于提前返回；
@@ -103,7 +103,7 @@ pub type Price = Float where self >= 0.0
 
 pub enum PriceInputError {
     InvalidNumber(ParseFloatError)
-    OutOfRange(Violation)
+    OutOfRange(ConstraintError)
 }
 
 pub fn parse_price(text Text) Result[Price, PriceInputError] {
@@ -114,12 +114,12 @@ pub fn parse_price(text Text) Result[Price, PriceInputError] {
 
     match Price(raw) {
         Ok(price) => Ok(price)
-        Err(violation) => Err(PriceInputError.OutOfRange(violation))
+        Err(constraint_error) => Err(PriceInputError.OutOfRange(constraint_error))
     }
 }
 ```
 
-这里的 `Price(raw)` 是 checked construction，其静态类型始终是 `Result[Price, Violation]`。编译器自动插入并执行 `where` 检查，但不会隐式抛异常、隐式传播错误或把 `Float` 当成 `Price`。
+这里的 `raw` 来自解析边界，proof domain 无法证明其值，所以 `Price(raw)` 是运行期 checked construction，静态类型为 `Result[Price, ConstraintError]`。相反，`Price(10.0)` 若能静态证明 predicate，类型直接是 `Price`，也不生成运行期检查。编译器不会隐式抛异常、隐式传播错误或把未知 `Float` 当成 `Price`。
 
 `Price` 只能保证写出的谓词。上述定义会拒绝 NaN，但允许正无穷；若业务还要求有限值，必须显式写出：
 
@@ -222,8 +222,12 @@ pub fn describe(result Result[Text, LookupError]) Text {
 普通测试只是在测试构建中发现的 `test fn`，不引入第二套运行模型：
 
 ```loom
+fn checked_price(raw Float) Result[Price, ConstraintError] {
+    Price(raw)
+}
+
 test fn negative_price_is_rejected() {
-    let rejected = match Price(-0.01) {
+    let rejected = match checked_price(-0.01) {
         Err(_) => true
         Ok(_) => false
     }
@@ -231,30 +235,22 @@ test fn negative_price_is_rejected() {
     assert rejected
 }
 
-test fn order_total_is_non_negative() Result[Unit, Violation] {
-    let subtotal = match Price(100.0) {
-        Ok(value) => value
-        Err(problem) => return Err(problem)
-    }
-    let discount = match Price(20.0) {
-        Ok(value) => value
-        Err(problem) => return Err(problem)
-    }
-    let order_result = Order {
+test fn order_total_is_non_negative() {
+    let subtotal = Price(100.0)
+    let discount = Price(20.0)
+    let order = Order {
         subtotal = subtotal
         discount = discount
         note = None
     }
-    let order = match order_result {
-        Ok(value) => value
-        Err(problem) => return Err(problem)
-    }
 
     let total = order.total()
     assert total == 80.0
-    Ok(Unit)
+    Unit
 }
 ```
+
+`Price(-0.01)` 本身是静态可否证的构造，会产生 `ConstraintUnsatisfied` 编译诊断；测试运行期拒绝路径时，应像上例一样经过真实的动态输入边界。`ConstraintError` 只表示约束/外部 invariant 建立失败，不是通用 `Error` 父类型。
 
 测试正常返回 `Unit` 或 `Ok(Unit)` 即通过；返回 `Err`、产生 ContractFault、RuntimeFault 或发生未处理缺陷即失败。
 

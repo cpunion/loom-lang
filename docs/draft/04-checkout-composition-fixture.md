@@ -24,9 +24,9 @@
 
 raw schema 固定为：`CheckoutInput { cart RawCart, customer RawCustomer, operation_id Text }`、`RawCart { lines Vec[RawCartLine] }`、`RawCartLine { sku Text, quantity Int, unit_price Decimal }`、`RawCustomer { tier CustomerTier, region Region, vat_identity Text? }`。领域侧 `VatIdentity = Text where len(self) >= 8 && len(self) <= 12`，`OperationId = Text where len(self) >= 1 && len(self) <= 64`，`Customer.vat_identity` 为 `VatIdentity?`。
 
-非法输入只进入 `CheckoutRequest.from(raw)`；任一 Violation 固定变成 `CheckoutError.Validation(violation)`，随后 flow 不启动且 capability trace 为空。多项同时非法时返回确定的第一项：empty cart，随后按 line index 检查 quantity、unit price，再检查 VAT identity、EU presence invariant、operation id；该顺序属于 fixture oracle，不依赖 record 字段排列。
+非法输入只进入 `CheckoutRequest.from(raw)`；任一 ConstraintError 固定变成 `CheckoutError.Validation(constraint_error)`，随后 flow 不启动且 capability trace 为空。多项同时非法时返回确定的第一项：empty cart，随后按 line index 检查 quantity、unit price，再检查 VAT identity、EU presence invariant、operation id；该顺序属于 fixture oracle，不依赖 record 字段排列。
 
-T1 只新增 `CheckoutRequest` 的领域 invariant：EU customer 必须拥有 `Some(VatIdentity)`。`CheckoutRequest.from` 统一触发既有 `VatIdentity` constraint 与新增 invariant 并映射 Violation；参与者不得在 flow 或调用点另写一份 VAT 条件。
+T1 只新增 `CheckoutRequest` 的领域 invariant：EU customer 必须拥有 `Some(VatIdentity)`。`CheckoutRequest.from` 统一触发既有 `VatIdentity` constraint 与新增 invariant 并映射 ConstraintError；参与者不得在 flow 或调用点另写一份 VAT 条件。
 
 初始行为：
 
@@ -52,7 +52,7 @@ validate raw input into CheckoutRequest
 
 三个 slot 都采用 E1 唯一组合规则 `pipeline[S, E]`：空槽返回 `Ok(input)`；每项 contribution 恰好提供一个带 slot-local key 的 `S -> Result[S, E]` transform；多个 active transforms 必须由 key 上的 `before` / `after` 形成全序，依次传递 context，并在首个 `Err` 停止。checker 先在 target-visible、同一 slot 的全部 declared transforms（active 或 inactive）中无条件检查 key 唯一并解析 anchor；顺序边只有两端 active 时才进入计划，从未声明的 key 才是 unknown anchor。contribution 不能引用 slot 外节点、扩展 `E` 或使用 `allows` 之外的 capability。
 
-slot errors 在任务发布前封闭：`PricingError = InvalidAmount(Violation)`；`PreAuthorizationError = RiskRejected(RiskReason) | RiskUnavailable(RiskError)`；`RejectionHandlingError = AuditFailed(AuditError)`。新增 contribution 只能返回这些既有 variants；若真实需求需要新错误，必须由 slot owner 修改合同，并作为中央 API 变化计量。
+slot errors 在任务发布前封闭：`PricingError = InvalidAmount(ConstraintError)`；`PreAuthorizationError = RiskRejected(RiskReason) | RiskUnavailable(RiskError)`；`RejectionHandlingError = AuditFailed(AuditError)`。新增 contribution 只能返回这些既有 variants；若真实需求需要新错误，必须由 slot owner 修改合同，并作为中央 API 变化计量。
 
 初始 target 只启用 `ProductPromotions`。机制门另外执行 pricing 的 empty、ProductPromotions(A)、VipDiscount(B)、A+B 四个 subset；A+B 必须明确 `vip_discount after product_promotions`。依赖/import 不激活 contribution，E1 target 直接 compose fully-qualified contribution。
 
@@ -88,7 +88,7 @@ host provider 不是测试进程里的隐藏约定。fixture 随源码版本化�
 
 | 来源 | CheckoutError |
 |---|---|
-| `CheckoutRequest.from` Violation | `Validation(violation)` |
+| `CheckoutRequest.from` ConstraintError | `Validation(constraint_error)` |
 | pricing pipeline | `PricingFailed(error)` |
 | Tax | `TaxFailed(error)` |
 | pre-authorization pipeline | `PreAuthorizationFailed(error)` |
@@ -97,7 +97,7 @@ host provider 不是测试进程里的隐藏约定。fixture 随源码版本化�
 | rejection handler failure | `RejectionHandlingFailed { authorization, handling }`，保留原 Authorization reason |
 | OrderStore | `PersistenceFailed(error)` |
 
-因此顶层联合固定为 `CheckoutError = Validation(Violation) | PricingFailed(PricingError) | TaxFailed(TaxError) | PreAuthorizationFailed(PreAuthorizationError) | AuthorizationUnavailable(AuthorizationCallError) | AuthorizationFailed(AuthorizationReason) | RejectionHandlingFailed { authorization AuthorizationReason, handling RejectionHandlingError } | PersistenceFailed(SaveError)`。底层 provider error/reason 的具体 variants 由下一份 E1 executable contract 与 host descriptor 一起冻结，贡献不得扩展它们。
+因此顶层联合固定为 `CheckoutError = Validation(ConstraintError) | PricingFailed(PricingError) | TaxFailed(TaxError) | PreAuthorizationFailed(PreAuthorizationError) | AuthorizationUnavailable(AuthorizationCallError) | AuthorizationFailed(AuthorizationReason) | RejectionHandlingFailed { authorization AuthorizationReason, handling RejectionHandlingError } | PersistenceFailed(SaveError)`。底层 provider error/reason 的具体 variants 由下一份 E1 executable contract 与 host descriptor 一起冻结，贡献不得扩展它们。
 
 ## 3. Oracle 分层
 
@@ -197,7 +197,7 @@ baseline-typescript/
 
 | helper | signature / guarantee |
 |---|---|
-| `CheckoutRequest.from` | `CheckoutInput -> Result[CheckoutRequest, Violation]` |
+| `CheckoutRequest.from` | `CheckoutInput -> Result[CheckoutRequest, ConstraintError]` |
 | `calculate_base_price` | `CheckoutRequest -> PricedCart`；结果保留完整 constrained request facts，并增加价格明细 |
 | `apply_tax` | `(PricedCart, TaxRate) -> Result[PricedCart, PricingError]` |
 | `make_authorization_context` | `PricedCart -> AuthorizationContext` |
@@ -211,7 +211,7 @@ baseline-typescript/
 fn checkout(raw CheckoutInput) Result[Order, CheckoutError] {
     match CheckoutRequest.from(raw) {
         Ok(request) => Checkout(request)
-        Err(violation) => Err(Validation(violation))
+        Err(constraint_error) => Err(Validation(constraint_error))
     }
 }
 

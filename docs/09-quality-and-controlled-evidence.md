@@ -10,7 +10,7 @@
 
 | 任务 | 源码 | SHA-256 | 主要机制 |
 |---|---|---|---|
-| constrained-contracts | `examples/core01/shop.loom` | `a327c2aafc5ed1f37a43692078bc48c7f4220e21d230a89a775561b86ccfa61f` | refined value、invariant、method contract、mutation |
+| constrained-contracts | `examples/core01/shop.loom` | `f3c6b8cad23cf4113e7555ac29d2307d853af10eff4ee89482ef4c8617a77472` | refined value、invariant、method contract、mutation |
 | concept-polymorphism | `examples/core02/concepts.loom` | `60bc7e21bd475ae3fb0f795f25cbae92e4d86c7c48675abad02c9561d2701d4a` | static concept、associated type、first-class `dyn C` |
 | structured-async | `examples/core03/tasks.loom` | `0981e9597a0a450c4a4bc035568be1e57fe50bb746dd827c7471aab45c0dae2d` | scoped/defer、Task、await、tuple/list join、取消 |
 

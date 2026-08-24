@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use loom_core::Span;
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, Contract, ContractArm,
-    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function, FunctionId, LocalId,
-    MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement, StatementKind,
-    TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, ConstructionMode, Contract,
+    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement,
+    StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,8 +71,8 @@ pub enum Value {
         ty: TypeId,
         value: Box<Value>,
     },
-    Violation {
-        value: Violation,
+    ConstraintError {
+        value: ConstraintError,
     },
     DynView {
         value: Box<Value>,
@@ -178,8 +178,8 @@ impl Value {
                 value.write_summary(output, depth + 1);
                 output.push(')');
             }
-            Self::Violation { value } => {
-                let _ = write!(output, "Violation({})", value.code);
+            Self::ConstraintError { value } => {
+                let _ = write!(output, "ConstraintError({})", value.code);
             }
             Self::DynView { .. } => output.push_str("<dyn interface>"),
             Self::Task { .. } | Self::TaskJoin { .. } => output.push_str("<task>"),
@@ -198,7 +198,7 @@ impl Value {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Violation {
+pub struct ConstraintError {
     pub target_type: String,
     pub code: String,
     pub predicate: String,
@@ -1835,7 +1835,7 @@ impl<'program> Interpreter<'program> {
             ExprKind::Record {
                 ty,
                 fields,
-                checked,
+                construction,
                 ..
             } => {
                 let fields = fields
@@ -1843,7 +1843,7 @@ impl<'program> Interpreter<'program> {
                     .map(|field| self.eval_expr(frame, field))
                     .collect::<Result<Vec<_>, _>>()?;
                 let value = Value::Record { ty: *ty, fields };
-                if *checked {
+                if *construction == ConstructionMode::Runtime {
                     Ok(self.checked_record(*ty, value, expression.span)?)
                 } else {
                     Ok(value)
@@ -1862,9 +1862,20 @@ impl<'program> Interpreter<'program> {
                     .map(|value| self.eval_expr(frame, value))
                     .collect::<Result<Vec<_>, _>>()?,
             }),
-            ExprKind::Refine { ty, value } => {
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => {
                 let value = self.eval_expr(frame, value)?;
-                Ok(self.checked_refine(*ty, value, expression.span)?)
+                if *construction == ConstructionMode::Runtime {
+                    Ok(self.checked_refine(*ty, value, expression.span)?)
+                } else {
+                    Ok(Value::Refined {
+                        ty: *ty,
+                        value: Box::new(value),
+                    })
+                }
             }
             ExprKind::Unrefine(value) => {
                 let value = self.eval_expr(frame, value)?;
@@ -3149,7 +3160,7 @@ impl<'program> Interpreter<'program> {
                 span,
             )
         } else {
-            let violation = Violation {
+            let constraint_error = ConstraintError {
                 target_type: definition.name.clone(),
                 code: "ConstraintViolation".into(),
                 predicate: predicate.code.clone(),
@@ -3157,7 +3168,13 @@ impl<'program> Interpreter<'program> {
                 value_summary: value.summary(),
                 contract_span: predicate.span,
             };
-            self.result_value(false, Value::Violation { value: violation }, span)
+            self.result_value(
+                false,
+                Value::ConstraintError {
+                    value: constraint_error,
+                },
+                span,
+            )
         }
     }
 
@@ -3199,7 +3216,7 @@ impl<'program> Interpreter<'program> {
         if accepted {
             self.result_value(true, value, span)
         } else {
-            let violation = Violation {
+            let constraint_error = ConstraintError {
                 target_type: definition.name.clone(),
                 code: "InvariantViolation".into(),
                 predicate: invariant.code.clone(),
@@ -3207,7 +3224,13 @@ impl<'program> Interpreter<'program> {
                 value_summary: value.summary(),
                 contract_span: invariant.span,
             };
-            self.result_value(false, Value::Violation { value: violation }, span)
+            self.result_value(
+                false,
+                Value::ConstraintError {
+                    value: constraint_error,
+                },
+                span,
+            )
         }
     }
 
@@ -4145,7 +4168,9 @@ fn semantic_equal(left: &Value, right: &Value) -> bool {
                 value: right,
             },
         ) => left_ty == right_ty && semantic_equal(left, right),
-        (Value::Violation { value: left }, Value::Violation { value: right }) => left == right,
+        (Value::ConstraintError { value: left }, Value::ConstraintError { value: right }) => {
+            left == right
+        }
         (Value::TaskOutcome { outcome: left }, Value::TaskOutcome { outcome: right }) => {
             match (left, right) {
                 (TaskOutcomeValue::Completed(left), TaskOutcomeValue::Completed(right)) => {

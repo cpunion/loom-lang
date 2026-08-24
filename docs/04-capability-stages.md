@@ -43,10 +43,10 @@
 范围：
 
 - `type T = Base where predicate`；
-- checked construction `T(expr) -> Result[T, Violation]`；
+- proof-classified construction：已证明 `T(expr) -> T`，已否证为静态诊断，unknown 才是 `T(expr) -> Result[T, ConstraintError]`；
 - 带 invariant record 的 checked literal；
-- 结构化 `Violation`；
-- 约束值读取、运算后重新建立，以及可证明检查的安全消除。
+- 结构化 `ConstraintError`；
+- 约束值读取、运算后重新建立，以及常量、局部/tuple、nominal return、requires/assert/invariant 与 proof-pure 分支事实驱动的安全检查消除；赋值、inout、join 和零轮循环路径执行保守失效。
 
 关门条件包括：任何输入边界都不能伪造已建立的约束值；debug/release 的接受结果一致；NaN、无穷、负零和边界值有固定语义；业务拒绝始终留在普通 `Result` 轨道。
 

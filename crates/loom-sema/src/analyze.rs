@@ -9,13 +9,16 @@ use loom_hir::{
     Statement, TaskJoinMode, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
 };
 
+use crate::proof::{
+    ProofBinary, ProofFacts, ProofPlace, ProofResult, ProofRoot, ProofTerm, ProofUnary,
+};
 use crate::{
     AssociatedTypeBinding, BodySemantics, Bound, BuiltinType, BuiltinValue, CallResolution,
-    CallTarget, CallableSignature, Coercion, ConceptInstance, DefMapBuild, Goal, ImplHeader,
-    ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place, PlaceProjection,
-    PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, ScopedDisposal, Signature,
-    SolveFailure, Substitution, TyData, TyId, TypedProgram, ViewResolution, ViewSource,
-    ViewTokenId, WitnessSelection, WitnessSource,
+    CallTarget, CallableSignature, Coercion, ConceptInstance, ConstructionCheck, DefMapBuild, Goal,
+    ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place,
+    PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, RuntimeCheck,
+    ScopedDisposal, Signature, SolveFailure, Substitution, TyData, TyId, TypedProgram,
+    ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "standard.resource";
@@ -1861,6 +1864,8 @@ enum DynamicCoercionMode {
 struct FlowState {
     self_dirty: bool,
     borrows: Vec<ActiveBorrow>,
+    proof_facts: ProofFacts,
+    local_terms: BTreeMap<LocalId, ProofTerm>,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -1885,6 +1890,8 @@ struct BodyChecker<'a, 'program> {
     cleanup_depth: u32,
     allow_await_here: bool,
     checking_scoped_receiver: bool,
+    proof_facts: ProofFacts,
+    local_terms: BTreeMap<LocalId, ProofTerm>,
 }
 
 impl<'a, 'program> BodyChecker<'a, 'program> {
@@ -1914,16 +1921,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             cleanup_depth: 0,
             allow_await_here: false,
             checking_scoped_receiver: false,
+            proof_facts: ProofFacts::default(),
+            local_terms: BTreeMap::new(),
         }
     }
 
     fn check(&mut self) {
+        self.seed_entry_proofs();
         let root = self.source().root;
         self.check_expr(
             root,
             Some(self.environment.expected_root),
             ExpressionContext::Value,
         );
+        self.classify_contract_body();
     }
 
     fn check_expr(
@@ -2015,6 +2026,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             inferred
         };
         self.semantics.expression_types.insert(expression, result);
+        self.invalidate_mutated_receiver(expression);
         result
     }
 
@@ -2561,6 +2573,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         self.check_suspendable_expr(*value, expected, ExpressionContext::Value);
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
                     self.semantics.local_types.insert(*local, ty);
+                    let term = self.proof_term(*value);
+                    if term.is_known() {
+                        self.local_terms.insert(*local, term);
+                    } else {
+                        self.local_terms.remove(local);
+                    }
+                    let local_term = ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::Local(local.raw()),
+                        fields: Vec::new(),
+                    });
+                    self.assume_established_type(ty, &local_term);
                     if scoped {
                         self.check_scoped_binding(*local, *value, ty, region);
                     } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
@@ -2612,8 +2635,24 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             vec![self.types().error(); locals.len()]
                         }
                     };
-                    for (local, element_ty) in locals.iter().zip(element_types) {
+                    let element_terms = match self.proof_term(*value) {
+                        ProofTerm::Tuple(elements) if elements.len() == locals.len() => elements,
+                        _ => vec![ProofTerm::Unknown; locals.len()],
+                    };
+                    for ((local, element_ty), term) in
+                        locals.iter().zip(element_types).zip(element_terms)
+                    {
                         self.semantics.local_types.insert(*local, element_ty);
+                        if term.is_known() {
+                            self.local_terms.insert(*local, term);
+                        }
+                        self.assume_established_type(
+                            element_ty,
+                            &ProofTerm::Place(ProofPlace {
+                                root: ProofRoot::Local(local.raw()),
+                                fields: Vec::new(),
+                            }),
+                        );
                         if self.has_marker_obligation(element_ty, MUST_SCOPE_CONCEPT) {
                             self.error(
                                 "MustScopeRequiresScoped",
@@ -2649,6 +2688,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics.expression_types.insert(*start, start_ty);
                     self.semantics.expression_types.insert(*end, end_ty);
                     self.semantics.local_types.insert(*local, int);
+                    let entry = self.flow_state();
 
                     // The iteration binding belongs to the loop body's lexical
                     // environment. Keep an outer binding with the same name
@@ -2661,6 +2701,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         .insert(name.clone(), *local);
                     let unit = self.types().builtin(BuiltinType::Unit);
                     self.check_expr(*body, Some(unit), ExpressionContext::Value);
+                    let iteration = self.flow_state();
+                    // A range may execute zero or many times. Retain only
+                    // facts stable before and after an arbitrary iteration.
+                    self.join_flow_states([entry, iteration]);
                     let scope = self.scopes.last_mut().expect("loop block scope exists");
                     if let Some(previous) = previous {
                         scope.insert(name, previous);
@@ -2711,6 +2755,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     diverges |= self.expression_diverges(*predicate)
                         || self.analyzer.typed.types.data(ty) == &TyData::Never;
                     self.environment.contract = previous;
+                    let term = self.proof_term(*predicate);
+                    let check = if self.proof_facts.prove(&term) == ProofResult::Proven {
+                        RuntimeCheck::Proven
+                    } else {
+                        RuntimeCheck::Runtime
+                    };
+                    self.semantics.assertion_checks.insert(*predicate, check);
+                    self.proof_facts.assume(term, true);
                 }
             }
         }
@@ -2832,11 +2884,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let bool_ty = self.types().builtin(BuiltinType::Bool);
         self.check_expr(condition, Some(bool_ty), ExpressionContext::Value);
         let entry = self.flow_state();
+        let condition_term = self.proof_term(condition);
+        // General `if` conditions may contain calls with mutation. A partial
+        // symbolic term would then describe a stale pre-call value, so branch
+        // facts are admitted only when the complete condition is proof-pure.
+        if condition_term.is_known() {
+            self.proof_facts.assume(condition_term.clone(), true);
+        }
         let then_ty = self.check_expr(then_branch, expected, context);
         let then_diverges = self.expression_diverges(then_branch);
         let then_state = self.flow_state();
         if let Some(else_branch) = else_branch {
             self.restore_flow(&entry);
+            if condition_term.is_known() {
+                self.proof_facts.assume(condition_term, false);
+            }
             let expected_else = expected.or_else(|| (!then_diverges).then_some(then_ty));
             let else_ty = self.check_expr(else_branch, expected_else, context);
             let else_diverges = self.expression_diverges(else_branch);
@@ -3018,6 +3080,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         self.check_expr(value, Some(target_ty), ExpressionContext::Value);
+        let value_term = self.proof_term(value);
+        let proof_place = proof_place(&place);
+        self.proof_facts.invalidate(&proof_place);
+        self.local_terms.retain(|local, term| {
+            matches!(place.root, PlaceRoot::Local(target) if *local == target)
+                || !term.contains_place(&proof_place)
+        });
+        if let PlaceRoot::Local(local) = place.root
+            && place.projections.is_empty()
+        {
+            // A term mentioning the destination denotes its old value. Do not
+            // let that spelling become a self-reference after assignment.
+            if value_term.is_known() && !value_term.contains_place(&proof_place) {
+                self.local_terms.insert(local, value_term);
+            } else {
+                self.local_terms.remove(&local);
+            }
+        }
+        let established = ProofTerm::Place(proof_place);
+        self.assume_established_type(target_ty, &established);
         if matches!(place.root, PlaceRoot::SelfValue) && !place.projections.is_empty() {
             self.self_dirty = true;
         }
@@ -3231,6 +3313,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .pattern_resolutions
             .insert(pattern, Resolution::Local(local));
         self.semantics.local_types.insert(local, expected);
+        self.assume_established_type(
+            expected,
+            &ProofTerm::Place(ProofPlace {
+                root: ProofRoot::Local(local.raw()),
+                fields: Vec::new(),
+            }),
+        );
         let name = self.source().locals[local].name.clone();
         self.scopes
             .last_mut()
@@ -3588,6 +3677,799 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
+    fn seed_entry_proofs(&mut self) {
+        let body_kind = self.source().kind;
+        let parameters = self
+            .environment
+            .params
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        for (parameter, ty) in &parameters {
+            let term = ProofTerm::Place(ProofPlace {
+                root: ProofRoot::Param(parameter.raw()),
+                fields: Vec::new(),
+            });
+            self.assume_established_type(*ty, &term);
+            if body_kind == BodyKind::Ensures {
+                // Parameters are immutable, but `old(parameter)` has a
+                // distinct proof spelling so entry snapshots never become
+                // interchangeable with a future mutable value category.
+                self.assume_established_type(
+                    *ty,
+                    &ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::OldParam(parameter.raw()),
+                        fields: Vec::new(),
+                    }),
+                );
+            }
+        }
+
+        if let Some(self_ty) = self.environment.self_ty {
+            let self_term = ProofTerm::Place(ProofPlace {
+                root: ProofRoot::SelfValue,
+                fields: Vec::new(),
+            });
+            if body_kind == BodyKind::RecordInvariant {
+                // The invariant cannot prove itself, but declarations on its
+                // field types are already established before it runs.
+                self.assume_established_record_fields(self_ty, &self_term);
+            } else {
+                self.assume_established_type(self_ty, &self_term);
+            }
+            if body_kind == BodyKind::Ensures {
+                // Both sides of a method boundary contain established values.
+                // Keep their identities separate because `mut self` may have
+                // changed between the two points.
+                self.assume_established_type(
+                    self_ty,
+                    &ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::OldSelf,
+                        fields: Vec::new(),
+                    }),
+                );
+            }
+        }
+
+        if body_kind == BodyKind::Ensures
+            && let Some(result_ty) = self.environment.result_ty
+        {
+            self.assume_established_type(
+                result_ty,
+                &ProofTerm::Place(ProofPlace {
+                    root: ProofRoot::ResultValue,
+                    fields: Vec::new(),
+                }),
+            );
+        }
+
+        let contract_owner = self.effective_contract_owner();
+        let (requires, ensures) = match &self.analyzer.program.definitions[contract_owner].kind {
+            DefinitionKind::Function(function) | DefinitionKind::Test(function) => (
+                function.signature.contracts.requires.clone(),
+                function.signature.contracts.ensures.clone(),
+            ),
+            DefinitionKind::Method(method) => (
+                method.signature.contracts.requires.clone(),
+                method.signature.contracts.ensures.clone(),
+            ),
+            _ => (Vec::new(), Vec::new()),
+        };
+        let implementation_parameters =
+            match self.analyzer.typed.signatures.get(self.environment.owner) {
+                Some(Signature::Callable(signature)) => signature
+                    .params
+                    .iter()
+                    .map(|(parameter, _)| *parameter)
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+        let contract_parameters = match self.analyzer.typed.signatures.get(contract_owner) {
+            Some(Signature::Callable(signature)) => signature
+                .params
+                .iter()
+                .map(|(parameter, _)| *parameter)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let current_argument_terms = contract_parameters
+            .iter()
+            .copied()
+            .zip(implementation_parameters.iter().copied())
+            .map(|(contract_parameter, implementation_parameter)| {
+                (
+                    contract_parameter,
+                    ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::Param(implementation_parameter.raw()),
+                        fields: Vec::new(),
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let old_argument_terms = contract_parameters
+            .into_iter()
+            .zip(implementation_parameters)
+            .map(|(contract_parameter, implementation_parameter)| {
+                (
+                    contract_parameter,
+                    ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::OldParam(implementation_parameter.raw()),
+                        fields: Vec::new(),
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let current_self = self.environment.self_ty.map(|_| {
+            ProofTerm::Place(ProofPlace {
+                root: ProofRoot::SelfValue,
+                fields: Vec::new(),
+            })
+        });
+        let old_self = self.environment.self_ty.map(|_| {
+            ProofTerm::Place(ProofPlace {
+                root: ProofRoot::OldSelf,
+                fields: Vec::new(),
+            })
+        });
+        match body_kind {
+            BodyKind::Function | BodyKind::Method => {
+                for contract in requires {
+                    let term = self.contract_proof_term(
+                        contract,
+                        current_self.as_ref(),
+                        &current_argument_terms,
+                    );
+                    self.proof_facts.assume(term, true);
+                }
+            }
+            BodyKind::Requires => {
+                // Requires clauses execute in source order. A preceding
+                // retained check, or a preceding statically proven clause,
+                // is therefore an independent fact for the next clause.
+                for contract in requires.into_iter().take_while(|body| *body != self.body) {
+                    let term = self.contract_proof_term(
+                        contract,
+                        current_self.as_ref(),
+                        &current_argument_terms,
+                    );
+                    self.proof_facts.assume(term, true);
+                }
+            }
+            BodyKind::Ensures => {
+                // A mutable receiver's requires clause is an entry fact. It
+                // may prove `old(self...)`, never the post-state `self...`.
+                // Ordinary parameters are immutable, so retain both their
+                // current and explicitly snapshotted spellings.
+                let entry_self = if self.environment.receiver == Some(ReceiverKind::Mutable) {
+                    old_self.as_ref()
+                } else {
+                    current_self.as_ref()
+                };
+                for contract in requires {
+                    let current_term =
+                        self.contract_proof_term(contract, entry_self, &current_argument_terms);
+                    self.proof_facts.assume(current_term, true);
+                    let old_term =
+                        self.contract_proof_term(contract, old_self.as_ref(), &old_argument_terms);
+                    self.proof_facts.assume(old_term, true);
+                }
+                // Contract bodies owned by this declaration share parameter
+                // and old-value roots, so earlier successful ensures clauses
+                // can safely discharge later redundant clauses.
+                if contract_owner == self.environment.owner {
+                    for contract in ensures.into_iter().take_while(|body| *body != self.body) {
+                        let term = self.contract_proof_term(contract, None, &BTreeMap::new());
+                        self.proof_facts.assume(term, true);
+                    }
+                }
+            }
+            BodyKind::RefinementPredicate | BodyKind::RecordInvariant => {}
+        }
+    }
+
+    fn effective_contract_owner(&self) -> DefId {
+        let owner = self.environment.owner;
+        let DefinitionKind::Method(method) = &self.analyzer.program.definitions[owner].kind else {
+            return owner;
+        };
+        if !matches!(
+            self.analyzer.program.definitions[method.owner].kind,
+            DefinitionKind::Conformance(_)
+        ) {
+            return owner;
+        }
+        self.analyzer
+            .typed
+            .conformances
+            .get(method.owner)
+            .and_then(|semantics| {
+                semantics
+                    .methods
+                    .iter()
+                    .find_map(|(requirement, implementation)| {
+                        (*implementation == owner).then_some(*requirement)
+                    })
+            })
+            .unwrap_or(owner)
+    }
+
+    fn classify_contract_body(&mut self) {
+        if !matches!(
+            self.source().kind,
+            BodyKind::RefinementPredicate
+                | BodyKind::RecordInvariant
+                | BodyKind::Requires
+                | BodyKind::Ensures
+        ) {
+            return;
+        }
+        let term = self.contract_proof_term(self.body, None, &BTreeMap::new());
+        self.semantics.contract_check =
+            Some(if self.proof_facts.prove(&term) == ProofResult::Proven {
+                RuntimeCheck::Proven
+            } else {
+                RuntimeCheck::Runtime
+            });
+    }
+
+    fn assume_established_type(&mut self, ty: TyId, value: &ProofTerm) {
+        if let Some(term) = self.established_type_term(ty, value) {
+            self.proof_facts.assume(term, true);
+        }
+        self.assume_established_record_fields(ty, value);
+    }
+
+    fn assume_established_record_fields(&mut self, ty: TyId, value: &ProofTerm) {
+        let TyData::Nominal { definition, .. } = self.analyzer.typed.types.data(ty).clone() else {
+            return;
+        };
+        let DefinitionKind::Record(record) = &self.analyzer.program.definitions[definition].kind
+        else {
+            return;
+        };
+        let fields = record
+            .fields
+            .iter()
+            .filter_map(|field| match self.analyzer.typed.signatures.get(*field) {
+                Some(Signature::Field { ty, .. }) => Some((*field, *ty)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (field, field_ty) in fields {
+            let field_value = value.clone().field(field);
+            if let Some(term) = self.established_type_term(field_ty, &field_value) {
+                self.proof_facts.assume(term, true);
+            }
+        }
+    }
+
+    fn established_type_term(&self, ty: TyId, value: &ProofTerm) -> Option<ProofTerm> {
+        let TyData::Nominal { definition, .. } = self.analyzer.typed.types.data(ty) else {
+            return None;
+        };
+        self.established_definition_term(*definition, value)
+    }
+
+    fn established_definition_term(
+        &self,
+        definition: DefId,
+        value: &ProofTerm,
+    ) -> Option<ProofTerm> {
+        let contract = match &self.analyzer.program.definitions[definition].kind {
+            DefinitionKind::RefinedType(refined) => Some(refined.predicate),
+            DefinitionKind::Record(record) => record.invariant,
+            _ => None,
+        }?;
+        Some(self.contract_proof_term(contract, Some(value), &BTreeMap::new()))
+    }
+
+    fn invalidate_mutated_receiver(&mut self, expression: ExprId) {
+        let inout = self
+            .semantics
+            .calls
+            .get(expression)
+            .is_some_and(|call| call.receiver == Some(ReceiverPassing::InOut));
+        if !inout {
+            return;
+        }
+        let receiver = match &self.source().expressions[expression] {
+            Expr::MethodCall { receiver, .. } => Some(*receiver),
+            _ => None,
+        };
+        let Some(receiver) = receiver else {
+            return;
+        };
+        let Some(place) = self.semantics.expression_places.get(receiver).cloned() else {
+            return;
+        };
+        let proof_place = proof_place(&place);
+        self.proof_facts.invalidate(&proof_place);
+        self.local_terms
+            .retain(|_, term| !term.contains_place(&proof_place));
+        if let PlaceRoot::Local(local) = place.root {
+            self.local_terms.remove(&local);
+        }
+        if let Some(ty) = self.semantics.expression_types.get(receiver).copied() {
+            self.assume_established_type(ty, &ProofTerm::Place(proof_place));
+        }
+    }
+
+    fn checked_value_proof(&self, expression: ExprId, facts: &mut ProofFacts) -> ProofTerm {
+        let candidate = self.proof_term(expression).unrefine();
+        let value = if candidate.is_known() {
+            candidate
+        } else {
+            ProofTerm::Place(ProofPlace {
+                root: ProofRoot::Expression {
+                    body: self.body.raw(),
+                    expression: expression.raw(),
+                },
+                fields: Vec::new(),
+            })
+        };
+
+        if let Some(ty) = self.semantics.expression_types.get(expression).copied()
+            && let Some(term) = self.established_type_term(ty, &value)
+        {
+            facts.assume(term, true);
+        }
+        if let Some(Coercion::RefinedToBase { refined }) =
+            self.semantics.expression_coercions.get(expression)
+            && let Some(term) = self.established_definition_term(*refined, &value)
+        {
+            facts.assume(term, true);
+        }
+        value
+    }
+
+    fn refinement_proof(&self, definition: DefId, expression: ExprId) -> ProofResult {
+        let DefinitionKind::RefinedType(refined) =
+            &self.analyzer.program.definitions[definition].kind
+        else {
+            return ProofResult::Unknown;
+        };
+        let mut facts = self.proof_facts.clone();
+        let value = self.checked_value_proof(expression, &mut facts);
+        let predicate = self.contract_proof_term(refined.predicate, Some(&value), &BTreeMap::new());
+        facts.prove(&predicate)
+    }
+
+    fn invariant_proof(&self, definition: DefId, fields: &[(DefId, ExprId)]) -> ProofResult {
+        let DefinitionKind::Record(record) = &self.analyzer.program.definitions[definition].kind
+        else {
+            return ProofResult::Unknown;
+        };
+        let Some(invariant) = record.invariant else {
+            return ProofResult::Proven;
+        };
+        let mut facts = self.proof_facts.clone();
+        let fields = fields
+            .iter()
+            .map(|(field, expression)| (*field, self.checked_value_proof(*expression, &mut facts)))
+            .collect();
+        let value = ProofTerm::Record { definition, fields };
+        let predicate = self.contract_proof_term(invariant, Some(&value), &BTreeMap::new());
+        facts.prove(&predicate)
+    }
+
+    fn proof_term(&self, expression: ExprId) -> ProofTerm {
+        self.proof_term_inner(expression, 0)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn proof_term_inner(&self, expression: ExprId, depth: u16) -> ProofTerm {
+        if depth >= 256 {
+            return ProofTerm::Unknown;
+        }
+        let mut term = match &self.source().expressions[expression] {
+            Expr::Literal(Literal::Bool(value)) => ProofTerm::bool(*value),
+            Expr::Literal(Literal::Int(value)) => value
+                .parse::<i64>()
+                .map_or(ProofTerm::Unknown, ProofTerm::int),
+            Expr::Literal(Literal::Float(value)) => value
+                .parse::<f64>()
+                .map_or(ProofTerm::Unknown, ProofTerm::float),
+            Expr::Literal(Literal::Text(value)) => ProofTerm::text(value.clone()),
+            Expr::Literal(Literal::Unit) => ProofTerm::unit(),
+            Expr::Tuple(elements) => ProofTerm::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.proof_term_inner(*element, depth + 1))
+                    .collect(),
+            ),
+            Expr::Path(_) => self.proof_resolution_term(expression),
+            Expr::SelfValue => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::SelfValue,
+                fields: Vec::new(),
+            }),
+            Expr::ResultValue => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::ResultValue,
+                fields: Vec::new(),
+            }),
+            Expr::Old(value) => self.proof_term_inner(*value, depth + 1),
+            Expr::Block { statements, tail } if statements.is_empty() => tail
+                .map_or(ProofTerm::unit(), |tail| {
+                    self.proof_term_inner(tail, depth + 1)
+                }),
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => match self
+                .proof_facts
+                .prove(&self.proof_term_inner(*condition, depth + 1))
+            {
+                ProofResult::Proven => self.proof_term_inner(*then_branch, depth + 1),
+                ProofResult::Disproven => else_branch.map_or(ProofTerm::unit(), |branch| {
+                    self.proof_term_inner(branch, depth + 1)
+                }),
+                ProofResult::Unknown => ProofTerm::Unknown,
+            },
+            Expr::Call { arguments, .. } => {
+                let resolution = self.semantics.calls.get(expression);
+                match resolution.map(|resolution| &resolution.target) {
+                    Some(CallTarget::Builtin(BuiltinValue::IsFinite)) if arguments.len() == 1 => {
+                        ProofTerm::is_finite(
+                            self.proof_term_inner(arguments[0], depth + 1).unrefine(),
+                        )
+                    }
+                    Some(CallTarget::Builtin(BuiltinValue::Unit)) => ProofTerm::unit(),
+                    Some(CallTarget::EnumVariant(variant)) => {
+                        let owner = match &self.analyzer.program.definitions[*variant].kind {
+                            DefinitionKind::Variant(variant) => variant.owner,
+                            _ => return ProofTerm::Unknown,
+                        };
+                        ProofTerm::Variant {
+                            owner,
+                            variant: *variant,
+                            payload: arguments
+                                .iter()
+                                .map(|argument| self.proof_term_inner(*argument, depth + 1))
+                                .collect(),
+                        }
+                    }
+                    Some(CallTarget::RefinedConstructor(definition))
+                        if self.semantics.construction_checks.get(expression)
+                            == Some(&ConstructionCheck::Proven)
+                            && arguments.len() == 1 =>
+                    {
+                        ProofTerm::Refined {
+                            definition: *definition,
+                            value: Box::new(
+                                self.proof_term_inner(arguments[0], depth + 1).unrefine(),
+                            ),
+                        }
+                    }
+                    _ => ProofTerm::Unknown,
+                }
+            }
+            Expr::Field { receiver, .. } => {
+                let Some(place) = self.semantics.expression_places.get(expression) else {
+                    return ProofTerm::Unknown;
+                };
+                let Some(PlaceProjection::Field(field)) = place.projections.last() else {
+                    return ProofTerm::Unknown;
+                };
+                self.proof_term_inner(*receiver, depth + 1).field(*field)
+            }
+            Expr::Unary { op, operand } => ProofTerm::unary(
+                proof_unary(*op),
+                self.proof_term_inner(*operand, depth + 1).unrefine(),
+            ),
+            Expr::Binary { op, left, right } => proof_binary_term(
+                *op,
+                self.proof_term_inner(*left, depth + 1).unrefine(),
+                self.proof_term_inner(*right, depth + 1).unrefine(),
+            ),
+            Expr::RecordLiteral { ty, fields } => {
+                let Some(canonical) = self.semantics.record_fields.get(expression) else {
+                    return ProofTerm::Unknown;
+                };
+                let module = self.analyzer.program.definitions[self.environment.owner].module;
+                let definition =
+                    crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module)
+                        .resolve_definition(ty, Namespace::Type)
+                        .ok();
+                let Some(definition) = definition else {
+                    return ProofTerm::Unknown;
+                };
+                if self.semantics.construction_checks.get(expression)
+                    == Some(&ConstructionCheck::Runtime)
+                {
+                    return ProofTerm::Unknown;
+                }
+                let _ = fields;
+                ProofTerm::Record {
+                    definition,
+                    fields: canonical
+                        .iter()
+                        .map(|(field, value)| (*field, self.proof_term_inner(*value, depth + 1)))
+                        .collect(),
+                }
+            }
+            Expr::List(_)
+            | Expr::Block { .. }
+            | Expr::Match { .. }
+            | Expr::MethodCall { .. }
+            | Expr::QualifiedMethodCall { .. }
+            | Expr::Assign { .. }
+            | Expr::View { .. }
+            | Expr::Await(_)
+            | Expr::Sleep(_)
+            | Expr::WaitFd { .. }
+            | Expr::TaskJoin { .. }
+            | Expr::Propagate(_)
+            | Expr::Return(_)
+            | Expr::Error => ProofTerm::Unknown,
+        };
+        if matches!(
+            self.semantics.expression_coercions.get(expression),
+            Some(Coercion::RefinedToBase { .. })
+        ) {
+            term = term.unrefine();
+        }
+        term
+    }
+
+    fn proof_resolution_term(&self, expression: ExprId) -> ProofTerm {
+        match self
+            .semantics
+            .expression_resolutions
+            .get(expression)
+            .copied()
+        {
+            Some(Resolution::Param(parameter)) => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::Param(parameter.raw()),
+                fields: Vec::new(),
+            }),
+            Some(Resolution::Local(local)) => {
+                self.local_terms.get(&local).cloned().unwrap_or_else(|| {
+                    ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::Local(local.raw()),
+                        fields: Vec::new(),
+                    })
+                })
+            }
+            Some(Resolution::SelfValue) => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::SelfValue,
+                fields: Vec::new(),
+            }),
+            Some(Resolution::ResultValue) => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::ResultValue,
+                fields: Vec::new(),
+            }),
+            Some(Resolution::Builtin(BuiltinValue::Unit)) => ProofTerm::unit(),
+            Some(Resolution::Definition(variant)) => {
+                let DefinitionKind::Variant(variant_definition) =
+                    &self.analyzer.program.definitions[variant].kind
+                else {
+                    return ProofTerm::Unknown;
+                };
+                ProofTerm::Variant {
+                    owner: variant_definition.owner,
+                    variant,
+                    payload: Vec::new(),
+                }
+            }
+            _ => ProofTerm::Unknown,
+        }
+    }
+
+    fn contract_proof_term(
+        &self,
+        body: BodyId,
+        self_value: Option<&ProofTerm>,
+        arguments: &BTreeMap<ParamId, ProofTerm>,
+    ) -> ProofTerm {
+        let bindings = BTreeMap::new();
+        self.contract_proof_term_inner(
+            body,
+            self.analyzer.program.bodies[body].root,
+            self_value,
+            arguments,
+            &bindings,
+            false,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn contract_proof_term_inner(
+        &self,
+        body: BodyId,
+        expression: ExprId,
+        self_value: Option<&ProofTerm>,
+        arguments: &BTreeMap<ParamId, ProofTerm>,
+        bindings: &BTreeMap<LocalId, ProofTerm>,
+        old: bool,
+        depth: u16,
+    ) -> ProofTerm {
+        if depth >= 256 {
+            return ProofTerm::Unknown;
+        }
+        let source = &self.analyzer.program.bodies[body];
+        let semantics = if body == self.body {
+            &self.semantics
+        } else {
+            let Some(semantics) = self.analyzer.typed.bodies.get(body) else {
+                return ProofTerm::Unknown;
+            };
+            semantics
+        };
+        match &source.expressions[expression] {
+            Expr::Literal(Literal::Bool(value)) => ProofTerm::bool(*value),
+            Expr::Literal(Literal::Int(value)) => value
+                .parse::<i64>()
+                .map_or(ProofTerm::Unknown, ProofTerm::int),
+            Expr::Literal(Literal::Float(value)) => value
+                .parse::<f64>()
+                .map_or(ProofTerm::Unknown, ProofTerm::float),
+            Expr::Literal(Literal::Text(value)) => ProofTerm::text(value.clone()),
+            Expr::Literal(Literal::Unit) => ProofTerm::unit(),
+            Expr::Path(_) => match semantics.expression_resolutions.get(expression).copied() {
+                Some(Resolution::Param(parameter)) => {
+                    arguments.get(&parameter).cloned().unwrap_or_else(|| {
+                        ProofTerm::Place(ProofPlace {
+                            root: if old {
+                                ProofRoot::OldParam(parameter.raw())
+                            } else {
+                                ProofRoot::Param(parameter.raw())
+                            },
+                            fields: Vec::new(),
+                        })
+                    })
+                }
+                Some(Resolution::Local(local)) => {
+                    bindings.get(&local).cloned().unwrap_or(ProofTerm::Unknown)
+                }
+                Some(Resolution::Builtin(BuiltinValue::Unit)) => ProofTerm::unit(),
+                Some(Resolution::Definition(variant)) => {
+                    let DefinitionKind::Variant(variant_definition) =
+                        &self.analyzer.program.definitions[variant].kind
+                    else {
+                        return ProofTerm::Unknown;
+                    };
+                    ProofTerm::Variant {
+                        owner: variant_definition.owner,
+                        variant,
+                        payload: Vec::new(),
+                    }
+                }
+                _ => ProofTerm::Unknown,
+            },
+            Expr::SelfValue => self_value.cloned().unwrap_or_else(|| {
+                ProofTerm::Place(ProofPlace {
+                    root: if old {
+                        ProofRoot::OldSelf
+                    } else {
+                        ProofRoot::SelfValue
+                    },
+                    fields: Vec::new(),
+                })
+            }),
+            Expr::ResultValue => ProofTerm::Place(ProofPlace {
+                root: ProofRoot::ResultValue,
+                fields: Vec::new(),
+            }),
+            Expr::Old(value) => self.contract_proof_term_inner(
+                body,
+                *value,
+                self_value,
+                arguments,
+                bindings,
+                true,
+                depth + 1,
+            ),
+            Expr::Field { receiver, .. } => {
+                let Some(place) = semantics.expression_places.get(expression) else {
+                    return ProofTerm::Unknown;
+                };
+                let Some(PlaceProjection::Field(field)) = place.projections.last() else {
+                    return ProofTerm::Unknown;
+                };
+                self.contract_proof_term_inner(
+                    body,
+                    *receiver,
+                    self_value,
+                    arguments,
+                    bindings,
+                    old,
+                    depth + 1,
+                )
+                .field(*field)
+            }
+            Expr::Unary { op, operand } => ProofTerm::unary(
+                proof_unary(*op),
+                self.contract_proof_term_inner(
+                    body,
+                    *operand,
+                    self_value,
+                    arguments,
+                    bindings,
+                    old,
+                    depth + 1,
+                )
+                .unrefine(),
+            ),
+            Expr::Binary { op, left, right } => proof_binary_term(
+                *op,
+                self.contract_proof_term_inner(
+                    body,
+                    *left,
+                    self_value,
+                    arguments,
+                    bindings,
+                    old,
+                    depth + 1,
+                )
+                .unrefine(),
+                self.contract_proof_term_inner(
+                    body,
+                    *right,
+                    self_value,
+                    arguments,
+                    bindings,
+                    old,
+                    depth + 1,
+                )
+                .unrefine(),
+            ),
+            Expr::Call {
+                arguments: values, ..
+            } if semantics.calls.get(expression).is_some_and(|resolution| {
+                resolution.target == CallTarget::Builtin(BuiltinValue::IsFinite)
+            }) && values.len() == 1 =>
+            {
+                ProofTerm::is_finite(
+                    self.contract_proof_term_inner(
+                        body,
+                        values[0],
+                        self_value,
+                        arguments,
+                        bindings,
+                        old,
+                        depth + 1,
+                    )
+                    .unrefine(),
+                )
+            }
+            Expr::Block { statements, tail } if statements.is_empty() => {
+                tail.map_or(ProofTerm::unit(), |tail| {
+                    self.contract_proof_term_inner(
+                        body,
+                        tail,
+                        self_value,
+                        arguments,
+                        bindings,
+                        old,
+                        depth + 1,
+                    )
+                })
+            }
+            // Exhaustive match remains runtime-checked unless its complete
+            // scrutinee/pattern proof can be represented by a later domain.
+            Expr::Error
+            | Expr::Tuple(_)
+            | Expr::List(_)
+            | Expr::If { .. }
+            | Expr::Match { .. }
+            | Expr::Call { .. }
+            | Expr::MethodCall { .. }
+            | Expr::QualifiedMethodCall { .. }
+            | Expr::Assign { .. }
+            | Expr::RecordLiteral { .. }
+            | Expr::View { .. }
+            | Expr::Await(_)
+            | Expr::Sleep(_)
+            | Expr::WaitFd { .. }
+            | Expr::TaskJoin { .. }
+            | Expr::Propagate(_)
+            | Expr::Return(_)
+            | Expr::Block { .. } => ProofTerm::Unknown,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn check_call(
         &mut self,
         expression: ExprId,
@@ -3730,15 +4612,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .copied()
                 .unwrap_or_else(|| self.types().error());
             self.check_expr(arguments[0], Some(base), ExpressionContext::Value);
+            let proof = self.refinement_proof(definition, arguments[0]);
             let nominal = self.types().intern(TyData::Nominal {
                 definition,
                 arguments: Vec::new(),
             });
-            let violation = self.types().builtin(BuiltinType::Violation);
-            let result = self.types().intern(TyData::Result {
-                ok: nominal,
-                error: violation,
-            });
+            let check = if proof == ProofResult::Proven {
+                ConstructionCheck::Proven
+            } else {
+                ConstructionCheck::Runtime
+            };
+            self.semantics.construction_checks.insert(expression, check);
             self.semantics.calls.insert(
                 expression,
                 CallResolution {
@@ -3749,7 +4633,28 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     receiver: None,
                 },
             );
-            return result;
+            return match proof {
+                ProofResult::Proven => nominal,
+                ProofResult::Disproven => {
+                    let name = self.analyzer.program.definitions[definition]
+                        .name
+                        .as_ref()
+                        .map_or("<constrained type>", Name::as_str);
+                    self.error_at(
+                        "ConstraintUnsatisfied",
+                        format!("value is statically known to violate `{name}`"),
+                        expression,
+                    );
+                    self.types().error()
+                }
+                ProofResult::Unknown => {
+                    let constraint_error = self.types().builtin(BuiltinType::ConstraintError);
+                    self.types().intern(TyData::Result {
+                        ok: nominal,
+                        error: constraint_error,
+                    })
+                }
+            };
         }
         self.error_at(
             "UnknownName",
@@ -5136,19 +6041,47 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let expected = self.types().substitute(field_ty, &substitution);
             self.coerce(value, actual, expected);
         }
+        let proof = record
+            .invariant
+            .map(|_| self.invariant_proof(definition, &canonical));
         self.semantics.record_fields.insert(expression, canonical);
         let nominal = self.types().intern(TyData::Nominal {
             definition,
             arguments,
         });
-        if record.invariant.is_some() {
-            let violation = self.types().builtin(BuiltinType::Violation);
-            self.types().intern(TyData::Result {
-                ok: nominal,
-                error: violation,
-            })
-        } else {
-            nominal
+        match proof {
+            None => nominal,
+            Some(ProofResult::Proven) => {
+                self.semantics
+                    .construction_checks
+                    .insert(expression, ConstructionCheck::Proven);
+                nominal
+            }
+            Some(ProofResult::Disproven) => {
+                self.semantics
+                    .construction_checks
+                    .insert(expression, ConstructionCheck::Runtime);
+                let name = self.analyzer.program.definitions[definition]
+                    .name
+                    .as_ref()
+                    .map_or("<record>", Name::as_str);
+                self.error_at(
+                    "InvariantUnsatisfied",
+                    format!("record literal is statically known to violate `{name}` invariant"),
+                    expression,
+                );
+                self.types().error()
+            }
+            Some(ProofResult::Unknown) => {
+                self.semantics
+                    .construction_checks
+                    .insert(expression, ConstructionCheck::Runtime);
+                let constraint_error = self.types().builtin(BuiltinType::ConstraintError);
+                self.types().intern(TyData::Result {
+                    ok: nominal,
+                    error: constraint_error,
+                })
+            }
         }
     }
 
@@ -5772,6 +6705,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         FlowState {
             self_dirty: self.self_dirty,
             borrows: self.borrows.clone(),
+            proof_facts: self.proof_facts.clone(),
+            local_terms: self.local_terms.clone(),
         }
     }
 
@@ -5789,19 +6724,33 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn restore_flow(&mut self, state: &FlowState) {
         self.self_dirty = state.self_dirty;
         self.borrows.clone_from(&state.borrows);
+        self.proof_facts.clone_from(&state.proof_facts);
+        self.local_terms.clone_from(&state.local_terms);
     }
 
     fn join_flow_states(&mut self, states: impl IntoIterator<Item = FlowState>) {
+        let states = states.into_iter().collect::<Vec<_>>();
         let mut dirty = false;
         let mut borrows = BTreeMap::new();
-        for state in states {
+        for state in &states {
             dirty |= state.self_dirty;
-            for borrow in state.borrows {
-                borrows.entry(borrow.token).or_insert(borrow);
+            for borrow in &state.borrows {
+                borrows
+                    .entry(borrow.token)
+                    .or_insert_with(|| borrow.clone());
             }
         }
         self.self_dirty = dirty;
         self.borrows = borrows.into_values().collect();
+        self.proof_facts =
+            ProofFacts::intersection(states.iter().map(|state| state.proof_facts.clone()));
+        let mut terms = states
+            .first()
+            .map_or_else(BTreeMap::new, |state| state.local_terms.clone());
+        for state in &states[states.len().min(1)..] {
+            terms.retain(|local, term| state.local_terms.get(local) == Some(term));
+        }
+        self.local_terms = terms;
     }
 
     fn register_borrow(
@@ -5922,6 +6871,52 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
         PatternVariant::User(definition) => Resolution::Definition(definition),
     }
+}
+
+const fn proof_unary(operator: UnaryOp) -> ProofUnary {
+    match operator {
+        UnaryOp::Negate => ProofUnary::Negate,
+        UnaryOp::Not => ProofUnary::Not,
+    }
+}
+
+const fn proof_binary(operator: BinaryOp) -> ProofBinary {
+    match operator {
+        BinaryOp::Add => ProofBinary::Add,
+        BinaryOp::Subtract => ProofBinary::Subtract,
+        BinaryOp::Multiply => ProofBinary::Multiply,
+        BinaryOp::Divide => ProofBinary::Divide,
+        BinaryOp::Equal => ProofBinary::Equal,
+        BinaryOp::NotEqual => ProofBinary::NotEqual,
+        BinaryOp::Less | BinaryOp::Greater => ProofBinary::Less,
+        BinaryOp::LessEqual | BinaryOp::GreaterEqual => ProofBinary::LessEqual,
+        BinaryOp::And => ProofBinary::And,
+        BinaryOp::Or => ProofBinary::Or,
+    }
+}
+
+fn proof_binary_term(operator: BinaryOp, left: ProofTerm, right: ProofTerm) -> ProofTerm {
+    match operator {
+        BinaryOp::Greater => ProofTerm::binary(ProofBinary::Less, right, left),
+        BinaryOp::GreaterEqual => ProofTerm::binary(ProofBinary::LessEqual, right, left),
+        _ => ProofTerm::binary(proof_binary(operator), left, right),
+    }
+}
+
+fn proof_place(place: &Place) -> ProofPlace {
+    let root = match place.root {
+        PlaceRoot::Param(parameter) => ProofRoot::Param(parameter.raw()),
+        PlaceRoot::Local(local) => ProofRoot::Local(local.raw()),
+        PlaceRoot::SelfValue => ProofRoot::SelfValue,
+    };
+    let fields = place
+        .projections
+        .iter()
+        .map(|projection| match projection {
+            PlaceProjection::Field(field) => *field,
+        })
+        .collect();
+    ProofPlace { root, fields }
 }
 
 fn contains_unbound_param(
@@ -6119,7 +7114,7 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Float" => Some(BuiltinType::Float),
         "Text" => Some(BuiltinType::Text),
         "Unit" => Some(BuiltinType::Unit),
-        "Violation" => Some(BuiltinType::Violation),
+        "ConstraintError" => Some(BuiltinType::ConstraintError),
         "ContractFault" => Some(BuiltinType::ContractFault),
         "TaskFault" => Some(BuiltinType::TaskFault),
         "Duration" => Some(BuiltinType::Duration),
@@ -6148,7 +7143,10 @@ mod tests {
     use loom_syntax::parse_with_file;
 
     use super::{Analysis, analyze};
-    use crate::{CallTarget, Signature, TyData, ViewSource, WitnessSelection, WitnessSource};
+    use crate::{
+        CallTarget, ConstructionCheck, Signature, TyData, ViewSource, WitnessSelection,
+        WitnessSource,
+    };
 
     const DYNAMIC_SOURCE_FIXTURE: &str = r"
 module sample
@@ -6695,6 +7693,352 @@ fn make_zero() Int {
             analysis.diagnostics.is_empty(),
             "{:#?}",
             analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn constrained_construction_uses_constants_and_established_path_facts() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+import standard.float.is_finite
+
+type Money = Float where is_finite(self) && self >= 0.0
+
+fn literal() Money { Money(10.0) }
+
+fn folded() Money { Money(4.0 + 6.0) }
+
+fn checked(raw Float) Result[Money, ConstraintError] { Money(raw) }
+
+fn required(raw Float) Money
+    requires is_finite(raw) && raw >= 0.0
+{
+    Money(raw)
+}
+
+fn asserted(raw Float) Money {
+    assert is_finite(raw) && raw > 0.0
+    Money(raw)
+}
+
+fn branched(raw Float) Result[Money, ConstraintError] {
+    if is_finite(raw) && raw >= 0.0 {
+        Ok(Money(raw))
+    } else {
+        checked(raw)
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let checks = analysis
+            .typed
+            .bodies
+            .iter()
+            .flat_map(|(_, body)| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| **check == ConstructionCheck::Proven)
+                .count(),
+            5,
+            "{checks:?}"
+        );
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| **check == ConstructionCheck::Runtime)
+                .count(),
+            1,
+            "{checks:?}"
+        );
+    }
+
+    #[test]
+    fn invariant_literals_share_the_same_proof_and_runtime_boundary() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+fn literal() Range {
+    let low = Money(1.0)
+    let high = Money(2.0)
+    Range { low = low, high = high }
+}
+
+fn checked(low Money, high Money) Result[Range, ConstraintError] {
+    Range { low = low, high = high }
+}
+
+fn required(low Money, high Money) Range
+    requires low <= high
+{
+    Range { low = low, high = high }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let checks = analysis
+            .typed
+            .bodies
+            .iter()
+            .flat_map(|(_, body)| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| **check == ConstructionCheck::Proven)
+                .count(),
+            4,
+            "{checks:?}"
+        );
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| **check == ConstructionCheck::Runtime)
+                .count(),
+            1,
+            "{checks:?}"
+        );
+    }
+
+    #[test]
+    fn statically_false_constraint_and_invariant_are_source_errors() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+fn bad_money() Money { Money(-1.0) }
+
+fn bad_range() Range {
+    let low = Money(2.0)
+    let high = Money(1.0)
+    Range { low = low, high = high }
+}
+",
+        );
+        let codes = analysis
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"ConstraintUnsatisfied"), "{codes:?}");
+        assert!(codes.contains(&"InvariantUnsatisfied"), "{codes:?}");
+    }
+
+    #[test]
+    fn constrained_conversion_matrix_is_one_way_and_check_free_when_established() {
+        let (_, valid) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+type Positive = Float where self > 0.0
+
+fn widen(value Money) Float { value }
+
+fn calculate(value Money) Float { value + 1.0 }
+
+fn reestablish(value Money) Money { Money(value) }
+
+fn positive() Positive { Positive(1.0) }
+
+fn strict_to_loose() Money { Money(positive()) }
+
+fn pair(value Money) (Money, Money) { (value, value) }
+
+fn tuple_binding(value Money) Money {
+    let first, second = pair(value)
+    Money(first)
+}
+
+record Wallet {
+    amount Money
+    invariant self.amount >= 0.0
+}
+
+fn make_money() Money { Money(2.0) }
+
+fn wallet_from_established_field() Wallet {
+    Wallet { amount = make_money() }
+}
+",
+        );
+        assert!(valid.diagnostics.is_empty(), "{:#?}", valid.diagnostics);
+        let valid_checks = valid
+            .typed
+            .bodies
+            .iter()
+            .flat_map(|(_, body)| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(valid_checks.len(), 6, "{valid_checks:?}");
+        assert!(
+            valid_checks
+                .iter()
+                .all(|check| *check == ConstructionCheck::Proven),
+            "{valid_checks:?}"
+        );
+
+        let (_, invalid) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+type Percentage = Float where self >= 0.0
+
+fn implicit_narrow(value Float) Money { value }
+fn cross_nominal(value Money) Percentage { value }
+",
+        );
+        let mismatches = invalid
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "TypeMismatch")
+            .count();
+        assert_eq!(mismatches, 2, "{:#?}", invalid.diagnostics);
+    }
+
+    #[test]
+    fn conformance_implementation_uses_its_requirement_contract_facts() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+
+concept Factory {
+    method make(self, raw Float) Money
+        requires raw >= 0.0
+}
+
+record DefaultFactory {}
+
+impl Factory for DefaultFactory {
+    method make(self, raw Float) Money {
+        Money(raw)
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let checks = analysis
+            .typed
+            .bodies
+            .iter()
+            .flat_map(|(_, body)| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(checks, [ConstructionCheck::Proven]);
+    }
+
+    #[test]
+    fn loops_and_impure_conditions_do_not_create_stale_proofs() {
+        let (_, analysis) = analyze_source(
+            r"
+module sample
+
+type Money = Float where self >= 0.0
+
+record Cell { value Float }
+
+impl Cell {
+    method make_negative(mut self) Bool {
+        self.value = -1.0
+        true
+    }
+
+    method make_positive(mut self) Unit {
+        self.value = 1.0
+        Unit
+    }
+}
+
+fn after_loop(raw Float, count Int) Result[Money, ConstraintError] {
+    var value = raw
+    for index in 0..count {
+        value = 1.0
+        Unit
+    }
+    Money(value)
+}
+
+fn after_impure_condition(raw Float) Unit {
+    var cell = Cell { value = raw }
+    if cell.value >= 0.0 && cell.make_negative() {
+        let checked = Money(cell.value)
+        Unit
+    } else {
+        Unit
+    }
+}
+
+fn copied_before_mutation(raw Float) Unit {
+    var cell = Cell { value = raw }
+    let snapshot = cell.value
+    cell.make_positive()
+    if cell.value >= 0.0 {
+        let checked = Money(snapshot)
+        Unit
+    } else {
+        Unit
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let checks = analysis
+            .typed
+            .bodies
+            .iter()
+            .flat_map(|(_, body)| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| **check == ConstructionCheck::Runtime)
+                .count(),
+            3,
+            "{checks:?}"
+        );
+        assert!(
+            checks
+                .iter()
+                .all(|check| *check == ConstructionCheck::Runtime),
+            "{checks:?}"
         );
     }
 }

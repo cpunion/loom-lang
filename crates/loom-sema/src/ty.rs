@@ -36,7 +36,7 @@ pub enum BuiltinType {
     Float,
     Text,
     Unit,
-    Violation,
+    ConstraintError,
     ContractFault,
     TaskFault,
     Duration,

@@ -91,7 +91,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端使用 uniform compiler-private Value ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递，concrete call 仍可被 LLVM 内联和去虚化。未来优化不得改变 checked overflow、value copy、mutation、Violation 或合同结果。
+当前 C1 LLVM 后端使用 uniform compiler-private Value ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递，concrete call 仍可被 LLVM 内联和去虚化。未来优化不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 

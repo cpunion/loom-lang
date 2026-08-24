@@ -25,7 +25,7 @@ const TASKS: &[TaskSpec] = &[
         name: "constrained-contracts",
         path: "examples/core01",
         source: "examples/core01/shop.loom",
-        sha256: "a327c2aafc5ed1f37a43692078bc48c7f4220e21d230a89a775561b86ccfa61f",
+        sha256: "f3c6b8cad23cf4113e7555ac29d2307d853af10eff4ee89482ef4c8617a77472",
     },
     TaskSpec {
         name: "concept-polymorphism",

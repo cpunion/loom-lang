@@ -245,7 +245,7 @@ contract predicate 只允许：
 - 后续对 caller place 或 `self` 的修改不能改变快照；
 - erased interface 参数本身不是可快照值，对它做 `old` 报 `OldOfView`；code 名保留兼容性，诊断文案不得要求用户理解 view/borrow 语法。
 
-实现可以合并可证明相同的快照，但必须保持上述观察语义。快照资源耗尽属于 host/runtime defect，不可伪装为 Violation、ContractFault 或 RuntimeFault。
+实现可以合并可证明相同的快照，但必须保持上述观察语义。快照资源耗尽属于 host/runtime defect，不可伪装为 ConstraintError、ContractFault 或 RuntimeFault。
 
 ## 8. builtin catalog
 
@@ -260,7 +260,7 @@ contract predicate 只允许：
 | `Unit` | primitive value | 唯一 `Unit` 值 |
 | `Option[T]` | prelude enum | `None`、`Some(T)` |
 | `Result[T,E]` | prelude enum | `Ok(T)`、`Err(E)` |
-| `Violation` | prelude failure value | checked construction 的可处理失败；无用户构造器 |
+| `ConstraintError` | prelude failure value | proof unknown 的 checked construction 可处理失败；无用户构造器，不是通用 Error 父类型 |
 | `ContractFault` | prelude report type | 不可构造、不可捕获，只由 contract runtime/host 报告 |
 | `standard.float.ParseFloatError` | standard enum | `InvalidSyntax`、`OutOfRange` |
 | `standard.int.ParseIntError` | standard enum | `InvalidSyntax`、`OutOfRange` |
@@ -274,6 +274,18 @@ contract predicate 只允许：
 `RuntimeFault` 是 host/test report category，**不是 prelude 类型或语言值**。除上表外，其他标准库名称都必须显式 import，也不会因为被标准库实现而自动获得 compiler-known 纯度或终止性。
 
 constrained numeric value 可以按 `02` 作为 base numeric value 读取；builtin 运算结果是 base type，不自动重建 refinement。operator 不调用 Core 0.2 concept，本 catalog 不是 operator-overloading hook。
+
+### 8.1 construction proof classification
+
+sema 必须为每个 constrained constructor 和带 invariant 的 record literal 固定一种 checked MIR construction mode：
+
+- `proven`：表达式类型是 nominal value，MIR 直接建立 constrained/record 表示，解释器和 LLVM 都不得再次求 predicate；
+- `runtime`：表达式类型是 `Result[nominal, ConstraintError]`，两个后端都执行同一 predicate/invariant；
+- `plain`：只允许用于没有 invariant 的普通 record。
+
+静态 false construction 不得进入 MIR，而是分别报告 `ConstraintUnsatisfied` 或 `InvariantUnsatisfied`。proof domain 与 NaN 安全规则由 `02` 第 9 节固定；backend optimization 不得把 unknown 重新分类为 proven，也不得为 proven 路径恢复检查。
+
+同一 proof engine 还给纯且 total 的合同检查分类。已由入口 nominal 事实、前序成功合同或闭合表达式证明的 `requires`、`ensures`、receiver invariant 和 `assert` 不进入 checked MIR；unknown 或 disproven 合同仍进入 MIR，以保留 `ContractFault`、blame、span 和测试失败行为。分类 requires 时不得先假设自身，分类 record invariant 时不得先假设自身；ensures 可以使用已经通过的 requires、当前 receiver invariant 与返回 nominal 类型事实。`mut self` 的 requires 事实只属于入口快照，可证明 `old(self...)`，不得证明退出时可能已改变的当前 `self...`。一个保留的合同成功后仍可建立后续 proof fact。这消除的是有独立依据的检查，不是循环假设合同成立。
 
 ## 9. diagnostic code 与 JSON
 
@@ -308,7 +320,7 @@ UnreachableMatchArm InvalidTestSignature ImmutableBindingAssignment
 InvalidAssignmentTarget ForeignInherentImpl ReadonlyReceiverMutation
 MutReceiverRequiresVar InoutAliasConflict InvariantIsolationViolation
 InvalidContractExpression InvalidOldExpression OldOfView
-ContractFaultNotCatchable
+ContractFaultNotCatchable ConstraintUnsatisfied InvariantUnsatisfied
 ```
 
 Core 0.2 稳定 code 沿用 `05` 第 13 节，并纳入同一 namespace：
@@ -378,12 +390,12 @@ byte offset 是相对原 UTF-8 bytes 的 zero-based、half-open offset；line/co
 
 `severity` 的 Core 值为 `error`、`warning`、`info`；只有 `error` 阻止 build。一个 invocation 的 diagnostics 按 `primary_span.path`、`start_byte`、`end_byte`、`code`、`message` 排序；`related` 按自己的 path/span/label 排序。两者都不得依赖文件遍历顺序。
 
-### 9.4 Violation
+### 9.4 ConstraintError
 
 ```json
 {
   "schema_version": 1,
-  "category": "violation",
+  "category": "constraint_error",
   "code": "ConstraintViolation",
   "target_type": "shop.price.Price",
   "predicate": "self >= 0.0",
@@ -454,7 +466,7 @@ record/enum layout、typed IR、calling convention、contract thunk、concept wi
 | 结果 | CLI exit | 报告 |
 |---|---:|---|
 | 成功 | 0 | 正常结果 |
-| source diagnostic、test Err、Violation test failure、ContractFault、RuntimeFault | 1 | 对应结构化报告 |
+| source diagnostic、test Err、ConstraintError test failure、ContractFault、RuntimeFault | 1 | 对应结构化报告 |
 | CLI invocation/config/artifact version 错误 | 2 | diagnostic / `ArtifactVersionMismatch` |
 | compiler、backend 或 interpreter defect | 3 | 对应 defect code |
 

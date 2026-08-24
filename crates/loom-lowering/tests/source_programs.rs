@@ -84,6 +84,97 @@ fn core03_source_lowers_and_validates() {
 }
 
 #[test]
+fn proof_dispositions_survive_lowering_as_checked_mir_modes() {
+    let program = compile_and_validate(
+        "module sample\n\ntype Money = Float where self >= 0.0\n\nrecord Range {\n    low Money\n    high Money\n    invariant self.low <= self.high\n}\n\nfn direct_money() Money { Money(10.0) }\n\nfn checked_money(raw Float) Result[Money, ConstraintError] { Money(raw) }\n\nfn direct_range() Range {\n    Range { low = Money(1.0), high = Money(2.0) }\n}\n\nfn checked_range(low Money, high Money) Result[Range, ConstraintError] {\n    Range { low = low, high = high }\n}\n",
+    );
+    let debug = format!("{program:#?}");
+    assert_eq!(debug.matches("construction: Proven").count(), 4, "{debug}");
+    assert_eq!(debug.matches("construction: Runtime").count(), 2, "{debug}");
+}
+
+#[test]
+fn contract_and_assert_proofs_remove_only_established_runtime_checks() {
+    let program = compile_and_validate(
+        "module sample\n\ntype Money = Float where self >= 0.0\n\nfn established(value Money) Money\n    requires value >= 0.0\n    ensures result >= 0.0\n{\n    assert value >= 0.0\n    Money(value)\n}\n\nfn dynamic(raw Float) Float\n    requires raw >= 0.0\n    ensures result >= 0.0\n{\n    assert raw >= 0.0\n    raw\n}\n\nfn unchecked_assert(raw Float) Unit {\n    assert raw >= 0.0\n    Unit\n}\n",
+    );
+    let established = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "established"))
+        .expect("established function");
+    assert!(established.call_plan.requires.is_empty());
+    assert!(established.call_plan.ensures.is_empty());
+    assert!(
+        established
+            .body
+            .statements
+            .iter()
+            .all(|statement| !matches!(statement.kind, loom_mir::StatementKind::Assert { .. }))
+    );
+
+    let dynamic = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "dynamic"))
+        .expect("dynamic function");
+    assert_eq!(dynamic.call_plan.requires.len(), 1);
+    assert_eq!(dynamic.call_plan.ensures.len(), 1);
+    assert!(
+        dynamic
+            .body
+            .statements
+            .iter()
+            .all(|statement| !matches!(statement.kind, loom_mir::StatementKind::Assert { .. }))
+    );
+
+    let unchecked = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "unchecked_assert"))
+        .expect("unchecked assertion function");
+    assert!(
+        unchecked
+            .body
+            .statements
+            .iter()
+            .any(|statement| matches!(statement.kind, loom_mir::StatementKind::Assert { .. }))
+    );
+}
+
+#[test]
+fn mutable_receiver_requires_only_proves_the_entry_snapshot() {
+    let program = compile_and_validate(
+        "module sample\n\nrecord Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self) Unit\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n        Unit\n    }\n}\n",
+    );
+    let change = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "change"))
+        .expect("change method");
+    assert_eq!(change.call_plan.requires.len(), 1);
+    assert_eq!(
+        change.call_plan.ensures.len(),
+        1,
+        "the entry requires may eliminate old(self), but not mutated current self"
+    );
+}
+
+#[test]
+fn earlier_contract_clauses_eliminate_weaker_later_clauses() {
+    let program = compile_and_validate(
+        "module sample\n\nfn ordered(value Float) Float\n    requires value >= 0.0\n    requires value >= -1.0\n    ensures result >= 0.0\n    ensures result >= -1.0\n{\n    value\n}\n",
+    );
+    let ordered = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "ordered"))
+        .expect("ordered function");
+    assert_eq!(ordered.call_plan.requires.len(), 1);
+    assert_eq!(ordered.call_plan.ensures.len(), 1);
+}
+
+#[test]
 fn lowering_and_artifact_are_deterministic() {
     let source = include_str!("../../../examples/core02/concepts.loom");
     let first = compile(source);

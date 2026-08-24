@@ -59,7 +59,7 @@ pub struct Program {
 pub struct PreludeIds {
     pub result: Option<TypeId>,
     pub option: Option<TypeId>,
-    pub violation: Option<TypeId>,
+    pub constraint_error: Option<TypeId>,
     pub parse_float_error: Option<TypeId>,
     pub parse_int_error: Option<TypeId>,
     pub task_fault: Option<TypeId>,
@@ -402,6 +402,19 @@ pub enum StatementKind {
     Return(Option<Expr>),
 }
 
+/// Checked-construction disposition fixed by semantic analysis.
+///
+/// `Plain` is valid only for records without an invariant. `Proven` carries a
+/// compiler proof and directly establishes the nominal value. `Runtime`
+/// evaluates the predicate/invariant and returns `Result`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstructionMode {
+    Plain,
+    Proven,
+    Runtime,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -432,7 +445,7 @@ pub enum ExprKind {
         ty: TypeId,
         type_arguments: Vec<Type>,
         fields: Vec<Expr>,
-        checked: bool,
+        construction: ConstructionMode,
     },
     Variant {
         ty: TypeId,
@@ -443,6 +456,7 @@ pub enum ExprKind {
     Refine {
         ty: TypeId,
         value: Box<Expr>,
+        construction: ConstructionMode,
     },
     /// Explicitly reads a constrained nominal value as its declared base.
     Unrefine(Box<Expr>),

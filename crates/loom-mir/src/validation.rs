@@ -6,12 +6,12 @@ use std::ops::Deref;
 use loom_core::Span;
 
 use crate::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, Constant, Contract,
-    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, RequirementWitnessParam, Statement, StatementKind,
-    TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness, WitnessParam,
-    WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, Constant,
+    ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr,
+    ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, Program,
+    Receiver, RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, Statement,
+    StatementKind, TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness,
+    WitnessParam, WitnessRef,
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
@@ -478,7 +478,11 @@ impl<'program> Validator<'program> {
         let entries = [
             ("result", self.program.prelude.result, "enum"),
             ("option", self.program.prelude.option, "enum"),
-            ("violation", self.program.prelude.violation, "record"),
+            (
+                "constraint_error",
+                self.program.prelude.constraint_error,
+                "record",
+            ),
             (
                 "parse_float_error",
                 self.program.prelude.parse_float_error,
@@ -652,16 +656,16 @@ impl<'program> Validator<'program> {
         if let Some(definition) = self
             .program
             .prelude
-            .violation
+            .constraint_error
             .and_then(|id| self.program.type_def(id))
             && (!matches!(definition.kind, TypeDefKind::Record { .. })
                 || definition.type_parameters != 0)
         {
             self.push(
                 MirValidationCode::RecordShape,
-                "prelude Violation must be a non-generic record",
+                "prelude ConstraintError must be a non-generic record",
                 definition.span,
-                "prelude.violation",
+                "prelude.constraint_error",
             );
         }
         if let Some(definition) = self
@@ -2817,13 +2821,13 @@ impl<'program> Validator<'program> {
                 ty,
                 type_arguments,
                 fields,
-                checked,
+                construction,
             } => self.validate_record_expr(
                 function,
                 *ty,
                 type_arguments,
                 fields,
-                *checked,
+                *construction,
                 expression,
                 path,
                 depth + 1,
@@ -2843,9 +2847,19 @@ impl<'program> Validator<'program> {
                 path,
                 depth + 1,
             ),
-            ExprKind::Refine { ty, value } => {
-                self.validate_refine_expr(function, *ty, value, expression, path, depth + 1)
-            }
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => self.validate_refine_expr(
+                function,
+                *ty,
+                value,
+                *construction,
+                expression,
+                path,
+                depth + 1,
+            ),
             ExprKind::Unrefine(value) => {
                 let value_ty =
                     self.validate_expr(function, value, &format!("{path}.value"), depth + 1);
@@ -3262,7 +3276,7 @@ impl<'program> Validator<'program> {
         type_id: crate::TypeId,
         type_arguments: &[Type],
         fields: &[Expr],
-        checked: bool,
+        construction: ConstructionMode,
         expression: &Expr,
         path: &str,
         depth: u16,
@@ -3325,20 +3339,25 @@ impl<'program> Validator<'program> {
                 );
             }
         }
-        if checked != invariant.is_some() {
+        let valid_construction = matches!(
+            (invariant.is_some(), construction),
+            (false, ConstructionMode::Plain)
+                | (true, ConstructionMode::Proven | ConstructionMode::Runtime)
+        );
+        if !valid_construction {
             self.push(
                 MirValidationCode::RecordShape,
-                "record `checked` flag must exactly match the presence of an invariant",
+                "record construction mode does not match its invariant boundary",
                 expression.span,
                 path,
             );
         }
-        if checked {
+        if construction == ConstructionMode::Runtime {
             let success = Type::Nominal(type_id, type_arguments.to_vec());
             self.expected_result_type(
                 success,
-                self.program.prelude.violation,
-                "violation",
+                self.program.prelude.constraint_error,
+                "constraint_error",
                 expression.span,
                 path,
             )
@@ -3446,11 +3465,13 @@ impl<'program> Validator<'program> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validate_refine_expr(
         &mut self,
         function: &Function,
         type_id: crate::TypeId,
         value: &Expr,
+        construction: ConstructionMode,
         expression: &Expr,
         path: &str,
         depth: u16,
@@ -3472,13 +3493,25 @@ impl<'program> Validator<'program> {
         if !types_compatible(base, &actual) {
             self.type_mismatch(base, &actual, value.span, &format!("{path}.value"));
         }
-        self.expected_result_type(
-            Type::Nominal(type_id, Vec::new()),
-            self.program.prelude.violation,
-            "violation",
-            expression.span,
-            path,
-        )
+        match construction {
+            ConstructionMode::Plain => {
+                self.push(
+                    MirValidationCode::ExpressionShape,
+                    "refinement construction cannot use the plain record mode",
+                    expression.span,
+                    path,
+                );
+                None
+            }
+            ConstructionMode::Proven => Some(Type::Nominal(type_id, Vec::new())),
+            ConstructionMode::Runtime => self.expected_result_type(
+                Type::Nominal(type_id, Vec::new()),
+                self.program.prelude.constraint_error,
+                "constraint_error",
+                expression.span,
+                path,
+            ),
+        }
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
