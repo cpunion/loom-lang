@@ -101,11 +101,21 @@ pub struct ViewTokenId(pub u32);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewResolution {
-    pub owner: Place,
-    pub witness: WitnessSelection,
+    pub source: ViewSource,
     pub mutable: bool,
     pub region: RegionId,
     pub token: ViewTokenId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ViewSource {
+    Concrete {
+        witness: WitnessSelection,
+        writeback: Option<Place>,
+    },
+    Interface {
+        owner: Place,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +146,9 @@ pub enum Coercion {
     /// parameter. The owner and selected witness are stored in `views` under
     /// the same expression id; no source-level ownership syntax is involved.
     ConcreteToDyn,
+    /// A first-class interface value is temporarily reborrowed when passed to
+    /// another mutable interface parameter. Ordinary copies remain owned.
+    InterfaceReborrow,
     NeverToAny,
 }
 

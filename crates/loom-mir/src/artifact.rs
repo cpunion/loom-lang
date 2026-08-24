@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 11;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 12;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
@@ -447,7 +447,8 @@ fn visit_expr(expression: &mut Expr, visitor: &mut impl FnMut(&mut Constant)) {
                 visit_expr(argument, visitor);
             }
         }
-        ExprKind::Copy(_) | ExprKind::Move(_) | ExprKind::MakeView { .. } => {}
+        ExprKind::Copy(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
+        ExprKind::MakeView { value, .. } => visit_expr(value, visitor),
     }
 }
 

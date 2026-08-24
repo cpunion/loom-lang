@@ -2889,11 +2889,24 @@ impl<'program> Validator<'program> {
                 depth + 1,
             ),
             ExprKind::MakeView {
-                owner,
+                value,
+                writeback,
                 witness,
                 mutable,
                 ..
-            } => self.validate_make_view(function, owner, witness, *mutable, expression, path),
+            } => self.validate_make_view(
+                function,
+                value,
+                writeback.as_ref(),
+                witness,
+                *mutable,
+                expression,
+                path,
+                depth + 1,
+            ),
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                self.validate_reborrow_view(function, owner, *mutable, expression, path)
+            }
             ExprKind::Await { state, task } => {
                 let task_ty =
                     self.validate_expr(function, task, &format!("{path}.task"), depth + 1);
@@ -4531,22 +4544,39 @@ impl<'program> Validator<'program> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validate_make_view(
         &mut self,
         function: &Function,
-        owner: &Place,
+        value: &Expr,
+        writeback: Option<&Place>,
         witness_ref: &WitnessRef,
         mutable: bool,
         expression: &Expr,
         path: &str,
+        depth: u16,
     ) -> Option<Type> {
-        let owner_ty = self.validate_place(
-            function,
-            owner,
-            mutable,
-            expression.span,
-            &format!("{path}.owner"),
-        );
+        let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
+        if let Some(writeback) = writeback {
+            let writeback_ty = self.validate_place(
+                function,
+                writeback,
+                mutable,
+                expression.span,
+                &format!("{path}.writeback"),
+            );
+            if writeback_ty
+                .as_ref()
+                .is_some_and(|writeback| !types_compatible(&value_ty, writeback))
+            {
+                self.type_mismatch(
+                    &value_ty,
+                    writeback_ty.as_ref().expect("checked"),
+                    expression.span,
+                    path,
+                );
+            }
+        }
         let Type::View {
             mutable: declared_mutable,
             concept,
@@ -4569,8 +4599,8 @@ impl<'program> Validator<'program> {
                 path,
             );
         }
-        let expected = owner_ty.clone().map(|target| WitnessParam {
-            target,
+        let expected = Some(WitnessParam {
+            target: value_ty.clone(),
             concept: *concept,
             bindings: bindings.clone(),
             span: expression.span,
@@ -4584,13 +4614,58 @@ impl<'program> Validator<'program> {
             0,
         ) && (resolved.proof.concept != *concept
             || resolved.proof.bindings != *bindings
-            || owner_ty
-                .as_ref()
-                .is_some_and(|owner| !types_compatible(&resolved.proof.target, owner)))
+            || !types_compatible(&resolved.proof.target, &value_ty))
         {
             self.push(
                 MirValidationCode::WitnessShape,
                 "interface type and argument do not match the supplied witness proof",
+                expression.span,
+                path,
+            );
+        }
+        Some(expression.ty.clone())
+    }
+
+    fn validate_reborrow_view(
+        &mut self,
+        function: &Function,
+        owner: &Place,
+        mutable: bool,
+        expression: &Expr,
+        path: &str,
+    ) -> Option<Type> {
+        let owner_ty = self.validate_place(
+            function,
+            owner,
+            mutable,
+            expression.span,
+            &format!("{path}.owner"),
+        );
+        if owner_ty.as_ref() != Some(&expression.ty) {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "interface reborrow owner and result types must match",
+                expression.span,
+                path,
+            );
+        }
+        let Type::View {
+            mutable: declared_mutable,
+            ..
+        } = &expression.ty
+        else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "interface reborrow must produce an erased interface value",
+                expression.span,
+                path,
+            );
+            return None;
+        };
+        if *declared_mutable != mutable {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "interface reborrow mutability does not match its type",
                 expression.span,
                 path,
             );
@@ -5588,7 +5663,7 @@ impl<'program> Validator<'program> {
     fn validate_view_placement(
         &mut self,
         ty: &Type,
-        allow_top_level: bool,
+        _allow_top_level: bool,
         span: Span,
         path: &str,
         depth: u16,
@@ -5598,14 +5673,6 @@ impl<'program> Validator<'program> {
         }
         match ty {
             Type::View { bindings, .. } => {
-                if !allow_top_level {
-                    self.push(
-                        MirValidationCode::TypeMismatch,
-                        "erased interface parameters cannot escape or be nested in aggregate types",
-                        span,
-                        path,
-                    );
-                }
                 for (name, binding) in bindings {
                     self.validate_view_placement(
                         binding,
@@ -5763,7 +5830,7 @@ impl<'program> Validator<'program> {
             }
         }
         let mut tokens = BTreeSet::new();
-        let _ = self.dataflow_block(
+        let flow = self.dataflow_block(
             function,
             &function.body,
             &mut state,
@@ -5771,6 +5838,14 @@ impl<'program> Validator<'program> {
             &format!("{path}.body"),
             0,
         );
+        if !flow.loans.is_empty() {
+            self.push(
+                MirValidationCode::BorrowShape,
+                "call-scoped interface carrier cannot escape through a function result",
+                function.body.span,
+                format!("{path}.body.tail"),
+            );
+        }
     }
 
     fn dataflow_block(
@@ -5844,6 +5919,14 @@ impl<'program> Validator<'program> {
                 if value.diverges {
                     return true;
                 }
+                if !value.loans.is_empty() {
+                    self.push(
+                        MirValidationCode::BorrowShape,
+                        "call-scoped interface carrier cannot be stored in a local",
+                        statement.span,
+                        format!("{path}.value"),
+                    );
+                }
                 let index = local.0 as usize;
                 if let Some(slot) = state.slots.get(index)
                     && *slot != SlotState::Uninitialized
@@ -5869,6 +5952,14 @@ impl<'program> Validator<'program> {
                 );
                 if value.diverges {
                     return true;
+                }
+                if !value.loans.is_empty() {
+                    self.push(
+                        MirValidationCode::BorrowShape,
+                        "call-scoped interface carrier cannot be destructured into locals",
+                        statement.span,
+                        format!("{path}.value"),
+                    );
                 }
                 for (index, local) in locals.iter().enumerate() {
                     let slot = local.0 as usize;
@@ -5940,6 +6031,14 @@ impl<'program> Validator<'program> {
                 if value.diverges {
                     return true;
                 }
+                if !value.loans.is_empty() {
+                    self.push(
+                        MirValidationCode::BorrowShape,
+                        "call-scoped interface carrier cannot be stored by assignment",
+                        statement.span,
+                        format!("{path}.value"),
+                    );
+                }
                 let index = place.local.0 as usize;
                 if place.projection.is_empty() {
                     self.reject_owner_mutation_while_borrowed(
@@ -5996,7 +6095,7 @@ impl<'program> Validator<'program> {
             }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    let _ = self.dataflow_expr(
+                    let flow = self.dataflow_expr(
                         function,
                         value,
                         state,
@@ -6004,6 +6103,14 @@ impl<'program> Validator<'program> {
                         &format!("{path}.value"),
                         depth,
                     );
+                    if !flow.loans.is_empty() {
+                        self.push(
+                            MirValidationCode::BorrowShape,
+                            "call-scoped interface carrier cannot escape through return",
+                            statement.span,
+                            format!("{path}.value"),
+                        );
+                    }
                 }
                 true
             }
@@ -6033,6 +6140,7 @@ impl<'program> Validator<'program> {
         match &expression.kind {
             ExprKind::Constant(_) => no_value(expression.ty == Type::Never),
             ExprKind::Tuple(elements) | ExprKind::List(elements) => {
+                let mut loans = Vec::new();
                 for (index, element) in elements.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
@@ -6045,25 +6153,15 @@ impl<'program> Validator<'program> {
                     if flow.diverges {
                         return no_value(true);
                     }
+                    loans = union_loans(loans, flow.loans);
                 }
-                no_value(expression.ty == Type::Never)
+                ExprFlow {
+                    diverges: expression.ty == Type::Never,
+                    loans,
+                }
             }
             ExprKind::Copy(place) => {
                 self.require_available(place.local, state, expression.span, path);
-                let view_mutability = Self::local_decl(function, place.local).and_then(|local| {
-                    let Type::View { mutable, .. } = local.ty else {
-                        return None;
-                    };
-                    Some(mutable)
-                });
-                if view_mutability == Some(true) {
-                    self.push(
-                        MirValidationCode::BorrowShape,
-                        "an interface argument for `mut self` cannot be copied",
-                        expression.span,
-                        path,
-                    );
-                }
                 if Self::owner_has_mutable_loan(place.local, state) {
                     self.push(
                         MirValidationCode::BorrowShape,
@@ -6074,13 +6172,7 @@ impl<'program> Validator<'program> {
                 }
                 ExprFlow {
                     diverges: expression.ty == Type::Never,
-                    loans: view_mutability.map_or_else(Vec::new, |_| {
-                        state
-                            .view_loans
-                            .get(place.local.0 as usize)
-                            .cloned()
-                            .unwrap_or_default()
-                    }),
+                    loans: Vec::new(),
                 }
             }
             ExprKind::Move(place) => {
@@ -6238,6 +6330,7 @@ impl<'program> Validator<'program> {
                 }
             }
             ExprKind::Record { fields, .. } => {
+                let mut loans = Vec::new();
                 for (index, field) in fields.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
@@ -6250,10 +6343,15 @@ impl<'program> Validator<'program> {
                     if flow.diverges {
                         return no_value(true);
                     }
+                    loans = union_loans(loans, flow.loans);
                 }
-                no_value(expression.ty == Type::Never)
+                ExprFlow {
+                    diverges: expression.ty == Type::Never,
+                    loans,
+                }
             }
             ExprKind::Variant { payload, .. } => {
+                let mut loans = Vec::new();
                 for (index, value) in payload.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
@@ -6266,8 +6364,12 @@ impl<'program> Validator<'program> {
                     if flow.diverges {
                         return no_value(true);
                     }
+                    loans = union_loans(loans, flow.loans);
                 }
-                no_value(expression.ty == Type::Never)
+                ExprFlow {
+                    diverges: expression.ty == Type::Never,
+                    loans,
+                }
             }
             ExprKind::Refine { value, .. } => {
                 let flow = self.dataflow_expr(
@@ -6278,7 +6380,10 @@ impl<'program> Validator<'program> {
                     &format!("{path}.value"),
                     depth + 1,
                 );
-                no_value(flow.diverges || expression.ty == Type::Never)
+                ExprFlow {
+                    diverges: flow.diverges || expression.ty == Type::Never,
+                    loans: flow.loans,
+                }
             }
             ExprKind::Call { arguments, .. } => {
                 let checkpoint = state.temporary_loans.len();
@@ -6296,6 +6401,14 @@ impl<'program> Validator<'program> {
                             if flow.diverges {
                                 state.temporary_loans.truncate(checkpoint);
                                 return no_value(true);
+                            }
+                            if matches!(expression.ty, Type::Task(_)) && !flow.loans.is_empty() {
+                                self.push(
+                                    MirValidationCode::BorrowShape,
+                                    "call-scoped interface carrier cannot enter an asynchronous call",
+                                    value.span,
+                                    format!("{path}.arguments[{index}]"),
+                                );
                             }
                             state.temporary_loans.extend(flow.loans);
                         }
@@ -6318,38 +6431,42 @@ impl<'program> Validator<'program> {
                 no_value(expression.ty == Type::Never)
             }
             ExprKind::MakeView {
-                owner,
+                value,
+                writeback,
                 mutable,
                 token,
                 ..
             } => {
-                self.require_available(owner.local, state, expression.span, path);
-                let conflicts =
-                    Self::active_loans(owner.local, state).any(|loan| *mutable || loan.mutable);
-                if conflicts {
-                    self.push(
-                        MirValidationCode::BorrowShape,
-                        "interface argument access conflicts with an already-active interface access",
-                        expression.span,
-                        path,
-                    );
+                let flow = self.dataflow_expr(
+                    function,
+                    value,
+                    state,
+                    tokens,
+                    &format!("{path}.value"),
+                    depth + 1,
+                );
+                if flow.diverges {
+                    return no_value(true);
                 }
-                if !tokens.insert(*token) {
-                    self.push(
-                        MirValidationCode::BorrowShape,
-                        format!("interface access token #{token} is reused in one function"),
-                        expression.span,
-                        format!("{path}.token"),
-                    );
-                }
-                ExprFlow {
-                    diverges: false,
-                    loans: vec![ViewLoan {
-                        owner: owner.local,
-                        mutable: *mutable,
-                        token: *token,
-                    }],
-                }
+                let Some(owner) = writeback else {
+                    if !tokens.insert(*token) {
+                        self.push(
+                            MirValidationCode::BorrowShape,
+                            format!("interface value token #{token} is reused in one function"),
+                            expression.span,
+                            format!("{path}.token"),
+                        );
+                    }
+                    return no_value(expression.ty == Type::Never);
+                };
+                self.dataflow_view_borrow(owner, *mutable, *token, expression, state, tokens, path)
+            }
+            ExprKind::ReborrowView {
+                owner,
+                mutable,
+                token,
+            } => {
+                self.dataflow_view_borrow(owner, *mutable, *token, expression, state, tokens, path)
             }
             ExprKind::Await { task, .. } => {
                 let flow = self.dataflow_expr(
@@ -6410,6 +6527,45 @@ impl<'program> Validator<'program> {
                 }
                 no_value(expression.ty == Type::Never)
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dataflow_view_borrow(
+        &mut self,
+        owner: &Place,
+        mutable: bool,
+        token: u32,
+        expression: &Expr,
+        state: &mut DataflowState,
+        tokens: &mut BTreeSet<u32>,
+        path: &str,
+    ) -> ExprFlow {
+        self.require_available(owner.local, state, expression.span, path);
+        let conflicts = Self::active_loans(owner.local, state).any(|loan| mutable || loan.mutable);
+        if conflicts {
+            self.push(
+                MirValidationCode::BorrowShape,
+                "interface argument access conflicts with an already-active interface access",
+                expression.span,
+                path,
+            );
+        }
+        if !tokens.insert(token) {
+            self.push(
+                MirValidationCode::BorrowShape,
+                format!("interface access token #{token} is reused in one function"),
+                expression.span,
+                format!("{path}.token"),
+            );
+        }
+        ExprFlow {
+            diverges: expression.ty == Type::Never,
+            loans: vec![ViewLoan {
+                owner: owner.local,
+                mutable,
+                token,
+            }],
         }
     }
 
@@ -6781,6 +6937,7 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         ExprKind::Unary(_, value)
         | ExprKind::Unrefine(value)
         | ExprKind::Refine { value, .. }
+        | ExprKind::MakeView { value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
         }
@@ -6823,7 +6980,7 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
-        | ExprKind::MakeView { .. } => false,
+        | ExprKind::ReborrowView { .. } => false,
     }
 }
 
@@ -6838,6 +6995,7 @@ fn expr_definitely_diverges(expression: &Expr, depth: u16) -> bool {
         ExprKind::Unary(_, value)
         | ExprKind::Unrefine(value)
         | ExprKind::Refine { value, .. }
+        | ExprKind::MakeView { value, .. }
         | ExprKind::Await { task: value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
@@ -6883,7 +7041,7 @@ fn expr_definitely_diverges(expression: &Expr, depth: u16) -> bool {
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
-        | ExprKind::MakeView { .. } => false,
+        | ExprKind::ReborrowView { .. } => false,
     }
 }
 

@@ -522,13 +522,15 @@ fn explicitly_erased(value dyn Display) Text
 
 - 当参数类型解析为 `dyn concept C` 时，`value C` 与 `value dyn C` 进入相同的 erased-interface 类型检查；前者是惯用形式，后者只强调擦除；
 - concrete 实参只在存在唯一显式 conformance 且 associated bindings 完全相同时自动适配；
-- `mut self` requirement 的接口实参必须是 caller `var` place，后端以 call-scoped inout 传递并在正常返回后写回；
-- 接口参数当前不能返回、存入 record/enum、嵌套在泛型类型或作为 associated binding；
+- 显式 `dyn C` 是普通一等类型，可返回、存入 record/enum、放入 tuple/list、嵌套为泛型实参；这些位置不把裸 `C` 隐式解释成接口类型；
+- stored `dyn C` 的普通 copy 必须复制 underlying logical value 并保留同一 proof，不能建立源码可观察的共享可变别名；
+- `mut self` requirement 的 receiver 必须是 `var` place；同步 concrete-to-interface 调用可以用 call-scoped inout 并在正常返回后写回，异步调用则复制拥有值进入 Task；
+- call-scoped 写回/reborrow 载体是 checked-MIR 内部值，不得存储、返回、嵌套或进入异步调用；
 - 编译器可以对具体类型和 witness 静态可知的调用直接派发；否则使用携带已选 proof 的 compiler-private 表示。当前 LLVM C1 可以传递 data/witness pair，但该形状不是源码、artifact 或未来后端合同；
 - 旧 `view[dyn C]`、`view[mut dyn C]` 和显式 view construction 报 `UnsupportedSyntax`；`box[...]`、`shared[...]` 同样不得产生可进入 typed program 的类型；
 - 当前没有 universal `any`，也不得从 `any` 运行时搜索 conformance 并转换为 `dyn C`。
 
-这些规则不建立源码级 borrow、lifetime、move token 或 owner freeze。接口参数的临时表示和地址传递完全属于 compiler-private ABI。
+这些规则不建立源码级 borrow、lifetime、move token 或 owner freeze。一等接口的物理表示、同步参数的临时写回和地址传递完全属于 compiler-private ABI。
 
 ## 12. Core 0.3 parser/checker 增量合同
 

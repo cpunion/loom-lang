@@ -404,6 +404,6 @@ Core 0.1 不包含 `example`、`scenario`、`property`。
 - 继承、concept conformance 之外的自由 extension declaration、开放/多重派发和第二套 trait/interface 抽象；
 - registry package、lockfile、feature/bundle；基础 manifest/path dependency/bin-test target 属于工具链层，不改变 Core 0.1 表达式语义；
 - `?`、pattern guard、默认字段和复杂解构；
-- 一般所有权、借用与公开底层内存布局；Core 0.2 接口参数由编译器管理为 call-scoped value/inout，不增加 borrow、lifetime 或 owning-carrier 源码语法。
+- 一般所有权、借用与公开底层内存布局；Core 0.2 的 `dyn C` 是普通一等值，同步参数写回由编译器管理为不可逃逸的 call-scoped inout，不增加 borrow、lifetime 或 owning-carrier 源码语法。
 
 `concept`/`dyn concept` 已经通过独立裁决进入 Core 0.2；GC、scoped/defer 与结构化 Task 已通过 [独立裁决](08-memory-cleanup-and-async.md)进入 Core 0.3，不再属于本节开放问题。其余方向只有在新的最小例子闭合后，才能修改 Core 版本。

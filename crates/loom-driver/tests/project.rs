@@ -65,6 +65,55 @@ fn portable_cache_context() -> CacheContext {
 }
 
 #[test]
+fn first_class_dynamic_values_execute_in_the_interpreter() {
+    let project = TestProject::new();
+    project.write(
+        "concepts.loom",
+        include_str!("../../../examples/core02/concepts.loom"),
+    );
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open dynamic-value project")
+        .snapshot()
+        .expect("compile dynamic-value project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let results = snapshot.run_tests().expect("execute dynamic-value tests");
+    assert!(
+        results
+            .iter()
+            .all(|result| result.status == TestStatus::Passed),
+        "{results:#?}"
+    );
+    assert!(results.iter().any(|result| {
+        result
+            .name
+            .ends_with("dynamic_interfaces_are_first_class_values")
+    }));
+}
+
+#[test]
+fn async_dynamic_values_execute_in_the_interpreter() {
+    let project = TestProject::new();
+    project.write(
+        "tasks.loom",
+        include_str!("../../../examples/core03/tasks.loom"),
+    );
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open async dynamic-value project")
+        .snapshot()
+        .expect("compile async dynamic-value project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let results = snapshot
+        .run_tests()
+        .expect("execute async dynamic-value tests");
+    assert!(
+        results
+            .iter()
+            .all(|result| result.status == TestStatus::Passed),
+        "{results:#?}"
+    );
+}
+
+#[test]
 fn discovery_is_recursive_sorted_and_ignores_git_and_target() {
     let project = TestProject::new();
     project.write("z.loom", "module z\n");

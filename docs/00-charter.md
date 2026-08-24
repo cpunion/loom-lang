@@ -35,8 +35,8 @@ Core 0.1 闭合后，下一项语言扩展已经定稿：
 - conformance 必须显式声明并满足 coherence；
 - `T: C` 是泛型参数中的定义处静态约束；
 - `dyn concept C` 在同一接口上额外承诺可擦除的运行时投影；
-- 参数写作 `value C`；具体值自动适配，参数位置的 `value dyn C` 仅用于显式强调类型擦除，二者具有相同可观察语义；
-- `dyn C` 的语义是 concrete value 与显式 `T: C` proof 一起流动，不规定 fat-pointer 或其他物理布局；静态可知的调用允许完全去虚化，当前 LLVM C1 只在间接派发仍存在时物化 compiler-private data/witness 表示；
+- 参数写作 `value C`；具体值自动适配，参数位置的 `value dyn C` 仅用于显式强调类型擦除，二者具有相同可观察语义；字段、返回与嵌套类型显式写 `dyn C`；
+- `dyn C` 的语义是可复制的 concrete logical value 与显式 `T: C` proof 一起流动，不规定 fat-pointer 或其他物理布局；静态可知的调用允许完全去虚化，当前 LLVM C1 只在间接派发仍存在时物化 compiler-private data/witness 表示；
 - 源码不引入 `view[...]`、borrow、lifetime、`box/shared` 或其他所有权 carrier。
 
 完整语义见 [concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)。实现分成 C1e static concept、C1f erased interface 两道门，但二者共用 conformance、witness 和合同语义。

@@ -109,11 +109,13 @@ source → parser → HIR → sema → checked MIR
 - `dyn concept` 定义处 compatibility checker；
 - 完整 associated binding；
 - concrete-to-interface coercion；
+- `dyn C` 的返回、local、record/enum、tuple/list 与泛型嵌套；
+- owned interface copy 的值隔离；
 - witness dispatch 和可去虚化的静态路径；
 - `mut self` 接口调用对 `var` place 的 call-scoped inout；
 - concrete invariant 与 concept contract 的统一顺序。
 
-关门条件包括：非 receiver `Self`、static/generic requirement 不能进入 erased ABI；未绑定 associated type 必须拒绝；mutable 接口实参不是 `var` place 时稳定诊断；接口值当前不得逃逸、存入 aggregate 或返回。
+关门条件包括：非 receiver `Self`、static/generic requirement 不能进入 erased ABI；未绑定 associated type 必须拒绝；mutable 接口 receiver 不是 `var` place 时稳定诊断；一等接口值可存储/返回且 copy 后互不别名；只有 compiler-private 同步调用写回载体不得逃逸、嵌套或跨 await。
 
 ## 8. root graph 与 DCE
 

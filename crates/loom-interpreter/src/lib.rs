@@ -75,7 +75,8 @@ pub enum Value {
         value: Violation,
     },
     DynView {
-        location: Location,
+        value: Box<Value>,
+        writeback: Option<Location>,
         witness: RuntimeWitness,
         mutable: bool,
         token: u32,
@@ -1775,7 +1776,9 @@ impl<'program> Interpreter<'program> {
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             ExprKind::Copy(place) => {
-                Ok(self.read_place(&Location::from_place(frame, place), expression.span)?)
+                let value =
+                    self.read_place(&Location::from_place(frame, place), expression.span)?;
+                Ok(owned_value_clone(&value))
             }
             ExprKind::Move(place) => {
                 Ok(self.take_place(&Location::from_place(frame, place), expression.span)?)
@@ -1881,16 +1884,46 @@ impl<'program> Interpreter<'program> {
                 ..
             } => self.eval_call(frame, target, arguments, witnesses, expression.span),
             ExprKind::MakeView {
-                owner,
+                value,
+                writeback,
                 witness,
                 mutable,
                 token,
-            } => Ok(Value::DynView {
-                location: Location::from_place(frame, owner),
-                witness: self.resolve_witness(frame, witness, expression.span)?,
-                mutable: *mutable,
-                token: *token,
-            }),
+            } => {
+                let value = self.eval_expr(frame, value)?;
+                Ok(Value::DynView {
+                    value: Box::new(value),
+                    writeback: writeback
+                        .as_ref()
+                        .map(|owner| Location::from_place(frame, owner)),
+                    witness: self.resolve_witness(frame, witness, expression.span)?,
+                    mutable: *mutable,
+                    token: *token,
+                })
+            }
+            ExprKind::ReborrowView {
+                owner,
+                mutable,
+                token,
+            } => {
+                let location = Location::from_place(frame, owner);
+                let Value::DynView { value, witness, .. } =
+                    self.read_place(&location, expression.span)?
+                else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "interface reborrow source is not an erased interface",
+                        expression.span,
+                    )));
+                };
+                Ok(Value::DynView {
+                    value,
+                    writeback: Some(location),
+                    witness,
+                    mutable: *mutable,
+                    token: *token,
+                })
+            }
             ExprKind::Await { .. } => self.eval_nested_await(frame, expression),
             ExprKind::Sleep { milliseconds } => {
                 let duration = self.eval_expr(frame, milliseconds)?;
@@ -2319,7 +2352,8 @@ impl<'program> Interpreter<'program> {
             }
         };
         let Value::DynView {
-            location,
+            value,
+            writeback,
             witness,
             mutable,
             ..
@@ -2353,14 +2387,18 @@ impl<'program> Interpreter<'program> {
                     span,
                 ))
             })?;
-        let function = self.program.function(function_id).ok_or_else(|| {
-            EvalAbort::from(self.runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "dynamic witness method does not exist",
-                span,
-            ))
-        })?;
-        let first = if function.receiver == Some(Receiver::Mutable) {
+        let receiver_kind = self
+            .program
+            .function(function_id)
+            .map(|function| function.receiver)
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "dynamic witness method does not exist",
+                    span,
+                ))
+            })?;
+        if receiver_kind == Some(Receiver::Mutable) {
             if !mutable {
                 return Err(EvalAbort::from(self.runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -2368,11 +2406,26 @@ impl<'program> Interpreter<'program> {
                     span,
                 )));
             }
-            BoundArgument::Alias(location)
-        } else {
-            BoundArgument::Value(self.read_place(&location, span)?)
-        };
-        let mut values = vec![first];
+            let CallArgument::InOut(place) = first else {
+                return Err(EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "mutable dynamic receiver is not an inout place",
+                    span,
+                )));
+            };
+            let carrier = Location::from_place(frame, place);
+            return self.invoke_mutable_dynamic(
+                frame,
+                &carrier,
+                *value,
+                writeback,
+                witness,
+                function_id,
+                &arguments[1..],
+                span,
+            );
+        }
+        let mut values = vec![BoundArgument::Value(*value)];
         for argument in &arguments[1..] {
             values.push(match argument {
                 CallArgument::Value(value) => BoundArgument::Value(self.eval_expr(frame, value)?),
@@ -2383,6 +2436,119 @@ impl<'program> Interpreter<'program> {
         }
         self.invoke_bound(function_id, values, witness.arguments, span)
             .map_err(EvalAbort::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_mutable_dynamic(
+        &mut self,
+        frame: u64,
+        carrier: &Location,
+        value: Value,
+        writeback: Option<Location>,
+        witness: RuntimeWitness,
+        function: FunctionId,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let mut trailing = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            trailing.push(match argument {
+                CallArgument::Value(value) => BoundArgument::Value(self.eval_expr(frame, value)?),
+                CallArgument::InOut(place) => {
+                    BoundArgument::Alias(Location::from_place(frame, place))
+                }
+            });
+        }
+        let temporary_frame = self.next_frame;
+        self.next_frame = self.next_frame.checked_add(1).ok_or_else(|| {
+            EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_FRAME_OVERFLOW",
+                "interpreter frame identifier space was exhausted",
+                span,
+            ))
+        })?;
+        self.frames.insert(
+            temporary_frame,
+            Frame {
+                slots: vec![Slot::Value(value)],
+                witnesses: Vec::new(),
+            },
+        );
+        let temporary = Location::local(temporary_frame, LocalId(0));
+        let mut values = vec![BoundArgument::Alias(temporary.clone())];
+        values.extend(trailing);
+        let outcome = self.invoke_bound(function, values, witness.arguments.clone(), span);
+        let mutated = self.read_place(&temporary, span);
+        self.frames.remove(&temporary_frame);
+        let mutated = mutated.map_err(EvalAbort::from)?;
+        let current = self.read_place(carrier, span).map_err(EvalAbort::from)?;
+        let Value::DynView { mutable, token, .. } = current else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "mutable dynamic receiver changed representation during its call",
+                span,
+            )));
+        };
+        self.write_place(
+            carrier,
+            Value::DynView {
+                value: Box::new(mutated.clone()),
+                writeback: writeback.clone(),
+                witness,
+                mutable,
+                token,
+            },
+            span,
+        )
+        .map_err(EvalAbort::from)?;
+        if let Some(writeback) = writeback {
+            self.propagate_interface_writeback(writeback, mutated, span)
+                .map_err(EvalAbort::from)?;
+        }
+        outcome.map_err(EvalAbort::from)
+    }
+
+    fn propagate_interface_writeback(
+        &mut self,
+        mut target: Location,
+        value: Value,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        for _ in 0..64 {
+            let current = self.read_place(&target, span)?;
+            let Value::DynView {
+                writeback,
+                witness,
+                mutable,
+                token,
+                ..
+            } = current
+            else {
+                return self.write_place(&target, value, span);
+            };
+            self.write_place(
+                &target,
+                Value::DynView {
+                    value: Box::new(value.clone()),
+                    writeback: writeback.clone(),
+                    witness,
+                    mutable,
+                    token,
+                },
+                span,
+            )?;
+            let Some(next) = writeback else {
+                return Ok(());
+            };
+            target = next;
+        }
+        Err(self
+            .runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "interface writeback chain exceeded its checked bound",
+                span,
+            )
+            .into())
     }
 
     fn resolve_witness(
@@ -3749,6 +3915,53 @@ fn unrefined(mut value: Value) -> Value {
         value = *inner;
     }
     value
+}
+
+fn owned_value_clone(value: &Value) -> Value {
+    match value {
+        Value::Tuple { elements } => Value::Tuple {
+            elements: elements.iter().map(owned_value_clone).collect(),
+        },
+        Value::List { elements } => Value::List {
+            elements: elements.iter().map(owned_value_clone).collect(),
+        },
+        Value::Record { ty, fields } => Value::Record {
+            ty: *ty,
+            fields: fields.iter().map(owned_value_clone).collect(),
+        },
+        Value::Enum {
+            ty,
+            variant,
+            payload,
+        } => Value::Enum {
+            ty: *ty,
+            variant: *variant,
+            payload: payload.iter().map(owned_value_clone).collect(),
+        },
+        Value::Refined { ty, value } => Value::Refined {
+            ty: *ty,
+            value: Box::new(owned_value_clone(value)),
+        },
+        Value::DynView {
+            value,
+            witness,
+            mutable,
+            token,
+            ..
+        } => Value::DynView {
+            value: Box::new(owned_value_clone(value)),
+            writeback: None,
+            witness: witness.clone(),
+            mutable: *mutable,
+            token: *token,
+        },
+        Value::TaskOutcome {
+            outcome: TaskOutcomeValue::Completed(value),
+        } => Value::TaskOutcome {
+            outcome: TaskOutcomeValue::Completed(Box::new(owned_value_clone(value))),
+        },
+        _ => value.clone(),
+    }
 }
 
 fn as_float(value: &Value) -> Option<f64> {

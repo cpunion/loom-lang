@@ -27,20 +27,20 @@ use loom_mir::{
 
 use crate::abi::{
     ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_FRAME_FIELD_RESULT,
-    COROUTINE_FRAME_FIELD_STATE, JOIN_RESULT_LIST, JOIN_RESULT_OUTCOME, JOIN_RESULT_OUTCOME_LIST,
-    JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR, JOIN_RESULT_TUPLE, READY_EVENT_COMPLETED,
-    READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS, READY_NOTIFICATION_FIELD_FRAME,
-    TASK_STEP_CANCELLED, TASK_STEP_COMPLETED, TASK_STEP_FAULTED, TASK_STEP_PENDING,
-    TASK_VALUE_DIRECT, VALUE_FIELD_AUX, VALUE_FIELD_DATA, VALUE_FIELD_NOMINAL, VALUE_FIELD_SCALAR,
-    VALUE_FIELD_TAG, VALUE_FIELD_WITNESS, VALUE_NODE_FIELD_NEXT, VALUE_NODE_FIELD_VALUE,
-    VALUE_TAG_BOOL, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
-    VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT,
-    VALUE_TAG_TUPLE, VALUE_TAG_UNIT, VALUE_TAG_VIOLATION, WAIT_ABI_VERSION, WAIT_INTEREST_READABLE,
-    WAIT_INTEREST_WRITABLE, WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE,
-    WAIT_SOURCE_FIELD_HANDLE, WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND,
-    WAIT_SOURCE_FIELD_RESERVED, WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD,
-    WAIT_SOURCE_KIND_TIMER, WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT,
-    WITNESS_NODE_FIELD_VALUE,
+    COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, DYN_FLAG_WRITEBACK, JOIN_RESULT_LIST,
+    JOIN_RESULT_OUTCOME, JOIN_RESULT_OUTCOME_LIST, JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR,
+    JOIN_RESULT_TUPLE, READY_EVENT_COMPLETED, READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS,
+    READY_NOTIFICATION_FIELD_FRAME, TASK_STEP_CANCELLED, TASK_STEP_COMPLETED, TASK_STEP_FAULTED,
+    TASK_STEP_PENDING, TASK_VALUE_DIRECT, VALUE_FIELD_AUX, VALUE_FIELD_DATA, VALUE_FIELD_NOMINAL,
+    VALUE_FIELD_SCALAR, VALUE_FIELD_TAG, VALUE_FIELD_WITNESS, VALUE_NODE_FIELD_NEXT,
+    VALUE_NODE_FIELD_VALUE, VALUE_TAG_BOOL, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT,
+    VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK,
+    VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_TAG_UNIT, VALUE_TAG_VIOLATION,
+    WAIT_ABI_VERSION, WAIT_INTEREST_READABLE, WAIT_INTEREST_WRITABLE,
+    WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE, WAIT_SOURCE_FIELD_HANDLE,
+    WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND, WAIT_SOURCE_FIELD_RESERVED,
+    WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD, WAIT_SOURCE_KIND_TIMER,
+    WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
 use crate::target::{OPTIMIZATION_PIPELINE, create_native_target_machine};
@@ -705,6 +705,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let aggregate = self.context.append_basic_block(clone, "aggregate");
         let enumeration = self.context.append_basic_block(clone, "enum");
         let refined = self.context.append_basic_block(clone, "refined");
+        let dynamic = self.context.append_basic_block(clone, "dynamic");
         let outcome = self.context.append_basic_block(clone, "task.outcome");
         let outcome_completed = self
             .context
@@ -731,6 +732,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     (self.tag(VALUE_TAG_LIST), aggregate),
                     (self.tag(VALUE_TAG_ENUM), enumeration),
                     (self.tag(VALUE_TAG_REFINED), refined),
+                    (self.tag(VALUE_TAG_DYN), dynamic),
                     (self.tag(VALUE_TAG_TASK_OUTCOME), outcome),
                 ],
             )
@@ -762,6 +764,39 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             )
             .map_err(builder_error)?;
         self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(dynamic);
+        let source_inner =
+            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "dyn.source")?;
+        let target_inner = call_pointer(
+            &self.builder,
+            self.native_gc_alloc_value(),
+            &[],
+            "dyn.clone",
+        )?;
+        self.builder
+            .build_call(
+                clone,
+                &[target_inner.into(), source_inner.into()],
+                "clone.dyn",
+            )
+            .map_err(builder_error)?;
+        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
+        self.store_i64_field(
+            self.value_type,
+            target,
+            VALUE_FIELD_SCALAR,
+            self.i64_type.const_zero(),
+        )?;
+        let flags = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "dyn.flags")?;
+        let mutable = self
+            .builder
+            .build_and(flags, self.tag(DYN_FLAG_MUTABLE), "dyn.mutable")
+            .map_err(builder_error)?;
+        self.store_i64_field(self.value_type, target, VALUE_FIELD_AUX, mutable)?;
         self.builder
             .build_unconditional_branch(done)
             .map_err(builder_error)?;
@@ -3434,25 +3469,126 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 ..
             } => self.emit_call(target, arguments, witnesses, destination),
             ExprKind::MakeView {
-                owner,
+                value,
+                writeback,
                 witness,
                 mutable,
                 ..
             } => {
-                let owner = self.place(owner)?;
+                let source = self.alloc_value("dyn.source");
+                if !self.emit_expr(value, source)? {
+                    return Ok(false);
+                }
+                let data = call_pointer(
+                    &self.backend.builder,
+                    self.backend.native_gc_alloc_value(),
+                    &[],
+                    "dyn.data",
+                )?;
+                self.clone_value(data, source)?;
                 let witness = self.resolve_witness(witness)?;
+                let writeback = writeback
+                    .as_ref()
+                    .map(|writeback| self.place(writeback))
+                    .transpose()?;
                 self.initialize(destination, VALUE_TAG_DYN)?;
+                let mut flags = u64::from(*mutable) * DYN_FLAG_MUTABLE;
+                if writeback.is_some() {
+                    flags |= DYN_FLAG_WRITEBACK;
+                }
                 self.backend.store_i64_field(
                     self.backend.value_type,
                     destination,
                     VALUE_FIELD_AUX,
-                    self.backend.tag(u64::from(*mutable)),
+                    self.backend.tag(flags),
                 )?;
                 self.backend.store_pointer_field(
                     self.backend.value_type,
                     destination,
                     VALUE_FIELD_DATA,
-                    owner,
+                    data,
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_WITNESS,
+                    witness,
+                )?;
+                let writeback = if let Some(writeback) = writeback {
+                    self.backend
+                        .builder
+                        .build_ptr_to_int(writeback, self.backend.i64_type, "dyn.writeback")
+                        .map_err(builder_error)?
+                } else {
+                    self.backend.i64_type.const_zero()
+                };
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    writeback,
+                )?;
+                Ok(true)
+            }
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                let source = self.place(owner)?;
+                let data = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    source,
+                    VALUE_FIELD_DATA,
+                    "dyn.reborrow.data",
+                )?;
+                let witness = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    source,
+                    VALUE_FIELD_WITNESS,
+                    "dyn.reborrow.witness",
+                )?;
+                let writeback = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    source,
+                    VALUE_FIELD_SCALAR,
+                    "dyn.reborrow.writeback",
+                )?;
+                let source_flags = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    source,
+                    VALUE_FIELD_AUX,
+                    "dyn.reborrow.flags",
+                )?;
+                let writeback_flag = self
+                    .backend
+                    .builder
+                    .build_and(
+                        source_flags,
+                        self.backend.tag(DYN_FLAG_WRITEBACK),
+                        "dyn.reborrow.writeback.flag",
+                    )
+                    .map_err(builder_error)?;
+                let mutable_flag = self.backend.tag(u64::from(*mutable) * DYN_FLAG_MUTABLE);
+                let flags = self
+                    .backend
+                    .builder
+                    .build_or(mutable_flag, writeback_flag, "dyn.reborrow.flags")
+                    .map_err(builder_error)?;
+                self.initialize(destination, VALUE_TAG_DYN)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_AUX,
+                    flags,
+                )?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    writeback,
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_DATA,
+                    data,
                 )?;
                 self.backend.store_pointer_field(
                     self.backend.value_type,
@@ -5543,6 +5679,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(mut values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
+        let mut dynamic_writeback = None;
         let (direct, indirect, witness_head) = match target {
             CallTarget::Direct(function) | CallTarget::Inherent(function) => {
                 let target = self
@@ -5617,6 +5754,22 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "dyn.witness",
                 )?;
                 values[0] = owner;
+                if self
+                    .backend
+                    .program
+                    .requirement(*requirement)
+                    .is_some_and(|definition| {
+                        definition.receiver == Some(loom_mir::Receiver::Mutable)
+                    })
+                {
+                    let writeback = self.backend.load_i64_field(
+                        self.backend.value_type,
+                        receiver,
+                        VALUE_FIELD_SCALAR,
+                        "dyn.writeback",
+                    )?;
+                    dynamic_writeback = Some((owner, writeback));
+                }
                 let method = self.load_witness_method(runtime_witness, *requirement)?;
                 let witness_head = self.backend.load_pointer_field(
                     self.backend.witness_type,
@@ -5661,8 +5814,44 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "dynamic call returned void"))?
                 .into_int_value()
         };
+        if let Some((source, writeback)) = dynamic_writeback {
+            self.emit_dynamic_writeback(source, writeback)?;
+        }
         self.propagate_status(status)?;
         Ok(true)
+    }
+
+    fn emit_dynamic_writeback(
+        &self,
+        source: PointerValue<'ctx>,
+        writeback: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let copy = self.append_block("dyn.writeback.copy");
+        let done = self.append_block("dyn.writeback.done");
+        let present = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                writeback,
+                self.backend.i64_type.const_zero(),
+                "dyn.writeback.present",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(present, copy, done)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(copy);
+        let target = self
+            .backend
+            .builder
+            .build_int_to_ptr(writeback, self.backend.ptr_type, "dyn.writeback.target")
+            .map_err(builder_error)?;
+        self.clone_value(target, source)?;
+        self.backend.branch(done)?;
+        self.backend.builder.position_at_end(done);
+        Ok(())
     }
 
     fn emit_call_arguments(

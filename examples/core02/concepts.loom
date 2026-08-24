@@ -66,6 +66,30 @@ pub fn take_one(source Source[Item = Int]) Option[Int] {
     source.next()
 }
 
+pub record LabelHolder {
+    item dyn Labeled
+}
+
+pub enum LabelPacket {
+    Item(dyn Labeled)
+}
+
+pub record LabelCollection {
+    items List[dyn Labeled]
+}
+
+pub fn erase_label(value Label) dyn Labeled {
+    value
+}
+
+pub fn forward_label(value Labeled) dyn Labeled {
+    value
+}
+
+pub fn erase_source(value Counter) dyn Source[Item = Int] {
+    value
+}
+
 pub fn main() Unit {
     let label = Label { text = "loom" }
     let rendered = static_label(label)
@@ -117,6 +141,60 @@ test fn static_and_readonly_dynamic_dispatch() {
 test fn mutable_dynamic_dispatch_writes_the_owner() {
     var counter = Counter { value = 0 }
     match take_one(counter) {
+        Some(value) => {
+            assert value == 1
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn dynamic_interfaces_are_first_class_values() {
+    let returned = erase_label(Label { text = "returned" })
+    let forwarded = forward_label(returned)
+    let returnedText = returned.label()
+    let forwardedText = forwarded.label()
+    assert returnedText == "returned"
+    assert forwardedText == "returned"
+
+    let holder = LabelHolder { item = returned }
+    let holderText = holder.item.label()
+    assert holderText == "returned"
+
+    let packet = LabelPacket.Item(forwarded)
+    match packet {
+        Item(value) => {
+            let packetText = value.label()
+            assert packetText == "returned"
+            Unit
+        }
+    }
+
+    let collection = LabelCollection {
+        items = [
+            erase_label(Label { text = "one" }),
+            erase_label(Label { text = "two" }),
+        ]
+    }
+    let collectionLength = collection.items.length()
+    assert collectionLength == 2
+
+    var source = erase_source(Counter { value = 0 })
+    var copied = source
+    match copied.next() {
+        Some(value) => {
+            assert value == 1
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+    match source.next() {
         Some(value) => {
             assert value == 1
             Unit

@@ -2,7 +2,7 @@
 
 状态：Confirmed Normative Design + LLVM C1 Executable Reference
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文规定 Loom 唯一的行为抽象 `concept`、静态泛型约束、默认接口参数和显式 `dyn C`。本版不引入所有权、借用、生命周期、`view[...]`、`box[...]` 或 `shared[...]` 语法。
 
@@ -103,7 +103,17 @@ fn take_one(source Source[Item = Int]) Option[Int]
 fn take_erased(source dyn Source[Item = Int]) Option[Int]
 ```
 
-在 parameter position，后两种 Source 写法不产生不同的业务语义。`dyn` 主要用于强调 API 已擦除 concrete type；未来若开放长期存储或返回 erased value，也只使用 `dyn C`，不会恢复 carrier/ownership 语法。
+在 parameter position，后两种 Source 写法不产生不同的业务语义。parameter 以外只有显式 `dyn C` 是接口值类型；它可以作为函数返回、record field、enum payload、tuple/list element 或普通泛型实参。裸 `C` 不在这些位置暗中变成类型，因此 API 是否长期保存擦除值仍能从签名直接读出，并且不需要 carrier/ownership 语法。
+
+```loom
+record Renderer {
+    display dyn Display
+}
+
+fn erase(value Label) dyn Display {
+    value
+}
+```
 
 ## 4. conformance 与 coherence
 
@@ -181,7 +191,9 @@ source Source[Item = Int]
 
 不满足时在 concept 定义处报告，而不是让各调用点偶然得到不同结论。
 
-`mut self` 接口调用要求实参是 `var` place。编译器把该 place 作为 call-scoped inout 地址传入，修改正常写回；源码不暴露 borrow、lifetime、`&mut` 或 carrier token。接口参数不得逃出当前调用、存入 aggregate 或被返回；长期 erased storage 留给后续独立设计，但不会引入 Rust 风格所有权表面。
+`dyn C` 是普通一等值，可以存储、复制、嵌套和返回。普通 copy 产生独立的逻辑值及同一份不可变 conformance proof；复制后的可变 receiver 不得通过隐藏别名改变原副本。对象地址、临时写回地址和 proof layout 都不可观察。
+
+对已经存储的 `dyn C` 调用 `mut self` requirement，receiver 必须是 `var` place，修改该接口值内部的 concrete data。同步函数的 concrete `var T` 实参自动适配到 mutable 接口参数时，编译器可以使用仅覆盖该次调用的写回载体，正常返回后把修改写回原 place。该载体只存在于 checked MIR/backend，不能被存储、返回、嵌套或跨 `.await`；源码仍不暴露 borrow、lifetime、`&mut` 或 token。异步调用的接口参数按拥有值复制进 Task frame，不保留指向 caller place 的写回地址。
 
 ## 8. 表示与派发
 
@@ -194,7 +206,7 @@ source Source[Item = Int]
 - 在间接派发仍存在时，使用当前 LLVM C1 的 compiler-private data/witness pair；
 - 对单一 live implementation 使用专用 thunk，或让优化器消除未使用的 table/slot。
 
-优化顺序固定为：先去虚化并消除接口表示，再特化调用签名只传仍未知的部分，其次传递分离的 SSA data/proof，最后才物化 pair。把接口值压成一个指针不是独立目标；对象头、existential box 或 tagged pointer 只是把另一部分信息移到别处，不得为 call-scoped 接口强制增加分配、间接访问、平台布局假设或运行时查询。未来长期存储的 erased value 可以基于实测采用单指针 box 或 inline container，但仍属于后端表示选择。
+优化顺序固定为：先去虚化并消除接口表示，再特化调用签名只传仍未知的部分，其次传递分离的 SSA data/proof，最后才物化 pair。把接口值压成一个指针不是独立目标；对象头、existential box、inline container 或 tagged pointer 只是把另一部分信息移到别处。当前 LLVM C1 为真正存活的一等接口值使用 GC-managed concrete value 加 witness，调用期写回信息仍是短生命周期 compiler-private 状态；后端可基于实测改成单指针或其他布局，但不得改变复制隔离、派发、DCE 或 fault 语义。
 
 witness 可以降低成 table，也可以降低成单独函数引用或被完全常量折叠。若使用 table，它由 `(concrete type, concept, associated bindings)` 决定，并且只允许引用该 concept 的 live method slots 与必要 proof metadata。concrete record 不嵌入 C++ 风格 vptr；派发不依赖 Java 对象头、GC、class loader、反射或全局 conformance registry。
 

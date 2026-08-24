@@ -455,8 +455,14 @@ pub enum ExprKind {
         witnesses: Vec<WitnessRef>,
     },
     MakeView {
-        owner: Place,
+        value: Box<Expr>,
+        writeback: Option<Place>,
         witness: WitnessRef,
+        mutable: bool,
+        token: u32,
+    },
+    ReborrowView {
+        owner: Place,
         mutable: bool,
         token: u32,
     },

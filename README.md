@@ -30,7 +30,7 @@
 - 唯一的行为抽象 `concept`、显式 conformance 和 associated type；
 - `T: Concept` 的定义处检查与静态派发；
 - Go 风格书写的接口参数 `value Display`，具体实参只在静态证明存在时自动适配；
-- `dyn concept` 与 `dyn C` 表示携带显式 conformance proof 的擦除接口；物理布局不是语言 ABI，当前 LLVM C1 仅在间接派发仍然存在时使用 compiler-private data/witness 表示；
+- `dyn concept` 与 `dyn C` 表示携带显式 conformance proof 的一等擦除接口，可返回、存储和嵌套；copy 隔离 logical data，物理布局不是语言 ABI，当前 LLVM C1 仅在间接派发仍然存在时使用 compiler-private data/witness 表示；
 - 不引入 `view[...]`、borrow、lifetime、`box/shared` 等所有权语法。
 
 Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-baseline.md)，具体书写见 [核心表面与代码风格](docs/03-surface-and-style.md)；Core 0.2 的行为抽象见 [concept 与多态规范](docs/05-concepts-and-dynamic-polymorphism.md)。lexer/parser、数值、failure、Task 表面、native artifact 和工具边界见 [Core 0.1–0.3 可执行合同](docs/06-executable-contract.md)，完整编译流程见 [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md)。

@@ -19,6 +19,14 @@ record CleanupProbe {
     value Int
 }
 
+record AsyncCounter {
+    value Int
+}
+
+dyn concept AsyncSource {
+    method next(mut self) Int
+}
+
 enum TaskProblem {
     Failed
 }
@@ -47,6 +55,21 @@ impl Dispose for Resource {
 }
 
 impl MustScope for Resource {}
+
+impl AsyncSource for AsyncCounter {
+    method next(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+async fn takeOwnedSource(source AsyncSource) Int {
+    source.next()
+}
+
+async fn makeOwnedSource() dyn AsyncSource {
+    AsyncCounter { value = 4 }
+}
 
 async fn child() Int {
     7
@@ -228,6 +251,13 @@ test async fn task_and_cleanup() {
     let pairedNumber, pairedText = pair()
     assert pairedNumber == 3
     assert pairedText == "tuple"
+    let originalCounter = AsyncCounter { value = 0 }
+    let advancedCounter = takeOwnedSource(originalCounter).await
+    assert advancedCounter == 1
+    assert originalCounter.value == 0
+    var returnedSource = makeOwnedSource().await
+    let returnedValue = returnedSource.next()
+    assert returnedValue == 5
     match propagatedResult() {
         Ok(propagated) => {
             assert propagated == 10

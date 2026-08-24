@@ -296,7 +296,7 @@ fn explicitly_erased(value dyn Formatter[Error = FormatError]) Unit {
 }
 ```
 
-参数使用 `name Type`，不写 `name: Type`。普通 `C` 是接口参数的惯用形式；参数位置的 `dyn C` 具有相同可观察语义，只显式强调类型擦除。具体实参自动适配，`mut self` requirement 要求实参是 `var` place。源码不写 `view[...]`、borrow、lifetime、`box/shared` 或其他所有权 carrier。
+参数使用 `name Type`，不写 `name: Type`。普通 `C` 是接口参数的惯用形式；参数位置的 `dyn C` 具有相同可观察语义，只显式强调类型擦除。字段、返回、tuple/list 与泛型嵌套显式写 `dyn C`。具体实参自动适配，`mut self` receiver 要求 `var` place；普通接口 copy 隔离 underlying logical value。源码不写 `view[...]`、borrow、lifetime、`box/shared` 或其他所有权 carrier。
 
 Core 0.2 parser 的 top-level sequence 增加 `(pub)? concept`、`(pub)? dyn concept` 与 `impl Concept for Type`。conformance body 的 member-start sequence 是 `associated type`、`method` 和 `static method`；它与 Core 0.1 的 inherent `impl Type` 分开恢复。语义与动态兼容以 [Core 0.2 规范](05-concepts-and-dynamic-polymorphism.md)为准，精确 parser 形状与拒绝规则以 [可执行合同第 11 节](06-executable-contract.md#11-core-02-parserchecker-降级合同)为准。
 

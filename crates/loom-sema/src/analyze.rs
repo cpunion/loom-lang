@@ -14,8 +14,8 @@ use crate::{
     CallTarget, CallableSignature, Coercion, ConceptInstance, DefMapBuild, Goal, ImplHeader,
     ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place, PlaceProjection,
     PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, ScopedDisposal, Signature,
-    SolveFailure, Substitution, TyData, TyId, TypedProgram, ViewResolution, ViewTokenId,
-    WitnessSelection, WitnessSource,
+    SolveFailure, Substitution, TyData, TyId, TypedProgram, ViewResolution, ViewSource,
+    ViewTokenId, WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "standard.resource";
@@ -202,15 +202,10 @@ impl Analyzer<'_> {
                 || signature.receiver.is_some()
                 || !source.signature.contracts.requires.is_empty()
                 || !source.signature.contracts.ensures.is_empty()
-                || signature
-                    .params
-                    .iter()
-                    .any(|(_, ty)| contains_view(&self.typed.types, *ty))
-                || contains_view(&self.typed.types, signature.return_ty)
             {
                 self.error(
                     "AsyncExecutableSliceRestriction",
-                    "the current async executable slice accepts non-generic functions without receiver, contracts, or erased interface parameters",
+                    "the current async executable slice accepts non-generic functions without receiver or contracts",
                     self.definition_span(definition),
                 );
             }
@@ -259,13 +254,6 @@ impl Analyzer<'_> {
                 }
                 DefinitionKind::Field(field) => {
                     let ty = self.resolve_type_ref(field.ty, &context);
-                    if contains_view(&self.typed.types, ty) {
-                        self.error(
-                            "ViewEscape",
-                            "erased interface parameters cannot be stored in record fields",
-                            self.type_span(field.ty),
-                        );
-                    }
                     self.typed.signatures.insert(
                         definition,
                         Signature::Field {
@@ -281,17 +269,7 @@ impl Analyzer<'_> {
                     let payload = variant
                         .payload
                         .iter()
-                        .map(|ty| {
-                            let resolved = self.resolve_type_ref(*ty, &context);
-                            if contains_view(&self.typed.types, resolved) {
-                                self.error(
-                                    "ViewEscape",
-                                    "erased interface parameters cannot be stored in enum payloads",
-                                    self.type_span(*ty),
-                                );
-                            }
-                            resolved
-                        })
+                        .map(|ty| self.resolve_type_ref(*ty, &context))
                         .collect();
                     self.typed.signatures.insert(
                         definition,
@@ -407,26 +385,11 @@ impl Analyzer<'_> {
             .map(|parameter| {
                 let source = &self.program.params[*parameter];
                 let ty = self.resolve_parameter_type(source.ty, context);
-                if contains_nested_view(&self.typed.types, ty) {
-                    self.error(
-                        "DynViewInGeneric",
-                        "erased interface parameters must use a direct, non-nested interface type",
-                        self.type_span(source.ty),
-                    );
-                }
                 (*parameter, ty)
             })
             .collect();
         let return_ty = if let Some(ty) = source.return_ty {
-            let resolved = self.resolve_type_ref(ty, context);
-            if contains_view(&self.typed.types, resolved) {
-                self.error(
-                    "ViewEscape",
-                    "erased interface parameters cannot be returned",
-                    self.type_span(ty),
-                );
-            }
-            resolved
+            self.resolve_type_ref(ty, context)
         } else {
             self.typed.types.builtin(BuiltinType::Unit)
         };
@@ -1856,18 +1819,16 @@ struct ActiveBorrow {
     span: Span,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ViewBinding {
-    Local(LocalId),
-    Param(ParamId),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DynamicCoercionMode {
+    Owned,
+    CallBorrow,
 }
 
 #[derive(Clone)]
 struct FlowState {
     self_dirty: bool,
     borrows: Vec<ActiveBorrow>,
-    local_view_tokens: BTreeMap<LocalId, BTreeSet<ViewTokenId>>,
-    moved_view_bindings: BTreeSet<ViewBinding>,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -1881,13 +1842,11 @@ struct BodyChecker<'a, 'program> {
     allow_dirty_self_projection: bool,
     checking_assignment_target: bool,
     checking_view_source: bool,
+    dynamic_coercion_mode: DynamicCoercionMode,
     regions: Vec<RegionId>,
     next_region: u32,
     next_view_token: u32,
     borrows: Vec<ActiveBorrow>,
-    local_view_tokens: BTreeMap<LocalId, BTreeSet<ViewTokenId>>,
-    param_view_tokens: BTreeMap<ParamId, BTreeSet<ViewTokenId>>,
-    moved_view_bindings: BTreeSet<ViewBinding>,
     scoped_locals: BTreeSet<LocalId>,
     active_no_suspend: Vec<(LocalId, RegionId, Span)>,
     task_local_uses: BTreeSet<LocalId>,
@@ -1902,21 +1861,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         body: BodyId,
         environment: BodyEnvironment,
     ) -> Self {
-        let mut next_view_token = 0;
-        let mut param_view_tokens = BTreeMap::new();
-        for (parameter, ty) in environment.params.values() {
-            if matches!(
-                analyzer.typed.types.data(*ty),
-                TyData::View {
-                    mutability: Mutability::Mutable,
-                    ..
-                }
-            ) {
-                param_view_tokens
-                    .insert(*parameter, BTreeSet::from([ViewTokenId(next_view_token)]));
-                next_view_token = next_view_token.saturating_add(1);
-            }
-        }
         Self {
             analyzer,
             body,
@@ -1927,13 +1871,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             allow_dirty_self_projection: false,
             checking_assignment_target: false,
             checking_view_source: false,
+            dynamic_coercion_mode: DynamicCoercionMode::Owned,
             regions: vec![RegionId(0)],
             next_region: 1,
-            next_view_token,
+            next_view_token: 0,
             borrows: Vec::new(),
-            local_view_tokens: BTreeMap::new(),
-            param_view_tokens,
-            moved_view_bindings: BTreeSet::new(),
             scoped_locals: BTreeSet::new(),
             active_no_suspend: Vec::new(),
             task_local_uses: BTreeSet::new(),
@@ -2390,17 +2332,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             expression,
                         );
                     }
-                    if !self.checking_assignment_target
-                        && self
-                            .moved_view_bindings
-                            .contains(&ViewBinding::Local(local))
-                    {
-                        self.error_at(
-                            "UseAfterViewMove",
-                            "mutable interface argument was already consumed by this call",
-                            expression,
-                        );
-                    }
                     self.semantics
                         .expression_resolutions
                         .insert(expression, Resolution::Local(local));
@@ -2438,17 +2369,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 }
             }
             if let Some((parameter, ty)) = self.environment.params.get(name).copied() {
-                if !self.checking_assignment_target
-                    && self
-                        .moved_view_bindings
-                        .contains(&ViewBinding::Param(parameter))
-                {
-                    self.error_at(
-                        "UseAfterViewMove",
-                        "mutable interface argument was already consumed by this call",
-                        expression,
-                    );
-                }
                 self.semantics
                     .expression_resolutions
                     .insert(expression, Resolution::Param(parameter));
@@ -2617,14 +2537,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             "this value has a MustScope obligation and must be bound with `scoped`",
                             self.local_span(*local),
                         );
-                    }
-                    if let Some(view) = self.semantics.views.get(*value) {
-                        self.local_view_tokens
-                            .insert(*local, BTreeSet::from([view.token]));
-                        self.moved_view_bindings.remove(&ViewBinding::Local(*local));
-                    } else if let Some(tokens) = self.move_view_from_path(*value) {
-                        self.local_view_tokens.insert(*local, tokens);
-                        self.moved_view_bindings.remove(&ViewBinding::Local(*local));
                     }
                     let name = self.source().locals[*local].name.clone();
                     let scope = self.scopes.last_mut().expect("block scope exists");
@@ -3074,24 +2986,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         self.check_expr(value, Some(target_ty), ExpressionContext::Value);
-        if matches!(
-            self.analyzer.typed.types.data(target_ty),
-            TyData::View {
-                mutability: Mutability::Mutable,
-                ..
-            }
-        ) {
-            let tokens = self
-                .semantics
-                .views
-                .get(value)
-                .map(|view| BTreeSet::from([view.token]))
-                .or_else(|| self.move_view_from_path(value));
-            if let (Some(tokens), PlaceRoot::Local(local)) = (tokens, &place.root) {
-                self.local_view_tokens.insert(*local, tokens);
-                self.moved_view_bindings.remove(&ViewBinding::Local(*local));
-            }
-        }
         if matches!(place.root, PlaceRoot::SelfValue) && !place.projections.is_empty() {
             self.self_dirty = true;
         }
@@ -3313,7 +3207,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn coerce(&mut self, expression: ExprId, actual: TyId, expected: TyId) -> TyId {
-        if actual == expected || self.is_error(actual) || self.is_error(expected) {
+        if actual == expected {
+            if self.dynamic_coercion_mode == DynamicCoercionMode::CallBorrow
+                && let TyData::View { mutability, .. } =
+                    self.analyzer.typed.types.data(expected).clone()
+            {
+                self.reborrow_interface_argument(expression, mutability);
+            }
+            return expected;
+        }
+        if self.is_error(actual) || self.is_error(expected) {
             return expected;
         }
         if self.types().data(actual) == &TyData::Never {
@@ -3382,15 +3285,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return self.types().error();
         };
-        let Some(owner) = self.semantics.expression_places.get(expression).cloned() else {
-            self.error_at(
-                "IllegalDynConversion",
-                "a dynamic argument must name a value",
-                expression,
-            );
-            return expected;
-        };
-        if mutability == Mutability::Mutable && owner.mutability != Mutability::Mutable {
+        let owner = self.semantics.expression_places.get(expression).cloned();
+        let borrowed =
+            self.dynamic_coercion_mode == DynamicCoercionMode::CallBorrow && owner.is_some();
+        if self.dynamic_coercion_mode == DynamicCoercionMode::CallBorrow
+            && mutability == Mutability::Mutable
+            && owner
+                .as_ref()
+                .is_none_or(|owner| owner.mutability != Mutability::Mutable)
+        {
             self.error_at(
                 "DynMutReceiverUnavailable",
                 "this concept can modify its receiver, so the argument must be a variable",
@@ -3401,19 +3304,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let region = *self.regions.last().expect("body has a lexical region");
             let token = ViewTokenId(self.next_view_token);
             self.next_view_token = self.next_view_token.saturating_add(1);
-            self.register_borrow(
-                owner.clone(),
-                mutability == Mutability::Mutable,
-                region,
-                token,
-                self.expr_span(expression),
-                expression,
-            );
+            if borrowed {
+                self.register_borrow(
+                    owner.clone().expect("borrowed interface has an owner"),
+                    mutability == Mutability::Mutable,
+                    region,
+                    token,
+                    self.expr_span(expression),
+                    expression,
+                );
+            }
             self.semantics.views.insert(
                 expression,
                 ViewResolution {
-                    owner,
-                    witness,
+                    source: ViewSource::Concrete {
+                        witness,
+                        writeback: borrowed.then(|| {
+                            owner.expect("borrowed interface has an owner after registration")
+                        }),
+                    },
                     mutable: mutability == Mutability::Mutable,
                     region,
                     token,
@@ -3424,6 +3333,54 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .insert(expression, Coercion::ConcreteToDyn);
         }
         expected
+    }
+
+    fn reborrow_interface_argument(&mut self, expression: ExprId, mutability: Mutability) {
+        if self.semantics.views.get(expression).is_some() {
+            return;
+        }
+        let Some(owner) = self.semantics.expression_places.get(expression).cloned() else {
+            if mutability == Mutability::Mutable {
+                self.error_at(
+                    "DynMutReceiverUnavailable",
+                    "a mutable interface argument must name a variable",
+                    expression,
+                );
+            }
+            return;
+        };
+        let mutable_owner =
+            owner.mutability == Mutability::Mutable || matches!(owner.root, PlaceRoot::Param(_));
+        if mutability == Mutability::Mutable && !mutable_owner {
+            self.error_at(
+                "DynMutReceiverUnavailable",
+                "this interface can modify its receiver, so the argument must be a variable",
+                expression,
+            );
+        }
+        let region = *self.regions.last().expect("body has a lexical region");
+        let token = ViewTokenId(self.next_view_token);
+        self.next_view_token = self.next_view_token.saturating_add(1);
+        self.register_borrow(
+            owner.clone(),
+            mutability == Mutability::Mutable,
+            region,
+            token,
+            self.expr_span(expression),
+            expression,
+        );
+        self.semantics.views.insert(
+            expression,
+            ViewResolution {
+                source: ViewSource::Interface { owner },
+                mutable: mutability == Mutability::Mutable,
+                region,
+                token,
+            },
+        );
+        self.semantics
+            .expression_coercions
+            .insert(expression, Coercion::InterfaceReborrow);
     }
 
     fn assignable(&self, actual: TyId, expected: TyId) -> bool {
@@ -4019,7 +3976,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let argument_expected =
                 (!contains_unbound_param(&self.analyzer.typed.types, instantiated, &substitution))
                     .then_some(instantiated);
+            let previous_mode = self.dynamic_coercion_mode;
+            if !signature.is_async
+                && argument_expected.is_some_and(|ty| {
+                    matches!(self.analyzer.typed.types.data(ty), TyData::View { .. })
+                })
+            {
+                self.dynamic_coercion_mode = DynamicCoercionMode::CallBorrow;
+            }
             let actual = self.check_expr(*argument, argument_expected, ExpressionContext::Value);
+            self.dynamic_coercion_mode = previous_mode;
             unify_type(
                 &self.analyzer.typed.types,
                 *parameter_ty,
@@ -4042,7 +4008,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         for (argument, actual, parameter_ty) in actual_types {
             let expected = self.types().substitute(parameter_ty, &substitution);
+            let previous_mode = self.dynamic_coercion_mode;
+            if !signature.is_async
+                && matches!(
+                    self.analyzer.typed.types.data(expected),
+                    TyData::View { .. }
+                )
+            {
+                self.dynamic_coercion_mode = DynamicCoercionMode::CallBorrow;
+            }
             self.coerce(argument, actual, expected);
+            self.dynamic_coercion_mode = previous_mode;
         }
         let return_ty = self.types().substitute(signature.return_ty, &substitution);
         (return_ty, substitution)
@@ -4587,6 +4563,22 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.error_at(
                     "DynMutReceiverUnavailable",
                     "a readonly interface argument cannot call a `mut self` method",
+                    receiver_expression,
+                );
+            }
+            if signature.receiver == Some(ReceiverKind::Mutable)
+                && self
+                    .semantics
+                    .expression_places
+                    .get(receiver_expression)
+                    .is_some_and(|place| {
+                        matches!(place.root, PlaceRoot::Local(_))
+                            && place.mutability != Mutability::Mutable
+                    })
+            {
+                self.error_at(
+                    "MutReceiverRequiresVar",
+                    "a stored interface value must use `var` before calling a `mut self` method",
                     receiver_expression,
                 );
             }
@@ -5194,8 +5186,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.semantics.views.insert(
                 expression,
                 ViewResolution {
-                    owner,
-                    witness,
+                    source: ViewSource::Concrete {
+                        witness,
+                        writeback: Some(owner),
+                    },
                     mutable,
                     region,
                     token,
@@ -5746,8 +5740,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         FlowState {
             self_dirty: self.self_dirty,
             borrows: self.borrows.clone(),
-            local_view_tokens: self.local_view_tokens.clone(),
-            moved_view_bindings: self.moved_view_bindings.clone(),
         }
     }
 
@@ -5765,30 +5757,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn restore_flow(&mut self, state: &FlowState) {
         self.self_dirty = state.self_dirty;
         self.borrows.clone_from(&state.borrows);
-        self.local_view_tokens.clone_from(&state.local_view_tokens);
-        self.moved_view_bindings
-            .clone_from(&state.moved_view_bindings);
     }
 
     fn join_flow_states(&mut self, states: impl IntoIterator<Item = FlowState>) {
         let mut dirty = false;
         let mut borrows = BTreeMap::new();
-        let mut local_view_tokens = BTreeMap::<LocalId, BTreeSet<ViewTokenId>>::new();
-        let mut moved_view_bindings = BTreeSet::new();
         for state in states {
             dirty |= state.self_dirty;
             for borrow in state.borrows {
                 borrows.entry(borrow.token).or_insert(borrow);
             }
-            for (local, tokens) in state.local_view_tokens {
-                local_view_tokens.entry(local).or_default().extend(tokens);
-            }
-            moved_view_bindings.extend(state.moved_view_bindings);
         }
         self.self_dirty = dirty;
         self.borrows = borrows.into_values().collect();
-        self.local_view_tokens = local_view_tokens;
-        self.moved_view_bindings = moved_view_bindings;
     }
 
     fn register_borrow(
@@ -5855,53 +5836,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         );
     }
 
-    fn view_binding_from_path(
-        &self,
-        expression: ExprId,
-    ) -> Option<(ViewBinding, BTreeSet<ViewTokenId>)> {
-        match self
-            .semantics
-            .expression_resolutions
-            .get(expression)
-            .copied()
-        {
-            Some(Resolution::Local(local)) => self
-                .local_view_tokens
-                .get(&local)
-                .cloned()
-                .map(|tokens| (ViewBinding::Local(local), tokens)),
-            Some(Resolution::Param(parameter)) => self
-                .param_view_tokens
-                .get(&parameter)
-                .cloned()
-                .map(|tokens| (ViewBinding::Param(parameter), tokens)),
-            _ => None,
-        }
-    }
-
-    fn move_view_from_path(&mut self, expression: ExprId) -> Option<BTreeSet<ViewTokenId>> {
-        let (binding, tokens) = self.view_binding_from_path(expression)?;
-        self.moved_view_bindings.insert(binding);
-        self.semantics
-            .view_moves
-            .insert(expression, tokens.iter().copied().collect());
-        Some(tokens)
-    }
-
     fn finish_call_arguments(&mut self, arguments: &[ExprId]) {
         for argument in arguments {
-            let ty = self.semantics.expression_types.get(*argument).copied();
-            if ty.is_some_and(|ty| {
-                matches!(
-                    self.analyzer.typed.types.data(ty),
-                    TyData::View {
-                        mutability: Mutability::Mutable,
-                        ..
-                    }
-                )
-            }) {
-                self.move_view_from_path(*argument);
-            }
             if let Some(view) = self.semantics.views.get(*argument) {
                 let token = view.token;
                 self.borrows.retain(|borrow| borrow.token != token);
@@ -5984,40 +5920,6 @@ fn contains_unbound_param(
             .any(|binding| contains_unbound_param(types, binding.ty, substitution)),
         TyData::View { target, .. } => contains_unbound_param(types, *target, substitution),
         TyData::Error | TyData::Never | TyData::Builtin(_) | TyData::SelfType(_) => false,
-    }
-}
-
-fn contains_view(types: &crate::TyInterner, ty: TyId) -> bool {
-    match types.data(ty) {
-        TyData::View { .. } => true,
-        TyData::Tuple(elements) => elements
-            .iter()
-            .any(|element| contains_view(types, *element)),
-        TyData::Option(element) => contains_view(types, *element),
-        TyData::Result { ok, error } => contains_view(types, *ok) || contains_view(types, *error),
-        TyData::Task(output) | TyData::List(output) | TyData::TaskOutcome(output) => {
-            contains_view(types, *output)
-        }
-        TyData::Nominal { arguments, .. } => arguments
-            .iter()
-            .any(|argument| contains_view(types, *argument)),
-        TyData::Projection { self_ty, .. } => contains_view(types, *self_ty),
-        TyData::DynTarget(instance) => instance
-            .bindings
-            .iter()
-            .any(|binding| contains_view(types, binding.ty)),
-        TyData::Error
-        | TyData::Never
-        | TyData::Builtin(_)
-        | TyData::Param(_)
-        | TyData::SelfType(_) => false,
-    }
-}
-
-fn contains_nested_view(types: &crate::TyInterner, ty: TyId) -> bool {
-    match types.data(ty) {
-        TyData::View { target, .. } => contains_view(types, *target),
-        _ => contains_view(types, ty),
     }
 }
 
@@ -6214,7 +6116,7 @@ mod tests {
     use loom_syntax::parse_with_file;
 
     use super::{Analysis, analyze};
-    use crate::{CallTarget, Signature, TyData, WitnessSource};
+    use crate::{CallTarget, Signature, TyData, ViewSource, WitnessSelection, WitnessSource};
 
     const DYNAMIC_SOURCE_FIXTURE: &str = r"
 module sample
@@ -6398,11 +6300,23 @@ fn consume(source Source[Item = Int]) {
             .iter()
             .flat_map(|(_, body)| body.views.values())
             .collect::<Vec<_>>();
-        assert_eq!(views.len(), 6);
+        assert!(views.len() >= 6);
+        assert!(views.iter().any(|view| {
+            matches!(
+                &view.source,
+                ViewSource::Concrete {
+                    witness: WitnessSelection {
+                        source: WitnessSource::Implementation(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        }));
         assert!(
             views
                 .iter()
-                .all(|view| { matches!(view.witness.source, WitnessSource::Implementation(_)) })
+                .any(|view| matches!(view.source, ViewSource::Interface { .. }))
         );
         assert!(
             analysis

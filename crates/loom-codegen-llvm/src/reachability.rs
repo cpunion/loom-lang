@@ -305,7 +305,10 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges) {
                 collect_witness(witness, &mut edges.witnesses);
             }
         }
-        ExprKind::MakeView { witness, .. } => collect_witness(witness, &mut edges.witnesses),
+        ExprKind::MakeView { value, witness, .. } => {
+            scan_expr(value, edges);
+            collect_witness(witness, &mut edges.witnesses);
+        }
         ExprKind::Await { task, .. } => scan_expr(task, edges),
         ExprKind::TaskJoin { arguments, .. } => {
             for argument in arguments {
@@ -314,7 +317,10 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges) {
         }
         ExprKind::Sleep { milliseconds } => scan_expr(milliseconds, edges),
         ExprKind::WaitFd { descriptor, .. } => scan_expr(descriptor, edges),
-        ExprKind::Constant(_) | ExprKind::Copy(_) | ExprKind::Move(_) => {}
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => {}
     }
 }
 

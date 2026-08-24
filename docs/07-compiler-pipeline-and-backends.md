@@ -145,11 +145,11 @@ status fn(out_value, argument_nodes, witness_nodes)
 
 ### 接口
 
-`dyn C` 在 checked MIR 中表示 concrete data 与已选 conformance proof 一起流动，不规定 LLVM 类型或内存布局。静态可知调用直接落到 implementation；后端也可以把 data/proof 拆成 SSA 参数或完全消除接口值。当前 C1 只在间接调用幸存时使用 compiler-private data/witness pair，并沿用同一内部函数签名。
+`dyn C` 在 checked MIR 中表示 concrete data 与已选 conformance proof 一起流动，不规定 LLVM 类型或内存布局。它是可返回、可存储、可嵌套的一等值；普通 copy 深复制 logical data，proof 可安全共享。静态可知调用直接落到 implementation；后端也可以把 data/proof 拆成 SSA 参数或完全消除接口值。当前 C1 只在间接调用幸存时使用 GC-managed data/witness 表示，并沿用同一内部函数签名。同步 concrete-to-mutable-interface 参数另带不可逃逸的临时写回地址；异步参数只捕获 owned copy。
 
 witness table 不是语言必须存在的对象。若当前后端选择物化它，只允许为 live requirement slot 引用 method。root/witness reachability 在表示选择之前完成，因此 DCE 不依赖 fat-pointer、table prefix、运行时 type id 或 registry。
 
-后端优化优先级是：去虚化/内联 → 调用签名特化 → 分离 SSA data/proof → 必要时物化 pair。单指针表示不作为 KPI；只有未来长期存储、目标 ABI 或实测结果确有收益时，才可以局部选择 box/header/tagged representation，并且不得改变显式 conformance、proof flow、fault 或 DCE 结果。
+后端优化优先级是：去虚化/内联 → 调用签名特化 → 分离 SSA data/proof → 必要时物化 pair。单指针表示不作为 KPI；目标 ABI 或实测结果确有收益时，可以局部选择 box/header/inline/tagged representation，但不得改变显式 conformance、值复制、proof flow、fault 或 DCE 结果。
 
 ### managed object 与 GC
 
@@ -315,19 +315,20 @@ Cranelift 已提供 codegen、frontend、multi-function module、object 与 JIT 
 3. source run 与 artifact run 结果一致；
 4. static generic/conditional witness native 回归；
 5. mutable interface method 正常写回 owner place；
-6. unreachable conformance 不进入 live witness/method graph；
-7. LLVM verifier 优化前后通过；
-8. Rust float codec 与 interpreter 的 canonical boundary 一致，且生成物不依赖 C++ runtime；
-9. interpreter differential tests 保留，但默认命令不使用解释器。
+6. returned/stored/nested `dyn C` 在两后端运行，copy 后 mutable data 相互隔离；
+7. unreachable conformance 不进入 live witness/method graph；
+8. LLVM verifier 优化前后通过；
+9. Rust float codec 与 interpreter 的 canonical boundary 一致，且生成物不依赖 C++ runtime；
+10. interpreter differential tests 保留，但默认命令不使用解释器。
 
 Core 0.3 的新增关门条件：
 
-10. `scoped`/`defer` 在 normal return、fault 和 cancellation 上保持同一 LIFO 顺序；
-11. async fixture 的 source run、native artifact run 与 interpreter 一致；
-12. Pending task 使用 wait registration/ready queue，不忙轮询；
-13. static tuple join 与 dynamic list join 保持 input-order result layout；
-14. `all/any/race` 的 sibling cancellation 在返回前 drain cleanup；
-15. moving GC 能重定位 coroutine frame/results，同时不改变 Task identity、合同或 concept behavior；
-16. async descriptor 和 join runtime edge进入 root graph，未构造的 task/conformance 仍可被 DCE；
-17. manifest path dependency、SemVer、cycle、bin/test target 与稳定 dependency source label 通过 driver/CLI 回归；
-18. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。
+11. `scoped`/`defer` 在 normal return、fault 和 cancellation 上保持同一 LIFO 顺序；
+12. async fixture 的 source run、native artifact run 与 interpreter 一致；
+13. Pending task 使用 wait registration/ready queue，不忙轮询；
+14. static tuple join 与 dynamic list join 保持 input-order result layout；
+15. `all/any/race` 的 sibling cancellation 在返回前 drain cleanup；
+16. moving GC 能重定位 coroutine frame/results，同时不改变 Task identity、合同或 concept behavior；
+17. async descriptor 和 join runtime edge进入 root graph，未构造的 task/conformance 仍可被 DCE；
+18. manifest path dependency、SemVer、cycle、bin/test target 与稳定 dependency source label 通过 driver/CLI 回归；
+19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。

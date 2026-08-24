@@ -19,7 +19,7 @@ use loom_mir::{
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
     CallTarget as SemaCallTarget, Coercion, Mutability, Place as SemaPlace, PlaceProjection,
-    PlaceRoot, Resolution, ScopedDisposal, Signature, TyData, TyId, WitnessSelection,
+    PlaceRoot, Resolution, ScopedDisposal, Signature, TyData, TyId, ViewSource, WitnessSelection,
     WitnessSource,
 };
 
@@ -2182,11 +2182,24 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     .collect::<LowerResult<_>>()?,
                 witnesses,
             },
+            ExprKind::MakeView {
+                value,
+                writeback,
+                witness,
+                mutable,
+                token,
+            } => ExprKind::MakeView {
+                value: Box::new(self.extract_nested_awaits(*value, output, false)?),
+                writeback,
+                witness,
+                mutable,
+                token,
+            },
             ExprKind::Constant(_)
             | ExprKind::Copy(_)
             | ExprKind::Move(_)
             | ExprKind::Block(_)
-            | ExprKind::MakeView { .. } => kind,
+            | ExprKind::ReborrowView { .. } => kind,
         };
         Ok(Expr { kind, ty, span })
     }
@@ -2195,20 +2208,36 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         let span = self.expr_span(id);
         if matches!(
             self.semantics.expression_coercions.get(id),
-            Some(Coercion::ConcreteToDyn)
+            Some(Coercion::ConcreteToDyn | Coercion::InterfaceReborrow)
         ) {
             let view = required(
                 self.semantics.views.get(id),
                 "dynamic coercion has no selected witness",
                 span,
             )?;
-            return Ok(Expr {
-                kind: ExprKind::MakeView {
-                    owner: self.lower_place(&view.owner, span)?,
-                    witness: self.lower_witness_selection(&view.witness, span)?,
+            let kind = match &view.source {
+                ViewSource::Concrete { witness, writeback } => {
+                    let mut value = self.lower_expr_uncoerced(id, mode)?;
+                    value.ty = self.lower_witness_target(witness, span)?;
+                    ExprKind::MakeView {
+                        value: Box::new(value),
+                        writeback: writeback
+                            .as_ref()
+                            .map(|owner| self.lower_place(owner, span))
+                            .transpose()?,
+                        witness: self.lower_witness_selection(witness, span)?,
+                        mutable: view.mutable,
+                        token: view.token.0,
+                    }
+                }
+                ViewSource::Interface { owner } => ExprKind::ReborrowView {
+                    owner: self.lower_place(owner, span)?,
                     mutable: view.mutable,
                     token: view.token.0,
                 },
+            };
+            return Ok(Expr {
+                kind,
                 ty: self.expression_ty(id)?,
                 span,
             });
@@ -2238,7 +2267,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
     #[allow(clippy::too_many_lines)]
     fn lower_expr_uncoerced(&mut self, id: ExprId, mode: ReadMode) -> LowerResult<Expr> {
         let span = self.expr_span(id);
-        let ty = self.expression_ty(id)?;
+        let ty = self.uncoerced_expression_ty(id)?;
         let source = self.body.expressions[id].clone();
         let kind = match source {
             loom_hir::Expr::Error => return Err(defect("error expression reached MIR", span)),
@@ -2399,15 +2428,25 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             loom_hir::Expr::RecordLiteral { fields, .. } => {
                 return self.lower_record_literal(id, &fields);
             }
-            loom_hir::Expr::View { .. } => {
+            loom_hir::Expr::View { source, .. } => {
                 let view = required(
                     self.semantics.views.get(id),
                     "checked erased interface has no semantic interface resolution",
                     span,
                 )?;
+                let ViewSource::Concrete { witness, writeback } = &view.source else {
+                    return Err(defect(
+                        "explicit interface adaptation reborrowed a view",
+                        span,
+                    ));
+                };
                 ExprKind::MakeView {
-                    owner: self.lower_place(&view.owner, span)?,
-                    witness: self.lower_witness_selection(&view.witness, span)?,
+                    value: Box::new(self.lower_expr(source)?),
+                    writeback: writeback
+                        .as_ref()
+                        .map(|owner| self.lower_place(owner, span))
+                        .transpose()?,
+                    witness: self.lower_witness_selection(witness, span)?,
                     mutable: view.mutable,
                     token: view.token.0,
                 }
@@ -2638,7 +2677,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             Resolution::Builtin(BuiltinValue::None) => Ok(ExprKind::Variant {
                 ty: OPTION_TYPE,
                 type_arguments: Self::nominal_type_arguments(
-                    &self.expression_ty(id)?,
+                    &self.uncoerced_expression_ty(id)?,
                     OPTION_TYPE,
                     span,
                 )?,
@@ -2663,7 +2702,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         source_arguments: &[ExprId],
     ) -> LowerResult<Expr> {
         let span = self.expr_span(id);
-        let ty = self.expression_ty(id)?;
+        let ty = self.uncoerced_expression_ty(id)?;
         let resolution = self.call(id)?.clone();
 
         match resolution.target {
@@ -2870,7 +2909,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         arguments: &[ExprId],
     ) -> LowerResult<Expr> {
         let span = self.expr_span(id);
-        let ty = self.expression_ty(id)?;
+        let ty = self.uncoerced_expression_ty(id)?;
         let kind = match builtin {
             BuiltinValue::ListNew => ExprKind::List(Vec::new()),
             BuiltinValue::Some
@@ -3127,7 +3166,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         source_fields: &[loom_hir::RecordFieldValue],
     ) -> LowerResult<Expr> {
         let span = self.expr_span(id);
-        let expression_ty = self.expression_ty(id)?;
+        let expression_ty = self.uncoerced_expression_ty(id)?;
         let canonical = required(
             self.semantics.record_fields.get(id),
             "record literal has no canonical semantic field mapping",
@@ -3284,6 +3323,27 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         let span = self.expr_span(id);
         let semantic = self.expression_semantic_ty(id)?;
         self.compiler.lower_ty(semantic, &self.parameters, span)
+    }
+
+    fn uncoerced_expression_ty(&self, id: ExprId) -> LowerResult<Type> {
+        if matches!(
+            self.semantics.expression_coercions.get(id),
+            Some(Coercion::ConcreteToDyn)
+        ) {
+            let view = required(
+                self.semantics.views.get(id),
+                "dynamic coercion has no selected witness",
+                self.expr_span(id),
+            )?;
+            let ViewSource::Concrete { witness, .. } = &view.source else {
+                return Err(defect(
+                    "concrete dynamic coercion has no concrete witness",
+                    self.expr_span(id),
+                ));
+            };
+            return self.lower_witness_target(witness, self.expr_span(id));
+        }
+        self.expression_ty(id)
     }
 
     fn expression_semantic_ty(&self, id: ExprId) -> LowerResult<TyId> {

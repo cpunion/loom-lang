@@ -101,7 +101,12 @@ fn object_fingerprint_excludes_unreachable_function_bodies() {
 fn root_function() -> Function {
     let view = Expr {
         kind: ExprKind::MakeView {
-            owner: Place::local(LocalId(0)),
+            value: Box::new(Expr {
+                kind: ExprKind::Copy(Place::local(LocalId(0))),
+                ty: Type::Int,
+                span: Default::default(),
+            }),
+            writeback: None,
             witness: WitnessRef::Concrete(WitnessId(0)),
             mutable: false,
             token: 0,

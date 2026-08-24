@@ -325,7 +325,8 @@ fn witness_parameter_references_are_bounded_by_the_current_function() {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
                     kind: ExprKind::MakeView {
-                        owner: Place::local(LocalId(0)),
+                        value: Box::new(copy(0, Type::Nominal(TypeId(0), Vec::new()))),
+                        writeback: None,
                         witness: WitnessRef::Parameter(0),
                         mutable: false,
                         token: 1,
@@ -1944,7 +1945,7 @@ fn checked_boundary_rejects_uninitialized_double_init_and_use_after_move() {
 }
 
 #[test]
-fn borrowed_views_are_affine_non_escaping_and_protect_the_owner() {
+fn borrowed_view_carriers_protect_the_owner() {
     let concept = ConceptDef {
         id: ConceptId(0),
         name: "Viewable".to_owned(),
@@ -1960,7 +1961,8 @@ fn borrowed_views_are_affine_non_escaping_and_protect_the_owner() {
     };
     let make_view = |token| Expr {
         kind: ExprKind::MakeView {
-            owner: Place::local(LocalId(0)),
+            value: Box::new(copy(0, Type::Int)),
+            writeback: Some(Place::local(LocalId(0))),
             witness: WitnessRef::Concrete(WitnessId(0)),
             mutable: true,
             token,
@@ -2032,7 +2034,6 @@ fn borrowed_views_are_affine_non_escaping_and_protect_the_owner() {
         ..Program::default()
     });
     assert!(errors.contains(MirValidationCode::BorrowShape));
-    assert!(errors.contains(MirValidationCode::TypeMismatch));
 }
 
 #[test]

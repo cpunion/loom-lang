@@ -462,7 +462,11 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
                     local: LocalId(1),
                     value: Expr {
                         kind: ExprKind::MakeView {
-                            owner: Place::local(LocalId(0)),
+                            value: Box::new(copy(
+                                Place::local(LocalId(0)),
+                                Type::Nominal(TypeId(0), vec![]),
+                            )),
+                            writeback: None,
                             witness: WitnessRef::Concrete(WitnessId(0)),
                             mutable: false,
                             token: 0,

@@ -16,6 +16,7 @@ use crate::scheduler::{ValueNode, ValueSlot};
 const VALUE_TAG_RECORD: u64 = 5;
 const VALUE_TAG_ENUM: u64 = 6;
 const VALUE_TAG_REFINED: u64 = 7;
+const VALUE_TAG_DYN: u64 = 9;
 const VALUE_TAG_TUPLE: u64 = 10;
 const VALUE_TAG_LIST: u64 = 12;
 const VALUE_TAG_TASK_OUTCOME: u64 = 13;
@@ -207,7 +208,9 @@ fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
                 marks,
             );
         }
-        VALUE_TAG_REFINED => trace_value_pointer(value.words[4] as *const ValueSlot, index, marks),
+        VALUE_TAG_REFINED | VALUE_TAG_DYN => {
+            trace_value_pointer(value.words[4] as *const ValueSlot, index, marks);
+        }
         VALUE_TAG_TASK_OUTCOME if value.words[2] == TASK_COMPLETED => {
             trace_value_pointer(value.words[4] as *const ValueSlot, index, marks);
         }
@@ -259,7 +262,7 @@ fn rewrite_value(
                 value.words[4] = *pointer as u64;
             }
         }
-        VALUE_TAG_REFINED | VALUE_TAG_TASK_OUTCOME => {
+        VALUE_TAG_REFINED | VALUE_TAG_DYN | VALUE_TAG_TASK_OUTCOME => {
             if let Some(pointer) = values.get(&address) {
                 value.words[4] = *pointer as u64;
             }
