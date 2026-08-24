@@ -1,0 +1,202 @@
+//! Semantic facts keyed by immutable HIR identities.
+
+use std::collections::BTreeMap;
+
+use loom_hir::{
+    ArenaMap, BodyId, DefId, ExprId, GenericParamId, LocalId, ParamId, PatternId, ReceiverKind,
+    TypeRefId,
+};
+
+use crate::{
+    AssociatedTypeBinding, ConceptInstance, Mutability, Substitution, TyId, TyInterner,
+    WitnessSelection,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Resolution {
+    Definition(DefId),
+    GenericParam(GenericParamId),
+    Param(ParamId),
+    Local(LocalId),
+    SelfValue,
+    ResultValue,
+    Builtin(BuiltinValue),
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinValue {
+    Unit,
+    None,
+    Some,
+    Ok,
+    Err,
+    ParseFloat,
+    FormatFloat,
+    IsFinite,
+    ParseFloatInvalidSyntax,
+    ParseFloatOutOfRange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CallTarget {
+    Function(DefId),
+    InherentMethod(DefId),
+    EnumVariant(DefId),
+    RefinedConstructor(DefId),
+    Builtin(BuiltinValue),
+    StaticConcept { requirement: DefId },
+    DynamicConcept { requirement: DefId },
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiverPassing {
+    Value,
+    InOut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallResolution {
+    pub target: CallTarget,
+    pub substitution: Substitution,
+    /// The witness selecting a concept requirement implementation.  This is
+    /// distinct from `witnesses`, which are hidden proof arguments required by
+    /// the selected callable's own generic bounds.
+    pub dispatch_witness: Option<WitnessSelection>,
+    pub witnesses: Vec<WitnessSelection>,
+    pub receiver: Option<ReceiverPassing>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RegionId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ViewTokenId(pub u32);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewResolution {
+    pub owner: Place,
+    pub witness: WitnessSelection,
+    pub mutable: bool,
+    pub region: RegionId,
+    pub token: ViewTokenId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlaceRoot {
+    Param(ParamId),
+    Local(LocalId),
+    SelfValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlaceProjection {
+    Field(DefId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Place {
+    pub root: PlaceRoot,
+    pub projections: Vec<PlaceProjection>,
+    pub mutability: Mutability,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Coercion {
+    RefinedToBase {
+        refined: DefId,
+    },
+    /// A concrete value is exposed through a dynamically dispatched concept
+    /// parameter. The owner and selected witness are stored in `views` under
+    /// the same expression id; no source-level ownership syntax is involved.
+    ConcreteToDyn,
+    NeverToAny,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BodySemantics {
+    pub expression_resolutions: ArenaMap<ExprId, Resolution>,
+    pub expression_types: ArenaMap<ExprId, TyId>,
+    pub expression_places: ArenaMap<ExprId, Place>,
+    pub expression_coercions: ArenaMap<ExprId, Coercion>,
+    pub calls: ArenaMap<ExprId, CallResolution>,
+    /// Source expressions mapped into definition field order. HIR retains the
+    /// original source order so MIR can evaluate into temporaries first.
+    pub record_fields: ArenaMap<ExprId, Vec<(DefId, ExprId)>>,
+    pub views: ArenaMap<ExprId, ViewResolution>,
+    /// Mutable-view path expressions which consume their source binding.  The
+    /// tokens identify the possible borrow origins after control-flow joins;
+    /// an expression absent from this table is a non-consuming receiver/read.
+    pub view_moves: ArenaMap<ExprId, Vec<ViewTokenId>>,
+    pub pattern_resolutions: ArenaMap<PatternId, Resolution>,
+    pub pattern_types: ArenaMap<PatternId, TyId>,
+    pub local_types: ArenaMap<LocalId, TyId>,
+    /// Static Dispose dispatch selected for each `scoped` declaration.
+    pub scoped_disposals: ArenaMap<LocalId, ScopedDisposal>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScopedDisposal {
+    pub requirement: DefId,
+    pub witness: WitnessSelection,
+}
+
+#[derive(Clone, Debug)]
+pub struct CallableSignature {
+    pub is_async: bool,
+    /// All type parameters in scope for the callable body, including enclosing
+    /// impl parameters.
+    pub generic_params: Vec<GenericParamId>,
+    /// Parameters introduced by this callable and therefore accepted by its
+    /// source-level type-argument list.
+    pub call_generic_params: Vec<GenericParamId>,
+    pub receiver: Option<ReceiverKind>,
+    pub params: Vec<(ParamId, TyId)>,
+    pub return_ty: TyId,
+    /// All proof parameters needed by the executable callable body.
+    pub bounds: Vec<Bound>,
+    /// Bounds introduced specifically by method/function type parameters.
+    pub call_bounds: Vec<Bound>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bound {
+    pub self_ty: TyId,
+    pub concept: ConceptInstance,
+}
+
+#[derive(Clone, Debug)]
+pub enum Signature {
+    Type { generic_params: Vec<GenericParamId> },
+    Field { owner: DefId, ty: TyId },
+    Variant { owner: DefId, payload: Vec<TyId> },
+    Callable(CallableSignature),
+    Concept,
+    AssociatedType { owner: DefId, bounds: Vec<Bound> },
+    Impl,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TypedProgram {
+    pub types: TyInterner,
+    pub resolved_type_refs: ArenaMap<TypeRefId, TyId>,
+    pub signatures: ArenaMap<DefId, Signature>,
+    pub bodies: ArenaMap<BodyId, BodySemantics>,
+    pub conformances: ArenaMap<DefId, ConformanceSemantics>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConformanceSemantics {
+    pub concept: ConceptInstance,
+    pub target: TyId,
+    pub methods: BTreeMap<DefId, DefId>,
+    pub associated_types: Vec<AssociatedTypeBinding>,
+}
+
+impl TypedProgram {
+    #[must_use]
+    pub fn body(&self, body: BodyId) -> Option<&BodySemantics> {
+        self.bodies.get(body)
+    }
+}

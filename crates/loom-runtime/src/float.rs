@@ -1,0 +1,144 @@
+//! Canonical binary64 text boundary used by compiler-generated builtins.
+
+use std::ffi::{c_char, c_int};
+
+const CANONICAL_NAN: u64 = 0x7ff8_0000_0000_0000;
+
+fn has_float_syntax(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'-'));
+    let integer_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == integer_start {
+        return false;
+    }
+
+    let mut decimal = false;
+    if bytes.get(index) == Some(&b'.') {
+        decimal = true;
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return false;
+        }
+    }
+
+    let mut exponent = false;
+    if matches!(bytes.get(index), Some(b'e' | b'E')) {
+        exponent = true;
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+' | b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+    index == bytes.len() && (decimal || exponent)
+}
+
+fn canonical_text(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".into();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".into();
+    }
+    let mut text = value.to_string();
+    if !text.contains(['.', 'e', 'E']) {
+        text.push_str(".0");
+    }
+    text
+}
+
+/// Parses Loom's canonical float syntax.
+///
+/// Returns 0 on success, 1 for invalid syntax and 2 for finite-range overflow.
+#[unsafe(export_name = "loom_runtime_parse_float")]
+pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *mut f64) -> c_int {
+    let Ok(length) = usize::try_from(length) else {
+        return 1;
+    };
+    if data.is_null() || output.is_null() || length > isize::MAX as usize {
+        return 1;
+    }
+    // SAFETY: the compiler passes a live Text payload and its checked length.
+    let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return 1;
+    };
+    let value = match text {
+        "NaN" => f64::from_bits(CANONICAL_NAN),
+        "Infinity" => f64::INFINITY,
+        "-Infinity" => f64::NEG_INFINITY,
+        _ if has_float_syntax(text) => {
+            let Ok(value) = text.parse::<f64>() else {
+                return 1;
+            };
+            if value.is_infinite() {
+                return 2;
+            }
+            value
+        }
+        _ => return 1,
+    };
+    // SAFETY: output was checked non-null and is an LLVM stack slot for f64.
+    unsafe { output.write(value) };
+    0
+}
+
+/// Formats a binary64 value and transfers an immutable byte allocation to the
+/// generated process. Core 0.x Text values are process-lifetime allocations.
+#[unsafe(export_name = "loom_runtime_format_float")]
+pub unsafe extern "C" fn format_float(
+    value: f64,
+    output: *mut *mut c_char,
+    length: *mut u64,
+) -> c_int {
+    if output.is_null() || length.is_null() {
+        return 1;
+    }
+    let text = canonical_text(value);
+    let Ok(text_length) = u64::try_from(text.len()) else {
+        return 1;
+    };
+    let mut bytes = text.into_bytes();
+    bytes.push(0);
+    let pointer = bytes.as_mut_ptr().cast::<c_char>();
+    std::mem::forget(bytes);
+    // SAFETY: both caller-owned output slots were checked non-null.
+    unsafe {
+        output.write(pointer);
+        length.write(text_length);
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_text, has_float_syntax};
+
+    #[test]
+    fn text_boundary_matches_language_contract() {
+        assert!(has_float_syntax("1.0"));
+        assert!(has_float_syntax("1e3"));
+        assert!(!has_float_syntax("1"));
+        assert_eq!(canonical_text(1e20), "100000000000000000000.0");
+        assert_eq!(canonical_text(1e-7), "0.0000001");
+        assert_eq!(canonical_text(-0.0), "-0.0");
+        assert_eq!(canonical_text(f64::INFINITY), "Infinity");
+        assert_eq!(canonical_text(f64::NAN), "NaN");
+    }
+}

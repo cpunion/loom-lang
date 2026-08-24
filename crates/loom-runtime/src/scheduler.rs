@@ -1,0 +1,1090 @@
+use std::ffi::c_void;
+use std::ptr;
+
+use crate::gc::{collect, enter_executor, leave_executor};
+use crate::reactor::{
+    LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
+    has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
+};
+use crate::{
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_INVALID_ARGUMENT, WAIT_OK,
+    WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_UNSUPPORTED,
+};
+
+const NO_JOIN_WINNER: u64 = u64::MAX;
+const VALUE_TAG_TASK: u64 = 11;
+const VALUE_TAG_LIST: u64 = 12;
+const VALUE_TAG_TASK_OUTCOME: u64 = 13;
+const VALUE_TAG_TUPLE: u64 = 10;
+const TASK_VALUE_DIRECT: u64 = 0;
+
+const JOIN_RESULT_TUPLE: u32 = 1;
+const JOIN_RESULT_LIST: u32 = 2;
+const JOIN_RESULT_OUTCOME: u32 = 3;
+const JOIN_RESULT_OUTCOME_TUPLE: u32 = 4;
+const JOIN_RESULT_OUTCOME_LIST: u32 = 5;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ValueSlot {
+    pub(crate) words: [u64; 6],
+}
+
+#[repr(C)]
+pub(crate) struct ValueNode {
+    pub(crate) value: ValueSlot,
+    pub(crate) next: *mut ValueNode,
+}
+
+pub type LoomTaskResume = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TaskStatus {
+    Runnable,
+    Running,
+    Waiting,
+    Draining,
+    Completed,
+    Faulted,
+    Cancelled,
+}
+
+pub struct LoomTask {
+    resume: LoomTaskResume,
+    pub(crate) slots: Box<[ValueSlot]>,
+    result_slot: usize,
+    state: u64,
+    executor: *mut LoomExecutor,
+    owner: *mut LoomTask,
+    owned_children: Vec<*mut LoomTask>,
+    join_children: Vec<*mut LoomTask>,
+    waits: Vec<LoomRegistration>,
+    status: TaskStatus,
+    deferred_terminal: i32,
+    join_mode: u32,
+    join_winner: u64,
+    join_step: i32,
+    queued: bool,
+    cancel_requested: bool,
+    join_active: bool,
+    wait_leaf: bool,
+    wait_source: LoomWaitSource,
+    composite_spec: *mut LoomJoinSpec,
+}
+
+pub struct LoomJoinSpec {
+    executor: *mut LoomExecutor,
+    owner: *mut LoomTask,
+    task: *mut LoomTask,
+    mode: u32,
+    shape: u32,
+    tasks: Vec<*mut LoomTask>,
+}
+
+fn terminal(status: TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed | TaskStatus::Faulted | TaskStatus::Cancelled
+    )
+}
+
+fn terminal_step(task: *const LoomTask) -> i32 {
+    if task.is_null() {
+        return TASK_FAULTED;
+    }
+    // SAFETY: callers pass pointers owned by their live executor.
+    match unsafe { (*task).status } {
+        TaskStatus::Completed => TASK_COMPLETED,
+        TaskStatus::Cancelled => TASK_CANCELLED,
+        _ => TASK_FAULTED,
+    }
+}
+
+fn executor_owns(executor: &LoomExecutor, task: *const LoomTask) -> bool {
+    !task.is_null()
+        && executor
+            .tasks
+            .iter()
+            .any(|candidate| ptr::eq::<LoomTask>(&raw const **candidate, task))
+}
+
+unsafe fn enqueue_task(executor: &mut LoomExecutor, task: *mut LoomTask) {
+    if !executor_owns(executor, task) {
+        return;
+    }
+    // SAFETY: ownership was established immediately above.
+    let task_ref = unsafe { &mut *task };
+    if task_ref.queued || task_ref.status != TaskStatus::Runnable {
+        return;
+    }
+    task_ref.queued = true;
+    executor.runnable.push_back(task);
+}
+
+fn all_terminal(tasks: &[*mut LoomTask]) -> bool {
+    tasks.iter().all(|task| {
+        !task.is_null() && {
+            // SAFETY: join/ownership lists contain live executor-owned tasks.
+            terminal(unsafe { (**task).status })
+        }
+    })
+}
+
+unsafe fn make_join_runnable(executor: &mut LoomExecutor, parent: *mut LoomTask) {
+    // SAFETY: caller established that parent belongs to executor.
+    unsafe {
+        (*parent).join_active = false;
+        (*parent).status = TaskStatus::Runnable;
+        enqueue_task(executor, parent);
+    }
+}
+
+unsafe fn request_cancel(executor: &mut LoomExecutor, task: *mut LoomTask) {
+    if !executor_owns(executor, task) {
+        return;
+    }
+    // SAFETY: task is owned by executor; copies release the borrow before
+    // recursive scheduler operations.
+    if terminal(unsafe { (*task).status }) {
+        return;
+    }
+    unsafe { (*task).cancel_requested = true };
+    let registrations = unsafe { std::mem::take(&mut (*task).waits) };
+    for registration in registrations {
+        // SAFETY: each registration was created by this executor for task.
+        let _ = unsafe { cancel_for_task(executor, &raw const registration) };
+    }
+    let children = unsafe { (*task).owned_children.clone() };
+    for child in children {
+        // SAFETY: structured child pointers remain live until executor drop.
+        unsafe { request_cancel(executor, child) };
+    }
+    if unsafe { (*task).status } != TaskStatus::Running {
+        unsafe {
+            (*task).status = TaskStatus::Runnable;
+            enqueue_task(executor, task);
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+unsafe fn update_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
+    if !executor_owns(executor, parent)
+        || !unsafe { (*parent).join_active }
+        || unsafe { (*parent).status } != TaskStatus::Waiting
+    {
+        return;
+    }
+    let children = unsafe { (*parent).join_children.clone() };
+    let finished = all_terminal(&children);
+    match unsafe { (*parent).join_mode } {
+        TASK_JOIN_ALL => {
+            let failure = children.iter().copied().find(|child| {
+                terminal(unsafe { (**child).status })
+                    && unsafe { (**child).status != TaskStatus::Completed }
+            });
+            if let Some(failure) = failure {
+                unsafe { (*parent).join_step = terminal_step(failure) };
+                for child in &children {
+                    if !terminal(unsafe { (**child).status }) {
+                        unsafe { request_cancel(executor, *child) };
+                    }
+                }
+                if all_terminal(&children) {
+                    unsafe { make_join_runnable(executor, parent) };
+                }
+            } else if finished {
+                unsafe {
+                    (*parent).join_step = TASK_COMPLETED;
+                    make_join_runnable(executor, parent);
+                }
+            }
+        }
+        TASK_JOIN_SETTLED => {
+            if finished {
+                unsafe {
+                    (*parent).join_step = TASK_COMPLETED;
+                    make_join_runnable(executor, parent);
+                }
+            }
+        }
+        TASK_JOIN_ANY => {
+            if unsafe { (*parent).join_winner } == NO_JOIN_WINNER
+                && let Some(index) = children
+                    .iter()
+                    .position(|child| unsafe { (**child).status } == TaskStatus::Completed)
+            {
+                let Ok(index) = u64::try_from(index) else {
+                    unsafe {
+                        (*parent).join_step = TASK_FAULTED;
+                        make_join_runnable(executor, parent);
+                    }
+                    return;
+                };
+                unsafe {
+                    (*parent).join_winner = index;
+                    (*parent).join_step = TASK_COMPLETED;
+                }
+            }
+            if unsafe { (*parent).join_winner } != NO_JOIN_WINNER {
+                let Ok(winner) = usize::try_from(unsafe { (*parent).join_winner }) else {
+                    unsafe {
+                        (*parent).join_step = TASK_FAULTED;
+                        make_join_runnable(executor, parent);
+                    }
+                    return;
+                };
+                for (index, child) in children.iter().enumerate() {
+                    if index != winner && !terminal(unsafe { (**child).status }) {
+                        unsafe { request_cancel(executor, *child) };
+                    }
+                }
+                if all_terminal(&children) {
+                    unsafe { make_join_runnable(executor, parent) };
+                }
+            } else if finished {
+                unsafe {
+                    (*parent).join_step = TASK_FAULTED;
+                    make_join_runnable(executor, parent);
+                }
+            }
+        }
+        TASK_JOIN_RACE => {
+            if unsafe { (*parent).join_winner } == NO_JOIN_WINNER
+                && let Some(index) = children
+                    .iter()
+                    .position(|child| terminal(unsafe { (**child).status }))
+            {
+                let Ok(index) = u64::try_from(index) else {
+                    unsafe {
+                        (*parent).join_step = TASK_FAULTED;
+                        make_join_runnable(executor, parent);
+                    }
+                    return;
+                };
+                unsafe {
+                    (*parent).join_winner = index;
+                    (*parent).join_step = TASK_COMPLETED;
+                }
+            }
+            if unsafe { (*parent).join_winner } != NO_JOIN_WINNER {
+                let Ok(winner) = usize::try_from(unsafe { (*parent).join_winner }) else {
+                    unsafe {
+                        (*parent).join_step = TASK_FAULTED;
+                        make_join_runnable(executor, parent);
+                    }
+                    return;
+                };
+                for (index, child) in children.iter().enumerate() {
+                    if index != winner && !terminal(unsafe { (**child).status }) {
+                        unsafe { request_cancel(executor, *child) };
+                    }
+                }
+                if all_terminal(&children) {
+                    unsafe { make_join_runnable(executor, parent) };
+                }
+            }
+        }
+        _ => unsafe {
+            (*parent).join_step = TASK_FAULTED;
+            make_join_runnable(executor, parent);
+        },
+    }
+}
+
+unsafe fn child_became_terminal(executor: &mut LoomExecutor, child: *mut LoomTask) {
+    let owner = unsafe { (*child).owner };
+    if !executor_owns(executor, owner) {
+        return;
+    }
+    if unsafe { (*owner).status } == TaskStatus::Waiting && unsafe { (*owner).join_active } {
+        unsafe { update_join(executor, owner) };
+    } else if unsafe { (*owner).status } == TaskStatus::Draining {
+        let children = unsafe { (*owner).owned_children.clone() };
+        if all_terminal(&children) {
+            let deferred = unsafe { (*owner).deferred_terminal };
+            unsafe {
+                (*owner).deferred_terminal = TASK_PENDING;
+                complete_terminal(executor, owner, deferred);
+            }
+        }
+    }
+}
+
+unsafe fn complete_terminal(executor: &mut LoomExecutor, task: *mut LoomTask, step: i32) {
+    if !executor_owns(executor, task) || terminal(unsafe { (*task).status }) {
+        return;
+    }
+    let children = unsafe { (*task).owned_children.clone() };
+    for child in &children {
+        if !terminal(unsafe { (**child).status }) {
+            unsafe { request_cancel(executor, *child) };
+        }
+    }
+    if !all_terminal(&children) {
+        unsafe {
+            (*task).deferred_terminal = step;
+            (*task).status = TaskStatus::Draining;
+        }
+        return;
+    }
+    unsafe {
+        (*task).status = match step {
+            TASK_COMPLETED => TaskStatus::Completed,
+            TASK_CANCELLED => TaskStatus::Cancelled,
+            _ => TaskStatus::Faulted,
+        };
+        child_became_terminal(executor, task);
+    }
+}
+
+unsafe fn consume_notifications(executor: *mut LoomExecutor) {
+    loop {
+        let mut notification = LoomReadyNotification::default();
+        // SAFETY: scheduler owns executor and the stack out pointer.
+        if unsafe { pop_for_scheduler(executor, &raw mut notification) } != 1 {
+            break;
+        }
+        let task = notification.frame.cast::<LoomTask>();
+        // SAFETY: executor is live for the entire scheduler run.
+        let executor_ref = unsafe { &mut *executor };
+        if !executor_owns(executor_ref, task) || terminal(unsafe { (*task).status }) {
+            continue;
+        }
+        let Some(index) = unsafe { (*task).waits.iter() }
+            .position(|candidate| *candidate == notification.registration)
+        else {
+            continue;
+        };
+        unsafe { (*task).waits.remove(index) };
+        if unsafe { (*task).waits.is_empty() } && !unsafe { (*task).cancel_requested } {
+            unsafe {
+                (*task).status = TaskStatus::Runnable;
+                enqueue_task(executor_ref, task);
+            }
+        }
+    }
+}
+
+fn move_task_frames(executor: &mut LoomExecutor) {
+    for task in &mut executor.tasks {
+        let pointer = (&raw mut **task).cast::<LoomTask>();
+        if pointer == executor.active_task || task.slots.is_empty() {
+            continue;
+        }
+        task.slots = task.slots.to_vec().into_boxed_slice();
+        executor.gc_relocations = executor.gc_relocations.saturating_add(1);
+    }
+}
+
+unsafe extern "C" fn resume_wait_leaf(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
+    if executor.is_null() || task.is_null() || !unsafe { (*task).wait_leaf } {
+        return TASK_FAULTED;
+    }
+    if unsafe { (*task).cancel_requested } {
+        return TASK_CANCELLED;
+    }
+    match unsafe { (*task).state } {
+        0 => {
+            let source = unsafe { (*task).wait_source };
+            // SAFETY: task and source are live and owned by executor.
+            if unsafe { task_suspend_wait(executor, task, &raw const source) } != WAIT_OK {
+                return TASK_FAULTED;
+            }
+            unsafe { (*task).state = 1 };
+            TASK_PENDING
+        }
+        1 => {
+            let result = unsafe { &mut (*task).slots[(*task).result_slot] };
+            *result = ValueSlot::default();
+            TASK_COMPLETED
+        }
+        _ => TASK_FAULTED,
+    }
+}
+
+unsafe extern "C" fn resume_composite(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
+    if executor.is_null() || task.is_null() || unsafe { (*task).composite_spec.is_null() } {
+        return TASK_FAULTED;
+    }
+    if unsafe { (*task).cancel_requested } {
+        return TASK_CANCELLED;
+    }
+    let spec = unsafe { (*task).composite_spec };
+    if unsafe { (*spec).executor } != executor || unsafe { (*spec).task } != task {
+        return TASK_FAULTED;
+    }
+    if unsafe { (*task).state } == 0 {
+        let prepare = unsafe { task_prepare_join(executor, task, (*spec).mode) };
+        if prepare != WAIT_OK {
+            return TASK_FAULTED;
+        }
+        for child in unsafe { (*spec).tasks.clone() } {
+            if unsafe { task_add_join_child(executor, task, child) } != WAIT_OK {
+                unsafe { (*task).join_active = false };
+                return TASK_FAULTED;
+            }
+        }
+        let suspend = unsafe { task_suspend_join(executor, task) };
+        if suspend < 0 {
+            return TASK_FAULTED;
+        }
+        unsafe { (*task).state = 1 };
+        if suspend != 0 {
+            return TASK_PENDING;
+        }
+    } else if unsafe { (*task).state } != 1 {
+        return TASK_FAULTED;
+    }
+    let step = unsafe { (*task).join_step };
+    if step != TASK_COMPLETED {
+        return step;
+    }
+    let result = unsafe { task_result(task) };
+    let write = unsafe { task_write_join_result(task, result, (*spec).shape) };
+    if write == WAIT_OK {
+        TASK_COMPLETED
+    } else {
+        TASK_FAULTED
+    }
+}
+
+#[unsafe(export_name = "loom_task_spawn")]
+pub unsafe extern "C" fn task_spawn(
+    executor: *mut LoomExecutor,
+    resume: Option<LoomTaskResume>,
+    slot_count: u64,
+    result_slot: u64,
+) -> *mut LoomTask {
+    let (Ok(slot_count), Ok(result_slot), Some(resume)) = (
+        usize::try_from(slot_count),
+        usize::try_from(result_slot),
+        resume,
+    ) else {
+        return ptr::null_mut();
+    };
+    if executor.is_null() || slot_count == 0 || result_slot >= slot_count {
+        return ptr::null_mut();
+    }
+    // SAFETY: non-null executor is uniquely driven on this thread.
+    let executor_ref = unsafe { &mut *executor };
+    let owner = executor_ref.active_task;
+    let mut task = Box::new(LoomTask {
+        resume,
+        slots: vec![ValueSlot::default(); slot_count].into_boxed_slice(),
+        result_slot,
+        state: 0,
+        executor,
+        owner,
+        owned_children: Vec::new(),
+        join_children: Vec::new(),
+        waits: Vec::new(),
+        status: TaskStatus::Runnable,
+        deferred_terminal: TASK_PENDING,
+        join_mode: TASK_JOIN_ALL,
+        join_winner: NO_JOIN_WINNER,
+        join_step: TASK_COMPLETED,
+        queued: false,
+        cancel_requested: false,
+        join_active: false,
+        wait_leaf: false,
+        wait_source: LoomWaitSource::default(),
+        composite_spec: ptr::null_mut(),
+    });
+    let pointer = &raw mut *task;
+    executor_ref.tasks.push(task);
+    if !owner.is_null() {
+        unsafe { (*owner).owned_children.push(pointer) };
+    }
+    unsafe { enqueue_task(executor_ref, pointer) };
+    pointer
+}
+
+#[unsafe(export_name = "loom_task_from_wait_source")]
+pub unsafe extern "C" fn task_from_wait_source(
+    executor: *mut LoomExecutor,
+    source: *const LoomWaitSource,
+) -> *mut LoomTask {
+    if executor.is_null() || source.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: source is borrowed for this call only.
+    let copied = unsafe { *source };
+    if copied.abi_version != WAIT_ABI_VERSION
+        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_FD)
+    {
+        return ptr::null_mut();
+    }
+    // SAFETY: validated executor and internal callback/slot layout.
+    let task = unsafe { task_spawn(executor, Some(resume_wait_leaf), 1, 0) };
+    if !task.is_null() {
+        unsafe {
+            (*task).wait_leaf = true;
+            (*task).wait_source = copied;
+        }
+    }
+    task
+}
+
+#[unsafe(export_name = "loom_task_slot")]
+pub unsafe extern "C" fn task_slot(task: *mut LoomTask, index: u64) -> *mut c_void {
+    let Ok(index) = usize::try_from(index) else {
+        return ptr::null_mut();
+    };
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: task was checked above; this explicit reference avoids an
+    // implicit raw-pointer autoref while inspecting the boxed-slice metadata.
+    let slots = unsafe { &*ptr::addr_of!((*task).slots) };
+    if index >= slots.len() {
+        return ptr::null_mut();
+    }
+    unsafe { (&raw mut (*task).slots[index]).cast() }
+}
+
+#[unsafe(export_name = "loom_task_result")]
+pub unsafe extern "C" fn task_result(task: *mut LoomTask) -> *mut c_void {
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { task_slot(task, (*task).result_slot as u64) }
+}
+
+#[unsafe(export_name = "loom_task_state")]
+pub unsafe extern "C" fn task_state(task: *const LoomTask) -> u64 {
+    if task.is_null() {
+        0
+    } else {
+        unsafe { (*task).state }
+    }
+}
+
+#[unsafe(export_name = "loom_task_set_state")]
+pub unsafe extern "C" fn task_set_state(task: *mut LoomTask, state: u64) {
+    if !task.is_null() {
+        unsafe { (*task).state = state };
+    }
+}
+
+#[unsafe(export_name = "loom_task_is_cancelled")]
+pub unsafe extern "C" fn task_is_cancelled(task: *const LoomTask) -> i32 {
+    i32::from(!task.is_null() && unsafe { (*task).cancel_requested })
+}
+
+#[unsafe(export_name = "loom_task_prepare_join")]
+pub unsafe extern "C" fn task_prepare_join(
+    executor: *mut LoomExecutor,
+    parent: *mut LoomTask,
+    mode: u32,
+) -> i32 {
+    if executor.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    if !executor_owns(executor_ref, parent)
+        || mode > TASK_JOIN_RACE
+        || executor_ref.active_task != parent
+        || unsafe { (*parent).join_active }
+    {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    unsafe {
+        (*parent).join_children.clear();
+        (*parent).join_mode = mode;
+        (*parent).join_winner = NO_JOIN_WINNER;
+        (*parent).join_step = TASK_COMPLETED;
+        (*parent).join_active = true;
+    }
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_task_add_join_child")]
+pub unsafe extern "C" fn task_add_join_child(
+    executor: *mut LoomExecutor,
+    parent: *mut LoomTask,
+    child: *mut LoomTask,
+) -> i32 {
+    if executor.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    if !executor_owns(executor_ref, parent)
+        || !executor_owns(executor_ref, child)
+        || !unsafe { (*parent).join_active }
+        || child == parent
+        || unsafe { (*child).owner } != parent
+        || unsafe { (*parent).join_children.contains(&child) }
+    {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    unsafe { (*parent).join_children.push(child) };
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_task_suspend_join")]
+pub unsafe extern "C" fn task_suspend_join(
+    executor: *mut LoomExecutor,
+    parent: *mut LoomTask,
+) -> i32 {
+    if executor.is_null() {
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    if !executor_owns(executor_ref, parent)
+        || executor_ref.active_task != parent
+        || !unsafe { (*parent).join_active }
+    {
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    if unsafe { (*parent).join_children.is_empty() } {
+        unsafe { (*parent).join_active = false };
+        return if matches!(
+            unsafe { (*parent).join_mode },
+            TASK_JOIN_ALL | TASK_JOIN_SETTLED
+        ) {
+            0
+        } else {
+            unsafe { (*parent).join_step = TASK_FAULTED };
+            -WAIT_INVALID_ARGUMENT
+        };
+    }
+    unsafe {
+        (*parent).status = TaskStatus::Waiting;
+        update_join(executor_ref, parent);
+    }
+    i32::from(unsafe { (*parent).status } != TaskStatus::Runnable)
+}
+
+#[unsafe(export_name = "loom_task_join_count")]
+pub unsafe extern "C" fn task_join_count(parent: *const LoomTask) -> u64 {
+    if parent.is_null() {
+        0
+    } else {
+        unsafe { (*parent).join_children.len() as u64 }
+    }
+}
+
+#[unsafe(export_name = "loom_task_join_winner")]
+pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
+    if parent.is_null() {
+        NO_JOIN_WINNER
+    } else {
+        unsafe { (*parent).join_winner }
+    }
+}
+
+#[unsafe(export_name = "loom_task_join_step")]
+pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
+    if parent.is_null() {
+        TASK_FAULTED
+    } else {
+        unsafe { (*parent).join_step }
+    }
+}
+
+#[unsafe(export_name = "loom_task_join_result_step")]
+pub unsafe extern "C" fn task_join_result_step(parent: *const LoomTask, index: u64) -> i32 {
+    let Ok(index) = usize::try_from(index) else {
+        return TASK_FAULTED;
+    };
+    if parent.is_null() || index >= unsafe { (*parent).join_children.len() } {
+        return TASK_FAULTED;
+    }
+    terminal_step(unsafe { (&(*parent).join_children)[index] })
+}
+
+#[unsafe(export_name = "loom_task_join_result")]
+pub unsafe extern "C" fn task_join_result(parent: *mut LoomTask, index: u64) -> *mut c_void {
+    let Ok(index) = usize::try_from(index) else {
+        return ptr::null_mut();
+    };
+    if parent.is_null() || index >= unsafe { (*parent).join_children.len() } {
+        return ptr::null_mut();
+    }
+    unsafe { task_result((&(*parent).join_children)[index]) }
+}
+
+unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut ValueSlot) -> i32 {
+    if parent.is_null()
+        || destination.is_null()
+        || index >= unsafe { (*parent).join_children.len() }
+    {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let step = terminal_step(unsafe { (&(*parent).join_children)[index] });
+    let Ok(step_word) = u64::try_from(step) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    let mut value = ValueSlot::default();
+    value.words[0] = VALUE_TAG_TASK_OUTCOME;
+    value.words[2] = step_word;
+    if step == TASK_COMPLETED {
+        let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
+        if result.is_null() {
+            return WAIT_INVALID_ARGUMENT;
+        }
+        let executor = unsafe { &mut *(*parent).executor };
+        let mut inner = Box::new(unsafe { *result });
+        value.words[4] = (&raw mut *inner) as u64;
+        executor.result_values.push(inner);
+    }
+    unsafe { destination.write(value) };
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_task_write_join_result")]
+pub unsafe extern "C" fn task_write_join_result(
+    parent: *mut LoomTask,
+    destination: *mut c_void,
+    shape: u32,
+) -> i32 {
+    if parent.is_null() || destination.is_null() || shape > JOIN_RESULT_OUTCOME_LIST {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let destination = destination.cast::<ValueSlot>();
+    let count = unsafe { (*parent).join_children.len() };
+    let outcome = matches!(
+        shape,
+        JOIN_RESULT_OUTCOME | JOIN_RESULT_OUTCOME_TUPLE | JOIN_RESULT_OUTCOME_LIST
+    );
+    let aggregate = matches!(
+        shape,
+        JOIN_RESULT_TUPLE | JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_TUPLE | JOIN_RESULT_OUTCOME_LIST
+    );
+    if !aggregate {
+        if count == 0 {
+            return WAIT_INVALID_ARGUMENT;
+        }
+        let winner = unsafe { (*parent).join_winner };
+        let index = if winner == NO_JOIN_WINNER {
+            0
+        } else {
+            let Ok(index) = usize::try_from(winner) else {
+                return WAIT_INVALID_ARGUMENT;
+            };
+            index
+        };
+        if outcome {
+            return unsafe { write_outcome(parent, index, destination) };
+        }
+        let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
+        if result.is_null() {
+            return WAIT_INVALID_ARGUMENT;
+        }
+        unsafe { destination.write(*result) };
+        return WAIT_OK;
+    }
+
+    let executor = unsafe { (*parent).executor };
+    let mut head = ptr::null_mut();
+    for index in (0..count).rev() {
+        let mut node = Box::new(ValueNode {
+            value: ValueSlot::default(),
+            next: head,
+        });
+        let status = if outcome {
+            unsafe { write_outcome(parent, index, &raw mut node.value) }
+        } else {
+            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
+            if result.is_null() {
+                WAIT_INVALID_ARGUMENT
+            } else {
+                node.value = unsafe { *result };
+                WAIT_OK
+            }
+        };
+        if status != WAIT_OK {
+            return status;
+        }
+        head = &raw mut *node;
+        // SAFETY: write_outcome released its temporary executor borrow before
+        // this mutation and generated code is single-threaded.
+        unsafe { (*executor).result_nodes.push(node) };
+    }
+    let mut result = ValueSlot::default();
+    result.words[0] = if matches!(shape, JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_LIST) {
+        VALUE_TAG_LIST
+    } else {
+        VALUE_TAG_TUPLE
+    };
+    result.words[2] = count as u64;
+    result.words[4] = head as u64;
+    unsafe { destination.write(result) };
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_join_create")]
+pub unsafe extern "C" fn join_create(
+    executor: *mut LoomExecutor,
+    mode: u32,
+    shape: u32,
+) -> *mut LoomJoinSpec {
+    if executor.is_null()
+        || mode > TASK_JOIN_RACE
+        || shape > JOIN_RESULT_OUTCOME_LIST
+        || unsafe { (*executor).active_task.is_null() }
+    {
+        return ptr::null_mut();
+    }
+    let task = unsafe { task_spawn(executor, Some(resume_composite), 1, 0) };
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    let executor_ref = unsafe { &mut *executor };
+    let mut join = Box::new(LoomJoinSpec {
+        executor,
+        owner: executor_ref.active_task,
+        task,
+        mode,
+        shape,
+        tasks: Vec::new(),
+    });
+    let pointer = &raw mut *join;
+    unsafe { (*task).composite_spec = pointer };
+    executor_ref.join_specs.push(join);
+    pointer
+}
+
+#[unsafe(export_name = "loom_join_task")]
+pub unsafe extern "C" fn join_task(join: *mut LoomJoinSpec) -> *mut LoomTask {
+    if join.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { (*join).task }
+    }
+}
+
+#[unsafe(export_name = "loom_join_add_task")]
+pub unsafe extern "C" fn join_add_task(join: *mut LoomJoinSpec, task: *mut LoomTask) -> i32 {
+    if join.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let executor = unsafe { (*join).executor };
+    let valid = !executor.is_null()
+        && executor_owns(unsafe { &*executor }, task)
+        && unsafe { (*join).owner } == unsafe { (*executor).active_task };
+    if !valid
+        || unsafe { (*task).owner } != unsafe { (*join).owner }
+        || task == unsafe { (*join).owner }
+        || task == unsafe { (*join).task }
+        || unsafe { (*join).tasks.contains(&task) }
+    {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let owner = unsafe { (*join).owner };
+    let composite = unsafe { (*join).task };
+    unsafe {
+        if let Some(index) = (*owner)
+            .owned_children
+            .iter()
+            .position(|candidate| *candidate == task)
+        {
+            (*owner).owned_children.remove(index);
+        } else {
+            return WAIT_INVALID_ARGUMENT;
+        }
+        (*task).owner = composite;
+        (*composite).owned_children.push(task);
+        (*join).tasks.push(task);
+    }
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_join_add_list")]
+pub unsafe extern "C" fn join_add_list(join: *mut LoomJoinSpec, list_value: *const c_void) -> i32 {
+    if join.is_null() || list_value.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let list = unsafe { &*list_value.cast::<ValueSlot>() };
+    if list.words[0] != VALUE_TAG_LIST {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let mut node = list.words[4] as *const ValueNode;
+    for _ in 0..list.words[2] {
+        if node.is_null()
+            || unsafe { (*node).value.words[0] } != VALUE_TAG_TASK
+            || unsafe { (*node).value.words[2] } != TASK_VALUE_DIRECT
+        {
+            return WAIT_INVALID_ARGUMENT;
+        }
+        let task = unsafe { (*node).value.words[4] as *mut LoomTask };
+        let status = unsafe { join_add_task(join, task) };
+        if status != WAIT_OK {
+            return status;
+        }
+        node = unsafe { (*node).next };
+    }
+    i32::from(!node.is_null()) * WAIT_INVALID_ARGUMENT
+}
+
+#[unsafe(export_name = "loom_task_suspend_value")]
+pub unsafe extern "C" fn task_suspend_value(
+    executor: *mut LoomExecutor,
+    parent: *mut LoomTask,
+    task_value: *const c_void,
+) -> i32 {
+    if executor.is_null() || task_value.is_null() {
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    let value = unsafe { &*task_value.cast::<ValueSlot>() };
+    if value.words[0] != VALUE_TAG_TASK {
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    if value.words[2] != TASK_VALUE_DIRECT {
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    let prepare = unsafe { task_prepare_join(executor, parent, TASK_JOIN_ALL) };
+    if prepare != WAIT_OK {
+        return -prepare;
+    }
+    let add = unsafe { task_add_join_child(executor, parent, value.words[4] as *mut LoomTask) };
+    if add != WAIT_OK {
+        unsafe { (*parent).join_active = false };
+        return -add;
+    }
+    unsafe { task_suspend_join(executor, parent) }
+}
+
+#[unsafe(export_name = "loom_task_suspend_wait")]
+pub unsafe extern "C" fn task_suspend_wait(
+    executor: *mut LoomExecutor,
+    task: *mut LoomTask,
+    source: *const LoomWaitSource,
+) -> i32 {
+    if executor.is_null() || task.is_null() || source.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let valid =
+        executor_owns(unsafe { &*executor }, task) && unsafe { (*executor).active_task } == task;
+    if !valid {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let mut registration = LoomRegistration::default();
+    let status = unsafe {
+        register_for_task(
+            executor,
+            source,
+            task.cast::<c_void>(),
+            &raw mut registration,
+        )
+    };
+    if status != WAIT_OK {
+        return status;
+    }
+    unsafe {
+        (*task).waits.push(registration);
+        (*task).status = TaskStatus::Waiting;
+    }
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_task_cancel")]
+pub unsafe extern "C" fn task_cancel(executor: *mut LoomExecutor, task: *mut LoomTask) -> i32 {
+    if executor.is_null() || !executor_owns(unsafe { &*executor }, task) {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    unsafe { request_cancel(&mut *executor, task) };
+    WAIT_OK
+}
+
+#[unsafe(export_name = "loom_executor_run")]
+pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut LoomTask) -> i32 {
+    if executor.is_null()
+        || !executor_owns(unsafe { &*executor }, root)
+        || !unsafe { (*root).owner.is_null() }
+    {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    while !terminal(unsafe { (*root).status }) {
+        unsafe { consume_notifications(executor) };
+        if unsafe { (*executor).runnable.is_empty() } {
+            let mut ready_count = 0;
+            let status = unsafe { wait_for_scheduler(executor, &raw mut ready_count) };
+            if status != WAIT_OK {
+                return status;
+            }
+            unsafe { consume_notifications(executor) };
+            if unsafe { (*executor).runnable.is_empty() } {
+                if has_registrations(unsafe { &*executor }) {
+                    continue;
+                }
+                return WAIT_UNSUPPORTED;
+            }
+        }
+        let task = {
+            // SAFETY: the scheduler is the executor's unique driver.
+            let executor_ref = unsafe { &mut *executor };
+            collect(executor_ref);
+            move_task_frames(executor_ref);
+            executor_ref.runnable.pop_front()
+        };
+        let Some(task) = task else {
+            continue;
+        };
+        unsafe { (*task).queued = false };
+        if unsafe { (*task).status } != TaskStatus::Runnable {
+            continue;
+        }
+        unsafe { (*task).status = TaskStatus::Running };
+        unsafe { (*executor).active_task = task };
+        let resume = unsafe { (*task).resume };
+        enter_executor(executor);
+        let step = unsafe { resume(task, executor) };
+        leave_executor();
+        unsafe { (*executor).active_task = ptr::null_mut() };
+        if step == TASK_PENDING {
+            if unsafe { (*task).status } == TaskStatus::Running {
+                unsafe { (*task).status = TaskStatus::Waiting };
+            }
+        } else {
+            // SAFETY: no generated code is active, so the scheduler may take
+            // the unique executor borrow again.
+            let executor_ref = unsafe { &mut *executor };
+            unsafe { complete_terminal(executor_ref, task, step) };
+        }
+    }
+    match unsafe { (*root).status } {
+        TaskStatus::Completed => TASK_COMPLETED,
+        TaskStatus::Cancelled => TASK_CANCELLED,
+        _ => TASK_FAULTED,
+    }
+}
+
+#[unsafe(export_name = "loom_executor_gc_collections")]
+pub unsafe extern "C" fn executor_gc_collections(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        unsafe { (*executor).gc_collections }
+    }
+}
+
+#[unsafe(export_name = "loom_executor_gc_relocations")]
+pub unsafe extern "C" fn executor_gc_relocations(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        unsafe { (*executor).gc_relocations }
+    }
+}
+
+#[unsafe(export_name = "loom_executor_gc_reclaimed")]
+pub unsafe extern "C" fn executor_gc_reclaimed(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        unsafe { (*executor).gc_reclaimed }
+    }
+}
+
+#[unsafe(export_name = "loom_executor_gc_live_objects")]
+pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor) -> u64 {
+    if executor.is_null() {
+        0
+    } else {
+        let executor = unsafe { &*executor };
+        (executor.gc_values.len() as u64).saturating_add(executor.gc_nodes.len() as u64)
+    }
+}

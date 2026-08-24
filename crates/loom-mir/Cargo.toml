@@ -1,0 +1,15 @@
+[package]
+name = "loom-mir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loom-core.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+
+[lints]
+workspace = true

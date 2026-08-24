@@ -1,0 +1,25 @@
+[package]
+name = "loom-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loom-core.workspace = true
+loom-syntax.workspace = true
+loom-hir.workspace = true
+loom-sema.workspace = true
+loom-mir.workspace = true
+loom-lowering.workspace = true
+loom-interpreter.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

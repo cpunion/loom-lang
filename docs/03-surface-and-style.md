@@ -1,12 +1,12 @@
 # loom-lang 核心表面与代码风格
 
-状态：Core Surface / Core 0.1 Draft + Core 0.2 Confirmed Addendum
+状态：Core Surface / Core 0.1–0.3 C1 Executable Reference
 
-证据等级：C0 草案（常用写法已确认，完整 lexical grammar 尚待闭合）
+证据等级：C1 executable core（parser、formatter 与 checker 已共享该表面合同）
 
-日期：2026-08-21
+日期：2026-08-24
 
-本文只规定 [Core 0.1](02-language-design-baseline.md) 已确认能力的常用写法。Core 0.2 的 `concept`、conformance 与 borrowed dyn carrier 由 [独立规范](05-concepts-and-dynamic-polymorphism.md)定稿；owned/shared dyn 只确认方向。它们都不属于 C1 parser 的输入。AOP-like 组合、desired-state/operator、capability 和专用 `example`/`scenario` 不在本文中，也不预留关键字。
+本文规定 [Core 0.1](02-language-design-baseline.md) 已确认能力的常用写法。Core 0.2 的 `concept`、显式 conformance、Go 风格参数书写与 `dyn C` 由 [独立规范](05-concepts-and-dynamic-polymorphism.md)定稿；Go-like 仅指 `name Type` 表面，不包含 structural conformance 或运行时接口发现。Core 0.3 的 GC、词法清理和 Task/coroutine 由 [独立规范](08-memory-cleanup-and-async.md)定稿。精确 token、换行、precedence、statement 和 Core 0.2 parser 形状以 [可执行合同](06-executable-contract.md)为准。所有权/借用表面、AOP-like 组合、desired-state/operator、capability 和专用 `example`/`scenario` 不在本文中，也不预留关键字。
 
 ## 1. 总体风格
 
@@ -56,7 +56,7 @@ parser 的恢复规则同样属于表面合同：
 5. 一个 method 损坏但 `impl` 外壳仍可识别时，以完整 `(pub)? method` sequence 同步下一个 member；遇到 top-level start sequence 则结束损坏的 impl error island；
 6. 恢复不表示损坏程序可构建，只保证一处半写代码不会吞掉其后的独立声明，也不会改变恢复后声明的可见性。
 
-精确 token grammar 和 diagnostic code 在 C1 parser 合同中补齐，但不得改变这条顶层同步原则。
+精确 token grammar 和 diagnostic code 已由 [可执行合同](06-executable-contract.md)补齐，不得改变这条顶层同步原则。
 
 ## 3. 命名与可见性
 
@@ -146,9 +146,9 @@ pub record Order {
     discount Price
     note     Option[Text]
 
-    invariant is_finite(self.subtotal)
-        && is_finite(self.discount)
-        && self.discount <= self.subtotal
+    invariant is_finite(self.subtotal) &&
+        is_finite(self.discount) &&
+        self.discount <= self.subtotal
 }
 
 impl Order {
@@ -256,11 +256,11 @@ test fn order_total_is_non_negative() Result[Unit, Violation] {
 }
 ```
 
-测试正常返回 `Unit` 或 `Ok(Unit)` 即通过；返回 `Err`、产生 ContractFault 或发生未处理缺陷即失败。
+测试正常返回 `Unit` 或 `Ok(Unit)` 即通过；返回 `Err`、产生 ContractFault、RuntimeFault 或发生未处理缺陷即失败。
 
-## 9. 已确认的下一版表面
+## 9. Core 0.2 concept 与接口参数
 
-Core 0.2 已确认以下唯一主写法：
+Core 0.2 的主写法：
 
 ```loom
 pub concept Ordered {
@@ -283,27 +283,66 @@ impl Ordered for Price {
 fn smaller[T: Ordered](left T, right T) T {
     if left.less_equal(right) { left } else { right }
 }
+
+fn format(
+    formatter Formatter[Error = FormatError],
+    text Text,
+) Result[Text, FormatError] {
+    formatter.format(text)
+}
+
+fn explicitly_erased(value dyn Formatter[Error = FormatError]) Unit {
+    Unit
+}
 ```
 
-动态值必须显式写出 carrier：
+参数使用 `name Type`，不写 `name: Type`。普通 `C` 是接口参数的惯用形式；参数位置的 `dyn C` 具有相同可观察语义，只显式强调类型擦除。具体实参自动适配，`mut self` requirement 要求实参是 `var` place。源码不写 `view[...]`、borrow、lifetime、`box/shared` 或其他所有权 carrier。
+
+Core 0.2 parser 的 top-level sequence 增加 `(pub)? concept`、`(pub)? dyn concept` 与 `impl Concept for Type`。conformance body 的 member-start sequence 是 `associated type`、`method` 和 `static method`；它与 Core 0.1 的 inherent `impl Type` 分开恢复。语义与动态兼容以 [Core 0.2 规范](05-concepts-and-dynamic-polymorphism.md)为准，精确 parser 形状与拒绝规则以 [可执行合同第 11 节](06-executable-contract.md#11-core-02-parserchecker-降级合同)为准。
+
+## 10. Core 0.3 scoped、defer 与 Task
+
+词法资源写法：
 
 ```loom
-view[dyn Formatter[Error = FormatError]]
-view[mut dyn Source[Item = Text]]
+scoped file = open(path)
+defer {
+    closeWithProtocolName(handle)
+}
 ```
 
-拥有型载体的目标拼写已选择为：
+不写 `scoped let`，也不写析构属性或 ownership/lifetime。`scoped` binding 本身稳定；资源内部需要变化时仍通过已有的 `mut self` method。cleanup 属于最内层 block，按 LIFO 执行。
+
+async 函数仍使用普通逻辑返回类型：
 
 ```loom
-box[dyn Formatter[Error = FormatError]]
-shared[dyn Formatter[Error = FormatError]]
+async fn load(id Int) Document {
+    ...
+}
+
+let document = load(1).await
+let decoded = load(1).await.decode()
+let document = load(1).await?
+Task.sleep(10).await // 10 milliseconds
 ```
 
-后两种仍等待独立 affine/shared 所有权规范，不是 Core 0.2 parser 当前可接受源码。
+固定元数的并发 join 返回 tuple：
 
-Core 0.2 parser 的 top-level sequence 将增加 `(pub)? concept`、`(pub)? dyn concept` 与 `impl Concept for Type`。conformance body 的 member-start sequence 是 `associated type`、`method` 和 `static method`；它与 Core 0.1 的 inherent `impl Type` 分开恢复。完整语法、动态兼容和 carrier 规则只以 [Core 0.2 规范](05-concepts-and-dynamic-polymorphism.md)为准。
+```loom
+let user, settings = Task.all(loadUser(), loadSettings()).await
+```
 
-## 10. 当前没有写法的方向
+动态数量使用同构 task list：
+
+```loom
+let tasks = List[Task[Report]]()
+// 根据运行时输入加入任意多个 Task[Report]
+let reports = Task.all(tasks).await
+```
+
+`.await` 是不可重载的后缀关键字，不是普通零参数 method；写 `.await`，不写 `.await()`，旧前缀 `await task` 按普通非法语法报错。`?` 是与 async 无关的独立后缀传播运算符：`task.await?` 先取得 `Result[T, E]`，再在 `Ok` 时产生 `T`、在 `Err` 时从当前 callable 返回 `Err`。当前不做隐式错误转换，`E` 必须与当前 callable 的 `Result[_, E]` 完全一致；`!` 不构成强制 await/unwrap 语法。`Task.sleep(milliseconds)` 要求非负 `Int`；`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)` 等待借用 descriptor 的一次 readiness，均返回可存储的 `Task[Unit]`。仍未终结的 Task 必须在词法 scope 结束前被 await、加入 join 或返回。`Task.all(...)` 等组合本身也只产生 Task，取得结果仍须显式 `.await`。tuple 与 list 不隐式互转；异构动态集合必须使用显式 enum/tagged union 或共同 `dyn C`，不得自动擦除为 `any`。
+
+## 11. 当前没有写法的方向
 
 Core 0.1 不定义或保留以下表面：
 
@@ -311,7 +350,7 @@ Core 0.1 不定义或保留以下表面：
 - desired-state、operator、reconcile；
 - capability、provider、effect；
 - `example`、`scenario`、`property`；
-- package、target、feature/bundle；
+- registry package、lockfile、feature/bundle；基础 `loom.toml` 与 bin/test target 已由工具链定义；
 - 第二套 trait/interface、concept conformance 之外的自由 extension declaration、继承、开放/多重派发和运行期实现发现。
 
-`concept` 与显式 dyn receiver dispatch 已经进入 Core 0.2，不属于本节。其余方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。
+`concept` 与显式 dyn receiver dispatch 已经进入 Core 0.2；GC、scoped/defer 与结构化 Task 已进入 Core 0.3，均不属于本节。其余方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。

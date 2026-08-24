@@ -1,12 +1,12 @@
 # loom-lang 最小语言核心规范
 
-状态：Core 0.1 / Confirmed Normative Draft
+状态：Core 0.1 / Confirmed Normative Design + C1 Executable Reference
 
-证据等级：C0 草案（本文列出的决定已确认，尚有可执行细节待闭合）
+证据等级：C1 executable core（Core 0.1 fixture 已通过真实工具链闭环）
 
-日期：2026-08-21
+日期：2026-08-24
 
-本文是 Core 0.1 的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；[实现分期](04-capability-stages.md#6-实现前仍需冻结的可执行细节) 所列问题闭合后，Core 0.1 才能升级为 parser/checker 的完整 executable contract。下一版已确认的行为抽象由 [Core 0.2 concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)单独定义；AOP-like 组合和 desired-state/operator 仍在讨论。
+本文是 Core 0.1 的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；parser/checker 开工所需的精确 token、grammar、数值、failure 与 artifact 选择由 [Core 0.1–0.3 可执行合同](06-executable-contract.md)补齐。下一版已确认的行为抽象由 [Core 0.2 concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)单独定义；AOP-like 组合和 desired-state/operator 仍在讨论。
 
 文中的“必须”“不得”是规范要求；表面拼写由 [核心表面与代码风格](03-surface-and-style.md)补充。
 
@@ -40,9 +40,11 @@ Core 0.1 的 `Float` 固定为 IEEE 754 binary64：
 - Core 0.1 不提供 Float 的隐式 total ordering；
 - 标准库 `standard.float.is_finite(Float) Bool` 是 compiler-known、pure、total predicate。
 
-文本解析/格式化和跨平台 canonical encoding 属于标准库 executable contract，不能改变上述运行语义。
+文本解析/格式化和跨平台 canonical encoding 由 [可执行合同第 6 节](06-executable-contract.md#6-float-parseformat-和-canonical-encoding)固定，不能改变上述运行语义。
 
-`Int` 的位宽、溢出、除零和转换语义尚未冻结，属于 C0 关门项。在该合同闭合前，本文只确认 Int literal、相等与顺序比较；不得把 Int 算术用于要求 total 的 contract predicate，也不得据此冻结后端行为。
+`Int` 固定为 checked signed i64，不随目标平台改变；溢出、除零和最小 Int 值除以 `-1` 产生不可捕获的 `RuntimeFault`，且没有隐式 Int/Float 转换，详见 [可执行合同第 5 节](06-executable-contract.md#5-int-运行合同)。Int 算术仍不得进入要求 total 的 contract predicate。
+
+Core 不同时暴露多组整数大小。未来若 FFI、二进制格式或 SIMD 需要精确宽度，可以显式增加 `I8/I16/I32/I64` 与 `U8/U16/U32/U64`；`ISize/USize` 只允许用于指针和宿主 ABI 边界，不成为默认算术、公共协议或持久化类型。普通源码继续使用跨平台语义固定的 `Int`。
 
 ## 2. 名字与 module
 
@@ -168,7 +170,7 @@ fn add_tax(price Price, rate Float) Result[Price, Violation] {
 - 局部变量允许类型推断；
 - 普通函数体按源码顺序执行；
 - 尾表达式是返回值，`return` 用于提前返回；
-- Core 0.1 没有函数重载、动态派发或隐式 receiver；Core 0.2 只通过显式 dyn carrier 增加 receiver dispatch。
+- Core 0.1 没有函数重载、动态派发或隐式 receiver；Core 0.2 的 concept 接口参数在需要擦除时增加 receiver dispatch，编译器可对静态可知的接口调用去虚化。
 
 method 在 `impl T` 中使用独立的 `method` 关键字声明：
 
@@ -279,9 +281,9 @@ record Order {
     subtotal Price
     discount Price
 
-    invariant is_finite(self.subtotal)
-        && is_finite(self.discount)
-        && self.discount <= self.subtotal
+    invariant is_finite(self.subtotal) &&
+        is_finite(self.discount) &&
+        self.discount <= self.subtotal
 }
 ```
 
@@ -333,7 +335,7 @@ impl Order {
 
 合同 predicate 必须 pure、deterministic、total。Core 0.1 允许参数、字段、`self`、`result`、`old(expr)`、字面量、total 基础运算、比较、布尔组合、穷尽 match，以及 compiler-known total predicates（首个是 `standard.float.is_finite`）；`assert` 还可以引用在该位置之前已经建立的 immutable locals。合同不得执行 I/O、修改状态或返回业务错误。
 
-Core 0.1 的合同中不允许用户函数调用、索引、Int 算术或其他无法静态保证 total 的操作。Int 数值模型闭合后，可把其中已证明 total 的操作加入合同子集。后续若开放用户 pure/total function，必须先有可检查的效果与终止合同。
+Core 0.1 的合同中不允许用户函数调用、索引、Int 算术或其他无法静态保证 total 的操作。即使 checked i64 运行合同已经闭合，可能产生 RuntimeFault 的 Int 算术仍不属于合同子集。后续若开放用户 pure/total function，必须先有可检查的效果与终止合同；当前闭合子集见 [可执行合同第 7 节](06-executable-contract.md#7-contract-predicate-与-old)。
 
 - `result` 表示完整返回值；
 - `old(expr)` 只允许出现在 ensures，表示当前 fn/method 调用入口时的逻辑值快照；其中表达式只能引用在入口已存在的参数，以及 method 的 `self`/字段；
@@ -384,7 +386,7 @@ test fn negative_price_is_rejected() {
 - 返回 Unit 或 `Result[Unit, E]`；
 - 使用与普通代码相同的 parser、类型系统和合同；
 - 正常返回 Unit/Ok(Unit) 即通过；
-- 返回 Err、ContractFault 或未处理程序缺陷即失败；
+- 返回 Err、ContractFault、RuntimeFault 或未处理程序缺陷即失败；
 - 对预期业务 Err 必须在 test 内显式 match；
 - test 遵守正常 module/import/可见性；
 - 没有专用响应式执行、fixture 生命周期、mock DSL 或隐式依赖注入。
@@ -398,10 +400,10 @@ Core 0.1 不包含 `example`、`scenario`、`property`。
 - AOP-like 静态组合和注入；
 - desired-state/operator/reconcile；
 - capability/provider/effect；
-- async、并发与持久化；
+- Core 0.3 已单独定义的 GC、scoped/defer 与结构化 async/Task 不属于 Core 0.1；持久化 coroutine 和分布式执行仍开放；
 - 继承、concept conformance 之外的自由 extension declaration、开放/多重派发和第二套 trait/interface 抽象；
-- package/target/feature；
+- registry package、lockfile、feature/bundle；基础 manifest/path dependency/bin-test target 属于工具链层，不改变 Core 0.1 表达式语义；
 - `?`、pattern guard、默认字段和复杂解构；
-- 一般所有权、借用与底层内存布局；Core 0.2 只为 dyn carrier 定义受限的 readonly/mutable 词法 view，box/shared 仍等待独立所有权规范。
+- 一般所有权、借用与公开底层内存布局；Core 0.2 接口参数由编译器管理为 call-scoped value/inout，不增加 borrow、lifetime 或 owning-carrier 源码语法。
 
-`concept`/`dyn concept` 已经通过独立裁决进入 Core 0.2，不再属于本节开放问题。其余方向只有在新的最小例子闭合后，才能修改 Core 版本。
+`concept`/`dyn concept` 已经通过独立裁决进入 Core 0.2；GC、scoped/defer 与结构化 Task 已通过 [独立裁决](08-memory-cleanup-and-async.md)进入 Core 0.3，不再属于本节开放问题。其余方向只有在新的最小例子闭合后，才能修改 Core 版本。

@@ -1,0 +1,3354 @@
+//! Deterministic interpreter for checked loom MIR.
+
+/// Interpreter backend version included in persistent compiler cache keys.
+pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Write as _;
+use std::time::{Duration, Instant};
+
+use loom_core::Span;
+use loom_mir::{
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, Contract, ContractArm,
+    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function, FunctionId, LocalId,
+    MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement, StatementKind,
+    TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
+};
+use serde::{Deserialize, Serialize};
+
+const DEFAULT_FUEL: u64 = 1_000_000;
+const DEFAULT_MAX_DEPTH: u32 = 256;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ExecutionLimits {
+    pub fuel: u64,
+    pub max_call_depth: u32,
+}
+
+impl Default for ExecutionLimits {
+    fn default() -> Self {
+        Self {
+            fuel: DEFAULT_FUEL,
+            max_call_depth: DEFAULT_MAX_DEPTH,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Value {
+    Unit,
+    Tuple {
+        elements: Vec<Value>,
+    },
+    List {
+        elements: Vec<Value>,
+    },
+    Bool {
+        value: bool,
+    },
+    Int {
+        value: i64,
+    },
+    Float {
+        value: f64,
+    },
+    Text {
+        value: String,
+    },
+    Record {
+        ty: TypeId,
+        fields: Vec<Value>,
+    },
+    Enum {
+        ty: TypeId,
+        variant: VariantId,
+        payload: Vec<Value>,
+    },
+    Refined {
+        ty: TypeId,
+        value: Box<Value>,
+    },
+    Violation {
+        value: Violation,
+    },
+    DynView {
+        location: Location,
+        witness: RuntimeWitness,
+        mutable: bool,
+        token: u32,
+    },
+    /// Compiler-internal managed task handle. Checked source cannot observe,
+    /// store, compare, or return this value.
+    Task {
+        id: u64,
+    },
+    TaskJoin {
+        mode: TaskJoinMode,
+        tasks: Vec<u64>,
+        dynamic: bool,
+    },
+    TaskOutcome {
+        outcome: TaskOutcomeValue,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+pub enum TaskOutcomeValue {
+    Completed(Box<Value>),
+    Faulted,
+    Cancelled,
+}
+
+/// A fully resolved conformance proof carried by an executing frame or view.
+///
+/// MIR witness parameters have already been replaced by their caller proofs;
+/// `arguments` therefore contains exactly the prerequisite proofs required by
+/// a conditional conformance implementation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeWitness {
+    definition: WitnessId,
+    arguments: Vec<RuntimeWitness>,
+}
+
+impl Value {
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut output = String::new();
+        self.write_summary(&mut output, 0);
+        if output.chars().count() > 256 {
+            output.chars().take(253).collect::<String>() + "..."
+        } else {
+            output
+        }
+    }
+
+    fn write_summary(&self, output: &mut String, depth: u8) {
+        if depth >= 6 {
+            output.push_str("...");
+            return;
+        }
+        match self {
+            Self::Unit => output.push_str("Unit"),
+            Self::Tuple { elements } => {
+                output.push('(');
+                for (index, element) in elements.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ");
+                    }
+                    element.write_summary(output, depth + 1);
+                }
+                if elements.len() == 1 {
+                    output.push(',');
+                }
+                output.push(')');
+            }
+            Self::List { elements } => {
+                output.push('[');
+                for (index, element) in elements.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ");
+                    }
+                    element.write_summary(output, depth + 1);
+                }
+                output.push(']');
+            }
+            Self::Bool { value } => output.push_str(if *value { "true" } else { "false" }),
+            Self::Int { value } => {
+                let _ = write!(output, "{value}");
+            }
+            Self::Float { value } => {
+                output.push_str(&format_float(*value));
+            }
+            Self::Text { value } => {
+                let _ = write!(output, "Text(bytes={})", value.len());
+            }
+            Self::Record { ty, .. } => {
+                let _ = write!(output, "type#{}", ty.0);
+            }
+            Self::Enum { ty, variant, .. } => {
+                let _ = write!(output, "type#{}::variant#{}", ty.0, variant.0);
+            }
+            Self::Refined { ty, value } => {
+                let _ = write!(output, "type#{}(", ty.0);
+                value.write_summary(output, depth + 1);
+                output.push(')');
+            }
+            Self::Violation { value } => {
+                let _ = write!(output, "Violation({})", value.code);
+            }
+            Self::DynView { .. } => output.push_str("<dyn interface>"),
+            Self::Task { .. } | Self::TaskJoin { .. } => output.push_str("<task>"),
+            Self::TaskOutcome { outcome } => match outcome {
+                TaskOutcomeValue::Completed(value) => {
+                    output.push_str("Completed(");
+                    value.write_summary(output, depth + 1);
+                    output.push(')');
+                }
+                TaskOutcomeValue::Faulted => output.push_str("Faulted"),
+                TaskOutcomeValue::Cancelled => output.push_str("Cancelled"),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Violation {
+    pub target_type: String,
+    pub code: String,
+    pub predicate: String,
+    pub path: Vec<String>,
+    pub value_summary: String,
+    pub contract_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractFaultKind {
+    Precondition,
+    Postcondition,
+    Invariant,
+    Assertion,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractFault {
+    pub code: String,
+    pub category: ContractFaultKind,
+    pub message: String,
+    pub contract_span: Span,
+    pub blame_span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFault {
+    pub code: String,
+    pub message: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterpreterDefect {
+    pub code: String,
+    pub message: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "channel", rename_all = "snake_case")]
+pub enum ExecutionFailure {
+    Contract { fault: ContractFault },
+    Runtime { fault: RuntimeFault },
+    Defect { defect: InterpreterDefect },
+}
+
+impl From<ContractFault> for ExecutionFailure {
+    fn from(fault: ContractFault) -> Self {
+        Self::Contract { fault }
+    }
+}
+
+impl From<RuntimeFault> for ExecutionFailure {
+    fn from(fault: RuntimeFault) -> Self {
+        if fault.code.starts_with("LOOM_RUNTIME_") {
+            Self::Defect {
+                defect: InterpreterDefect {
+                    code: "InterpreterDefect".into(),
+                    message: fault.message,
+                    span: fault.span,
+                },
+            }
+        } else {
+            Self::Runtime { fault }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestResult {
+    pub name: String,
+    pub status: TestStatus,
+    pub value: Option<Value>,
+    pub failure: Option<ExecutionFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    frame: u64,
+    local: LocalId,
+    projection: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+enum Slot {
+    Empty,
+    Value(Value),
+    Alias(Location),
+    Moved,
+}
+
+#[derive(Clone, Debug)]
+struct Frame {
+    slots: Vec<Slot>,
+    witnesses: Vec<RuntimeWitness>,
+}
+
+#[derive(Clone, Debug)]
+enum TaskStatus {
+    Runnable,
+    Waiting,
+    Completed(Value),
+    Failed(ExecutionFailure),
+    Cancelled,
+}
+
+#[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+struct ManagedTask {
+    function: FunctionId,
+    frame: u64,
+    parent: Option<u64>,
+    children: Vec<u64>,
+    cursor: usize,
+    awaiting_state: Option<u32>,
+    cleanups: Vec<Block>,
+    status: TaskStatus,
+    queued: bool,
+    marked: bool,
+    /// Present only for the compiler-known `Task.sleep` leaf task.
+    timer_deadline: Option<Instant>,
+    /// Present only for a compiler-known descriptor readiness leaf task.
+    fd_wait: Option<(i64, bool)>,
+    join_mode: TaskJoinMode,
+    join_dynamic: bool,
+    join_combined: bool,
+    join_winner: Option<usize>,
+    cancel_requested: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcStats {
+    pub allocations: u64,
+    pub collections: u64,
+    pub reclaimed: u64,
+    pub live: u64,
+}
+
+enum TaskPoll {
+    Pending,
+    Completed,
+    Failed,
+}
+
+enum AwaitPoll {
+    Pending,
+    Ready(Value),
+    Failed(ExecutionFailure),
+}
+
+enum AwaitDestination {
+    Ignore,
+    Local(LocalId),
+    Tuple(Vec<LocalId>),
+    Return,
+}
+
+#[derive(Clone, Debug)]
+enum BoundArgument {
+    Value(Value),
+    Alias(Location),
+}
+
+enum EvalAbort {
+    Failure(ExecutionFailure),
+    Return(Box<Value>),
+    Cancelled,
+}
+
+impl From<ExecutionFailure> for EvalAbort {
+    fn from(value: ExecutionFailure) -> Self {
+        Self::Failure(value)
+    }
+}
+
+impl From<RuntimeFault> for EvalAbort {
+    fn from(value: RuntimeFault) -> Self {
+        Self::Failure(value.into())
+    }
+}
+
+impl From<ContractFault> for EvalAbort {
+    fn from(value: ContractFault) -> Self {
+        Self::Failure(value.into())
+    }
+}
+
+struct ContractContext<'a> {
+    receiver: Option<&'a Value>,
+    result: Option<&'a Value>,
+    arguments: &'a [Value],
+    old_receiver: Option<&'a Value>,
+    old_arguments: &'a [Option<Value>],
+    bindings: &'a [Value],
+}
+
+#[derive(Clone, Debug, Default)]
+struct OldSnapshotNeeds {
+    receiver: bool,
+    arguments: Vec<bool>,
+}
+
+pub struct Interpreter<'program> {
+    program: &'program Program,
+    frames: BTreeMap<u64, Frame>,
+    next_frame: u64,
+    fuel_limit: u64,
+    fuel: u64,
+    max_call_depth: u32,
+    call_depth: u32,
+    tasks: BTreeMap<u64, ManagedTask>,
+    ready: VecDeque<u64>,
+    next_task: u64,
+    active_task: Option<u64>,
+    active_root: Option<u64>,
+    gc_stats: GcStats,
+}
+
+impl<'program> Interpreter<'program> {
+    #[must_use]
+    pub fn new(program: &'program Program) -> Self {
+        Self::with_limits(program, ExecutionLimits::default())
+    }
+
+    #[must_use]
+    pub fn with_limits(program: &'program Program, limits: ExecutionLimits) -> Self {
+        Self {
+            program,
+            frames: BTreeMap::new(),
+            next_frame: 0,
+            fuel_limit: limits.fuel,
+            fuel: limits.fuel,
+            max_call_depth: limits.max_call_depth,
+            call_depth: 0,
+            tasks: BTreeMap::new(),
+            ready: VecDeque::new(),
+            next_task: 0,
+            active_task: None,
+            active_root: None,
+            gc_stats: GcStats::default(),
+        }
+    }
+
+    /// Invokes a checked MIR function.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured contract or runtime failure. Language-level
+    /// `Result.Err` remains a successful [`Value`] on the normal channel.
+    pub fn invoke(
+        &mut self,
+        function: FunctionId,
+        arguments: Vec<Value>,
+        call_site: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        if self.call_depth == 0 {
+            self.frames.clear();
+            self.tasks.clear();
+            self.ready.clear();
+            self.next_frame = 0;
+            self.next_task = 0;
+            self.active_task = None;
+            self.active_root = None;
+            self.gc_stats = GcStats::default();
+            self.fuel = self.fuel_limit;
+        }
+        let value = self.invoke_bound(
+            function,
+            arguments.into_iter().map(BoundArgument::Value).collect(),
+            Vec::new(),
+            call_site,
+        )?;
+        if let Value::Task { id } = value {
+            self.run_task(id)
+        } else {
+            Ok(value)
+        }
+    }
+
+    #[must_use]
+    pub const fn gc_stats(&self) -> GcStats {
+        self.gc_stats
+    }
+
+    pub fn run_tests(&mut self) -> Vec<TestResult> {
+        let mut tests = self.program.tests.clone();
+        tests.sort_by_key(|id| {
+            self.program
+                .function(*id)
+                .map_or_else(String::new, |function| function.name.clone())
+        });
+        tests
+            .into_iter()
+            .map(|id| {
+                let Some(function) = self.program.function(id) else {
+                    return TestResult {
+                        name: format!("function#{}", id.0),
+                        status: TestStatus::Failed,
+                        value: None,
+                        failure: Some(
+                            self.runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "test function does not exist",
+                                Span::default(),
+                            )
+                            .into(),
+                        ),
+                    };
+                };
+                let name = function.name.clone();
+                let span = function.span;
+                match self.invoke(id, Vec::new(), span) {
+                    Ok(value) if test_value_passed(&value) => TestResult {
+                        name,
+                        status: TestStatus::Passed,
+                        value: Some(value),
+                        failure: None,
+                    },
+                    Ok(value) => TestResult {
+                        name,
+                        status: TestStatus::Failed,
+                        value: Some(value),
+                        failure: None,
+                    },
+                    Err(failure) => TestResult {
+                        name,
+                        status: TestStatus::Failed,
+                        value: None,
+                        failure: Some(failure),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn run_task(&mut self, root: u64) -> Result<Value, ExecutionFailure> {
+        self.active_root = Some(root);
+        loop {
+            match self.tasks.get(&root).map(|task| task.status.clone()) {
+                Some(TaskStatus::Completed(value)) => {
+                    self.active_task = None;
+                    self.active_root = None;
+                    self.collect_tasks(None);
+                    return Ok(value);
+                }
+                Some(TaskStatus::Failed(failure)) => {
+                    self.active_task = None;
+                    self.active_root = None;
+                    self.collect_tasks(None);
+                    return Err(failure);
+                }
+                Some(TaskStatus::Cancelled) => {
+                    self.active_task = None;
+                    self.active_root = None;
+                    self.collect_tasks(None);
+                    return Err(self
+                        .runtime_fault("TaskCancelled", "root task was cancelled", Span::default())
+                        .into());
+                }
+                Some(TaskStatus::Runnable | TaskStatus::Waiting) => {}
+                None => {
+                    return Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "root task was collected before completion",
+                            Span::default(),
+                        )
+                        .into());
+                }
+            }
+
+            let Some(current) = self.ready.pop_front() else {
+                if self.wait_for_next_timer() {
+                    continue;
+                }
+                return Err(self
+                    .runtime_fault(
+                        "AsyncDeadlock",
+                        "no runnable task can satisfy the root task's wait",
+                        Span::default(),
+                    )
+                    .into());
+            };
+            let Some(task) = self.tasks.get_mut(&current) else {
+                continue;
+            };
+            task.queued = false;
+            if !matches!(task.status, TaskStatus::Runnable) {
+                continue;
+            }
+
+            self.active_task = Some(current);
+            let poll = self.resume_task(current)?;
+            self.active_task = None;
+            if matches!(poll, TaskPoll::Completed | TaskPoll::Failed) {
+                self.wake_parent(current);
+            }
+        }
+    }
+
+    fn wait_for_next_timer(&mut self) -> bool {
+        let Some(deadline) = self
+            .tasks
+            .values()
+            .filter(|task| {
+                task.timer_deadline.is_some() && matches!(task.status, TaskStatus::Waiting)
+            })
+            .filter_map(|task| task.timer_deadline)
+            .min()
+        else {
+            return false;
+        };
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let now = Instant::now();
+        let ready = self
+            .tasks
+            .iter()
+            .filter_map(|(id, task)| {
+                (matches!(task.status, TaskStatus::Waiting)
+                    && task.timer_deadline.is_some_and(|deadline| deadline <= now))
+                .then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        for task_id in ready {
+            self.tasks
+                .get_mut(&task_id)
+                .expect("timer task exists")
+                .status = TaskStatus::Runnable;
+            self.enqueue_task(task_id);
+        }
+        true
+    }
+
+    fn enqueue_task(&mut self, task_id: u64) {
+        let Some(task) = self.tasks.get_mut(&task_id) else {
+            return;
+        };
+        if !matches!(task.status, TaskStatus::Runnable) || task.queued {
+            return;
+        }
+        task.queued = true;
+        self.ready.push_back(task_id);
+    }
+
+    fn wake_parent(&mut self, child: u64) {
+        let Some(parent) = self.tasks.get(&child).and_then(|task| task.parent) else {
+            return;
+        };
+        let Some(waiting) = self.tasks.get(&parent) else {
+            return;
+        };
+        if !matches!(waiting.status, TaskStatus::Waiting) || !waiting.children.contains(&child) {
+            return;
+        }
+        let children = waiting.children.clone();
+        let mode = waiting.join_mode;
+        let mut winner = waiting.join_winner;
+        let child_status = self.tasks.get(&child).map(|task| task.status.clone());
+        if winner.is_none() {
+            let selected = match mode {
+                TaskJoinMode::Any => {
+                    matches!(child_status, Some(TaskStatus::Completed(_)))
+                }
+                TaskJoinMode::Race => child_status.as_ref().is_some_and(task_terminal),
+                TaskJoinMode::All | TaskJoinMode::Settled => false,
+            };
+            if selected {
+                winner = children.iter().position(|candidate| *candidate == child);
+                self.tasks
+                    .get_mut(&parent)
+                    .expect("parent exists")
+                    .join_winner = winner;
+            }
+        }
+        let all_failed = mode == TaskJoinMode::All
+            && matches!(
+                child_status,
+                Some(TaskStatus::Failed(_) | TaskStatus::Cancelled)
+            );
+        if all_failed || winner.is_some() {
+            for (index, sibling) in children.iter().copied().enumerate() {
+                if Some(index) != winner && sibling != child {
+                    self.cancel_task(sibling);
+                }
+            }
+        }
+        let ready = children.iter().all(|child| {
+            self.tasks
+                .get(child)
+                .is_some_and(|task| task_terminal(&task.status))
+        });
+        if !ready {
+            return;
+        }
+        self.tasks.get_mut(&parent).expect("parent checked").status = TaskStatus::Runnable;
+        self.enqueue_task(parent);
+    }
+
+    fn cancel_task(&mut self, task_id: u64) {
+        let Some(task) = self.tasks.get_mut(&task_id) else {
+            return;
+        };
+        if task_terminal(&task.status) || task.cancel_requested {
+            return;
+        }
+        task.cancel_requested = true;
+        task.timer_deadline = None;
+        let children = task.children.clone();
+        task.status = TaskStatus::Runnable;
+        for child in children {
+            self.cancel_task(child);
+        }
+        self.enqueue_task(task_id);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn resume_task(&mut self, task_id: u64) -> Result<TaskPoll, ExecutionFailure> {
+        match self.tasks.get(&task_id).map(|task| &task.status) {
+            Some(TaskStatus::Completed(_)) => return Ok(TaskPoll::Completed),
+            Some(TaskStatus::Failed(_) | TaskStatus::Cancelled) => {
+                return Ok(TaskPoll::Failed);
+            }
+            Some(TaskStatus::Runnable) => {}
+            Some(TaskStatus::Waiting) => {
+                return Err(self
+                    .runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "scheduler resumed a task that is still waiting",
+                        Span::default(),
+                    )
+                    .into());
+            }
+            None => {
+                return Err(self
+                    .runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "scheduler referenced an unknown task",
+                        Span::default(),
+                    )
+                    .into());
+            }
+        }
+        if self
+            .tasks
+            .get(&task_id)
+            .is_some_and(|task| task.cancel_requested)
+        {
+            return Ok(self.finish_task(task_id, Err(EvalAbort::Cancelled)));
+        }
+        if let Some(deadline) = self
+            .tasks
+            .get(&task_id)
+            .and_then(|task| task.timer_deadline)
+        {
+            if Instant::now() < deadline {
+                self.tasks
+                    .get_mut(&task_id)
+                    .expect("timer task exists")
+                    .status = TaskStatus::Waiting;
+                return Ok(TaskPoll::Pending);
+            }
+            self.tasks
+                .get_mut(&task_id)
+                .expect("timer task exists")
+                .status = TaskStatus::Completed(Value::Unit);
+            return Ok(TaskPoll::Completed);
+        }
+        if let Some((descriptor, writable)) = self.tasks.get(&task_id).and_then(|task| task.fd_wait)
+        {
+            let interests = if writable {
+                loom_runtime::WAIT_WRITABLE
+            } else {
+                loom_runtime::WAIT_READABLE
+            };
+            if let Err(error) = loom_runtime::wait_fd_once(descriptor, interests) {
+                let failure = self.runtime_fault(
+                    "IoWaitFault",
+                    format!("descriptor readiness wait failed: {error}"),
+                    Span::default(),
+                );
+                self.tasks
+                    .get_mut(&task_id)
+                    .expect("fd wait task exists")
+                    .status = TaskStatus::Failed(failure.clone().into());
+                return Ok(TaskPoll::Failed);
+            }
+            self.tasks
+                .get_mut(&task_id)
+                .expect("fd wait task exists")
+                .status = TaskStatus::Completed(Value::Unit);
+            return Ok(TaskPoll::Completed);
+        }
+        let (function_id, frame) = {
+            let task = self.tasks.get(&task_id).expect("task checked above");
+            (task.function, task.frame)
+        };
+        let function = self.program.function(function_id).cloned().ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "async task references an unknown function",
+                Span::default(),
+            ))
+        })?;
+        loop {
+            let cursor = self.tasks.get(&task_id).expect("task exists").cursor;
+            if let Some(statement) = function.body.statements.get(cursor).cloned() {
+                if let StatementKind::Defer(cleanup) = statement.kind {
+                    let task = self.tasks.get_mut(&task_id).expect("task exists");
+                    task.cleanups.push(cleanup);
+                    task.cursor += 1;
+                    continue;
+                }
+
+                let await_action = match &statement.kind {
+                    StatementKind::Let { local, value } => {
+                        await_expr(value).map(|awaited| (AwaitDestination::Local(*local), awaited))
+                    }
+                    StatementKind::LetTuple { locals, value } => await_expr(value)
+                        .map(|awaited| (AwaitDestination::Tuple(locals.clone()), awaited)),
+                    StatementKind::Evaluate(value) => {
+                        await_expr(value).map(|awaited| (AwaitDestination::Ignore, awaited))
+                    }
+                    StatementKind::Return(Some(value)) => {
+                        await_expr(value).map(|awaited| (AwaitDestination::Return, awaited))
+                    }
+                    StatementKind::Assign { .. }
+                    | StatementKind::Assert { .. }
+                    | StatementKind::Return(None)
+                    | StatementKind::Defer(_) => None,
+                };
+                if let Some((destination, awaited)) = await_action {
+                    match self.poll_await(task_id, frame, awaited)? {
+                        AwaitPoll::Pending => return Ok(TaskPoll::Pending),
+                        AwaitPoll::Failed(failure) => {
+                            return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
+                        }
+                        AwaitPoll::Ready(value) => {
+                            match destination {
+                                AwaitDestination::Ignore => {}
+                                AwaitDestination::Local(local) => {
+                                    self.set_slot(
+                                        frame,
+                                        local,
+                                        Slot::Value(value),
+                                        statement.span,
+                                    )?;
+                                }
+                                AwaitDestination::Tuple(locals) => {
+                                    self.bind_tuple(frame, &locals, value, statement.span)?;
+                                }
+                                AwaitDestination::Return => {
+                                    return Ok(self.finish_task(
+                                        task_id,
+                                        Err(EvalAbort::Return(Box::new(value))),
+                                    ));
+                                }
+                            }
+                            self.tasks.get_mut(&task_id).expect("task exists").cursor += 1;
+                            continue;
+                        }
+                    }
+                }
+
+                match self.eval_statement(frame, &statement) {
+                    Ok(()) => {
+                        self.tasks.get_mut(&task_id).expect("task exists").cursor += 1;
+                    }
+                    Err(abort) => return Ok(self.finish_task(task_id, Err(abort))),
+                }
+                continue;
+            }
+
+            if let Some(tail) = function.body.tail.as_deref() {
+                if let Some(awaited) = await_expr(tail) {
+                    match self.poll_await(task_id, frame, awaited)? {
+                        AwaitPoll::Pending => return Ok(TaskPoll::Pending),
+                        AwaitPoll::Ready(value) => {
+                            return Ok(self.finish_task(task_id, Ok(value)));
+                        }
+                        AwaitPoll::Failed(failure) => {
+                            return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
+                        }
+                    }
+                }
+                let outcome = self.eval_expr(frame, tail);
+                return Ok(self.finish_task(task_id, outcome));
+            }
+            return Ok(self.finish_task(task_id, Ok(Value::Unit)));
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn poll_await(
+        &mut self,
+        task_id: u64,
+        frame: u64,
+        awaited: &Expr,
+    ) -> Result<AwaitPoll, ExecutionFailure> {
+        let ExprKind::Await { state, task } = &awaited.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "scheduler received a non-Await expression",
+                    awaited.span,
+                )
+                .into());
+        };
+        let awaiting = self
+            .tasks
+            .get(&task_id)
+            .and_then(|task| task.awaiting_state);
+        if awaiting.is_none() {
+            let value = match self.eval_expr(frame, task) {
+                Ok(value) => value,
+                Err(EvalAbort::Failure(failure)) => return Ok(AwaitPoll::Failed(failure)),
+                Err(EvalAbort::Return(_)) => {
+                    return Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Await operand attempted to return from its enclosing function",
+                            awaited.span,
+                        )
+                        .into());
+                }
+                Err(EvalAbort::Cancelled) => return Ok(AwaitPoll::Pending),
+            };
+            let (children, mode, dynamic, combined) = match value {
+                Value::Task { id } => (vec![id], TaskJoinMode::All, false, false),
+                Value::Tuple { elements } => {
+                    let mut children = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        let Value::Task { id } = element else {
+                            return Err(self
+                                .runtime_fault(
+                                    "LOOM_RUNTIME_INVALID_MIR",
+                                    "Await tuple contained a non-task value",
+                                    awaited.span,
+                                )
+                                .into());
+                        };
+                        children.push(id);
+                    }
+                    (children, TaskJoinMode::All, false, true)
+                }
+                Value::TaskJoin {
+                    mode,
+                    tasks,
+                    dynamic,
+                } => (tasks, mode, dynamic, true),
+                _ => {
+                    return Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Await operand did not construct a task or task tuple",
+                            awaited.span,
+                        )
+                        .into());
+                }
+            };
+            if children.is_empty() {
+                return match mode {
+                    TaskJoinMode::All | TaskJoinMode::Settled => {
+                        Ok(AwaitPoll::Ready(Value::List {
+                            elements: Vec::new(),
+                        }))
+                    }
+                    TaskJoinMode::Any | TaskJoinMode::Race => Ok(AwaitPoll::Failed(
+                        self.runtime_fault(
+                            "EmptyTaskJoin",
+                            "Task.any and Task.race require a non-empty task list",
+                            awaited.span,
+                        )
+                        .into(),
+                    )),
+                };
+            }
+            let current = self.tasks.get_mut(&task_id).expect("task exists");
+            current.awaiting_state = Some(*state);
+            current.children.clone_from(&children);
+            current.join_mode = mode;
+            current.join_dynamic = dynamic;
+            current.join_combined = combined;
+            current.join_winner = None;
+            current.status = TaskStatus::Waiting;
+            for child in children {
+                if let Some(child_task) = self.tasks.get_mut(&child) {
+                    child_task.parent = Some(task_id);
+                }
+            }
+            return Ok(AwaitPoll::Pending);
+        }
+        if awaiting != Some(*state) {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "task resumed at a different Await state",
+                    awaited.span,
+                )
+                .into());
+        }
+        let children = self
+            .tasks
+            .get(&task_id)
+            .map(|task| task.children.clone())
+            .filter(|children| !children.is_empty())
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "waiting task has no children",
+                    awaited.span,
+                ))
+            })?;
+        let (mode, dynamic, combined, winner) = {
+            let current = self.tasks.get(&task_id).expect("task exists");
+            (
+                current.join_mode,
+                current.join_dynamic,
+                current.join_combined,
+                current.join_winner,
+            )
+        };
+        let mut values = Vec::with_capacity(children.len());
+        let mut outcomes = Vec::with_capacity(children.len());
+        let mut failure = None;
+        for child in &children {
+            match self.tasks.get(child).map(|task| task.status.clone()) {
+                Some(TaskStatus::Completed(value)) => {
+                    outcomes.push(Value::TaskOutcome {
+                        outcome: TaskOutcomeValue::Completed(Box::new(value.clone())),
+                    });
+                    values.push(Some(value));
+                }
+                Some(TaskStatus::Failed(child_failure)) => {
+                    outcomes.push(Value::TaskOutcome {
+                        outcome: TaskOutcomeValue::Faulted,
+                    });
+                    failure.get_or_insert(child_failure);
+                    values.push(None);
+                }
+                Some(TaskStatus::Cancelled) => {
+                    outcomes.push(Value::TaskOutcome {
+                        outcome: TaskOutcomeValue::Cancelled,
+                    });
+                    values.push(None);
+                }
+                Some(TaskStatus::Runnable | TaskStatus::Waiting) => {
+                    self.tasks.get_mut(&task_id).expect("task exists").status = TaskStatus::Waiting;
+                    return Ok(AwaitPoll::Pending);
+                }
+                None => {
+                    return Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "waiting task references a collected child",
+                            awaited.span,
+                        )
+                        .into());
+                }
+            }
+        }
+        let current = self.tasks.get_mut(&task_id).expect("task exists");
+        current.awaiting_state = None;
+        current.children.clear();
+        self.collect_tasks(self.active_root);
+        match mode {
+            TaskJoinMode::All => {
+                if let Some(failure) = failure {
+                    return Ok(AwaitPoll::Failed(failure));
+                }
+                let values = values.into_iter().flatten().collect::<Vec<_>>();
+                if dynamic {
+                    Ok(AwaitPoll::Ready(Value::List { elements: values }))
+                } else if combined {
+                    Ok(AwaitPoll::Ready(Value::Tuple { elements: values }))
+                } else {
+                    Ok(AwaitPoll::Ready(
+                        values.into_iter().next().expect("single task completed"),
+                    ))
+                }
+            }
+            TaskJoinMode::Settled => {
+                if dynamic {
+                    Ok(AwaitPoll::Ready(Value::List { elements: outcomes }))
+                } else {
+                    Ok(AwaitPoll::Ready(Value::Tuple { elements: outcomes }))
+                }
+            }
+            TaskJoinMode::Any => {
+                if let Some(index) = winner
+                    && let Some(value) = values.get_mut(index).and_then(Option::take)
+                {
+                    Ok(AwaitPoll::Ready(value))
+                } else {
+                    Ok(AwaitPoll::Failed(
+                        self.runtime_fault(
+                            "TaskAnyFailed",
+                            "Task.any completed without a successful task",
+                            awaited.span,
+                        )
+                        .into(),
+                    ))
+                }
+            }
+            TaskJoinMode::Race => {
+                let index = winner.ok_or_else(|| {
+                    ExecutionFailure::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "Task.race resumed without a winner",
+                        awaited.span,
+                    ))
+                })?;
+                Ok(AwaitPoll::Ready(outcomes[index].clone()))
+            }
+        }
+    }
+
+    fn eval_nested_await(&mut self, frame: u64, awaited: &Expr) -> Result<Value, EvalAbort> {
+        let task_id = self.active_task.ok_or_else(|| {
+            EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "nested Await has no active async task",
+                awaited.span,
+            ))
+        })?;
+        loop {
+            if self
+                .tasks
+                .get(&task_id)
+                .is_some_and(|task| task.cancel_requested)
+            {
+                self.remove_ready_task(task_id);
+                return Err(EvalAbort::Cancelled);
+            }
+            match self
+                .poll_await(task_id, frame, awaited)
+                .map_err(EvalAbort::from)?
+            {
+                AwaitPoll::Ready(value) => {
+                    self.remove_ready_task(task_id);
+                    return Ok(value);
+                }
+                AwaitPoll::Failed(failure) => return Err(EvalAbort::Failure(failure)),
+                AwaitPoll::Pending => self.drive_nested_wait(task_id, awaited.span)?,
+            }
+        }
+    }
+
+    fn drive_nested_wait(&mut self, parent: u64, span: Span) -> Result<(), EvalAbort> {
+        loop {
+            let parent_ready = self.tasks.get(&parent).is_some_and(|task| {
+                task.cancel_requested
+                    || (task.awaiting_state.is_some()
+                        && matches!(task.status, TaskStatus::Runnable))
+            });
+            if parent_ready {
+                self.remove_ready_task(parent);
+                self.active_task = Some(parent);
+                return Ok(());
+            }
+
+            let Some(current) = self.ready.pop_front() else {
+                if self.wait_for_next_timer() {
+                    continue;
+                }
+                return Err(EvalAbort::from(self.runtime_fault(
+                    "AsyncDeadlock",
+                    "no runnable task can satisfy the nested await",
+                    span,
+                )));
+            };
+            if current == parent {
+                if let Some(task) = self.tasks.get_mut(&parent) {
+                    task.queued = false;
+                }
+                self.active_task = Some(parent);
+                return Ok(());
+            }
+            let Some(task) = self.tasks.get_mut(&current) else {
+                continue;
+            };
+            task.queued = false;
+            if !matches!(task.status, TaskStatus::Runnable) {
+                continue;
+            }
+            self.active_task = Some(current);
+            let poll = self.resume_task(current).map_err(EvalAbort::from)?;
+            self.active_task = Some(parent);
+            if matches!(poll, TaskPoll::Completed | TaskPoll::Failed) {
+                self.wake_parent(current);
+            }
+        }
+    }
+
+    fn remove_ready_task(&mut self, task_id: u64) {
+        self.ready.retain(|candidate| *candidate != task_id);
+        if let Some(task) = self.tasks.get_mut(&task_id) {
+            task.queued = false;
+        }
+    }
+
+    fn finish_task(&mut self, task_id: u64, outcome: Result<Value, EvalAbort>) -> TaskPoll {
+        let (frame, cleanups) = {
+            let task = self.tasks.get_mut(&task_id).expect("task exists");
+            (task.frame, std::mem::take(&mut task.cleanups))
+        };
+        let outcome = self.run_cleanups(frame, cleanups, outcome);
+        let status = match outcome {
+            Ok(value) => TaskStatus::Completed(value),
+            Err(EvalAbort::Return(value)) => TaskStatus::Completed(*value),
+            Err(EvalAbort::Failure(failure)) => TaskStatus::Failed(failure),
+            Err(EvalAbort::Cancelled) => TaskStatus::Cancelled,
+        };
+        let failed = matches!(&status, TaskStatus::Failed(_) | TaskStatus::Cancelled);
+        self.tasks.get_mut(&task_id).expect("task exists").status = status;
+        if failed {
+            TaskPoll::Failed
+        } else {
+            TaskPoll::Completed
+        }
+    }
+
+    fn collect_tasks(&mut self, root: Option<u64>) {
+        self.gc_stats.collections = self.gc_stats.collections.saturating_add(1);
+        for task in self.tasks.values_mut() {
+            task.marked = false;
+        }
+        let mut pending = root.into_iter().collect::<Vec<_>>();
+        while let Some(task_id) = pending.pop() {
+            let Some(task) = self.tasks.get_mut(&task_id) else {
+                continue;
+            };
+            if task.marked {
+                continue;
+            }
+            task.marked = true;
+            pending.extend(task.children.iter().copied());
+        }
+        let unreachable = self
+            .tasks
+            .iter()
+            .filter_map(|(id, task)| (!task.marked).then_some((*id, task.frame)))
+            .collect::<Vec<_>>();
+        for (task, frame) in unreachable {
+            self.tasks.remove(&task);
+            self.frames.remove(&frame);
+            self.gc_stats.reclaimed = self.gc_stats.reclaimed.saturating_add(1);
+        }
+        self.ready.retain(|task| self.tasks.contains_key(task));
+        self.gc_stats.live = self.tasks.len() as u64;
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn invoke_bound(
+        &mut self,
+        function_id: FunctionId,
+        arguments: Vec<BoundArgument>,
+        witnesses: Vec<RuntimeWitness>,
+        call_site: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        self.tick(call_site)?;
+        if self.call_depth >= self.max_call_depth {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_CALL_DEPTH",
+                    "call depth limit exceeded",
+                    call_site,
+                )
+                .into());
+        }
+        let function = self.program.function(function_id).cloned().ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                format!("function #{} does not exist", function_id.0),
+                call_site,
+            ))
+        })?;
+        if function.params.len() != arguments.len() {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    format!(
+                        "{} expects {} arguments, received {}",
+                        function.name,
+                        function.params.len(),
+                        arguments.len()
+                    ),
+                    call_site,
+                )
+                .into());
+        }
+        if function.witness_params.len() != witnesses.len() {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    format!(
+                        "{} expects {} witness arguments, received {}",
+                        function.name,
+                        function.witness_params.len(),
+                        witnesses.len()
+                    ),
+                    call_site,
+                )
+                .into());
+        }
+
+        let slot_count = function
+            .params
+            .iter()
+            .chain(&function.locals)
+            .map(|local| local.id.0 as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let frame_id = self.next_frame;
+        self.next_frame += 1;
+        let mut frame = Frame {
+            slots: vec![Slot::Empty; slot_count],
+            witnesses,
+        };
+        for (parameter, argument) in function.params.iter().zip(arguments) {
+            frame.slots[parameter.id.0 as usize] = match argument {
+                BoundArgument::Value(value) => Slot::Value(value),
+                BoundArgument::Alias(location) => Slot::Alias(location),
+            };
+        }
+        self.frames.insert(frame_id, frame);
+        if function.is_async {
+            let task_id = self.next_task;
+            self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "TaskIdExhausted",
+                    "async task identity space was exhausted",
+                    call_site,
+                ))
+            })?;
+            self.tasks.insert(
+                task_id,
+                ManagedTask {
+                    function: function_id,
+                    frame: frame_id,
+                    parent: self.active_task,
+                    children: Vec::new(),
+                    cursor: 0,
+                    awaiting_state: None,
+                    cleanups: Vec::new(),
+                    status: TaskStatus::Runnable,
+                    queued: false,
+                    marked: false,
+                    timer_deadline: None,
+                    fd_wait: None,
+                    join_mode: TaskJoinMode::All,
+                    join_dynamic: false,
+                    join_combined: false,
+                    join_winner: None,
+                    cancel_requested: false,
+                },
+            );
+            self.enqueue_task(task_id);
+            self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+            self.gc_stats.live = self.tasks.len() as u64;
+            return Ok(Value::Task { id: task_id });
+        }
+        self.call_depth += 1;
+
+        let outcome = self.execute_function(frame_id, &function, call_site);
+        self.call_depth -= 1;
+        self.frames.remove(&frame_id);
+        outcome
+    }
+
+    fn execute_function(
+        &mut self,
+        frame: u64,
+        function: &Function,
+        call_site: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let parameter_values = self.read_parameter_values(frame, function)?;
+        let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
+
+        if let (Some(contract), Some(receiver_value)) =
+            (&function.call_plan.receiver_invariant, receiver.as_ref())
+        {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Invariant,
+                receiver_value,
+                arguments,
+                None,
+                None,
+                &[],
+                contract.span,
+            )?;
+        }
+
+        for contract in &function.call_plan.requires {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Precondition,
+                receiver.as_ref().unwrap_or(&Value::Unit),
+                arguments,
+                None,
+                None,
+                &[],
+                call_site,
+            )?;
+        }
+
+        let snapshot_needs = old_snapshot_needs(&function.call_plan.ensures, arguments.len());
+        let old_arguments = arguments
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                snapshot_needs
+                    .arguments
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                    .then(|| value.clone())
+            })
+            .collect::<Vec<_>>();
+        let old_receiver = snapshot_needs.receiver.then(|| receiver.clone()).flatten();
+        let result = match self.eval_block(frame, &function.body) {
+            Ok(value) => value,
+            Err(EvalAbort::Return(value)) => *value,
+            Err(EvalAbort::Failure(failure)) => return Err(failure),
+            Err(EvalAbort::Cancelled) => {
+                return Err(self
+                    .runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "synchronous function observed task cancellation",
+                        call_site,
+                    )
+                    .into());
+            }
+        };
+
+        let current_parameter_values = self.read_parameter_values(frame, function)?;
+        let (current_receiver, current_arguments) =
+            self.contract_arguments(function, &current_parameter_values)?;
+
+        if let (Some(contract), Some(receiver_value)) = (
+            &function.call_plan.receiver_invariant,
+            current_receiver.as_ref(),
+        ) {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Invariant,
+                receiver_value,
+                current_arguments,
+                Some(&result),
+                old_receiver.as_ref(),
+                &old_arguments,
+                contract.span,
+            )?;
+        }
+
+        for contract in &function.call_plan.ensures {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Postcondition,
+                current_receiver.as_ref().unwrap_or(&Value::Unit),
+                current_arguments,
+                Some(&result),
+                old_receiver.as_ref(),
+                &old_arguments,
+                contract.span,
+            )?;
+        }
+        Ok(result)
+    }
+
+    fn read_parameter_values(
+        &self,
+        frame: u64,
+        function: &Function,
+    ) -> Result<Vec<Value>, ExecutionFailure> {
+        function
+            .params
+            .iter()
+            .map(|parameter| self.read_place(&Location::local(frame, parameter.id), function.span))
+            .collect()
+    }
+
+    fn contract_arguments<'values>(
+        &self,
+        function: &Function,
+        values: &'values [Value],
+    ) -> Result<(Option<Value>, &'values [Value]), ExecutionFailure> {
+        if function.receiver.is_none() {
+            return Ok((None, values));
+        }
+        let Some((receiver, arguments)) = values.split_first() else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "receiver function has no receiver parameter",
+                    function.span,
+                )
+                .into());
+        };
+        Ok((Some(receiver.clone()), arguments))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn require_contract(
+        &mut self,
+        contract: &Contract,
+        category: ContractFaultKind,
+        receiver: &Value,
+        arguments: &[Value],
+        result: Option<&Value>,
+        old_receiver: Option<&Value>,
+        old_arguments: &[Option<Value>],
+        blame_span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let context = ContractContext {
+            receiver: Some(receiver),
+            result,
+            arguments,
+            old_receiver,
+            old_arguments,
+            bindings: &[],
+        };
+        let value = self.eval_contract(&contract.expression, &context)?;
+        match value {
+            Value::Bool { value: true } => Ok(()),
+            Value::Bool { value: false } => Err(ContractFault {
+                code: match category {
+                    ContractFaultKind::Precondition => "PreconditionFault",
+                    ContractFaultKind::Postcondition => "PostconditionFault",
+                    ContractFaultKind::Invariant => "InvariantFault",
+                    ContractFaultKind::Assertion => "AssertionFault",
+                }
+                .into(),
+                category,
+                message: format!("contract `{}` was not satisfied", contract.code),
+                contract_span: contract.span,
+                blame_span,
+            }
+            .into()),
+            _ => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "contract expression did not produce Bool",
+                    contract.span,
+                )
+                .into()),
+        }
+    }
+
+    fn eval_block(&mut self, frame: u64, block: &Block) -> Result<Value, EvalAbort> {
+        self.tick(block.span).map_err(EvalAbort::from)?;
+        let mut cleanups = Vec::new();
+        let outcome = (|| {
+            for statement in &block.statements {
+                if let StatementKind::Defer(cleanup) = &statement.kind {
+                    cleanups.push(cleanup.clone());
+                } else {
+                    self.eval_statement(frame, statement)?;
+                }
+            }
+            block
+                .tail
+                .as_deref()
+                .map_or_else(|| Ok(Value::Unit), |tail| self.eval_expr(frame, tail))
+        })();
+        self.run_cleanups(frame, cleanups, outcome)
+    }
+
+    fn run_cleanups(
+        &mut self,
+        frame: u64,
+        cleanups: Vec<Block>,
+        mut outcome: Result<Value, EvalAbort>,
+    ) -> Result<Value, EvalAbort> {
+        for cleanup in cleanups.into_iter().rev() {
+            match self.eval_block(frame, &cleanup) {
+                Ok(_) => {}
+                Err(EvalAbort::Failure(failure)) => {
+                    if matches!(&outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                        outcome = Err(EvalAbort::Failure(failure));
+                    }
+                }
+                Err(EvalAbort::Return(_)) => {
+                    if matches!(&outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                        outcome = Err(EvalAbort::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "defer cleanup attempted to return",
+                            cleanup.span,
+                        )));
+                    }
+                }
+                Err(EvalAbort::Cancelled) => {
+                    if !matches!(&outcome, Err(EvalAbort::Failure(_))) {
+                        outcome = Err(EvalAbort::Cancelled);
+                    }
+                }
+            }
+        }
+        outcome
+    }
+
+    fn eval_statement(&mut self, frame: u64, statement: &Statement) -> Result<(), EvalAbort> {
+        self.tick(statement.span).map_err(EvalAbort::from)?;
+        match &statement.kind {
+            StatementKind::Let { local, value } => {
+                let value = self.eval_expr(frame, value)?;
+                self.set_slot(frame, *local, Slot::Value(value), statement.span)
+                    .map_err(EvalAbort::from)?;
+                Ok(())
+            }
+            StatementKind::LetTuple { locals, value } => {
+                let value = self.eval_expr(frame, value)?;
+                self.bind_tuple(frame, locals, value, statement.span)
+                    .map_err(EvalAbort::from)
+            }
+            StatementKind::Assign { place, value } => {
+                let value = self.eval_expr(frame, value)?;
+                let location = Location::from_place(frame, place);
+                self.write_place(&location, value, statement.span)
+                    .map_err(EvalAbort::from)?;
+                Ok(())
+            }
+            StatementKind::Assert { condition } => {
+                let value = self.eval_expr(frame, condition)?;
+                match value {
+                    Value::Bool { value: true } => Ok(()),
+                    Value::Bool { value: false } => Err(EvalAbort::from(ContractFault {
+                        code: "AssertionFault".into(),
+                        category: ContractFaultKind::Assertion,
+                        message: "assertion was not satisfied".into(),
+                        contract_span: statement.span,
+                        blame_span: statement.span,
+                    })),
+                    _ => Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "assert expression did not produce Bool",
+                        statement.span,
+                    ))),
+                }
+            }
+            StatementKind::Evaluate(expression) => {
+                self.eval_expr(frame, expression)?;
+                Ok(())
+            }
+            StatementKind::Defer(_) => Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "defer registration escaped block execution",
+                statement.span,
+            ))),
+            StatementKind::Return(value) => {
+                let value = value
+                    .as_ref()
+                    .map_or_else(|| Ok(Value::Unit), |value| self.eval_expr(frame, value))?;
+                Err(EvalAbort::Return(Box::new(value)))
+            }
+        }
+    }
+
+    fn bind_tuple(
+        &mut self,
+        frame: u64,
+        locals: &[LocalId],
+        value: Value,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let Value::Tuple { elements } = value else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "tuple binding received a non-tuple value",
+                    span,
+                )
+                .into());
+        };
+        if elements.len() != locals.len() {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "tuple binding arity does not match its value",
+                    span,
+                )
+                .into());
+        }
+        for (local, element) in locals.iter().zip(elements) {
+            self.set_slot(frame, *local, Slot::Value(element), span)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn eval_expr(&mut self, frame: u64, expression: &Expr) -> Result<Value, EvalAbort> {
+        self.tick(expression.span).map_err(EvalAbort::from)?;
+        match &expression.kind {
+            ExprKind::Constant(value) => Ok(Value::from(value.clone())),
+            ExprKind::Tuple(elements) => Ok(Value::Tuple {
+                elements: elements
+                    .iter()
+                    .map(|element| self.eval_expr(frame, element))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            ExprKind::List(elements) => Ok(Value::List {
+                elements: elements
+                    .iter()
+                    .map(|element| self.eval_expr(frame, element))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            ExprKind::Copy(place) => {
+                Ok(self.read_place(&Location::from_place(frame, place), expression.span)?)
+            }
+            ExprKind::Move(place) => {
+                Ok(self.take_place(&Location::from_place(frame, place), expression.span)?)
+            }
+            ExprKind::Unary(operator, value) => {
+                let value = self.eval_expr(frame, value)?;
+                Ok(self.eval_unary(*operator, value, expression.span)?)
+            }
+            ExprKind::Binary(BinaryOp::And, left, right) => {
+                let left = self.eval_expr(frame, left)?;
+                if expect_bool(&left, expression.span)? {
+                    let right = self.eval_expr(frame, right)?;
+                    Ok(Value::Bool {
+                        value: expect_bool(&right, expression.span)?,
+                    })
+                } else {
+                    Ok(Value::Bool { value: false })
+                }
+            }
+            ExprKind::Binary(BinaryOp::Or, left, right) => {
+                let left = self.eval_expr(frame, left)?;
+                if expect_bool(&left, expression.span)? {
+                    Ok(Value::Bool { value: true })
+                } else {
+                    let right = self.eval_expr(frame, right)?;
+                    Ok(Value::Bool {
+                        value: expect_bool(&right, expression.span)?,
+                    })
+                }
+            }
+            ExprKind::Binary(operator, left, right) => {
+                let left = self.eval_expr(frame, left)?;
+                let right = self.eval_expr(frame, right)?;
+                Ok(self.eval_binary(*operator, left, right, expression.span)?)
+            }
+            ExprKind::Block(block) => self.eval_block(frame, block),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let condition = self.eval_expr(frame, condition)?;
+                let branch = if expect_bool(&condition, expression.span)? {
+                    then_branch
+                } else {
+                    else_branch
+                };
+                self.eval_block(frame, branch)
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let value = self.eval_expr(frame, scrutinee)?;
+                self.eval_match(frame, &value, arms, expression.span)
+            }
+            ExprKind::Record {
+                ty,
+                fields,
+                checked,
+                ..
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| self.eval_expr(frame, field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let value = Value::Record { ty: *ty, fields };
+                if *checked {
+                    Ok(self.checked_record(*ty, value, expression.span)?)
+                } else {
+                    Ok(value)
+                }
+            }
+            ExprKind::Variant {
+                ty,
+                variant,
+                payload,
+                ..
+            } => Ok(Value::Enum {
+                ty: *ty,
+                variant: *variant,
+                payload: payload
+                    .iter()
+                    .map(|value| self.eval_expr(frame, value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            ExprKind::Refine { ty, value } => {
+                let value = self.eval_expr(frame, value)?;
+                Ok(self.checked_refine(*ty, value, expression.span)?)
+            }
+            ExprKind::Unrefine(value) => {
+                let value = self.eval_expr(frame, value)?;
+                let Value::Refined { value, .. } = value else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "unrefine operand is not a constrained value",
+                        expression.span,
+                    )));
+                };
+                Ok(*value)
+            }
+            ExprKind::Call {
+                target,
+                arguments,
+                witnesses,
+                ..
+            } => self.eval_call(frame, target, arguments, witnesses, expression.span),
+            ExprKind::MakeView {
+                owner,
+                witness,
+                mutable,
+                token,
+            } => Ok(Value::DynView {
+                location: Location::from_place(frame, owner),
+                witness: self.resolve_witness(frame, witness, expression.span)?,
+                mutable: *mutable,
+                token: *token,
+            }),
+            ExprKind::Await { .. } => self.eval_nested_await(frame, expression),
+            ExprKind::Sleep { milliseconds } => {
+                let duration = self.eval_expr(frame, milliseconds)?;
+                let Value::Int {
+                    value: milliseconds,
+                } = duration
+                else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "Task.sleep duration did not produce Int",
+                        expression.span,
+                    )));
+                };
+                if milliseconds < 0 {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "InvalidSleepDuration",
+                        "Task.sleep duration cannot be negative",
+                        expression.span,
+                    )));
+                }
+                let nanoseconds = milliseconds.checked_mul(1_000_000).ok_or_else(|| {
+                    EvalAbort::from(self.runtime_fault(
+                        "SleepDurationOverflow",
+                        "Task.sleep duration exceeds the timer range",
+                        expression.span,
+                    ))
+                })?;
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_nanos(nanoseconds.cast_unsigned()))
+                    .ok_or_else(|| {
+                        EvalAbort::from(self.runtime_fault(
+                            "SleepDurationOverflow",
+                            "Task.sleep deadline exceeds the timer range",
+                            expression.span,
+                        ))
+                    })?;
+                let task_id = self.next_task;
+                self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+                    EvalAbort::from(self.runtime_fault(
+                        "TaskIdExhausted",
+                        "async task identity space was exhausted",
+                        expression.span,
+                    ))
+                })?;
+                self.tasks.insert(
+                    task_id,
+                    ManagedTask {
+                        function: FunctionId(u32::MAX),
+                        frame: u64::MAX,
+                        parent: self.active_task,
+                        children: Vec::new(),
+                        cursor: 0,
+                        awaiting_state: None,
+                        cleanups: Vec::new(),
+                        status: TaskStatus::Runnable,
+                        queued: false,
+                        marked: false,
+                        timer_deadline: Some(deadline),
+                        fd_wait: None,
+                        join_mode: TaskJoinMode::All,
+                        join_dynamic: false,
+                        join_combined: false,
+                        join_winner: None,
+                        cancel_requested: false,
+                    },
+                );
+                self.enqueue_task(task_id);
+                self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+                self.gc_stats.live = self.tasks.len() as u64;
+                Ok(Value::Task { id: task_id })
+            }
+            ExprKind::WaitFd {
+                descriptor,
+                writable,
+            } => {
+                let descriptor = self.eval_expr(frame, descriptor)?;
+                let Value::Int { value: descriptor } = descriptor else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "descriptor wait did not produce Int",
+                        expression.span,
+                    )));
+                };
+                if !(0..=i64::from(i32::MAX)).contains(&descriptor) {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "InvalidFileDescriptor",
+                        "descriptor must fit the platform fd ABI",
+                        expression.span,
+                    )));
+                }
+                let task_id = self.next_task;
+                self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+                    EvalAbort::from(self.runtime_fault(
+                        "TaskIdExhausted",
+                        "async task identity space was exhausted",
+                        expression.span,
+                    ))
+                })?;
+                self.tasks.insert(
+                    task_id,
+                    ManagedTask {
+                        function: FunctionId(u32::MAX),
+                        frame: u64::MAX,
+                        parent: self.active_task,
+                        children: Vec::new(),
+                        cursor: 0,
+                        awaiting_state: None,
+                        cleanups: Vec::new(),
+                        status: TaskStatus::Runnable,
+                        queued: false,
+                        marked: false,
+                        timer_deadline: None,
+                        fd_wait: Some((descriptor, *writable)),
+                        join_mode: TaskJoinMode::All,
+                        join_dynamic: false,
+                        join_combined: false,
+                        join_winner: None,
+                        cancel_requested: false,
+                    },
+                );
+                self.enqueue_task(task_id);
+                self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+                self.gc_stats.live = self.tasks.len() as u64;
+                Ok(Value::Task { id: task_id })
+            }
+            ExprKind::TaskJoin { mode, arguments } => {
+                let values = arguments
+                    .iter()
+                    .map(|argument| self.eval_expr(frame, argument))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let (values, dynamic) = match values.as_slice() {
+                    [Value::List { elements }] => (elements.clone(), true),
+                    _ => (values, false),
+                };
+                let mut tasks = Vec::with_capacity(values.len());
+                for value in values {
+                    let Value::Task { id } = value else {
+                        return Err(EvalAbort::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Task join contained a non-task value",
+                            expression.span,
+                        )));
+                    };
+                    tasks.push(id);
+                }
+                Ok(Value::TaskJoin {
+                    mode: *mode,
+                    tasks,
+                    dynamic,
+                })
+            }
+        }
+    }
+
+    fn eval_match(
+        &mut self,
+        frame: u64,
+        value: &Value,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        for arm in arms {
+            let mut bindings = Vec::new();
+            if pattern_matches(&arm.pattern, value, &mut bindings) {
+                if bindings.len() != arm.bindings.len() {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "match binding count does not match pattern",
+                        span,
+                    )));
+                }
+                for (local, value) in arm.bindings.iter().zip(bindings) {
+                    self.set_slot(frame, *local, Slot::Value(value), span)
+                        .map_err(EvalAbort::from)?;
+                }
+                return self.eval_expr(frame, &arm.value);
+            }
+        }
+        Err(EvalAbort::from(self.runtime_fault(
+            "LOOM_RUNTIME_NON_EXHAUSTIVE_MATCH",
+            "checked MIR reached a non-exhaustive match",
+            span,
+        )))
+    }
+
+    fn eval_call(
+        &mut self,
+        frame: u64,
+        target: &CallTarget,
+        arguments: &[CallArgument],
+        witnesses: &[WitnessRef],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        if let CallTarget::Builtin(builtin) = target {
+            let values = arguments
+                .iter()
+                .map(|argument| match argument {
+                    CallArgument::Value(value) => self.eval_expr(frame, value),
+                    CallArgument::InOut(place) => {
+                        Ok(self.read_place(&Location::from_place(frame, place), span)?)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return self
+                .eval_builtin(*builtin, &values, span)
+                .map_err(EvalAbort::from);
+        }
+
+        if let CallTarget::Dynamic { requirement } = target {
+            return self.eval_dynamic_call(frame, *requirement, arguments, span);
+        }
+
+        if let CallTarget::StaticConcept {
+            requirement,
+            witness,
+            ..
+        } = target
+        {
+            return self.eval_static_concept_call(
+                frame,
+                *requirement,
+                witness,
+                arguments,
+                witnesses,
+                span,
+            );
+        }
+
+        let function = match target {
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => *function,
+            CallTarget::Dynamic { .. }
+            | CallTarget::Builtin(_)
+            | CallTarget::StaticConcept { .. } => unreachable!(),
+        };
+        let values = arguments
+            .iter()
+            .map(|argument| match argument {
+                CallArgument::Value(value) => {
+                    self.eval_expr(frame, value).map(BoundArgument::Value)
+                }
+                CallArgument::InOut(place) => {
+                    Ok(BoundArgument::Alias(Location::from_place(frame, place)))
+                }
+            })
+            .collect::<Result<Vec<_>, EvalAbort>>()?;
+        let witness_values = witnesses
+            .iter()
+            .map(|witness| self.resolve_witness(frame, witness, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.invoke_bound(function, values, witness_values, span)
+            .map_err(EvalAbort::from)
+    }
+
+    fn eval_static_concept_call(
+        &mut self,
+        frame: u64,
+        requirement: RequirementId,
+        witness_ref: &WitnessRef,
+        arguments: &[CallArgument],
+        method_witnesses: &[WitnessRef],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let runtime_witness = self.resolve_witness(frame, witness_ref, span)?;
+        let witness = self
+            .program
+            .witness(runtime_witness.definition)
+            .cloned()
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "static concept call references an unknown witness",
+                    span,
+                ))
+            })?;
+        let function = witness.methods.get(&requirement).copied().ok_or_else(|| {
+            EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "static witness is missing a required method",
+                span,
+            ))
+        })?;
+        let values = arguments
+            .iter()
+            .map(|argument| match argument {
+                CallArgument::Value(value) => {
+                    self.eval_expr(frame, value).map(BoundArgument::Value)
+                }
+                CallArgument::InOut(place) => {
+                    Ok(BoundArgument::Alias(Location::from_place(frame, place)))
+                }
+            })
+            .collect::<Result<Vec<_>, EvalAbort>>()?;
+        let mut proof_arguments = runtime_witness.arguments;
+        proof_arguments.extend(
+            method_witnesses
+                .iter()
+                .map(|witness| self.resolve_witness(frame, witness, span))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        self.invoke_bound(function, values, proof_arguments, span)
+            .map_err(EvalAbort::from)
+    }
+
+    fn eval_dynamic_call(
+        &mut self,
+        frame: u64,
+        requirement: RequirementId,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let Some(first) = arguments.first() else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "dynamic call is missing its receiver",
+                span,
+            )));
+        };
+        let receiver = match first {
+            CallArgument::Value(value) => self.eval_expr(frame, value)?,
+            CallArgument::InOut(place) => {
+                self.read_place(&Location::from_place(frame, place), span)?
+            }
+        };
+        let Value::DynView {
+            location,
+            witness,
+            mutable,
+            ..
+        } = receiver
+        else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "dynamic call receiver is not an erased interface",
+                span,
+            )));
+        };
+        let witness_definition = self
+            .program
+            .witness(witness.definition)
+            .cloned()
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "erased interface references an unknown witness",
+                    span,
+                ))
+            })?;
+        let function_id = witness_definition
+            .methods
+            .get(&requirement)
+            .copied()
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "dynamic witness is missing a required method",
+                    span,
+                ))
+            })?;
+        let function = self.program.function(function_id).ok_or_else(|| {
+            EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "dynamic witness method does not exist",
+                span,
+            ))
+        })?;
+        let first = if function.receiver == Some(Receiver::Mutable) {
+            if !mutable {
+                return Err(EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "a readonly interface argument dispatched a `mut self` method",
+                    span,
+                )));
+            }
+            BoundArgument::Alias(location)
+        } else {
+            BoundArgument::Value(self.read_place(&location, span)?)
+        };
+        let mut values = vec![first];
+        for argument in &arguments[1..] {
+            values.push(match argument {
+                CallArgument::Value(value) => BoundArgument::Value(self.eval_expr(frame, value)?),
+                CallArgument::InOut(place) => {
+                    BoundArgument::Alias(Location::from_place(frame, place))
+                }
+            });
+        }
+        self.invoke_bound(function_id, values, witness.arguments, span)
+            .map_err(EvalAbort::from)
+    }
+
+    fn resolve_witness(
+        &self,
+        frame: u64,
+        witness: &WitnessRef,
+        span: Span,
+    ) -> Result<RuntimeWitness, EvalAbort> {
+        match witness {
+            WitnessRef::Concrete(witness) => Ok(RuntimeWitness {
+                definition: *witness,
+                arguments: Vec::new(),
+            }),
+            WitnessRef::Parameter(index) => self
+                .frames
+                .get(&frame)
+                .and_then(|frame| frame.witnesses.get(*index as usize))
+                .cloned()
+                .ok_or_else(|| {
+                    EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "witness parameter does not exist",
+                        span,
+                    ))
+                }),
+            WitnessRef::Apply { witness, arguments } => Ok(RuntimeWitness {
+                definition: *witness,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.resolve_witness(frame, argument, span))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+        }
+    }
+
+    fn eval_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::IsFinite, [value]) => Ok(Value::Bool {
+                value: as_float(value).is_some_and(f64::is_finite),
+            }),
+            (Builtin::ParseFloat, [Value::Text { value }]) => match parse_float(value) {
+                Ok(number) => self.result_value(true, Value::Float { value: number }, span),
+                Err(error) => {
+                    let error = self.parse_float_error_value(error, span)?;
+                    self.result_value(false, error, span)
+                }
+            },
+            (Builtin::FormatFloat, [value]) => as_float(value).map_or_else(
+                || {
+                    Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "format_float expected Float",
+                            span,
+                        )
+                        .into())
+                },
+                |value| {
+                    Ok(Value::Text {
+                        value: format_float(value),
+                    })
+                },
+            ),
+            _ => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "builtin called with invalid arguments",
+                    span,
+                )
+                .into()),
+        }
+    }
+
+    fn checked_refine(
+        &mut self,
+        ty: TypeId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self.program.type_def(ty).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "refined type does not exist",
+                span,
+            ))
+        })?;
+        let TypeDefKind::Refined { predicate, .. } = &definition.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "checked refinement targets a non-refined type",
+                    span,
+                )
+                .into());
+        };
+        let context = ContractContext {
+            receiver: Some(&value),
+            result: None,
+            arguments: &[],
+            old_receiver: None,
+            old_arguments: &[],
+            bindings: &[],
+        };
+        let predicate_value = self.eval_contract(&predicate.expression, &context)?;
+        let accepted = expect_bool(&predicate_value, span)?;
+        if accepted {
+            self.result_value(
+                true,
+                Value::Refined {
+                    ty,
+                    value: Box::new(value),
+                },
+                span,
+            )
+        } else {
+            let violation = Violation {
+                target_type: definition.name.clone(),
+                code: "ConstraintViolation".into(),
+                predicate: predicate.code.clone(),
+                path: Vec::new(),
+                value_summary: value.summary(),
+                contract_span: predicate.span,
+            };
+            self.result_value(false, Value::Violation { value: violation }, span)
+        }
+    }
+
+    fn checked_record(
+        &mut self,
+        ty: TypeId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self.program.type_def(ty).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "record type does not exist",
+                span,
+            ))
+        })?;
+        let TypeDefKind::Record { invariant, .. } = &definition.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "record construction targets a non-record type",
+                    span,
+                )
+                .into());
+        };
+        let Some(invariant) = invariant else {
+            return Ok(value);
+        };
+        let context = ContractContext {
+            receiver: Some(&value),
+            result: None,
+            arguments: &[],
+            old_receiver: None,
+            old_arguments: &[],
+            bindings: &[],
+        };
+        let invariant_value = self.eval_contract(&invariant.expression, &context)?;
+        let accepted = expect_bool(&invariant_value, span)?;
+        if accepted {
+            self.result_value(true, value, span)
+        } else {
+            let violation = Violation {
+                target_type: definition.name.clone(),
+                code: "InvariantViolation".into(),
+                predicate: invariant.code.clone(),
+                path: Vec::new(),
+                value_summary: value.summary(),
+                contract_span: invariant.span,
+            };
+            self.result_value(false, Value::Violation { value: violation }, span)
+        }
+    }
+
+    fn result_value(
+        &self,
+        ok: bool,
+        payload: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let result_type = self
+            .program
+            .prelude
+            .result
+            .and_then(|id| self.program.type_def(id))
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude Result type is missing",
+                    span,
+                ))
+            })?;
+        Ok(Value::Enum {
+            ty: result_type.id,
+            variant: VariantId(u32::from(!ok)),
+            payload: vec![payload],
+        })
+    }
+
+    fn parse_float_error_value(
+        &self,
+        error: ParseFloatFailure,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self
+            .program
+            .prelude
+            .parse_float_error
+            .and_then(|id| self.program.type_def(id))
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude ParseFloatError type is missing",
+                    span,
+                ))
+            })?;
+        let TypeDefKind::Enum { variants } = &definition.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "prelude ParseFloatError is not an enum",
+                    span,
+                )
+                .into());
+        };
+        let expected = match error {
+            ParseFloatFailure::InvalidSyntax => "InvalidSyntax",
+            ParseFloatFailure::OutOfRange => "OutOfRange",
+        };
+        let variant = variants
+            .iter()
+            .find(|variant| variant.name == expected)
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    format!("prelude ParseFloatError is missing {expected}"),
+                    span,
+                ))
+            })?;
+        Ok(Value::Enum {
+            ty: definition.id,
+            variant: variant.id,
+            payload: Vec::new(),
+        })
+    }
+
+    fn eval_contract(
+        &mut self,
+        expression: &ContractExpr,
+        context: &ContractContext<'_>,
+    ) -> Result<Value, ExecutionFailure> {
+        self.tick(expression.span)?;
+        match &expression.kind {
+            ContractExprKind::Constant(value) => Ok(Value::from(value.clone())),
+            ContractExprKind::Value(value) => {
+                contract_value(*value, context).cloned().ok_or_else(|| {
+                    self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "contract referenced an unavailable value",
+                        expression.span,
+                    )
+                    .into()
+                })
+            }
+            ContractExprKind::Binding(index) => context
+                .bindings
+                .get(*index as usize)
+                .cloned()
+                .ok_or_else(|| {
+                    self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "contract referenced an unavailable pattern binding",
+                        expression.span,
+                    )
+                    .into()
+                }),
+            ContractExprKind::Field(value, field) => {
+                let value = self.eval_contract(value, context)?;
+                read_value_projection(&value, &[*field], expression.span)
+            }
+            ContractExprKind::Unary(operator, value) => {
+                let value = self.eval_contract(value, context)?;
+                self.eval_unary(*operator, value, expression.span)
+            }
+            ContractExprKind::Binary(BinaryOp::And, left, right) => {
+                let left = self.eval_contract(left, context)?;
+                if expect_bool(&left, expression.span)? {
+                    let right = self.eval_contract(right, context)?;
+                    Ok(Value::Bool {
+                        value: expect_bool(&right, expression.span)?,
+                    })
+                } else {
+                    Ok(Value::Bool { value: false })
+                }
+            }
+            ContractExprKind::Binary(BinaryOp::Or, left, right) => {
+                let left = self.eval_contract(left, context)?;
+                if expect_bool(&left, expression.span)? {
+                    Ok(Value::Bool { value: true })
+                } else {
+                    let right = self.eval_contract(right, context)?;
+                    Ok(Value::Bool {
+                        value: expect_bool(&right, expression.span)?,
+                    })
+                }
+            }
+            ContractExprKind::Binary(operator, left, right) => {
+                let left = self.eval_contract(left, context)?;
+                let right = self.eval_contract(right, context)?;
+                self.eval_binary(*operator, left, right, expression.span)
+            }
+            ContractExprKind::IsFinite(value) => {
+                let value = self.eval_contract(value, context)?;
+                Ok(Value::Bool {
+                    value: as_float(&value).is_some_and(f64::is_finite),
+                })
+            }
+            ContractExprKind::Match { scrutinee, arms } => {
+                let value = self.eval_contract(scrutinee, context)?;
+                self.eval_contract_match(&value, arms, context, expression.span)
+            }
+        }
+    }
+
+    fn eval_contract_match(
+        &mut self,
+        value: &Value,
+        arms: &[ContractArm],
+        context: &ContractContext<'_>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        for arm in arms {
+            let mut arm_bindings = Vec::new();
+            if pattern_matches(&arm.pattern, value, &mut arm_bindings) {
+                if arm_bindings.len() != arm.bindings.len() {
+                    return Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "contract match binding count does not match pattern",
+                            span,
+                        )
+                        .into());
+                }
+                let mut bindings = context.bindings.to_vec();
+                bindings.extend(arm_bindings);
+                let nested = ContractContext {
+                    receiver: context.receiver,
+                    result: context.result,
+                    arguments: context.arguments,
+                    old_receiver: context.old_receiver,
+                    old_arguments: context.old_arguments,
+                    bindings: &bindings,
+                };
+                return self.eval_contract(&arm.value, &nested);
+            }
+        }
+        Err(self
+            .runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "contract match was not exhaustive",
+                span,
+            )
+            .into())
+    }
+
+    fn eval_unary(
+        &self,
+        operator: UnaryOp,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (operator, unrefined(value)) {
+            (UnaryOp::Not, Value::Bool { value }) => Ok(Value::Bool { value: !value }),
+            (UnaryOp::Negate, Value::Int { value }) => value.checked_neg().map_or_else(
+                || {
+                    Err(self
+                        .runtime_fault("IntegerOverflow", "integer negation overflowed", span)
+                        .into())
+                },
+                |value| Ok(Value::Int { value }),
+            ),
+            (UnaryOp::Negate, Value::Float { value }) => Ok(Value::Float { value: -value }),
+            _ => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "invalid unary operation in checked MIR",
+                    span,
+                )
+                .into()),
+        }
+    }
+
+    fn eval_binary(
+        &self,
+        operator: BinaryOp,
+        left: Value,
+        right: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let left = unrefined(left);
+        let right = unrefined(right);
+        match operator {
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                let equal = semantic_equal(&left, &right);
+                Ok(Value::Bool {
+                    value: if operator == BinaryOp::Equal {
+                        equal
+                    } else {
+                        !equal
+                    },
+                })
+            }
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                self.eval_arithmetic(operator, left, right, span)
+            }
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                self.eval_order(operator, left, right, span)
+            }
+            BinaryOp::And | BinaryOp::Or => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "logical operation reached non-short-circuit evaluator",
+                    span,
+                )
+                .into()),
+        }
+    }
+
+    fn eval_arithmetic(
+        &self,
+        operator: BinaryOp,
+        left: Value,
+        right: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (left, right) {
+            (Value::Int { value: left }, Value::Int { value: right }) => {
+                if operator == BinaryOp::Divide && right == 0 {
+                    return Err(self
+                        .runtime_fault("IntegerDivisionByZero", "integer division by zero", span)
+                        .into());
+                }
+                if operator == BinaryOp::Divide && left == i64::MIN && right == -1 {
+                    return Err(self
+                        .runtime_fault(
+                            "IntegerDivisionOverflow",
+                            "integer division overflowed",
+                            span,
+                        )
+                        .into());
+                }
+                let result = match operator {
+                    BinaryOp::Add => left.checked_add(right),
+                    BinaryOp::Subtract => left.checked_sub(right),
+                    BinaryOp::Multiply => left.checked_mul(right),
+                    BinaryOp::Divide => left.checked_div(right),
+                    _ => None,
+                };
+                result.map_or_else(
+                    || {
+                        Err(self
+                            .runtime_fault("IntegerOverflow", "integer arithmetic overflowed", span)
+                            .into())
+                    },
+                    |value| Ok(Value::Int { value }),
+                )
+            }
+            (Value::Float { value: left }, Value::Float { value: right }) => {
+                let value = match operator {
+                    BinaryOp::Add => left + right,
+                    BinaryOp::Subtract => left - right,
+                    BinaryOp::Multiply => left * right,
+                    BinaryOp::Divide => left / right,
+                    _ => unreachable!(),
+                };
+                Ok(Value::Float { value })
+            }
+            _ => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "invalid arithmetic in checked MIR",
+                    span,
+                )
+                .into()),
+        }
+    }
+
+    fn eval_order(
+        &self,
+        operator: BinaryOp,
+        left: Value,
+        right: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let value = match (left, right) {
+            (Value::Int { value: left }, Value::Int { value: right }) => match operator {
+                BinaryOp::Less => left < right,
+                BinaryOp::LessEqual => left <= right,
+                BinaryOp::Greater => left > right,
+                BinaryOp::GreaterEqual => left >= right,
+                _ => unreachable!(),
+            },
+            (Value::Float { value: left }, Value::Float { value: right }) => match operator {
+                BinaryOp::Less => left < right,
+                BinaryOp::LessEqual => left <= right,
+                BinaryOp::Greater => left > right,
+                BinaryOp::GreaterEqual => left >= right,
+                _ => unreachable!(),
+            },
+            _ => {
+                return Err(self
+                    .runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "invalid comparison in checked MIR",
+                        span,
+                    )
+                    .into());
+            }
+        };
+        Ok(Value::Bool { value })
+    }
+
+    fn read_place(&self, location: &Location, span: Span) -> Result<Value, ExecutionFailure> {
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
+        let frame = self.frames.get(&root.frame).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_DANGLING_VIEW",
+                "place refers to a frame that is no longer alive",
+                span,
+            ))
+        })?;
+        let slot = frame.slots.get(root.local.0 as usize).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "local does not exist",
+                span,
+            ))
+        })?;
+        match slot {
+            Slot::Value(value) => read_value_projection(value, &projection, span),
+            Slot::Empty => Err(self
+                .runtime_fault("LOOM_RUNTIME_UNINITIALIZED", "local is uninitialized", span)
+                .into()),
+            Slot::Moved => Err(self
+                .runtime_fault("LOOM_RUNTIME_USE_AFTER_MOVE", "value has been moved", span)
+                .into()),
+            Slot::Alias(_) => unreachable!("aliases are removed by resolve_location"),
+        }
+    }
+
+    fn write_place(
+        &mut self,
+        location: &Location,
+        value: Value,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
+        let frame = self
+            .frames
+            .get_mut(&root.frame)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_DANGLING_VIEW".into(),
+                message: "place refers to a frame that is no longer alive".into(),
+                span,
+            })?;
+        let slot = frame
+            .slots
+            .get_mut(root.local.0 as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "local does not exist".into(),
+                span,
+            })?;
+        if projection.is_empty() {
+            *slot = Slot::Value(value);
+            return Ok(());
+        }
+        match slot {
+            Slot::Value(root_value) => write_value_projection(root_value, &projection, value, span),
+            Slot::Empty => Err(RuntimeFault {
+                code: "LOOM_RUNTIME_UNINITIALIZED".into(),
+                message: "local is uninitialized".into(),
+                span,
+            }
+            .into()),
+            Slot::Moved => Err(RuntimeFault {
+                code: "LOOM_RUNTIME_USE_AFTER_MOVE".into(),
+                message: "value has been moved".into(),
+                span,
+            }
+            .into()),
+            Slot::Alias(_) => unreachable!("aliases are removed by resolve_location"),
+        }
+    }
+
+    fn take_place(&mut self, location: &Location, span: Span) -> Result<Value, ExecutionFailure> {
+        let (root, projection) = self.resolve_location(location, span)?;
+        if !projection.is_empty() || !location.projection.is_empty() {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "moving a projected place is not supported by verified MIR",
+                    span,
+                )
+                .into());
+        }
+        let frame = self
+            .frames
+            .get_mut(&root.frame)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_DANGLING_VIEW".into(),
+                message: "place refers to a frame that is no longer alive".into(),
+                span,
+            })?;
+        let slot = frame
+            .slots
+            .get_mut(root.local.0 as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "local does not exist".into(),
+                span,
+            })?;
+        match std::mem::replace(slot, Slot::Moved) {
+            Slot::Value(value) => Ok(value),
+            Slot::Empty => Err(RuntimeFault {
+                code: "LOOM_RUNTIME_UNINITIALIZED".into(),
+                message: "local is uninitialized".into(),
+                span,
+            }
+            .into()),
+            Slot::Moved => Err(RuntimeFault {
+                code: "LOOM_RUNTIME_USE_AFTER_MOVE".into(),
+                message: "value has already been moved".into(),
+                span,
+            }
+            .into()),
+            Slot::Alias(_) => unreachable!("aliases are removed by resolve_location"),
+        }
+    }
+
+    fn resolve_location(
+        &self,
+        location: &Location,
+        span: Span,
+    ) -> Result<(Location, Vec<u32>), ExecutionFailure> {
+        let mut current = location.clone();
+        let mut prefix = Vec::new();
+        for _ in 0..64 {
+            let frame = self.frames.get(&current.frame).ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_DANGLING_VIEW",
+                    "place refers to a frame that is no longer alive",
+                    span,
+                ))
+            })?;
+            let slot = frame.slots.get(current.local.0 as usize).ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "local does not exist",
+                    span,
+                ))
+            })?;
+            if let Slot::Alias(alias) = slot {
+                prefix.extend_from_slice(&alias.projection);
+                current = Location {
+                    frame: alias.frame,
+                    local: alias.local,
+                    projection: Vec::new(),
+                };
+            } else {
+                return Ok((current, prefix));
+            }
+        }
+        Err(self
+            .runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "place alias chain is cyclic or too deep",
+                span,
+            )
+            .into())
+    }
+
+    fn set_slot(
+        &mut self,
+        frame: u64,
+        local: LocalId,
+        value: Slot,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let frame = self.frames.get_mut(&frame).ok_or_else(|| RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "frame does not exist".into(),
+            span,
+        })?;
+        let slot = frame
+            .slots
+            .get_mut(local.0 as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "local does not exist".into(),
+                span,
+            })?;
+        *slot = value;
+        Ok(())
+    }
+
+    fn tick(&mut self, span: Span) -> Result<(), ExecutionFailure> {
+        self.fuel = self.fuel.checked_sub(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_FUEL_EXHAUSTED",
+                "execution fuel was exhausted",
+                span,
+            ))
+        })?;
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn runtime_fault(
+        &self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        span: Span,
+    ) -> RuntimeFault {
+        RuntimeFault {
+            code: code.into(),
+            message: message.into(),
+            span,
+        }
+    }
+}
+
+impl Location {
+    fn local(frame: u64, local: LocalId) -> Self {
+        Self {
+            frame,
+            local,
+            projection: Vec::new(),
+        }
+    }
+
+    fn from_place(frame: u64, place: &Place) -> Self {
+        Self {
+            frame,
+            local: place.local,
+            projection: place.projection.clone(),
+        }
+    }
+}
+
+impl From<Constant> for Value {
+    fn from(value: Constant) -> Self {
+        match value {
+            Constant::Unit => Self::Unit,
+            Constant::Bool(value) => Self::Bool { value },
+            Constant::Int(value) => Self::Int { value },
+            Constant::Float(value) => Self::Float { value },
+            Constant::Text(value) => Self::Text { value },
+        }
+    }
+}
+
+fn await_expr(expression: &Expr) -> Option<&Expr> {
+    matches!(expression.kind, ExprKind::Await { .. }).then_some(expression)
+}
+
+fn task_terminal(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed(_) | TaskStatus::Failed(_) | TaskStatus::Cancelled
+    )
+}
+
+fn contract_value<'a>(value: ContractValue, context: &'a ContractContext<'_>) -> Option<&'a Value> {
+    match value {
+        ContractValue::SelfValue => context.receiver,
+        ContractValue::Result => context.result,
+        ContractValue::Argument(index) => context.arguments.get(index as usize),
+        ContractValue::OldSelf => context.old_receiver,
+        ContractValue::OldArgument(index) => context
+            .old_arguments
+            .get(index as usize)
+            .and_then(Option::as_ref),
+    }
+}
+
+fn old_snapshot_needs(contracts: &[Contract], argument_count: usize) -> OldSnapshotNeeds {
+    let mut needs = OldSnapshotNeeds {
+        receiver: false,
+        arguments: vec![false; argument_count],
+    };
+    for contract in contracts {
+        collect_old_snapshot_needs(&contract.expression, &mut needs);
+    }
+    needs
+}
+
+fn collect_old_snapshot_needs(expression: &ContractExpr, needs: &mut OldSnapshotNeeds) {
+    match &expression.kind {
+        ContractExprKind::Value(ContractValue::OldSelf) => needs.receiver = true,
+        ContractExprKind::Value(ContractValue::OldArgument(index)) => {
+            if let Some(argument) = needs.arguments.get_mut(*index as usize) {
+                *argument = true;
+            }
+        }
+        ContractExprKind::Field(value, _)
+        | ContractExprKind::Unary(_, value)
+        | ContractExprKind::IsFinite(value) => collect_old_snapshot_needs(value, needs),
+        ContractExprKind::Binary(_, left, right) => {
+            collect_old_snapshot_needs(left, needs);
+            collect_old_snapshot_needs(right, needs);
+        }
+        ContractExprKind::Match { scrutinee, arms } => {
+            collect_old_snapshot_needs(scrutinee, needs);
+            for arm in arms {
+                collect_old_snapshot_needs(&arm.value, needs);
+            }
+        }
+        ContractExprKind::Constant(_)
+        | ContractExprKind::Value(_)
+        | ContractExprKind::Binding(_) => {}
+    }
+}
+
+fn unrefined(mut value: Value) -> Value {
+    while let Value::Refined { value: inner, .. } = value {
+        value = *inner;
+    }
+    value
+}
+
+fn as_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float { value } => Some(*value),
+        Value::Refined { value, .. } => as_float(value),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ParseFloatFailure {
+    InvalidSyntax,
+    OutOfRange,
+}
+
+fn parse_float(text: &str) -> Result<f64, ParseFloatFailure> {
+    match text {
+        "NaN" => return Ok(f64::from_bits(0x7ff8_0000_0000_0000)),
+        "Infinity" => return Ok(f64::INFINITY),
+        "-Infinity" => return Ok(f64::NEG_INFINITY),
+        _ => {}
+    }
+    if !is_float_text(text) {
+        return Err(ParseFloatFailure::InvalidSyntax);
+    }
+    let value = text
+        .parse::<f64>()
+        .map_err(|_| ParseFloatFailure::InvalidSyntax)?;
+    if value.is_infinite() {
+        Err(ParseFloatFailure::OutOfRange)
+    } else {
+        Ok(value)
+    }
+}
+
+fn is_float_text(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'-'));
+    let integer_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == integer_start {
+        return false;
+    }
+
+    let mut has_decimal = false;
+    if bytes.get(index) == Some(&b'.') {
+        has_decimal = true;
+        index += 1;
+        let fractional_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fractional_start {
+            return false;
+        }
+    }
+
+    let mut has_exponent = false;
+    if matches!(bytes.get(index), Some(b'e' | b'E')) {
+        has_exponent = true;
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+' | b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+
+    index == bytes.len() && (has_decimal || has_exponent)
+}
+
+/// Formats a binary64 value using the language's canonical textual boundary.
+/// Rust's formatter already emits a shortest round-tripping finite decimal;
+/// Loom additionally keeps integral finite values lexically distinguishable
+/// from `Int` and gives special values their specified spellings.
+fn format_float(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".into();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".into();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".into();
+    }
+
+    let mut formatted = value.to_string();
+    if !formatted.contains(['.', 'e', 'E']) {
+        formatted.push_str(".0");
+    }
+    formatted
+}
+
+fn expect_bool(value: &Value, span: Span) -> Result<bool, ExecutionFailure> {
+    if let Value::Bool { value } = value {
+        Ok(*value)
+    } else {
+        Err(RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "checked Bool expression produced another value".into(),
+            span,
+        }
+        .into())
+    }
+}
+
+#[allow(clippy::float_cmp)] // IEEE equality is the language rule, not an approximation.
+fn semantic_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Unit, Value::Unit) => true,
+        (Value::Bool { value: left }, Value::Bool { value: right }) => left == right,
+        (Value::Int { value: left }, Value::Int { value: right }) => left == right,
+        (Value::Float { value: left }, Value::Float { value: right }) => left == right,
+        (Value::Text { value: left }, Value::Text { value: right }) => left == right,
+        (Value::Tuple { elements: left }, Value::Tuple { elements: right })
+        | (Value::List { elements: left }, Value::List { elements: right }) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| semantic_equal(left, right))
+        }
+        (
+            Value::Record {
+                ty: left_ty,
+                fields: left,
+            },
+            Value::Record {
+                ty: right_ty,
+                fields: right,
+            },
+        ) => {
+            left_ty == right_ty
+                && left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| semantic_equal(left, right))
+        }
+        (
+            Value::Enum {
+                ty: left_ty,
+                variant: left_variant,
+                payload: left,
+            },
+            Value::Enum {
+                ty: right_ty,
+                variant: right_variant,
+                payload: right,
+            },
+        ) => {
+            left_ty == right_ty
+                && left_variant == right_variant
+                && left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| semantic_equal(left, right))
+        }
+        (
+            Value::Refined {
+                ty: left_ty,
+                value: left,
+            },
+            Value::Refined {
+                ty: right_ty,
+                value: right,
+            },
+        ) => left_ty == right_ty && semantic_equal(left, right),
+        (Value::Violation { value: left }, Value::Violation { value: right }) => left == right,
+        (Value::TaskOutcome { outcome: left }, Value::TaskOutcome { outcome: right }) => {
+            match (left, right) {
+                (TaskOutcomeValue::Completed(left), TaskOutcomeValue::Completed(right)) => {
+                    semantic_equal(left, right)
+                }
+                (TaskOutcomeValue::Faulted, TaskOutcomeValue::Faulted)
+                | (TaskOutcomeValue::Cancelled, TaskOutcomeValue::Cancelled) => true,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn pattern_matches(pattern: &Pattern, value: &Value, bindings: &mut Vec<Value>) -> bool {
+    match pattern {
+        Pattern::Wildcard => true,
+        Pattern::Binding => {
+            bindings.push(value.clone());
+            true
+        }
+        Pattern::Constant(constant) => semantic_equal(&Value::from(constant.clone()), value),
+        Pattern::Variant {
+            ty,
+            variant,
+            payload,
+        } => {
+            let Value::Enum {
+                ty: value_ty,
+                variant: value_variant,
+                payload: values,
+            } = value
+            else {
+                return false;
+            };
+            *ty == *value_ty
+                && *variant == *value_variant
+                && payload.len() == values.len()
+                && payload
+                    .iter()
+                    .zip(values)
+                    .all(|(pattern, value)| pattern_matches(pattern, value, bindings))
+        }
+    }
+}
+
+fn read_value_projection(
+    value: &Value,
+    projection: &[u32],
+    span: Span,
+) -> Result<Value, ExecutionFailure> {
+    let mut current = value;
+    for field in projection {
+        while let Value::Refined { value, .. } = current {
+            current = value;
+        }
+        match current {
+            Value::Record { fields, .. } => {
+                current = fields.get(*field as usize).ok_or_else(|| RuntimeFault {
+                    code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                    message: "field projection is out of bounds".into(),
+                    span,
+                })?;
+            }
+            _ => {
+                return Err(RuntimeFault {
+                    code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                    message: "field projection targets a non-record value".into(),
+                    span,
+                }
+                .into());
+            }
+        }
+    }
+    Ok(current.clone())
+}
+
+fn write_value_projection(
+    value: &mut Value,
+    projection: &[u32],
+    replacement: Value,
+    span: Span,
+) -> Result<(), ExecutionFailure> {
+    let Some((&field, remainder)) = projection.split_first() else {
+        *value = replacement;
+        return Ok(());
+    };
+    match value {
+        Value::Record { fields, .. } => {
+            let field = fields.get_mut(field as usize).ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "field projection is out of bounds".into(),
+                span,
+            })?;
+            write_value_projection(field, remainder, replacement, span)
+        }
+        _ => Err(RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "field projection targets a non-record value".into(),
+            span,
+        }
+        .into()),
+    }
+}
+
+fn test_value_passed(value: &Value) -> bool {
+    match value {
+        Value::Unit => true,
+        Value::Enum {
+            variant, payload, ..
+        } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
+        _ => false,
+    }
+}

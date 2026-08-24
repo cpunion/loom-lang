@@ -1,0 +1,6731 @@
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::process::Command;
+
+use inkwell::AddressSpace;
+use inkwell::builder::Builder;
+use inkwell::context::Context;
+use inkwell::debug_info::{
+    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DWARFEmissionKind,
+    DWARFSourceLanguage, DebugInfoBuilder,
+};
+use inkwell::module::{FlagBehavior, Linkage, Module};
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::FileType;
+use inkwell::types::{BasicType, FunctionType, IntType, PointerType, StructType};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
+};
+use inkwell::{FloatPredicate, IntPredicate};
+use loom_mir::{
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, Contract, ContractArm,
+    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function, FunctionId, LocalId,
+    MatchArm, Pattern, Place, Program, RequirementId, Statement, StatementKind, TaskJoinMode, Type,
+    TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
+};
+
+use crate::abi::{
+    ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_FRAME_FIELD_RESULT,
+    COROUTINE_FRAME_FIELD_STATE, JOIN_RESULT_LIST, JOIN_RESULT_OUTCOME, JOIN_RESULT_OUTCOME_LIST,
+    JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR, JOIN_RESULT_TUPLE, READY_EVENT_COMPLETED,
+    READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS, READY_NOTIFICATION_FIELD_FRAME,
+    TASK_STEP_CANCELLED, TASK_STEP_COMPLETED, TASK_STEP_FAULTED, TASK_STEP_PENDING,
+    TASK_VALUE_DIRECT, VALUE_FIELD_AUX, VALUE_FIELD_DATA, VALUE_FIELD_NOMINAL, VALUE_FIELD_SCALAR,
+    VALUE_FIELD_TAG, VALUE_FIELD_WITNESS, VALUE_NODE_FIELD_NEXT, VALUE_NODE_FIELD_VALUE,
+    VALUE_TAG_BOOL, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
+    VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT,
+    VALUE_TAG_TUPLE, VALUE_TAG_UNIT, VALUE_TAG_VIOLATION, WAIT_ABI_VERSION, WAIT_INTEREST_READABLE,
+    WAIT_INTEREST_WRITABLE, WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE,
+    WAIT_SOURCE_FIELD_HANDLE, WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND,
+    WAIT_SOURCE_FIELD_RESERVED, WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD,
+    WAIT_SOURCE_KIND_TIMER, WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT,
+    WITNESS_NODE_FIELD_VALUE,
+};
+use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
+use crate::target::{OPTIMIZATION_PIPELINE, create_native_target_machine};
+use crate::{CodegenError, ReachableProgram, Roots};
+
+pub(crate) struct Emitter;
+
+impl Emitter {
+    pub(crate) fn emit_object(
+        program: &Program,
+        reachable: &ReachableProgram,
+        roots: &Roots,
+        output: &Path,
+        options: &EmitOptions,
+    ) -> Result<NativeObjectArtifact, CodegenError> {
+        let (triple, machine) = create_native_target_machine()?;
+
+        let context = Context::create();
+        let mut backend = Backend::new(&context, program, reachable, roots, options);
+        backend.module.set_triple(&triple);
+        backend
+            .module
+            .set_data_layout(&machine.get_target_data().get_data_layout());
+        backend.compile()?;
+        backend.finalize_debug();
+        backend
+            .module
+            .verify()
+            .map_err(|message| CodegenError::new("LlvmVerificationFailed", message.to_string()))?;
+        backend
+            .module
+            .run_passes(
+                OPTIMIZATION_PIPELINE,
+                &machine,
+                PassBuilderOptions::create(),
+            )
+            .map_err(|message| CodegenError::new("LlvmOptimizationFailed", message.to_string()))?;
+        backend
+            .module
+            .verify()
+            .map_err(|message| CodegenError::new("LlvmVerificationFailed", message.to_string()))?;
+
+        if let Some(ir_path) = &options.emit_ir {
+            backend.module.print_to_file(ir_path).map_err(|message| {
+                CodegenError::new(
+                    "LlvmIrWriteFailed",
+                    format!("{}: {message}", ir_path.display()),
+                )
+            })?;
+        }
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CodegenError::new(
+                    "ArtifactWriteFailed",
+                    format!("{}: {error}", parent.display()),
+                )
+            })?;
+        }
+        machine
+            .write_to_file(&backend.module, FileType::Object, output)
+            .map_err(|message| CodegenError::new("LlvmObjectWriteFailed", message.to_string()))?;
+
+        Ok(NativeObjectArtifact {
+            object: output.to_path_buf(),
+            functions: reachable.functions.len(),
+            witnesses: reachable.witnesses.len(),
+        })
+    }
+
+    pub(crate) fn link_object(object: &Path, output: &Path) -> Result<(), CodegenError> {
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CodegenError::new(
+                    "ArtifactWriteFailed",
+                    format!("{}: {error}", parent.display()),
+                )
+            })?;
+        }
+        let runtime_objects = [materialize_rust_runtime()?];
+        let runtime_paths = runtime_objects
+            .iter()
+            .map(tempfile::NamedTempFile::path)
+            .collect::<Vec<_>>();
+        link_objects(object, &runtime_paths, output)
+    }
+}
+
+fn materialize_rust_runtime() -> Result<tempfile::NamedTempFile, CodegenError> {
+    let archive = tempfile::Builder::new()
+        .prefix("loom-runtime-")
+        .suffix(".a")
+        .tempfile()
+        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
+    std::fs::write(archive.path(), native_runtime_bytes())
+        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
+    Ok(archive)
+}
+
+pub(crate) fn native_runtime_bytes() -> &'static [u8] {
+    include_bytes!(concat!(env!("OUT_DIR"), "/libloom_runtime.a"))
+}
+
+fn link_objects(object: &Path, runtimes: &[&Path], output: &Path) -> Result<(), CodegenError> {
+    let linker = native_linker_program();
+    let mut command = Command::new(&linker);
+    command.arg(object);
+    for runtime in runtimes {
+        command.arg(runtime);
+    }
+    #[cfg(target_os = "linux")]
+    command.args(["-ldl", "-lpthread", "-lm", "-lrt", "-lutil"]);
+    let result = command.arg("-o").arg(output).output().map_err(|error| {
+        CodegenError::new(
+            "NativeLinkerUnavailable",
+            format!("{}: {error}", Path::new(&linker).display()),
+        )
+    })?;
+    if result.status.success() {
+        Ok(())
+    } else {
+        Err(CodegenError::new(
+            "NativeLinkFailed",
+            String::from_utf8_lossy(&result.stderr).trim().to_owned(),
+        ))
+    }
+}
+
+pub(crate) fn native_linker_program() -> std::ffi::OsString {
+    std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into())
+}
+
+struct Backend<'ctx, 'program> {
+    context: &'ctx Context,
+    program: &'program Program,
+    reachable: &'program ReachableProgram,
+    roots: &'program Roots,
+    options: &'program EmitOptions,
+    debug: DebugState<'ctx>,
+    module: Module<'ctx>,
+    builder: Builder<'ctx>,
+    i64_type: IntType<'ctx>,
+    ptr_type: PointerType<'ctx>,
+    value_type: StructType<'ctx>,
+    value_node_type: StructType<'ctx>,
+    arg_node_type: StructType<'ctx>,
+    witness_node_type: StructType<'ctx>,
+    witness_type: StructType<'ctx>,
+    wait_source_type: StructType<'ctx>,
+    registration_type: StructType<'ctx>,
+    ready_notification_type: StructType<'ctx>,
+    coroutine_frame_type: StructType<'ctx>,
+    loom_function_type: FunctionType<'ctx>,
+    task_resume_type: FunctionType<'ctx>,
+    functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
+    task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
+    witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
+    names: Cell<u64>,
+}
+
+struct DebugState<'ctx> {
+    builder: DebugInfoBuilder<'ctx>,
+    unit: DICompileUnit<'ctx>,
+    files: BTreeMap<u32, DIFile<'ctx>>,
+    sources: BTreeMap<u32, DebugSource>,
+}
+
+impl<'ctx> DebugState<'ctx> {
+    fn new(context: &'ctx Context, module: &Module<'ctx>, sources: &[DebugSource]) -> Self {
+        let primary = sources
+            .first()
+            .map_or("<loom-generated>.loom", |source| source.path.as_str());
+        module.set_source_file_name(primary);
+        module.add_basic_value_flag(
+            "Debug Info Version",
+            FlagBehavior::Warning,
+            context.i32_type().const_int(3, false),
+        );
+        module.add_basic_value_flag(
+            "Dwarf Version",
+            FlagBehavior::Warning,
+            context.i32_type().const_int(4, false),
+        );
+        let (builder, unit) = module.create_debug_info_builder(
+            true,
+            DWARFSourceLanguage::C,
+            primary,
+            ".",
+            concat!("loomc ", env!("CARGO_PKG_VERSION")),
+            true,
+            "",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+        let mut files = BTreeMap::new();
+        let mut source_map = BTreeMap::new();
+        for (index, source) in sources.iter().enumerate() {
+            let file = if index == 0 {
+                unit.get_file()
+            } else {
+                builder.create_file(&source.path, ".")
+            };
+            files.insert(source.file, file);
+            source_map.insert(source.file, source.clone());
+        }
+        Self {
+            builder,
+            unit,
+            files,
+            sources: source_map,
+        }
+    }
+
+    fn file(&self, id: u32) -> DIFile<'ctx> {
+        self.files
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| self.unit.get_file())
+    }
+
+    fn line_column(&self, file: u32, offset: u32) -> (u32, u32) {
+        let Some(source) = self.sources.get(&file) else {
+            return (1, 1);
+        };
+        let line = source
+            .line_starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        let start = source.line_starts.get(line).copied().unwrap_or(0);
+        (
+            u32::try_from(line).unwrap_or(u32::MAX).saturating_add(1),
+            offset.saturating_sub(start).saturating_add(1),
+        )
+    }
+
+    fn attach_function(
+        &self,
+        function: FunctionValue<'ctx>,
+        source_name: &str,
+        file_id: u32,
+        offset: u32,
+    ) -> Result<(), CodegenError> {
+        let file = self.file(file_id);
+        let (line, _) = self.line_column(file_id, offset);
+        let status = self
+            .builder
+            .create_basic_type("LoomStatus", 32, 0x05, DIFlags::PUBLIC)
+            .map_err(|error| CodegenError::new("LlvmDebugInfoFailed", error.to_string()))?;
+        let signature =
+            self.builder
+                .create_subroutine_type(file, Some(status.as_type()), &[], DIFlags::PUBLIC);
+        let linkage = function.get_name().to_string_lossy();
+        let scope = self.builder.create_function(
+            file.as_debug_info_scope(),
+            source_name,
+            Some(linkage.as_ref()),
+            file,
+            line,
+            signature,
+            true,
+            true,
+            line,
+            DIFlags::PUBLIC,
+            true,
+        );
+        function.set_subprogram(scope);
+        Ok(())
+    }
+
+    fn set_location(
+        &self,
+        context: &'ctx Context,
+        ir_builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        file: u32,
+        offset: u32,
+    ) {
+        if let Some(scope) = function.get_subprogram() {
+            let (line, column) = self.line_column(file, offset);
+            let location = self.builder.create_debug_location(
+                context,
+                line,
+                column,
+                scope.as_debug_info_scope(),
+                None,
+            );
+            ir_builder.set_current_debug_location(location);
+        }
+    }
+}
+
+impl<'ctx, 'program> Backend<'ctx, 'program> {
+    fn new(
+        context: &'ctx Context,
+        program: &'program Program,
+        reachable: &'program ReachableProgram,
+        roots: &'program Roots,
+        options: &'program EmitOptions,
+    ) -> Self {
+        let module = context.create_module("loom.program");
+        let builder = context.create_builder();
+        let i64_type = context.i64_type();
+        let i32_type = context.i32_type();
+        let ptr_type = context.ptr_type(AddressSpace::default());
+        let value_type = context.opaque_struct_type("loom.Value");
+        value_type.set_body(
+            &[
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let value_node_type = context.opaque_struct_type("loom.ValueNode");
+        value_node_type.set_body(&[value_type.into(), ptr_type.into()], false);
+        let arg_node_type = context.opaque_struct_type("loom.ArgNode");
+        arg_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
+        let witness_node_type = context.opaque_struct_type("loom.WitnessNode");
+        witness_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
+        let witness_type = context.opaque_struct_type("loom.Witness");
+        witness_type.set_body(
+            &std::iter::repeat_n(ptr_type.into(), program.requirements.len() + 1)
+                .collect::<Vec<_>>(),
+            false,
+        );
+        let wait_source_type = context.opaque_struct_type("loom.WaitSource");
+        wait_source_type.set_body(
+            &[
+                i32_type.into(),
+                i32_type.into(),
+                i64_type.into(),
+                i32_type.into(),
+                i32_type.into(),
+                i64_type.into(),
+            ],
+            false,
+        );
+        let registration_type = context.opaque_struct_type("loom.Registration");
+        registration_type.set_body(&[i64_type.into(), i64_type.into()], false);
+        let ready_notification_type = context.opaque_struct_type("loom.ReadyNotification");
+        ready_notification_type.set_body(
+            &[
+                registration_type.into(),
+                ptr_type.into(),
+                i32_type.into(),
+                i32_type.into(),
+            ],
+            false,
+        );
+        let coroutine_frame_type = context.opaque_struct_type("loom.CoroutineFrame");
+        coroutine_frame_type.set_body(&[i64_type.into(), ptr_type.into()], false);
+        let loom_function_type = context.i32_type().fn_type(
+            &[
+                ptr_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
+        let task_resume_type = context
+            .i32_type()
+            .fn_type(&[ptr_type.into(), ptr_type.into()], false);
+        let debug = DebugState::new(context, &module, &options.debug_sources);
+        Self {
+            context,
+            program,
+            reachable,
+            roots,
+            options,
+            debug,
+            module,
+            builder,
+            i64_type,
+            ptr_type,
+            value_type,
+            value_node_type,
+            arg_node_type,
+            witness_node_type,
+            witness_type,
+            wait_source_type,
+            registration_type,
+            ready_notification_type,
+            coroutine_frame_type,
+            loom_function_type,
+            task_resume_type,
+            functions: BTreeMap::new(),
+            task_resumes: BTreeMap::new(),
+            witnesses: BTreeMap::new(),
+            names: Cell::new(0),
+        }
+    }
+
+    fn compile(&mut self) -> Result<(), CodegenError> {
+        self.declare_functions()?;
+        self.declare_witnesses()?;
+        self.emit_runtime_helpers()?;
+        for function in &self.reachable.functions {
+            let source = self.program.function(*function).ok_or_else(|| {
+                CodegenError::new("InvalidFunctionReference", "reachable function is missing")
+            })?;
+            if source.is_async {
+                self.emit_async_constructor(*function)?;
+                self.emit_async_resume(*function)?;
+            } else {
+                self.emit_function(*function)?;
+            }
+        }
+        self.emit_main()
+    }
+
+    fn finalize_debug(&self) {
+        self.builder.unset_current_debug_location();
+        self.debug.builder.finalize();
+    }
+
+    fn set_debug_location(&self, function: FunctionValue<'ctx>, file: u32, offset: u32) {
+        self.debug
+            .set_location(self.context, &self.builder, function, file, offset);
+    }
+
+    fn declare_functions(&mut self) -> Result<(), CodegenError> {
+        for id in &self.reachable.functions {
+            let source = self.program.function(*id).ok_or_else(|| {
+                CodegenError::new(
+                    "InvalidFunctionReference",
+                    format!("function #{} does not exist", id.0),
+                )
+            })?;
+            let name = format!("loom.fn.{}.{}", id.0, mangle(&source.name));
+            let function =
+                self.module
+                    .add_function(&name, self.loom_function_type, Some(Linkage::Internal));
+            self.debug.attach_function(
+                function,
+                &source.name,
+                source.span.file.0,
+                source.span.range.start,
+            )?;
+            self.functions.insert(*id, function);
+            if source.is_async {
+                let resume = self.module.add_function(
+                    &format!("loom.resume.{}.{}", id.0, mangle(&source.name)),
+                    self.task_resume_type,
+                    Some(Linkage::Internal),
+                );
+                self.debug.attach_function(
+                    resume,
+                    &format!("{}$resume", source.name),
+                    source.span.file.0,
+                    source.span.range.start,
+                )?;
+                self.task_resumes.insert(*id, resume);
+            }
+        }
+        Ok(())
+    }
+
+    fn declare_witnesses(&mut self) -> Result<(), CodegenError> {
+        for id in &self.reachable.witnesses {
+            let global =
+                self.module
+                    .add_global(self.witness_type, None, &format!("loom.witness.{}", id.0));
+            let mut fields = vec![self.ptr_type.const_null().into()];
+            for requirement_index in 0..self.program.requirements.len() {
+                let requirement =
+                    loom_mir::RequirementId(u32::try_from(requirement_index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many requirements")
+                    })?);
+                let pointer = self
+                    .reachable
+                    .witness_methods
+                    .get(id)
+                    .filter(|methods| methods.contains(&requirement))
+                    .and_then(|_| self.program.witness(*id))
+                    .and_then(|witness| witness.methods.get(&requirement))
+                    .and_then(|function| self.functions.get(function))
+                    .map_or_else(
+                        || self.ptr_type.const_null(),
+                        |function| function.as_global_value().as_pointer_value(),
+                    );
+                fields.push(pointer.into());
+            }
+            global.set_initializer(&self.witness_type.const_named_struct(&fields));
+            global.set_constant(true);
+            global.set_linkage(Linkage::Internal);
+            self.witnesses.insert(*id, global);
+        }
+        Ok(())
+    }
+
+    fn emit_runtime_helpers(&self) -> Result<(), CodegenError> {
+        self.emit_witness_helpers()?;
+        self.emit_clone_helpers()?;
+        self.emit_unwrap_helper()?;
+        self.emit_equal_helpers()?;
+        self.emit_print_helper()
+    }
+
+    fn emit_witness_helpers(&self) -> Result<(), CodegenError> {
+        let function_type = self
+            .ptr_type
+            .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+        let concatenate = self.module.add_function(
+            "loom.runtime.concat_witnesses",
+            function_type,
+            Some(Linkage::Internal),
+        );
+        let entry = self.context.append_basic_block(concatenate, "entry");
+        let empty = self.context.append_basic_block(concatenate, "empty");
+        let copy = self.context.append_basic_block(concatenate, "copy");
+        self.builder.position_at_end(entry);
+        let prefix = parameter_pointer(concatenate, 0)?;
+        let suffix = parameter_pointer(concatenate, 1)?;
+        let prefix_empty = self
+            .builder
+            .build_is_null(prefix, "prefix.empty")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(prefix_empty, empty, copy)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(empty);
+        self.builder
+            .build_return(Some(&suffix))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(copy);
+        let node = call_pointer(
+            &self.builder,
+            self.native_gc_alloc_witness_node(),
+            &[],
+            "witness.concat",
+        )?;
+        let value = self.load_pointer_field(
+            self.witness_node_type,
+            prefix,
+            WITNESS_NODE_FIELD_VALUE,
+            "witness.concat.value",
+        )?;
+        self.store_pointer_field(
+            self.witness_node_type,
+            node,
+            WITNESS_NODE_FIELD_VALUE,
+            value,
+        )?;
+        let next = self.load_pointer_field(
+            self.witness_node_type,
+            prefix,
+            WITNESS_NODE_FIELD_NEXT,
+            "witness.concat.next",
+        )?;
+        let tail = call_pointer(
+            &self.builder,
+            concatenate,
+            &[next.into(), suffix.into()],
+            "witness.concat.tail",
+        )?;
+        self.store_pointer_field(self.witness_node_type, node, WITNESS_NODE_FIELD_NEXT, tail)?;
+        self.builder
+            .build_return(Some(&node))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_clone_helpers(&self) -> Result<(), CodegenError> {
+        let clone_type = self
+            .context
+            .void_type()
+            .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+        let nodes_type = self
+            .ptr_type
+            .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+        let clone =
+            self.module
+                .add_function("loom.runtime.clone", clone_type, Some(Linkage::Internal));
+        let clone_nodes = self.module.add_function(
+            "loom.runtime.clone_nodes",
+            nodes_type,
+            Some(Linkage::Internal),
+        );
+
+        let entry = self.context.append_basic_block(clone_nodes, "entry");
+        let empty = self.context.append_basic_block(clone_nodes, "empty");
+        let copy = self.context.append_basic_block(clone_nodes, "copy");
+        self.builder.position_at_end(entry);
+        let source = parameter_pointer(clone_nodes, 0)?;
+        let count = parameter_int(clone_nodes, 1)?;
+        let done = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                count,
+                self.i64_type.const_zero(),
+                "nodes.done",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(done, empty, copy)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(empty);
+        self.builder
+            .build_return(Some(&self.ptr_type.const_null()))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(copy);
+        let target = call_pointer(
+            &self.builder,
+            self.native_gc_alloc_value_node(),
+            &[],
+            "node.clone",
+        )?;
+        let source_value = self.struct_pointer(
+            self.value_node_type,
+            source,
+            VALUE_NODE_FIELD_VALUE,
+            "source.value",
+        )?;
+        let target_value = self.struct_pointer(
+            self.value_node_type,
+            target,
+            VALUE_NODE_FIELD_VALUE,
+            "target.value",
+        )?;
+        self.builder
+            .build_call(
+                clone,
+                &[target_value.into(), source_value.into()],
+                "clone.value",
+            )
+            .map_err(builder_error)?;
+        let source_next = self.load_pointer_field(
+            self.value_node_type,
+            source,
+            VALUE_NODE_FIELD_NEXT,
+            "source.next",
+        )?;
+        let remaining = self
+            .builder
+            .build_int_sub(count, self.i64_type.const_int(1, false), "remaining")
+            .map_err(builder_error)?;
+        let next = call_pointer(
+            &self.builder,
+            clone_nodes,
+            &[source_next.into(), remaining.into()],
+            "clone.next",
+        )?;
+        self.store_pointer_field(self.value_node_type, target, VALUE_NODE_FIELD_NEXT, next)?;
+        self.builder
+            .build_return(Some(&target))
+            .map_err(builder_error)?;
+
+        let entry = self.context.append_basic_block(clone, "entry");
+        let aggregate = self.context.append_basic_block(clone, "aggregate");
+        let enumeration = self.context.append_basic_block(clone, "enum");
+        let refined = self.context.append_basic_block(clone, "refined");
+        let outcome = self.context.append_basic_block(clone, "task.outcome");
+        let outcome_completed = self
+            .context
+            .append_basic_block(clone, "task.outcome.completed");
+        let done = self.context.append_basic_block(clone, "done");
+        self.builder.position_at_end(entry);
+        let target = parameter_pointer(clone, 0)?;
+        let source = parameter_pointer(clone, 1)?;
+        let value = self
+            .builder
+            .build_load(self.value_type, source, "clone.source")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(target, value)
+            .map_err(builder_error)?;
+        let tag = self.load_i64_field(self.value_type, source, VALUE_FIELD_TAG, "clone.tag")?;
+        self.builder
+            .build_switch(
+                tag,
+                done,
+                &[
+                    (self.tag(VALUE_TAG_RECORD), aggregate),
+                    (self.tag(VALUE_TAG_TUPLE), aggregate),
+                    (self.tag(VALUE_TAG_LIST), aggregate),
+                    (self.tag(VALUE_TAG_ENUM), enumeration),
+                    (self.tag(VALUE_TAG_REFINED), refined),
+                    (self.tag(VALUE_TAG_TASK_OUTCOME), outcome),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(aggregate);
+        let count = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "field.count")?;
+        self.clone_data_chain(source, target, count, clone_nodes, done)?;
+
+        self.builder.position_at_end(enumeration);
+        let count =
+            self.load_i64_field(self.value_type, source, VALUE_FIELD_SCALAR, "payload.count")?;
+        self.clone_data_chain(source, target, count, clone_nodes, done)?;
+
+        self.builder.position_at_end(refined);
+        let source_inner =
+            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "refined.source")?;
+        let target_inner = call_pointer(
+            &self.builder,
+            self.native_gc_alloc_value(),
+            &[],
+            "refined.clone",
+        )?;
+        self.builder
+            .build_call(
+                clone,
+                &[target_inner.into(), source_inner.into()],
+                "clone.inner",
+            )
+            .map_err(builder_error)?;
+        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(outcome);
+        let step = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "outcome.step")?;
+        let completed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                step,
+                self.i64_type.const_int(TASK_STEP_COMPLETED, false),
+                "outcome.completed",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(completed, outcome_completed, done)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(outcome_completed);
+        let source_inner =
+            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "outcome.source")?;
+        let target_inner = call_pointer(
+            &self.builder,
+            self.native_gc_alloc_value(),
+            &[],
+            "outcome.clone",
+        )?;
+        self.builder
+            .build_call(
+                clone,
+                &[target_inner.into(), source_inner.into()],
+                "clone.outcome",
+            )
+            .map_err(builder_error)?;
+        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(done);
+        self.builder.build_return(None).map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn clone_data_chain(
+        &self,
+        source: PointerValue<'ctx>,
+        target: PointerValue<'ctx>,
+        count: IntValue<'ctx>,
+        clone_nodes: FunctionValue<'ctx>,
+        done: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let source_data = self.load_pointer_field(
+            self.value_type,
+            source,
+            VALUE_FIELD_DATA,
+            "aggregate.source",
+        )?;
+        let data = call_pointer(
+            &self.builder,
+            clone_nodes,
+            &[source_data.into(), count.into()],
+            "aggregate.clone",
+        )?;
+        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, data)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_unwrap_helper(&self) -> Result<(), CodegenError> {
+        let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
+        let function = self.module.add_function(
+            "loom.runtime.unwrap",
+            function_type,
+            Some(Linkage::Internal),
+        );
+        let entry = self.context.append_basic_block(function, "entry");
+        let nested = self.context.append_basic_block(function, "nested");
+        let done = self.context.append_basic_block(function, "done");
+        self.builder.position_at_end(entry);
+        let value = parameter_pointer(function, 0)?;
+        let tag = self.load_i64_field(self.value_type, value, VALUE_FIELD_TAG, "unwrap.tag")?;
+        let is_refined = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                self.tag(VALUE_TAG_REFINED),
+                "is.refined",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(is_refined, nested, done)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(nested);
+        let inner =
+            self.load_pointer_field(self.value_type, value, VALUE_FIELD_DATA, "unwrap.inner")?;
+        let unwrapped = call_pointer(&self.builder, function, &[inner.into()], "unwrap.recursive")?;
+        self.builder
+            .build_return(Some(&unwrapped))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(done);
+        self.builder
+            .build_return(Some(&value))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_equal_helpers(&self) -> Result<(), CodegenError> {
+        let equal_type = self
+            .context
+            .bool_type()
+            .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+        let nodes_type = self.context.bool_type().fn_type(
+            &[
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+            ],
+            false,
+        );
+        let equal =
+            self.module
+                .add_function("loom.runtime.equal", equal_type, Some(Linkage::Internal));
+        let equal_nodes = self.module.add_function(
+            "loom.runtime.equal_nodes",
+            nodes_type,
+            Some(Linkage::Internal),
+        );
+        self.emit_equal_nodes(equal, equal_nodes)?;
+        self.emit_equal_value(equal, equal_nodes)
+    }
+
+    fn emit_equal_nodes(
+        &self,
+        equal: FunctionValue<'ctx>,
+        equal_nodes: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let entry = self.context.append_basic_block(equal_nodes, "entry");
+        let yes = self.context.append_basic_block(equal_nodes, "yes");
+        let compare = self.context.append_basic_block(equal_nodes, "compare");
+        let recurse = self.context.append_basic_block(equal_nodes, "recurse");
+        let no = self.context.append_basic_block(equal_nodes, "no");
+        self.builder.position_at_end(entry);
+        let left = parameter_pointer(equal_nodes, 0)?;
+        let right = parameter_pointer(equal_nodes, 1)?;
+        let count = parameter_int(equal_nodes, 2)?;
+        let done = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                count,
+                self.i64_type.const_zero(),
+                "equal.done",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(done, yes, compare)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(compare);
+        let left_value = self.struct_pointer(
+            self.value_node_type,
+            left,
+            VALUE_NODE_FIELD_VALUE,
+            "left.value",
+        )?;
+        let right_value = self.struct_pointer(
+            self.value_node_type,
+            right,
+            VALUE_NODE_FIELD_VALUE,
+            "right.value",
+        )?;
+        let item_equal = call_int(
+            &self.builder,
+            equal,
+            &[left_value.into(), right_value.into()],
+            "item.equal",
+        )?;
+        self.builder
+            .build_conditional_branch(item_equal, recurse, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(recurse);
+        let left_next = self.load_pointer_field(
+            self.value_node_type,
+            left,
+            VALUE_NODE_FIELD_NEXT,
+            "left.next",
+        )?;
+        let right_next = self.load_pointer_field(
+            self.value_node_type,
+            right,
+            VALUE_NODE_FIELD_NEXT,
+            "right.next",
+        )?;
+        let remaining = self
+            .builder
+            .build_int_sub(count, self.i64_type.const_int(1, false), "remaining")
+            .map_err(builder_error)?;
+        let rest = call_int(
+            &self.builder,
+            equal_nodes,
+            &[left_next.into(), right_next.into(), remaining.into()],
+            "rest.equal",
+        )?;
+        self.builder
+            .build_return(Some(&rest))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(yes);
+        self.builder
+            .build_return(Some(&self.context.bool_type().const_int(1, false)))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(no);
+        self.builder
+            .build_return(Some(&self.context.bool_type().const_zero()))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_equal_value(
+        &self,
+        equal: FunctionValue<'ctx>,
+        equal_nodes: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let entry = self.context.append_basic_block(equal, "entry");
+        let dispatch = self.context.append_basic_block(equal, "dispatch");
+        let yes = self.context.append_basic_block(equal, "yes");
+        let no = self.context.append_basic_block(equal, "no");
+        let scalar = self.context.append_basic_block(equal, "scalar");
+        let float = self.context.append_basic_block(equal, "float");
+        let text = self.context.append_basic_block(equal, "text");
+        let record = self.context.append_basic_block(equal, "record");
+        let enumeration = self.context.append_basic_block(equal, "enum");
+        let refined = self.context.append_basic_block(equal, "refined");
+        let outcome = self.context.append_basic_block(equal, "task.outcome");
+        self.builder.position_at_end(entry);
+        let left = parameter_pointer(equal, 0)?;
+        let right = parameter_pointer(equal, 1)?;
+        let left_tag = self.load_i64_field(self.value_type, left, VALUE_FIELD_TAG, "left.tag")?;
+        let right_tag =
+            self.load_i64_field(self.value_type, right, VALUE_FIELD_TAG, "right.tag")?;
+        let same_tag = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, left_tag, right_tag, "same.tag")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(same_tag, dispatch, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(dispatch);
+        self.builder
+            .build_switch(
+                left_tag,
+                no,
+                &[
+                    (self.tag(VALUE_TAG_UNIT), yes),
+                    (self.tag(VALUE_TAG_BOOL), scalar),
+                    (self.tag(VALUE_TAG_INT), scalar),
+                    (self.tag(VALUE_TAG_FLOAT), float),
+                    (self.tag(VALUE_TAG_TEXT), text),
+                    (self.tag(VALUE_TAG_RECORD), record),
+                    (self.tag(VALUE_TAG_TUPLE), record),
+                    (self.tag(VALUE_TAG_LIST), record),
+                    (self.tag(VALUE_TAG_ENUM), enumeration),
+                    (self.tag(VALUE_TAG_REFINED), refined),
+                    (self.tag(VALUE_TAG_VIOLATION), record),
+                    (self.tag(VALUE_TAG_TASK_OUTCOME), outcome),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(scalar);
+        let left_scalar =
+            self.load_i64_field(self.value_type, left, VALUE_FIELD_SCALAR, "left.scalar")?;
+        let right_scalar =
+            self.load_i64_field(self.value_type, right, VALUE_FIELD_SCALAR, "right.scalar")?;
+        let values_equal = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, left_scalar, right_scalar, "scalar.equal")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(values_equal, yes, no)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(float);
+        let left_bits =
+            self.load_i64_field(self.value_type, left, VALUE_FIELD_SCALAR, "left.bits")?;
+        let right_bits =
+            self.load_i64_field(self.value_type, right, VALUE_FIELD_SCALAR, "right.bits")?;
+        let left_float = self
+            .builder
+            .build_bit_cast(left_bits, self.context.f64_type(), "left.float")
+            .map_err(builder_error)?
+            .into_float_value();
+        let right_float = self
+            .builder
+            .build_bit_cast(right_bits, self.context.f64_type(), "right.float")
+            .map_err(builder_error)?
+            .into_float_value();
+        let values_equal = self
+            .builder
+            .build_float_compare(FloatPredicate::OEQ, left_float, right_float, "float.equal")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(values_equal, yes, no)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(text);
+        let left_length =
+            self.load_i64_field(self.value_type, left, VALUE_FIELD_AUX, "left.length")?;
+        let right_length =
+            self.load_i64_field(self.value_type, right, VALUE_FIELD_AUX, "right.length")?;
+        let same_length = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, left_length, right_length, "same.length")
+            .map_err(builder_error)?;
+        let text_bytes = self.context.append_basic_block(equal, "text.bytes");
+        self.builder
+            .build_conditional_branch(same_length, text_bytes, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(text_bytes);
+        let memcmp = self.libc_memcmp();
+        let left_data =
+            self.load_pointer_field(self.value_type, left, VALUE_FIELD_DATA, "left.data")?;
+        let right_data =
+            self.load_pointer_field(self.value_type, right, VALUE_FIELD_DATA, "right.data")?;
+        let comparison = call_int(
+            &self.builder,
+            memcmp,
+            &[left_data.into(), right_data.into(), left_length.into()],
+            "memcmp",
+        )?;
+        let text_equal = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                comparison,
+                self.context.i32_type().const_zero(),
+                "text.equal",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(text_equal, yes, no)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(record);
+        let same_nominal = self.compare_i64_field(left, right, VALUE_FIELD_NOMINAL, "nominal")?;
+        let record_details = self.context.append_basic_block(equal, "record.details");
+        self.builder
+            .build_conditional_branch(same_nominal, record_details, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(record_details);
+        let count = self.load_i64_field(self.value_type, left, VALUE_FIELD_AUX, "field.count")?;
+        let same_count = self.compare_i64_field(left, right, VALUE_FIELD_AUX, "field.count")?;
+        let record_items = self.context.append_basic_block(equal, "record.items");
+        self.builder
+            .build_conditional_branch(same_count, record_items, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(record_items);
+        self.emit_equal_chains(left, right, count, equal_nodes, yes, no)?;
+
+        self.builder.position_at_end(enumeration);
+        let same_nominal = self.compare_i64_field(left, right, VALUE_FIELD_NOMINAL, "enum.type")?;
+        let same_variant = self.compare_i64_field(left, right, VALUE_FIELD_AUX, "enum.variant")?;
+        let header_equal = self
+            .builder
+            .build_and(same_nominal, same_variant, "enum.header")
+            .map_err(builder_error)?;
+        let enum_details = self.context.append_basic_block(equal, "enum.details");
+        self.builder
+            .build_conditional_branch(header_equal, enum_details, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(enum_details);
+        let count =
+            self.load_i64_field(self.value_type, left, VALUE_FIELD_SCALAR, "payload.count")?;
+        let same_count =
+            self.compare_i64_field(left, right, VALUE_FIELD_SCALAR, "payload.count")?;
+        let enum_items = self.context.append_basic_block(equal, "enum.items");
+        self.builder
+            .build_conditional_branch(same_count, enum_items, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(enum_items);
+        self.emit_equal_chains(left, right, count, equal_nodes, yes, no)?;
+
+        self.builder.position_at_end(refined);
+        let same_nominal =
+            self.compare_i64_field(left, right, VALUE_FIELD_NOMINAL, "refined.type")?;
+        let refined_inner = self.context.append_basic_block(equal, "refined.inner");
+        self.builder
+            .build_conditional_branch(same_nominal, refined_inner, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(refined_inner);
+        let left_inner =
+            self.load_pointer_field(self.value_type, left, VALUE_FIELD_DATA, "left.inner")?;
+        let right_inner =
+            self.load_pointer_field(self.value_type, right, VALUE_FIELD_DATA, "right.inner")?;
+        let inner_equal = call_int(
+            &self.builder,
+            equal,
+            &[left_inner.into(), right_inner.into()],
+            "inner.equal",
+        )?;
+        self.builder
+            .build_conditional_branch(inner_equal, yes, no)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(outcome);
+        let same_step = self.compare_i64_field(left, right, VALUE_FIELD_AUX, "outcome.step")?;
+        let outcome_details = self
+            .context
+            .append_basic_block(equal, "task.outcome.details");
+        self.builder
+            .build_conditional_branch(same_step, outcome_details, no)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(outcome_details);
+        let step = self.load_i64_field(self.value_type, left, VALUE_FIELD_AUX, "outcome.step")?;
+        let completed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                step,
+                self.i64_type.const_int(TASK_STEP_COMPLETED, false),
+                "outcome.completed",
+            )
+            .map_err(builder_error)?;
+        let outcome_inner = self.context.append_basic_block(equal, "task.outcome.inner");
+        self.builder
+            .build_conditional_branch(completed, outcome_inner, yes)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(outcome_inner);
+        let left_inner =
+            self.load_pointer_field(self.value_type, left, VALUE_FIELD_DATA, "left.outcome")?;
+        let right_inner =
+            self.load_pointer_field(self.value_type, right, VALUE_FIELD_DATA, "right.outcome")?;
+        let inner_equal = call_int(
+            &self.builder,
+            equal,
+            &[left_inner.into(), right_inner.into()],
+            "outcome.inner.equal",
+        )?;
+        self.builder
+            .build_conditional_branch(inner_equal, yes, no)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(yes);
+        self.builder
+            .build_return(Some(&self.context.bool_type().const_int(1, false)))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(no);
+        self.builder
+            .build_return(Some(&self.context.bool_type().const_zero()))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_equal_chains(
+        &self,
+        left: PointerValue<'ctx>,
+        right: PointerValue<'ctx>,
+        count: IntValue<'ctx>,
+        equal_nodes: FunctionValue<'ctx>,
+        yes: inkwell::basic_block::BasicBlock<'ctx>,
+        no: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let left_data =
+            self.load_pointer_field(self.value_type, left, VALUE_FIELD_DATA, "left.items")?;
+        let right_data =
+            self.load_pointer_field(self.value_type, right, VALUE_FIELD_DATA, "right.items")?;
+        let equal = call_int(
+            &self.builder,
+            equal_nodes,
+            &[left_data.into(), right_data.into(), count.into()],
+            "items.equal",
+        )?;
+        self.builder
+            .build_conditional_branch(equal, yes, no)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_print_helper(&self) -> Result<(), CodegenError> {
+        let function_type = self
+            .context
+            .void_type()
+            .fn_type(&[self.ptr_type.into()], false);
+        let function =
+            self.module
+                .add_function("loom.runtime.print", function_type, Some(Linkage::Internal));
+        let entry = self.context.append_basic_block(function, "entry");
+        let unit = self.context.append_basic_block(function, "unit");
+        let boolean = self.context.append_basic_block(function, "bool");
+        let integer = self.context.append_basic_block(function, "int");
+        let float = self.context.append_basic_block(function, "float");
+        let text = self.context.append_basic_block(function, "text");
+        let nominal = self.context.append_basic_block(function, "nominal");
+        let dynamic = self.context.append_basic_block(function, "dyn");
+        let done = self.context.append_basic_block(function, "done");
+        self.builder.position_at_end(entry);
+        let value = parameter_pointer(function, 0)?;
+        let tag = self.load_i64_field(self.value_type, value, VALUE_FIELD_TAG, "print.tag")?;
+        self.builder
+            .build_switch(
+                tag,
+                nominal,
+                &[
+                    (self.tag(VALUE_TAG_UNIT), unit),
+                    (self.tag(VALUE_TAG_BOOL), boolean),
+                    (self.tag(VALUE_TAG_INT), integer),
+                    (self.tag(VALUE_TAG_FLOAT), float),
+                    (self.tag(VALUE_TAG_TEXT), text),
+                    (self.tag(VALUE_TAG_DYN), dynamic),
+                ],
+            )
+            .map_err(builder_error)?;
+        self.builder.position_at_end(unit);
+        self.puts("Unit")?;
+        self.branch(done)?;
+        self.builder.position_at_end(boolean);
+        let scalar =
+            self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "bool.value")?;
+        let is_true = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                scalar,
+                self.i64_type.const_zero(),
+                "bool.true",
+            )
+            .map_err(builder_error)?;
+        let print_true = self.context.append_basic_block(function, "print.true");
+        let print_false = self.context.append_basic_block(function, "print.false");
+        self.builder
+            .build_conditional_branch(is_true, print_true, print_false)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(print_true);
+        self.puts("true")?;
+        self.branch(done)?;
+        self.builder.position_at_end(print_false);
+        self.puts("false")?;
+        self.branch(done)?;
+        self.builder.position_at_end(integer);
+        let scalar =
+            self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "int.value")?;
+        self.printf("%lld\n", &[scalar.into()])?;
+        self.branch(done)?;
+        self.builder.position_at_end(float);
+        let bits = self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "float.bits")?;
+        let number = self
+            .builder
+            .build_bit_cast(bits, self.context.f64_type(), "float.value")
+            .map_err(builder_error)?;
+        self.printf("%.17g\n", &[number.into()])?;
+        self.branch(done)?;
+        self.builder.position_at_end(text);
+        let length = self.load_i64_field(self.value_type, value, VALUE_FIELD_AUX, "text.length")?;
+        self.printf("Text(bytes=%lld)\n", &[length.into()])?;
+        self.branch(done)?;
+        self.builder.position_at_end(nominal);
+        let id = self.load_i64_field(self.value_type, value, VALUE_FIELD_NOMINAL, "nominal.id")?;
+        self.printf("type#%lld\n", &[id.into()])?;
+        self.branch(done)?;
+        self.builder.position_at_end(dynamic);
+        self.puts("<dyn>")?;
+        self.branch(done)?;
+        self.builder.position_at_end(done);
+        self.builder.build_return(None).map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn libc_memcmp(&self) -> FunctionValue<'ctx> {
+        self.module.get_function("memcmp").unwrap_or_else(|| {
+            let function_type = self.context.i32_type().fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function("memcmp", function_type, None)
+        })
+    }
+
+    fn libc_puts(&self) -> FunctionValue<'ctx> {
+        self.module.get_function("puts").unwrap_or_else(|| {
+            let function_type = self
+                .context
+                .i32_type()
+                .fn_type(&[self.ptr_type.into()], false);
+            self.module.add_function("puts", function_type, None)
+        })
+    }
+
+    fn libc_printf(&self) -> FunctionValue<'ctx> {
+        self.module.get_function("printf").unwrap_or_else(|| {
+            let function_type = self
+                .context
+                .i32_type()
+                .fn_type(&[self.ptr_type.into()], true);
+            self.module.add_function("printf", function_type, None)
+        })
+    }
+
+    fn native_parse_float(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_parse_float")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_parse_float", function_type, None)
+            })
+    }
+
+    fn native_format_float(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_format_float")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.context.f64_type().into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_format_float", function_type, None)
+            })
+    }
+
+    fn native_gc_alloc_value(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_alloc_value")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[], false);
+                self.module
+                    .add_function("loom_gc_alloc_value", function_type, None)
+            })
+    }
+
+    fn native_gc_alloc_value_node(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_alloc_value_node")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[], false);
+                self.module
+                    .add_function("loom_gc_alloc_value_node", function_type, None)
+            })
+    }
+
+    fn native_gc_alloc_witness_node(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_alloc_witness_node")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[], false);
+                self.module
+                    .add_function("loom_gc_alloc_witness_node", function_type, None)
+            })
+    }
+
+    fn native_wait_now_ns(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_wait_now_ns")
+            .unwrap_or_else(|| {
+                let function_type = self.i64_type.fn_type(&[], false);
+                self.module
+                    .add_function("loom_wait_now_ns", function_type, None)
+            })
+    }
+
+    fn native_executor_create(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_create")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[], false);
+                self.module
+                    .add_function("loom_executor_create", function_type, None)
+            })
+    }
+
+    fn native_executor_destroy(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_destroy")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .void_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_executor_destroy", function_type, None)
+            })
+    }
+
+    fn native_executor_register(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_register")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_executor_register", function_type, None)
+            })
+    }
+
+    fn native_executor_notify_completion(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_notify_completion")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.context.i32_type().into(),
+                        self.context.i32_type().into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_executor_notify_completion", function_type, None)
+            })
+    }
+
+    fn native_executor_wait(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_wait")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_executor_wait", function_type, None)
+            })
+    }
+
+    fn native_executor_pop_ready(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_pop_ready")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_executor_pop_ready", function_type, None)
+            })
+    }
+
+    fn native_task_spawn(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_spawn")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_task_spawn", function_type, None)
+            })
+    }
+
+    fn native_task_from_wait_source(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_from_wait_source")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_from_wait_source", function_type, None)
+            })
+    }
+
+    fn native_task_slot(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_slot")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function("loom_task_slot", function_type, None)
+            })
+    }
+
+    fn native_task_result(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_result")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_result", function_type, None)
+            })
+    }
+
+    fn native_task_state(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_state")
+            .unwrap_or_else(|| {
+                let function_type = self.i64_type.fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_state", function_type, None)
+            })
+    }
+
+    fn native_task_set_state(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_set_state")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .void_type()
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function("loom_task_set_state", function_type, None)
+            })
+    }
+
+    fn native_task_is_cancelled(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_is_cancelled")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_is_cancelled", function_type, None)
+            })
+    }
+
+    fn native_task_join_step(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_join_step")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_join_step", function_type, None)
+            })
+    }
+
+    fn native_task_write_join_result(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_write_join_result")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.context.i32_type().into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_task_write_join_result", function_type, None)
+            })
+    }
+
+    fn native_join_create(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_join_create")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i32_type().into(),
+                        self.context.i32_type().into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_join_create", function_type, None)
+            })
+    }
+
+    fn native_join_task(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_join_task")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_join_task", function_type, None)
+            })
+    }
+
+    fn native_join_add_task(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_join_add_task")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_join_add_task", function_type, None)
+            })
+    }
+
+    fn native_join_add_list(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_join_add_list")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_join_add_list", function_type, None)
+            })
+    }
+
+    fn native_task_suspend_value(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_suspend_value")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_task_suspend_value", function_type, None)
+            })
+    }
+
+    fn native_executor_run(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_run")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_executor_run", function_type, None)
+            })
+    }
+
+    fn puts(&self, value: &str) -> Result<(), CodegenError> {
+        let string = self
+            .builder
+            .build_global_string_ptr(value, &self.unique("string"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_call(
+                self.libc_puts(),
+                &[string.as_pointer_value().into()],
+                "puts",
+            )
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn printf(
+        &self,
+        format: &str,
+        values: &[BasicMetadataValueEnum<'ctx>],
+    ) -> Result<(), CodegenError> {
+        let string = self
+            .builder
+            .build_global_string_ptr(format, &self.unique("format"))
+            .map_err(builder_error)?;
+        let mut arguments = Vec::with_capacity(values.len() + 1);
+        arguments.push(string.as_pointer_value().into());
+        arguments.extend_from_slice(values);
+        self.builder
+            .build_call(self.libc_printf(), &arguments, "printf")
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_function(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self
+            .program
+            .function(id)
+            .ok_or_else(|| CodegenError::new("InvalidFunctionReference", "function is missing"))?;
+        self.set_debug_location(
+            self.functions[&id],
+            source.span.file.0,
+            source.span.range.start,
+        );
+        let result = FunctionCompiler::new(self, id)?.compile();
+        self.builder.unset_current_debug_location();
+        result
+    }
+
+    fn emit_async_resume(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self.program.function(id).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "async function is missing")
+        })?;
+        self.set_debug_location(
+            self.task_resumes[&id],
+            source.span.file.0,
+            source.span.range.start,
+        );
+        let result = FunctionCompiler::new_async(self, id)?.compile();
+        self.builder.unset_current_debug_location();
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_async_constructor(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self.program.function(id).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "async constructor is missing")
+        })?;
+        let layout = AsyncLayout::new(source)?;
+        let constructor = self.functions[&id];
+        self.set_debug_location(constructor, source.span.file.0, source.span.range.start);
+        let output = parameter_pointer(constructor, 0)?;
+        let mut argument = parameter_pointer(constructor, 1)?;
+        let executor = parameter_pointer(constructor, 3)?;
+        let entry = self.context.append_basic_block(constructor, "entry");
+        let ready = self.context.append_basic_block(constructor, "task.ready");
+        let failed = self.context.append_basic_block(constructor, "task.failed");
+        self.builder.position_at_end(entry);
+        let resume = self.task_resumes[&id].as_global_value().as_pointer_value();
+        let task = call_pointer(
+            &self.builder,
+            self.native_task_spawn(),
+            &[
+                executor.into(),
+                resume.into(),
+                self.i64_type.const_int(layout.slot_count, false).into(),
+                self.i64_type.const_int(layout.result_slot, false).into(),
+            ],
+            "task.spawn",
+        )?;
+        let exists = self
+            .builder
+            .build_is_not_null(task, "task.exists")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(exists, ready, failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failed);
+        self.puts("RuntimeFault: task allocation failed")?;
+        self.builder
+            .build_return(Some(
+                &self.context.i32_type().const_int(TASK_STEP_FAULTED, false),
+            ))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(ready);
+        let clone = self
+            .module
+            .get_function("loom.runtime.clone")
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+        for parameter in &source.params {
+            let value = self.load_pointer_field(
+                self.arg_node_type,
+                argument,
+                ARG_NODE_FIELD_VALUE,
+                "task.argument",
+            )?;
+            let slot = call_pointer(
+                &self.builder,
+                self.native_task_slot(),
+                &[
+                    task.into(),
+                    self.i64_type
+                        .const_int(layout.local_slots[&parameter.id], false)
+                        .into(),
+                ],
+                "task.parameter.slot",
+            )?;
+            self.builder
+                .build_call(clone, &[slot.into(), value.into()], "task.parameter.clone")
+                .map_err(builder_error)?;
+            let old = call_pointer(
+                &self.builder,
+                self.native_task_slot(),
+                &[
+                    task.into(),
+                    self.i64_type
+                        .const_int(layout.old_parameter_slots[&parameter.id], false)
+                        .into(),
+                ],
+                "task.old.slot",
+            )?;
+            self.builder
+                .build_call(clone, &[old.into(), value.into()], "task.old.clone")
+                .map_err(builder_error)?;
+            argument = self.load_pointer_field(
+                self.arg_node_type,
+                argument,
+                ARG_NODE_FIELD_NEXT,
+                "task.argument.next",
+            )?;
+        }
+        self.builder
+            .build_store(output, self.value_type.const_zero())
+            .map_err(builder_error)?;
+        self.store_i64_field(
+            self.value_type,
+            output,
+            VALUE_FIELD_TAG,
+            self.tag(VALUE_TAG_TASK),
+        )?;
+        self.store_pointer_field(self.value_type, output, VALUE_FIELD_DATA, task)?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_zero()))
+            .map_err(builder_error)?;
+        self.builder.unset_current_debug_location();
+        Ok(())
+    }
+
+    fn needs_executor(&self) -> bool {
+        self.reachable
+            .functions
+            .iter()
+            .filter_map(|function| self.program.function(*function))
+            .any(|function| function.is_async)
+    }
+
+    fn create_root_executor(&self) -> Result<PointerValue<'ctx>, CodegenError> {
+        if !self.needs_executor() {
+            return Ok(self.ptr_type.const_null());
+        }
+        let executor = call_pointer(
+            &self.builder,
+            self.native_executor_create(),
+            &[],
+            "executor.root",
+        )?;
+        let ready = self.context.append_basic_block(
+            self.builder
+                .get_insert_block()
+                .and_then(inkwell::basic_block::BasicBlock::get_parent)
+                .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "root has no function"))?,
+            "executor.root.ready",
+        );
+        let failed = self.context.append_basic_block(
+            ready.get_parent().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "root block has no function")
+            })?,
+            "executor.root.failed",
+        );
+        let exists = self
+            .builder
+            .build_is_not_null(executor, "executor.root.exists")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(exists, ready, failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failed);
+        self.puts("RuntimeFault: executor creation failed")?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_int(6, false)))
+            .map_err(builder_error)?;
+        self.builder.position_at_end(ready);
+        Ok(executor)
+    }
+
+    fn destroy_root_executor(&self, executor: PointerValue<'ctx>) -> Result<(), CodegenError> {
+        if self.needs_executor() {
+            self.builder
+                .build_call(
+                    self.native_executor_destroy(),
+                    &[executor.into()],
+                    "executor.root.destroy",
+                )
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_main(&self) -> Result<(), CodegenError> {
+        let main_type = self.context.i32_type().fn_type(&[], false);
+        let main = self.module.add_function("main", main_type, None);
+        let entry = self.context.append_basic_block(main, "entry");
+        self.builder.position_at_end(entry);
+        let result = self
+            .builder
+            .build_alloca(self.value_type, "result")
+            .map_err(builder_error)?;
+        let null = self.ptr_type.const_null();
+        match &self.options.kind {
+            EmitKind::Run { .. } => {
+                let executor = self.create_root_executor()?;
+                let root = self
+                    .roots
+                    .functions()
+                    .iter()
+                    .next()
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new("NoCompilationRoots", "run harness has no root")
+                    })?;
+                let mut status = call_int(
+                    &self.builder,
+                    self.functions[&root],
+                    &[result.into(), null.into(), null.into(), executor.into()],
+                    "run",
+                )?;
+                if self
+                    .program
+                    .function(root)
+                    .is_some_and(|function| function.is_async)
+                {
+                    status = self.drive_async_root(status, result, executor)?;
+                }
+                let success = self.context.append_basic_block(main, "run.success");
+                let failure = self.context.append_basic_block(main, "run.failure");
+                let ok = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.context.i32_type().const_zero(),
+                        "run.ok",
+                    )
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_conditional_branch(ok, success, failure)
+                    .map_err(builder_error)?;
+                self.builder.position_at_end(success);
+                self.destroy_root_executor(executor)?;
+                let print = self
+                    .module
+                    .get_function("loom.runtime.print")
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "print helper is missing"))?;
+                self.builder
+                    .build_call(print, &[result.into()], "print.result")
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_return(Some(&self.context.i32_type().const_zero()))
+                    .map_err(builder_error)?;
+                self.builder.position_at_end(failure);
+                self.destroy_root_executor(executor)?;
+                self.builder
+                    .build_return(Some(&status))
+                    .map_err(builder_error)?;
+            }
+            EmitKind::Tests => {
+                let failed = self
+                    .builder
+                    .build_alloca(self.context.i32_type(), "tests.failed")
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_store(failed, self.context.i32_type().const_zero())
+                    .map_err(builder_error)?;
+                for root in self.roots.functions() {
+                    let executor = self.create_root_executor()?;
+                    let mut status = call_int(
+                        &self.builder,
+                        self.functions[root],
+                        &[result.into(), null.into(), null.into(), executor.into()],
+                        "test",
+                    )?;
+                    if self
+                        .program
+                        .function(*root)
+                        .is_some_and(|function| function.is_async)
+                    {
+                        status = self.drive_async_root(status, result, executor)?;
+                    }
+                    self.destroy_root_executor(executor)?;
+                    let status_ok = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            status,
+                            self.context.i32_type().const_zero(),
+                            "test.status.ok",
+                        )
+                        .map_err(builder_error)?;
+                    let value_ok = self.test_value_passed(result)?;
+                    let passed = self
+                        .builder
+                        .build_and(status_ok, value_ok, "test.passed")
+                        .map_err(builder_error)?;
+                    let pass = self.context.append_basic_block(main, "test.pass");
+                    let fail = self.context.append_basic_block(main, "test.fail");
+                    let next = self.context.append_basic_block(main, "test.next");
+                    self.builder
+                        .build_conditional_branch(passed, pass, fail)
+                        .map_err(builder_error)?;
+                    let name = &self
+                        .program
+                        .function(*root)
+                        .ok_or_else(|| {
+                            CodegenError::new("InvalidFunctionReference", "test root is missing")
+                        })?
+                        .name;
+                    self.builder.position_at_end(pass);
+                    self.puts(&format!("passed {name}"))?;
+                    self.branch(next)?;
+                    self.builder.position_at_end(fail);
+                    self.puts(&format!("failed {name}"))?;
+                    self.builder
+                        .build_store(failed, self.context.i32_type().const_int(1, false))
+                        .map_err(builder_error)?;
+                    self.branch(next)?;
+                    self.builder.position_at_end(next);
+                }
+                let status = self
+                    .builder
+                    .build_load(self.context.i32_type(), failed, "tests.status")
+                    .map_err(builder_error)?
+                    .into_int_value();
+                self.builder
+                    .build_return(Some(&status))
+                    .map_err(builder_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn drive_async_root(
+        &self,
+        constructor_status: IntValue<'ctx>,
+        result: PointerValue<'ctx>,
+        executor: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "root has no function"))?;
+        let run = self.context.append_basic_block(function, "task.root.run");
+        let constructor_failed = self
+            .context
+            .append_basic_block(function, "task.root.constructor.failed");
+        let copy = self.context.append_basic_block(function, "task.root.copy");
+        let run_failed = self
+            .context
+            .append_basic_block(function, "task.root.run.failed");
+        let merge = self.context.append_basic_block(function, "task.root.merge");
+        let constructed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                constructor_status,
+                self.context.i32_type().const_zero(),
+                "task.root.constructed",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(constructed, run, constructor_failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(constructor_failed);
+        self.branch(merge)?;
+
+        self.builder.position_at_end(run);
+        let task = self.load_pointer_field(
+            self.value_type,
+            result,
+            VALUE_FIELD_DATA,
+            "task.root.pointer",
+        )?;
+        let run_status = call_int(
+            &self.builder,
+            self.native_executor_run(),
+            &[executor.into(), task.into()],
+            "task.root.status",
+        )?;
+        let completed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                run_status,
+                self.context
+                    .i32_type()
+                    .const_int(TASK_STEP_COMPLETED, false),
+                "task.root.completed",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(completed, copy, run_failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(copy);
+        let task_result = call_pointer(
+            &self.builder,
+            self.native_task_result(),
+            &[task.into()],
+            "task.root.result",
+        )?;
+        let clone = self
+            .module
+            .get_function("loom.runtime.clone")
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+        self.builder
+            .build_call(
+                clone,
+                &[result.into(), task_result.into()],
+                "task.root.copy",
+            )
+            .map_err(builder_error)?;
+        self.branch(merge)?;
+        self.builder.position_at_end(run_failed);
+        self.branch(merge)?;
+
+        self.builder.position_at_end(merge);
+        let status = self
+            .builder
+            .build_phi(self.context.i32_type(), "task.root.merged.status")
+            .map_err(builder_error)?;
+        status.add_incoming(&[
+            (&constructor_status, constructor_failed),
+            (&run_status, copy),
+            (&run_status, run_failed),
+        ]);
+        Ok(status.as_basic_value().into_int_value())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn test_value_passed(&self, value: PointerValue<'ctx>) -> Result<IntValue<'ctx>, CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "test harness has no function")
+            })?;
+        let tag = self.load_i64_field(self.value_type, value, VALUE_FIELD_TAG, "test.tag")?;
+        let is_unit = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, tag, self.tag(VALUE_TAG_UNIT), "test.unit")
+            .map_err(builder_error)?;
+        let unit_block = self.context.append_basic_block(function, "test.value.unit");
+        let non_unit = self
+            .context
+            .append_basic_block(function, "test.value.non_unit");
+        let enum_block = self.context.append_basic_block(function, "test.value.enum");
+        let other_block = self
+            .context
+            .append_basic_block(function, "test.value.other");
+        let merge = self
+            .context
+            .append_basic_block(function, "test.value.merge");
+        self.builder
+            .build_conditional_branch(is_unit, unit_block, non_unit)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(unit_block);
+        self.branch(merge)?;
+        self.builder.position_at_end(non_unit);
+        let is_enum = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                self.tag(VALUE_TAG_ENUM),
+                "test.result",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(is_enum, enum_block, other_block)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(other_block);
+        self.branch(merge)?;
+        self.builder.position_at_end(enum_block);
+        let variant =
+            self.load_i64_field(self.value_type, value, VALUE_FIELD_AUX, "test.variant")?;
+        let ok_variant = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                variant,
+                self.i64_type.const_zero(),
+                "test.ok.variant",
+            )
+            .map_err(builder_error)?;
+        let count = self.load_i64_field(
+            self.value_type,
+            value,
+            VALUE_FIELD_SCALAR,
+            "test.payload.count",
+        )?;
+        let one_payload = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                count,
+                self.i64_type.const_int(1, false),
+                "test.one.payload",
+            )
+            .map_err(builder_error)?;
+        let data =
+            self.load_pointer_field(self.value_type, value, VALUE_FIELD_DATA, "test.payload")?;
+        let payload_value = self.struct_pointer(
+            self.value_node_type,
+            data,
+            VALUE_NODE_FIELD_VALUE,
+            "test.payload.value",
+        )?;
+        let payload_tag = self.load_i64_field(
+            self.value_type,
+            payload_value,
+            VALUE_FIELD_TAG,
+            "test.payload.tag",
+        )?;
+        let unit_payload = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                payload_tag,
+                self.tag(VALUE_TAG_UNIT),
+                "test.unit.payload",
+            )
+            .map_err(builder_error)?;
+        let result = self
+            .builder
+            .build_and(ok_variant, one_payload, "test.result.one")
+            .map_err(builder_error)?;
+        let result = self
+            .builder
+            .build_and(result, unit_payload, "test.result.unit")
+            .map_err(builder_error)?;
+        self.branch(merge)?;
+        self.builder.position_at_end(merge);
+        let phi = self
+            .builder
+            .build_phi(self.context.bool_type(), "test.value.passed")
+            .map_err(builder_error)?;
+        let yes = self.context.bool_type().const_int(1, false);
+        let no = self.context.bool_type().const_zero();
+        phi.add_incoming(&[
+            (&yes, unit_block),
+            (&no, other_block),
+            (&result, enum_block),
+        ]);
+        Ok(phi.as_basic_value().into_int_value())
+    }
+
+    fn tag(&self, tag: u64) -> IntValue<'ctx> {
+        self.i64_type.const_int(tag, false)
+    }
+
+    fn signed_i64(&self, value: i64) -> IntValue<'ctx> {
+        self.i64_type
+            .const_int(u64::from_ne_bytes(value.to_ne_bytes()), true)
+    }
+
+    fn struct_pointer<T: BasicType<'ctx>>(
+        &self,
+        structure: T,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.builder
+            .build_struct_gep(structure, pointer, field, name)
+            .map_err(builder_error)
+    }
+
+    fn load_i64_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, name)?;
+        self.builder
+            .build_load(self.i64_type, field, name)
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_int_value)
+    }
+
+    fn store_i64_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        value: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, "field")?;
+        self.builder
+            .build_store(field, value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn store_i32_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        value: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, "field")?;
+        self.builder
+            .build_store(field, value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn load_i32_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, name)?;
+        self.builder
+            .build_load(self.context.i32_type(), field, name)
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_int_value)
+    }
+
+    fn load_pointer_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, name)?;
+        self.builder
+            .build_load(self.ptr_type, field, name)
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn store_pointer_field(
+        &self,
+        structure: StructType<'ctx>,
+        pointer: PointerValue<'ctx>,
+        field: u32,
+        value: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let field = self.struct_pointer(structure, pointer, field, "field")?;
+        self.builder
+            .build_store(field, value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn compare_i64_field(
+        &self,
+        left: PointerValue<'ctx>,
+        right: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let left = self.load_i64_field(self.value_type, left, field, &format!("left.{name}"))?;
+        let right = self.load_i64_field(self.value_type, right, field, &format!("right.{name}"))?;
+        self.builder
+            .build_int_compare(IntPredicate::EQ, left, right, &format!("same.{name}"))
+            .map_err(builder_error)
+    }
+
+    fn branch(&self, target: inkwell::basic_block::BasicBlock<'ctx>) -> Result<(), CodegenError> {
+        self.builder
+            .build_unconditional_branch(target)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn unique(&self, prefix: &str) -> String {
+        let value = self.names.get();
+        self.names.set(value + 1);
+        format!("{prefix}.{value}")
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CompletionWait<'ctx> {
+    executor: PointerValue<'ctx>,
+    frame: PointerValue<'ctx>,
+    registration: PointerValue<'ctx>,
+}
+
+struct AsyncLayout {
+    local_slots: BTreeMap<LocalId, u64>,
+    old_parameter_slots: BTreeMap<LocalId, u64>,
+    result_slot: u64,
+    slot_count: u64,
+}
+
+impl AsyncLayout {
+    fn new(function: &Function) -> Result<Self, CodegenError> {
+        let mut next = 0_u64;
+        let mut local_slots = BTreeMap::new();
+        for local in function.params.iter().chain(&function.locals) {
+            local_slots.insert(local.id, next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
+        }
+        let mut old_parameter_slots = BTreeMap::new();
+        for parameter in &function.params {
+            old_parameter_slots.insert(parameter.id, next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
+        }
+        let result_slot = next;
+        let slot_count = next
+            .checked_add(1)
+            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
+        Ok(Self {
+            local_slots,
+            old_parameter_slots,
+            result_slot,
+            slot_count,
+        })
+    }
+}
+
+struct FunctionCompiler<'backend, 'ctx, 'program> {
+    backend: &'backend Backend<'ctx, 'program>,
+    source: &'program Function,
+    function: FunctionValue<'ctx>,
+    output: PointerValue<'ctx>,
+    witness_arguments: PointerValue<'ctx>,
+    executor: PointerValue<'ctx>,
+    task: Option<PointerValue<'ctx>>,
+    resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
+    locals: BTreeMap<LocalId, PointerValue<'ctx>>,
+    old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
+    body_done: inkwell::basic_block::BasicBlock<'ctx>,
+    cleanups: RefCell<Vec<Block>>,
+    cancellation_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    cancellation_cleanups: RefCell<BTreeMap<u32, Vec<Block>>>,
+    unwind_status: Cell<Option<u64>>,
+}
+
+impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
+    fn new(
+        backend: &'backend Backend<'ctx, 'program>,
+        id: FunctionId,
+    ) -> Result<Self, CodegenError> {
+        let source = backend.program.function(id).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("function #{} does not exist", id.0),
+            )
+        })?;
+        let function = backend.functions[&id];
+        let output = parameter_pointer(function, 0)?;
+        let arguments = parameter_pointer(function, 1)?;
+        let witness_arguments = parameter_pointer(function, 2)?;
+        let executor = parameter_pointer(function, 3)?;
+        let entry = backend.context.append_basic_block(function, "entry");
+        let body_done = backend.context.append_basic_block(function, "body.done");
+        backend.builder.position_at_end(entry);
+
+        let mut locals = BTreeMap::new();
+        let mut argument_node = arguments;
+        for parameter in &source.params {
+            let pointer = backend.load_pointer_field(
+                backend.arg_node_type,
+                argument_node,
+                ARG_NODE_FIELD_VALUE,
+                "argument",
+            )?;
+            locals.insert(parameter.id, pointer);
+            argument_node = backend.load_pointer_field(
+                backend.arg_node_type,
+                argument_node,
+                ARG_NODE_FIELD_NEXT,
+                "argument.next",
+            )?;
+        }
+        for local in &source.locals {
+            let pointer = backend
+                .builder
+                .build_alloca(
+                    backend.value_type,
+                    &format!("local.{}.{}", local.id.0, local.name),
+                )
+                .map_err(builder_error)?;
+            backend
+                .builder
+                .build_store(pointer, backend.value_type.const_zero())
+                .map_err(builder_error)?;
+            locals.insert(local.id, pointer);
+        }
+        backend
+            .builder
+            .build_store(output, backend.value_type.const_zero())
+            .map_err(builder_error)?;
+        let clone = backend
+            .module
+            .get_function("loom.runtime.clone")
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+        let mut old_parameters = BTreeMap::new();
+        for parameter in &source.params {
+            let snapshot = backend
+                .builder
+                .build_alloca(backend.value_type, &format!("old.{}", parameter.id.0))
+                .map_err(builder_error)?;
+            backend
+                .builder
+                .build_call(
+                    clone,
+                    &[snapshot.into(), locals[&parameter.id].into()],
+                    "snapshot",
+                )
+                .map_err(builder_error)?;
+            old_parameters.insert(parameter.id, snapshot);
+        }
+        Ok(Self {
+            backend,
+            source,
+            function,
+            output,
+            witness_arguments,
+            executor,
+            task: None,
+            resume_blocks: BTreeMap::new(),
+            locals,
+            old_parameters,
+            body_done,
+            cleanups: RefCell::new(Vec::new()),
+            cancellation_block: None,
+            cancellation_cleanups: RefCell::new(BTreeMap::new()),
+            unwind_status: Cell::new(None),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn new_async(
+        backend: &'backend Backend<'ctx, 'program>,
+        id: FunctionId,
+    ) -> Result<Self, CodegenError> {
+        let source = backend.program.function(id).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("function #{} does not exist", id.0),
+            )
+        })?;
+        let layout = AsyncLayout::new(source)?;
+        let function = backend.task_resumes[&id];
+        let task = parameter_pointer(function, 0)?;
+        let executor = parameter_pointer(function, 1)?;
+        let entry = backend.context.append_basic_block(function, "entry");
+        let dispatch = backend
+            .context
+            .append_basic_block(function, "state.dispatch");
+        let start = backend.context.append_basic_block(function, "state.start");
+        let cancelled = backend
+            .context
+            .append_basic_block(function, "state.cancelled");
+        let invalid = backend
+            .context
+            .append_basic_block(function, "state.invalid");
+        let body_done = backend.context.append_basic_block(function, "body.done");
+        let mut resume_blocks = BTreeMap::new();
+        for point in &source.suspension_points {
+            resume_blocks.insert(
+                point.state,
+                backend
+                    .context
+                    .append_basic_block(function, &format!("state.resume.{}", point.state)),
+            );
+        }
+        backend.builder.position_at_end(entry);
+        let output = call_pointer(
+            &backend.builder,
+            backend.native_task_result(),
+            &[task.into()],
+            "task.result",
+        )?;
+        let mut locals = BTreeMap::new();
+        for local in source.params.iter().chain(&source.locals) {
+            let slot = call_pointer(
+                &backend.builder,
+                backend.native_task_slot(),
+                &[
+                    task.into(),
+                    backend
+                        .i64_type
+                        .const_int(layout.local_slots[&local.id], false)
+                        .into(),
+                ],
+                &format!("task.local.{}", local.id.0),
+            )?;
+            locals.insert(local.id, slot);
+        }
+        let mut old_parameters = BTreeMap::new();
+        for parameter in &source.params {
+            let slot = call_pointer(
+                &backend.builder,
+                backend.native_task_slot(),
+                &[
+                    task.into(),
+                    backend
+                        .i64_type
+                        .const_int(layout.old_parameter_slots[&parameter.id], false)
+                        .into(),
+                ],
+                &format!("task.old.{}", parameter.id.0),
+            )?;
+            old_parameters.insert(parameter.id, slot);
+        }
+        let is_cancelled = call_int(
+            &backend.builder,
+            backend.native_task_is_cancelled(),
+            &[task.into()],
+            "task.cancelled",
+        )?;
+        let cancellation = backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                is_cancelled,
+                backend.context.i32_type().const_zero(),
+                "task.cancellation.requested",
+            )
+            .map_err(builder_error)?;
+        backend
+            .builder
+            .build_conditional_branch(cancellation, cancelled, dispatch)
+            .map_err(builder_error)?;
+
+        backend.builder.position_at_end(dispatch);
+        let state = call_int(
+            &backend.builder,
+            backend.native_task_state(),
+            &[task.into()],
+            "task.state",
+        )?;
+        let mut cases = Vec::with_capacity(resume_blocks.len() + 1);
+        cases.push((backend.i64_type.const_zero(), start));
+        for (state, block) in &resume_blocks {
+            cases.push((backend.i64_type.const_int(u64::from(*state), false), *block));
+        }
+        backend
+            .builder
+            .build_switch(state, invalid, &cases)
+            .map_err(builder_error)?;
+
+        backend.builder.position_at_end(invalid);
+        backend.puts("RuntimeFault: invalid coroutine state")?;
+        backend
+            .builder
+            .build_return(Some(
+                &backend
+                    .context
+                    .i32_type()
+                    .const_int(TASK_STEP_FAULTED, false),
+            ))
+            .map_err(builder_error)?;
+        backend.builder.position_at_end(start);
+
+        Ok(Self {
+            backend,
+            source,
+            function,
+            output,
+            witness_arguments: backend.ptr_type.const_null(),
+            executor,
+            task: Some(task),
+            resume_blocks,
+            locals,
+            old_parameters,
+            body_done,
+            cleanups: RefCell::new(Vec::new()),
+            cancellation_block: Some(cancelled),
+            cancellation_cleanups: RefCell::new(BTreeMap::new()),
+            unwind_status: Cell::new(None),
+        })
+    }
+
+    fn compile(&self) -> Result<(), CodegenError> {
+        self.emit_entry_contracts()?;
+        let continues = self.emit_block(&self.source.body, self.output)?;
+        if continues {
+            self.backend.branch(self.body_done)?;
+        }
+        self.backend.builder.position_at_end(self.body_done);
+        self.emit_exit_contracts()?;
+        if !self.current_block_terminated() {
+            self.backend
+                .builder
+                .build_return(Some(&self.backend.context.i32_type().const_zero()))
+                .map_err(builder_error)?;
+        }
+        self.emit_cancellation_dispatch()?;
+        Ok(())
+    }
+
+    fn emit_cancellation_dispatch(&self) -> Result<(), CodegenError> {
+        let Some(cancelled) = self.cancellation_block else {
+            return Ok(());
+        };
+        let task = self
+            .task
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "async cancellation has no task"))?;
+        let snapshots = self.cancellation_cleanups.borrow().clone();
+        let done = self.append_block("cancel.done");
+        let cleanup_blocks = snapshots
+            .keys()
+            .map(|state| {
+                (
+                    *state,
+                    self.backend
+                        .context
+                        .append_basic_block(self.function, &format!("cancel.state.{state}")),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        self.backend.builder.position_at_end(cancelled);
+        let state = call_int(
+            &self.backend.builder,
+            self.backend.native_task_state(),
+            &[task.into()],
+            "cancel.state",
+        )?;
+        let cases = cleanup_blocks
+            .iter()
+            .map(|(state, block)| {
+                (
+                    self.backend.i64_type.const_int(u64::from(*state), false),
+                    *block,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.backend
+            .builder
+            .build_switch(state, done, &cases)
+            .map_err(builder_error)?;
+
+        for (state, block) in cleanup_blocks {
+            self.backend.builder.position_at_end(block);
+            let previous = self.unwind_status.replace(Some(TASK_STEP_CANCELLED));
+            let cleanup_result = self.emit_cleanup_sequence(&snapshots[&state]);
+            self.unwind_status.set(previous);
+            cleanup_result?;
+            if !self.current_block_terminated() {
+                self.backend.branch(done)?;
+            }
+        }
+        self.backend.builder.position_at_end(done);
+        self.backend
+            .builder
+            .build_return(Some(
+                &self
+                    .backend
+                    .context
+                    .i32_type()
+                    .const_int(TASK_STEP_CANCELLED, false),
+            ))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_entry_contracts(&self) -> Result<(), CodegenError> {
+        if let Some(contract) = &self.source.call_plan.receiver_invariant {
+            self.emit_contract_check(contract, "InvariantFault", None)?;
+        }
+        for contract in &self.source.call_plan.requires {
+            self.emit_contract_check(contract, "PreconditionFault", None)?;
+        }
+        Ok(())
+    }
+
+    fn emit_exit_contracts(&self) -> Result<(), CodegenError> {
+        if let Some(contract) = &self.source.call_plan.receiver_invariant {
+            self.emit_contract_check(contract, "InvariantFault", Some(self.output))?;
+        }
+        for contract in &self.source.call_plan.ensures {
+            self.emit_contract_check(contract, "PostconditionFault", Some(self.output))?;
+        }
+        Ok(())
+    }
+
+    fn emit_contract_check(
+        &self,
+        contract: &Contract,
+        category: &str,
+        result: Option<PointerValue<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        let condition = self.alloc_value("contract");
+        let context = self.contract_context(result)?;
+        if !self.emit_contract_expr(&contract.expression, &context, condition)? {
+            return Ok(());
+        }
+        let accepted = self.bool_value(condition)?;
+        let pass = self.append_block("contract.pass");
+        let fail = self.append_block("contract.fail");
+        self.backend
+            .builder
+            .build_conditional_branch(accepted, pass, fail)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(fail);
+        self.backend
+            .puts(&format!("{category}: {}", contract.code))?;
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&self.failure_status()))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(pass);
+        Ok(())
+    }
+
+    fn contract_context(
+        &self,
+        result: Option<PointerValue<'ctx>>,
+    ) -> Result<ContractContext<'ctx>, CodegenError> {
+        let parameters = self
+            .source
+            .params
+            .iter()
+            .map(|parameter| {
+                self.locals
+                    .get(&parameter.id)
+                    .copied()
+                    .map(|pointer| TypedPointer {
+                        pointer,
+                        ty: parameter.ty.clone(),
+                    })
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("parameter local #{} is missing", parameter.id.0),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (receiver, arguments) = if self.source.receiver.is_some() {
+            let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "receiver function has no receiver")
+            })?;
+            (Some(receiver.clone()), arguments.to_vec())
+        } else {
+            (None, parameters)
+        };
+        let old_parameters = self
+            .source
+            .params
+            .iter()
+            .map(|parameter| TypedPointer {
+                pointer: self.old_parameters[&parameter.id],
+                ty: parameter.ty.clone(),
+            })
+            .collect::<Vec<_>>();
+        let (old_receiver, old_arguments) = if self.source.receiver.is_some() {
+            let (receiver, arguments) = old_parameters.split_first().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "receiver snapshot is missing")
+            })?;
+            (
+                Some(receiver.clone()),
+                arguments.iter().cloned().map(Some).collect(),
+            )
+        } else {
+            (None, old_parameters.into_iter().map(Some).collect())
+        };
+        Ok(ContractContext {
+            receiver,
+            result: result.map(|pointer| TypedPointer {
+                pointer,
+                ty: self.source.return_ty.clone(),
+            }),
+            arguments,
+            old_receiver,
+            old_arguments,
+            bindings: Vec::new(),
+        })
+    }
+
+    fn emit_block(
+        &self,
+        block: &Block,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        self.backend
+            .set_debug_location(self.function, block.span.file.0, block.span.range.start);
+        let cleanup_base = self.cleanups.borrow().len();
+        for statement in &block.statements {
+            if let StatementKind::Defer(cleanup) = &statement.kind {
+                self.cleanups.borrow_mut().push(cleanup.clone());
+                continue;
+            }
+            if !self.emit_statement(statement)? {
+                self.cleanups.borrow_mut().truncate(cleanup_base);
+                return Ok(false);
+            }
+        }
+        let continues = if let Some(tail) = &block.tail {
+            self.emit_expr(tail, destination)
+        } else {
+            self.emit_constant(&Constant::Unit, destination)?;
+            Ok(true)
+        }?;
+        if continues {
+            self.emit_cleanups_from(cleanup_base)?;
+        }
+        self.cleanups.borrow_mut().truncate(cleanup_base);
+        Ok(continues)
+    }
+
+    fn emit_cleanups_from(&self, base: usize) -> Result<(), CodegenError> {
+        let cleanups = self.cleanups.borrow()[base..].to_vec();
+        self.emit_cleanup_sequence(&cleanups)
+    }
+
+    fn emit_cleanup_sequence(&self, cleanups: &[Block]) -> Result<(), CodegenError> {
+        let saved = self.cleanups.replace(cleanups.to_vec());
+        for (index, cleanup) in cleanups.iter().enumerate().rev() {
+            self.cleanups.replace(cleanups[..index].to_vec());
+            let ignored = self.alloc_value("cleanup");
+            let result = self.emit_block(cleanup, ignored);
+            if let Err(error) = result {
+                self.cleanups.replace(saved);
+                return Err(error);
+            }
+            if !result.expect("checked above") {
+                self.cleanups.replace(saved);
+                return Err(CodegenError::new(
+                    "InvalidCleanupControlFlow",
+                    "checked cleanup unexpectedly terminated its enclosing function",
+                ));
+            }
+        }
+        self.cleanups.replace(saved);
+        Ok(())
+    }
+
+    fn emit_all_cleanups(&self) -> Result<(), CodegenError> {
+        self.emit_cleanups_from(0)
+    }
+
+    fn emit_statement(&self, statement: &Statement) -> Result<bool, CodegenError> {
+        self.backend.set_debug_location(
+            self.function,
+            statement.span.file.0,
+            statement.span.range.start,
+        );
+        match &statement.kind {
+            StatementKind::Let { local, value } => {
+                let destination = self.local(*local)?;
+                self.emit_expr(value, destination)
+            }
+            StatementKind::LetTuple { locals, value } => {
+                let tuple = self.alloc_value("tuple.binding");
+                if !self.emit_expr(value, tuple)? {
+                    return Ok(false);
+                }
+                let data = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    tuple,
+                    VALUE_FIELD_DATA,
+                    "tuple.data",
+                )?;
+                for (index, local) in locals.iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "tuple binding index exceeds u32")
+                    })?;
+                    let node = self.value_node_at(data, index)?;
+                    let element = self.backend.struct_pointer(
+                        self.backend.value_node_type,
+                        node,
+                        VALUE_NODE_FIELD_VALUE,
+                        "tuple.element",
+                    )?;
+                    self.clone_value(self.local(*local)?, element)?;
+                }
+                Ok(true)
+            }
+            StatementKind::Assign { place, value } => {
+                let temporary = self.alloc_value("assign");
+                if !self.emit_expr(value, temporary)? {
+                    return Ok(false);
+                }
+                let destination = self.place(place)?;
+                self.shallow_copy(destination, temporary)?;
+                Ok(true)
+            }
+            StatementKind::Assert { condition } => {
+                let temporary = self.alloc_value("assert");
+                if !self.emit_expr(condition, temporary)? {
+                    return Ok(false);
+                }
+                let accepted = self.bool_value(temporary)?;
+                let pass = self.append_block("assert.pass");
+                let fail = self.append_block("assert.fail");
+                self.backend
+                    .builder
+                    .build_conditional_branch(accepted, pass, fail)
+                    .map_err(builder_error)?;
+                self.backend.builder.position_at_end(fail);
+                self.backend.puts("AssertionFault")?;
+                self.emit_all_cleanups()?;
+                self.backend
+                    .builder
+                    .build_return(Some(&self.failure_status()))
+                    .map_err(builder_error)?;
+                self.backend.builder.position_at_end(pass);
+                Ok(true)
+            }
+            StatementKind::Evaluate(value) => {
+                let temporary = self.alloc_value("evaluate");
+                self.emit_expr(value, temporary)
+            }
+            StatementKind::Defer(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "defer registration escaped lexical block emission",
+            )),
+            StatementKind::Return(value) => {
+                let continues = if let Some(value) = value {
+                    self.emit_expr(value, self.output)?
+                } else {
+                    self.emit_constant(&Constant::Unit, self.output)?;
+                    true
+                };
+                if continues {
+                    self.emit_all_cleanups()?;
+                    self.backend.branch(self.body_done)?;
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_expr(
+        &self,
+        expression: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        self.backend.set_debug_location(
+            self.function,
+            expression.span.file.0,
+            expression.span.range.start,
+        );
+        match &expression.kind {
+            ExprKind::Constant(value) => {
+                self.emit_constant(value, destination)?;
+                Ok(true)
+            }
+            ExprKind::Tuple(elements) => self.emit_tuple(elements, destination),
+            ExprKind::List(elements) => self.emit_list(elements, destination),
+            ExprKind::Copy(place) => {
+                let source = self.place(place)?;
+                self.clone_value(destination, source)?;
+                Ok(true)
+            }
+            ExprKind::Move(place) => {
+                let source = self.place(place)?;
+                self.shallow_copy(destination, source)?;
+                Ok(true)
+            }
+            ExprKind::Unary(operator, value) => self.emit_unary(*operator, value, destination),
+            ExprKind::Binary(operator, left, right) => {
+                self.emit_binary(*operator, left, right, destination)
+            }
+            ExprKind::Block(block) => self.emit_block(block, destination),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => self.emit_if(condition, then_branch, else_branch, destination),
+            ExprKind::Match { scrutinee, arms } => self.emit_match(scrutinee, arms, destination),
+            ExprKind::Record {
+                ty,
+                fields,
+                checked,
+                ..
+            } => self.emit_record(*ty, fields, *checked, destination),
+            ExprKind::Variant {
+                ty,
+                variant,
+                payload,
+                ..
+            } => self.emit_variant(*ty, variant.0, payload, destination),
+            ExprKind::Refine { ty, value } => self.emit_refine(*ty, value, destination),
+            ExprKind::Unrefine(value) => {
+                let refined = self.alloc_value("refined");
+                if !self.emit_expr(value, refined)? {
+                    return Ok(false);
+                }
+                let inner = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    refined,
+                    VALUE_FIELD_DATA,
+                    "refined.inner",
+                )?;
+                self.clone_value(destination, inner)?;
+                Ok(true)
+            }
+            ExprKind::Call {
+                target,
+                arguments,
+                witnesses,
+                ..
+            } => self.emit_call(target, arguments, witnesses, destination),
+            ExprKind::MakeView {
+                owner,
+                witness,
+                mutable,
+                ..
+            } => {
+                let owner = self.place(owner)?;
+                let witness = self.resolve_witness(witness)?;
+                self.initialize(destination, VALUE_TAG_DYN)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_AUX,
+                    self.backend.tag(u64::from(*mutable)),
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_DATA,
+                    owner,
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_WITNESS,
+                    witness,
+                )?;
+                Ok(true)
+            }
+            ExprKind::Await { state, task } => {
+                if self.task.is_some() {
+                    return self.emit_resumable_await(*state, task, destination);
+                }
+                if let ExprKind::Sleep { milliseconds } = &task.kind {
+                    return self.emit_sleep_await(*state, milliseconds, destination);
+                }
+                if let ExprKind::Tuple(tasks) = &task.kind
+                    && tasks
+                        .iter()
+                        .all(|task| matches!(&task.kind, ExprKind::Sleep { .. }))
+                {
+                    return self.emit_sleep_join(*state, tasks, destination);
+                }
+                // Child bodies in the current linear slice are still eligible
+                // for Task elision, but completion follows the same ABI as an
+                // external wait: the compiler frame is registered, notified,
+                // and recovered from the runtime ready queue before execution
+                // continues at the MIR suspension state.
+                let completion = self.begin_completion_wait(*state, destination)?;
+                if !self.emit_expr(task, destination)? {
+                    return Ok(false);
+                }
+                self.finish_completion_wait(completion)?;
+                Ok(true)
+            }
+            ExprKind::Sleep { milliseconds } => self.emit_wait_task(milliseconds, destination),
+            ExprKind::WaitFd {
+                descriptor,
+                writable,
+            } => self.emit_fd_wait_task(descriptor, *writable, destination),
+            ExprKind::TaskJoin { mode, arguments } => {
+                self.emit_task_join(*mode, arguments, &expression.ty, destination)
+            }
+        }
+    }
+
+    fn emit_resumable_await(
+        &self,
+        state: u32,
+        task_expression: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let task = self.task.ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "resumable await has no task frame")
+        })?;
+        let awaited = self.alloc_value("task.awaited");
+        if !self.emit_expr(task_expression, awaited)? {
+            return Ok(false);
+        }
+        self.cancellation_cleanups
+            .borrow_mut()
+            .insert(state, self.cleanups.borrow().clone());
+        let suspend = call_int(
+            &self.backend.builder,
+            self.backend.native_task_suspend_value(),
+            &[self.executor.into(), task.into(), awaited.into()],
+            "task.value.suspend",
+        )?;
+        let invalid = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                suspend,
+                self.backend.context.i32_type().const_zero(),
+                "task.value.invalid",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(invalid, "TaskJoinFault")?;
+        let pending = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                suspend,
+                self.backend.context.i32_type().const_int(1, false),
+                "task.value.pending",
+            )
+            .map_err(builder_error)?;
+        let suspend_block = self.append_block("task.value.return.pending");
+        let resume_block = self.resume_blocks.get(&state).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("coroutine resume state {state} has no block"),
+            )
+        })?;
+        self.backend
+            .builder
+            .build_conditional_branch(pending, suspend_block, resume_block)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(suspend_block);
+        self.set_resume_state_and_suspend(task, state)?;
+        self.backend.builder.position_at_end(resume_block);
+        let step = call_int(
+            &self.backend.builder,
+            self.backend.native_task_join_step(),
+            &[task.into()],
+            "task.join.step",
+        )?;
+        let completed = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                step,
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(TASK_STEP_COMPLETED, false),
+                "task.join.completed",
+            )
+            .map_err(builder_error)?;
+        let ready = self.append_block("task.join.ready");
+        let failed = self.append_block("task.join.failed");
+        self.backend
+            .builder
+            .build_conditional_branch(completed, ready, failed)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(failed);
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&step))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(ready);
+        let write = call_int(
+            &self.backend.builder,
+            self.backend.native_task_write_join_result(),
+            &[
+                task.into(),
+                destination.into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(JOIN_RESULT_SCALAR, false)
+                    .into(),
+            ],
+            "task.join.write.result",
+        )?;
+        self.propagate_runtime_status(write, self.executor, "task.join.write.result")?;
+        Ok(true)
+    }
+
+    fn emit_wait_task(
+        &self,
+        milliseconds: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let duration_value = self.alloc_value("sleep.task.duration");
+        if !self.emit_expr(milliseconds, duration_value)? {
+            return Ok(false);
+        }
+        let milliseconds = self.int_scalar(duration_value)?;
+        let negative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                milliseconds,
+                self.backend.i64_type.const_zero(),
+                "sleep.task.duration.negative",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(negative, "InvalidSleepDuration")?;
+        let nanoseconds = self.checked_timer_multiply(milliseconds)?;
+        let now = call_int(
+            &self.backend.builder,
+            self.backend.native_wait_now_ns(),
+            &[],
+            "sleep.task.now",
+        )?;
+        let deadline = self.checked_timer_add(now, nanoseconds)?;
+        let source = self.alloc_timer_wait_source(deadline)?;
+        let task = call_pointer(
+            &self.backend.builder,
+            self.backend.native_task_from_wait_source(),
+            &[self.executor.into(), source.into()],
+            "sleep.task",
+        )?;
+        let missing = self
+            .backend
+            .builder
+            .build_is_null(task, "sleep.task.missing")
+            .map_err(builder_error)?;
+        self.fail_if(missing, "TaskAllocationFault")?;
+        self.initialize(destination, VALUE_TAG_TASK)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(TASK_VALUE_DIRECT),
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            task,
+        )?;
+        Ok(true)
+    }
+
+    fn emit_fd_wait_task(
+        &self,
+        descriptor: &Expr,
+        writable: bool,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let descriptor_value = self.alloc_value("fd.task.descriptor");
+        if !self.emit_expr(descriptor, descriptor_value)? {
+            return Ok(false);
+        }
+        let descriptor = self.int_scalar(descriptor_value)?;
+        let negative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                descriptor,
+                self.backend.i64_type.const_zero(),
+                "fd.task.descriptor.negative",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(negative, "InvalidFileDescriptor")?;
+        let too_large = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                descriptor,
+                self.backend.i64_type.const_int(i32::MAX as u64, false),
+                "fd.task.descriptor.too_large",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(too_large, "InvalidFileDescriptor")?;
+        let interests = if writable {
+            WAIT_INTEREST_WRITABLE
+        } else {
+            WAIT_INTEREST_READABLE
+        };
+        let source = self.alloc_fd_wait_source(descriptor, interests)?;
+        let task = call_pointer(
+            &self.backend.builder,
+            self.backend.native_task_from_wait_source(),
+            &[self.executor.into(), source.into()],
+            "fd.task",
+        )?;
+        let missing = self
+            .backend
+            .builder
+            .build_is_null(task, "fd.task.missing")
+            .map_err(builder_error)?;
+        self.fail_if(missing, "TaskAllocationFault")?;
+        self.initialize(destination, VALUE_TAG_TASK)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(TASK_VALUE_DIRECT),
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            task,
+        )?;
+        Ok(true)
+    }
+
+    fn emit_task_join(
+        &self,
+        mode: TaskJoinMode,
+        arguments: &[Expr],
+        result_ty: &Type,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let shape = join_result_shape(mode, result_ty);
+        let mode = match mode {
+            TaskJoinMode::All => 0,
+            TaskJoinMode::Settled => 1,
+            TaskJoinMode::Any => 2,
+            TaskJoinMode::Race => 3,
+        };
+        let join = call_pointer(
+            &self.backend.builder,
+            self.backend.native_join_create(),
+            &[
+                self.executor.into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(mode, false)
+                    .into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(shape, false)
+                    .into(),
+            ],
+            "task.join.create",
+        )?;
+        let missing = self
+            .backend
+            .builder
+            .build_is_null(join, "task.join.missing")
+            .map_err(builder_error)?;
+        self.fail_if(missing, "TaskAllocationFault")?;
+
+        let dynamic = matches!(
+            arguments,
+            [Expr {
+                ty: Type::List(element),
+                ..
+            }] if matches!(element.as_ref(), Type::Task(_))
+        );
+        if dynamic {
+            let list = self.alloc_value("task.join.list");
+            if !self.emit_expr(&arguments[0], list)? {
+                return Ok(false);
+            }
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_join_add_list(),
+                &[join.into(), list.into()],
+                "task.join.add.list",
+            )?;
+            self.propagate_runtime_status(status, self.executor, "task.join.add.list")?;
+        } else {
+            for argument in arguments {
+                let value = self.alloc_value("task.join.argument");
+                if !self.emit_expr(argument, value)? {
+                    return Ok(false);
+                }
+                let task = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    value,
+                    VALUE_FIELD_DATA,
+                    "task.join.argument.pointer",
+                )?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_join_add_task(),
+                    &[join.into(), task.into()],
+                    "task.join.add.task",
+                )?;
+                self.propagate_runtime_status(status, self.executor, "task.join.add.task")?;
+            }
+        }
+        let task = call_pointer(
+            &self.backend.builder,
+            self.backend.native_join_task(),
+            &[join.into()],
+            "task.join.task",
+        )?;
+        let missing = self
+            .backend
+            .builder
+            .build_is_null(task, "task.join.task.missing")
+            .map_err(builder_error)?;
+        self.fail_if(missing, "TaskAllocationFault")?;
+        self.initialize(destination, VALUE_TAG_TASK)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(TASK_VALUE_DIRECT),
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            task,
+        )?;
+        Ok(true)
+    }
+
+    fn set_resume_state_and_suspend(
+        &self,
+        task: PointerValue<'ctx>,
+        state: u32,
+    ) -> Result<(), CodegenError> {
+        self.backend
+            .builder
+            .build_call(
+                self.backend.native_task_set_state(),
+                &[
+                    task.into(),
+                    self.backend
+                        .i64_type
+                        .const_int(u64::from(state), false)
+                        .into(),
+                ],
+                "task.state.set",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_return(Some(
+                &self
+                    .backend
+                    .context
+                    .i32_type()
+                    .const_int(TASK_STEP_PENDING, false),
+            ))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn begin_completion_wait(
+        &self,
+        state: u32,
+        result: PointerValue<'ctx>,
+    ) -> Result<CompletionWait<'ctx>, CodegenError> {
+        let frame = self.alloc_coroutine_frame(state, result)?;
+        let executor = self.executor;
+        let source = self.alloc_completion_wait_source()?;
+        let registration = self
+            .backend
+            .builder
+            .build_alloca(self.backend.registration_type, "wait.registration")
+            .map_err(builder_error)?;
+        let register_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_register(),
+            &[
+                executor.into(),
+                source.into(),
+                frame.into(),
+                registration.into(),
+            ],
+            "wait.register",
+        )?;
+        self.propagate_runtime_status(register_status, executor, "wait.register")?;
+        Ok(CompletionWait {
+            executor,
+            frame,
+            registration,
+        })
+    }
+
+    fn emit_sleep_await(
+        &self,
+        state: u32,
+        milliseconds: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let duration_value = self.alloc_value("sleep.duration");
+        if !self.emit_expr(milliseconds, duration_value)? {
+            return Ok(false);
+        }
+        let milliseconds = self.int_scalar(duration_value)?;
+        let negative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                milliseconds,
+                self.backend.i64_type.const_zero(),
+                "sleep.duration.negative",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(negative, "InvalidSleepDuration")?;
+        let nanoseconds = self.checked_timer_multiply(milliseconds)?;
+        let now = call_int(
+            &self.backend.builder,
+            self.backend.native_wait_now_ns(),
+            &[],
+            "wait.now",
+        )?;
+        let deadline = self.checked_timer_add(now, nanoseconds)?;
+
+        let frame = self.alloc_coroutine_frame(state, destination)?;
+        let source = self.alloc_timer_wait_source(deadline)?;
+        let registration = self
+            .backend
+            .builder
+            .build_alloca(self.backend.registration_type, "wait.registration")
+            .map_err(builder_error)?;
+        let register_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_register(),
+            &[
+                self.executor.into(),
+                source.into(),
+                frame.into(),
+                registration.into(),
+            ],
+            "timer.register",
+        )?;
+        self.propagate_runtime_status(register_status, self.executor, "timer.register")?;
+
+        let pending = self.append_block("coroutine.pending.timer");
+        self.backend.branch(pending)?;
+        self.backend.builder.position_at_end(pending);
+        let ready_count = self
+            .backend
+            .builder
+            .build_alloca(self.backend.context.i32_type(), "ready.count")
+            .map_err(builder_error)?;
+        let wait_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_wait(),
+            &[
+                self.executor.into(),
+                self.backend.i64_type.const_int(u64::MAX, false).into(),
+                ready_count.into(),
+            ],
+            "timer.wait",
+        )?;
+        self.propagate_runtime_status(wait_status, self.executor, "timer.wait")?;
+        self.consume_ready_frame(self.executor, frame, READY_EVENT_TIMER)?;
+        self.emit_constant(&Constant::Unit, destination)?;
+        Ok(true)
+    }
+
+    fn emit_sleep_join(
+        &self,
+        state: u32,
+        tasks: &[Expr],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let frame = self.alloc_coroutine_frame(state, destination)?;
+        for task in tasks {
+            let ExprKind::Sleep { milliseconds } = &task.kind else {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "non-timer task reached the static timer join",
+                ));
+            };
+            let duration_value = self.alloc_value("sleep.join.duration");
+            if !self.emit_expr(milliseconds, duration_value)? {
+                return Ok(false);
+            }
+            let milliseconds = self.int_scalar(duration_value)?;
+            let negative = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::SLT,
+                    milliseconds,
+                    self.backend.i64_type.const_zero(),
+                    "sleep.join.duration.negative",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(negative, "InvalidSleepDuration")?;
+            let nanoseconds = self.checked_timer_multiply(milliseconds)?;
+            let now = call_int(
+                &self.backend.builder,
+                self.backend.native_wait_now_ns(),
+                &[],
+                "sleep.join.now",
+            )?;
+            let deadline = self.checked_timer_add(now, nanoseconds)?;
+            let source = self.alloc_timer_wait_source(deadline)?;
+            let registration = self
+                .backend
+                .builder
+                .build_alloca(self.backend.registration_type, "sleep.join.registration")
+                .map_err(builder_error)?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_executor_register(),
+                &[
+                    self.executor.into(),
+                    source.into(),
+                    frame.into(),
+                    registration.into(),
+                ],
+                "sleep.join.register",
+            )?;
+            self.propagate_runtime_status(status, self.executor, "sleep.join.register")?;
+        }
+
+        for _ in tasks {
+            let pending = self.append_block("coroutine.pending.timer.join");
+            self.backend.branch(pending)?;
+            self.backend.builder.position_at_end(pending);
+            let ready_count = self
+                .backend
+                .builder
+                .build_alloca(self.backend.context.i32_type(), "sleep.join.ready.count")
+                .map_err(builder_error)?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_executor_wait(),
+                &[
+                    self.executor.into(),
+                    self.backend.i64_type.const_int(u64::MAX, false).into(),
+                    ready_count.into(),
+                ],
+                "sleep.join.wait",
+            )?;
+            self.propagate_runtime_status(status, self.executor, "sleep.join.wait")?;
+            self.consume_ready_frame(self.executor, frame, READY_EVENT_TIMER)?;
+        }
+
+        let values = tasks
+            .iter()
+            .map(|task| Expr {
+                kind: ExprKind::Constant(Constant::Unit),
+                ty: Type::Unit,
+                span: task.span,
+            })
+            .collect::<Vec<_>>();
+        self.emit_tuple(&values, destination)
+    }
+
+    fn checked_timer_multiply(
+        &self,
+        milliseconds: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.smul.with.overflow")
+            .and_then(|intrinsic| {
+                intrinsic.get_declaration(&self.backend.module, &[self.backend.i64_type.into()])
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "missing llvm.smul.with.overflow for Task.sleep",
+                )
+            })?;
+        let aggregate = self
+            .backend
+            .builder
+            .build_call(
+                intrinsic,
+                &[
+                    milliseconds.into(),
+                    self.backend.i64_type.const_int(1_000_000, false).into(),
+                ],
+                "sleep.nanoseconds.checked",
+            )
+            .map_err(builder_error)?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sleep multiply returned void"))?
+            .into_struct_value();
+        let value = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 0, "sleep.nanoseconds")
+            .map_err(builder_error)?
+            .into_int_value();
+        let overflow = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 1, "sleep.duration.overflow")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.fail_if(overflow, "SleepDurationOverflow")?;
+        Ok(value)
+    }
+
+    fn checked_timer_add(
+        &self,
+        now: IntValue<'ctx>,
+        duration: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.uadd.with.overflow")
+            .and_then(|intrinsic| {
+                intrinsic.get_declaration(&self.backend.module, &[self.backend.i64_type.into()])
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "missing llvm.uadd.with.overflow for Task.sleep",
+                )
+            })?;
+        let aggregate = self
+            .backend
+            .builder
+            .build_call(
+                intrinsic,
+                &[now.into(), duration.into()],
+                "sleep.deadline.checked",
+            )
+            .map_err(builder_error)?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sleep deadline add returned void"))?
+            .into_struct_value();
+        let value = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 0, "sleep.deadline")
+            .map_err(builder_error)?
+            .into_int_value();
+        let overflow = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 1, "sleep.deadline.overflow")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.fail_if(overflow, "SleepDurationOverflow")?;
+        Ok(value)
+    }
+
+    fn finish_completion_wait(&self, wait: CompletionWait<'ctx>) -> Result<(), CodegenError> {
+        let notify_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_notify_completion(),
+            &[
+                wait.executor.into(),
+                wait.registration.into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(READY_EVENT_COMPLETED, false)
+                    .into(),
+                self.backend.context.i32_type().const_zero().into(),
+            ],
+            "wait.notify",
+        )?;
+        self.propagate_runtime_status(notify_status, wait.executor, "wait.notify")?;
+        let ready_count = self
+            .backend
+            .builder
+            .build_alloca(self.backend.context.i32_type(), "ready.count")
+            .map_err(builder_error)?;
+        let wait_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_wait(),
+            &[
+                wait.executor.into(),
+                self.backend.i64_type.const_zero().into(),
+                ready_count.into(),
+            ],
+            "wait.poll",
+        )?;
+        self.propagate_runtime_status(wait_status, wait.executor, "wait.poll")?;
+        self.consume_ready_frame(wait.executor, wait.frame, READY_EVENT_COMPLETED)
+    }
+
+    fn alloc_coroutine_frame(
+        &self,
+        state: u32,
+        result: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let frame = self
+            .backend
+            .builder
+            .build_alloca(self.backend.coroutine_frame_type, "coroutine.frame")
+            .map_err(builder_error)?;
+        self.backend.store_i64_field(
+            self.backend.coroutine_frame_type,
+            frame,
+            COROUTINE_FRAME_FIELD_STATE,
+            self.backend.i64_type.const_int(u64::from(state), false),
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.coroutine_frame_type,
+            frame,
+            COROUTINE_FRAME_FIELD_RESULT,
+            result,
+        )?;
+        Ok(frame)
+    }
+
+    fn alloc_completion_wait_source(&self) -> Result<PointerValue<'ctx>, CodegenError> {
+        let source = self
+            .backend
+            .builder
+            .build_alloca(self.backend.wait_source_type, "wait.source")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(source, self.backend.wait_source_type.const_zero())
+            .map_err(builder_error)?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_ABI_VERSION,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_ABI_VERSION, false),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_KIND,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_SOURCE_KIND_COMPLETION, false),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_HANDLE,
+            self.backend.signed_i64(-1),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_INTERESTS,
+            self.backend.context.i32_type().const_zero(),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_RESERVED,
+            self.backend.context.i32_type().const_zero(),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_DEADLINE,
+            self.backend.i64_type.const_zero(),
+        )?;
+        Ok(source)
+    }
+
+    fn alloc_timer_wait_source(
+        &self,
+        deadline: IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let source = self
+            .backend
+            .builder
+            .build_alloca(self.backend.wait_source_type, "wait.source.timer")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(source, self.backend.wait_source_type.const_zero())
+            .map_err(builder_error)?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_ABI_VERSION,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_ABI_VERSION, false),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_KIND,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_SOURCE_KIND_TIMER, false),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_HANDLE,
+            self.backend.signed_i64(-1),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_INTERESTS,
+            self.backend.context.i32_type().const_zero(),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_RESERVED,
+            self.backend.context.i32_type().const_zero(),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_DEADLINE,
+            deadline,
+        )?;
+        Ok(source)
+    }
+
+    fn alloc_fd_wait_source(
+        &self,
+        descriptor: IntValue<'ctx>,
+        interests: u64,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let source = self
+            .backend
+            .builder
+            .build_alloca(self.backend.wait_source_type, "wait.source.fd")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(source, self.backend.wait_source_type.const_zero())
+            .map_err(builder_error)?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_ABI_VERSION,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_ABI_VERSION, false),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_KIND,
+            self.backend
+                .context
+                .i32_type()
+                .const_int(WAIT_SOURCE_KIND_FD, false),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_HANDLE,
+            descriptor,
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_INTERESTS,
+            self.backend.context.i32_type().const_int(interests, false),
+        )?;
+        self.backend.store_i32_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_RESERVED,
+            self.backend.context.i32_type().const_zero(),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.wait_source_type,
+            source,
+            WAIT_SOURCE_FIELD_DEADLINE,
+            self.backend.i64_type.const_zero(),
+        )?;
+        Ok(source)
+    }
+
+    fn consume_ready_frame(
+        &self,
+        executor: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+        expected_event: u64,
+    ) -> Result<(), CodegenError> {
+        let notification = self
+            .backend
+            .builder
+            .build_alloca(self.backend.ready_notification_type, "ready.notification")
+            .map_err(builder_error)?;
+        let pop_status = call_int(
+            &self.backend.builder,
+            self.backend.native_executor_pop_ready(),
+            &[executor.into(), notification.into()],
+            "ready.pop",
+        )?;
+        let ready_frame = self.backend.load_pointer_field(
+            self.backend.ready_notification_type,
+            notification,
+            READY_NOTIFICATION_FIELD_FRAME,
+            "ready.frame",
+        )?;
+        let popped = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                pop_status,
+                self.backend.context.i32_type().const_int(1, false),
+                "ready.popped",
+            )
+            .map_err(builder_error)?;
+        let same_frame = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::EQ, ready_frame, frame, "ready.same.frame")
+            .map_err(builder_error)?;
+        let events = self.backend.load_i32_field(
+            self.backend.ready_notification_type,
+            notification,
+            READY_NOTIFICATION_FIELD_EVENTS,
+            "ready.events",
+        )?;
+        let expected = self
+            .backend
+            .context
+            .i32_type()
+            .const_int(expected_event, false);
+        let relevant = self
+            .backend
+            .builder
+            .build_and(events, expected, "ready.relevant.events")
+            .map_err(builder_error)?;
+        let has_expected_event = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                relevant,
+                self.backend.context.i32_type().const_zero(),
+                "ready.expected.event",
+            )
+            .map_err(builder_error)?;
+        let valid_identity = self
+            .backend
+            .builder
+            .build_and(popped, same_frame, "ready.valid")
+            .map_err(builder_error)?;
+        let valid = self
+            .backend
+            .builder
+            .build_and(valid_identity, has_expected_event, "ready.valid.event")
+            .map_err(builder_error)?;
+        let resume = self.append_block("coroutine.resume");
+        let invalid = self.append_block("ready.invalid");
+        self.backend
+            .builder
+            .build_conditional_branch(valid, resume, invalid)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(invalid);
+        self.backend
+            .puts("RuntimeFault: invalid wait notification")?;
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&self.failure_status()))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(resume);
+        Ok(())
+    }
+
+    fn propagate_runtime_status(
+        &self,
+        status: IntValue<'ctx>,
+        _executor: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let success = self.append_block(&format!("{name}.success"));
+        let failure = self.append_block(&format!("{name}.failure"));
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                &format!("{name}.ok"),
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(failure);
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&if self.task.is_some() {
+                self.failure_status()
+            } else {
+                status
+            }))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(success);
+        Ok(())
+    }
+
+    fn emit_unary(
+        &self,
+        operator: UnaryOp,
+        expression: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let value = self.alloc_value("unary");
+        if !self.emit_expr(expression, value)? {
+            return Ok(false);
+        }
+        match operator {
+            UnaryOp::Not => {
+                let boolean = self.bool_value(value)?;
+                let result = self
+                    .backend
+                    .builder
+                    .build_not(boolean, "not")
+                    .map_err(builder_error)?;
+                self.initialize(destination, VALUE_TAG_BOOL)?;
+                let extended = self
+                    .backend
+                    .builder
+                    .build_int_z_extend(result, self.backend.i64_type, "bool.i64")
+                    .map_err(builder_error)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    extended,
+                )?;
+            }
+            UnaryOp::Negate => match self.numeric_kind(&expression.ty)? {
+                NumericKind::Int => {
+                    let scalar = self.int_scalar(value)?;
+                    let overflow = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            scalar,
+                            self.backend.signed_i64(i64::MIN),
+                            "negate.overflow",
+                        )
+                        .map_err(builder_error)?;
+                    self.fail_if(overflow, "IntegerOverflow")?;
+                    let result = self
+                        .backend
+                        .builder
+                        .build_int_sub(self.backend.i64_type.const_zero(), scalar, "negate")
+                        .map_err(builder_error)?;
+                    self.initialize(destination, VALUE_TAG_INT)?;
+                    self.backend.store_i64_field(
+                        self.backend.value_type,
+                        destination,
+                        VALUE_FIELD_SCALAR,
+                        result,
+                    )?;
+                }
+                NumericKind::Float => {
+                    let scalar = self.float_scalar(value)?;
+                    let result = self
+                        .backend
+                        .builder
+                        .build_float_neg(scalar, "negate")
+                        .map_err(builder_error)?;
+                    self.store_float(destination, result)?;
+                }
+            },
+        }
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_binary(
+        &self,
+        operator: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if matches!(operator, BinaryOp::And | BinaryOp::Or) {
+            return self.emit_logical(operator, left, right, destination);
+        }
+        let left_value = self.alloc_value("left");
+        if !self.emit_expr(left, left_value)? {
+            return Ok(false);
+        }
+        let right_value = self.alloc_value("right");
+        if !self.emit_expr(right, right_value)? {
+            return Ok(false);
+        }
+        match operator {
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                let equal = self
+                    .backend
+                    .module
+                    .get_function("loom.runtime.equal")
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "equal helper is missing"))?;
+                let mut result = call_int(
+                    &self.backend.builder,
+                    equal,
+                    &[left_value.into(), right_value.into()],
+                    "equal",
+                )?;
+                if operator == BinaryOp::NotEqual {
+                    result = self
+                        .backend
+                        .builder
+                        .build_not(result, "not.equal")
+                        .map_err(builder_error)?;
+                }
+                self.store_bool(destination, result)?;
+            }
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                match self.numeric_kind(&left.ty)? {
+                    NumericKind::Int => {
+                        let left = self.int_scalar(left_value)?;
+                        let right = self.int_scalar(right_value)?;
+                        let result = self.emit_checked_integer(operator, left, right)?;
+                        self.initialize(destination, VALUE_TAG_INT)?;
+                        self.backend.store_i64_field(
+                            self.backend.value_type,
+                            destination,
+                            VALUE_FIELD_SCALAR,
+                            result,
+                        )?;
+                    }
+                    NumericKind::Float => {
+                        let left = self.float_scalar(left_value)?;
+                        let right = self.float_scalar(right_value)?;
+                        let result = match operator {
+                            BinaryOp::Add => {
+                                self.backend.builder.build_float_add(left, right, "add")
+                            }
+                            BinaryOp::Subtract => {
+                                self.backend.builder.build_float_sub(left, right, "sub")
+                            }
+                            BinaryOp::Multiply => {
+                                self.backend.builder.build_float_mul(left, right, "mul")
+                            }
+                            BinaryOp::Divide => {
+                                self.backend.builder.build_float_div(left, right, "div")
+                            }
+                            _ => unreachable!(),
+                        }
+                        .map_err(builder_error)?;
+                        self.store_float(destination, result)?;
+                    }
+                }
+            }
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                let result = match self.numeric_kind(&left.ty)? {
+                    NumericKind::Int => {
+                        let left = self.int_scalar(left_value)?;
+                        let right = self.int_scalar(right_value)?;
+                        let predicate = match operator {
+                            BinaryOp::Less => IntPredicate::SLT,
+                            BinaryOp::LessEqual => IntPredicate::SLE,
+                            BinaryOp::Greater => IntPredicate::SGT,
+                            BinaryOp::GreaterEqual => IntPredicate::SGE,
+                            _ => unreachable!(),
+                        };
+                        self.backend
+                            .builder
+                            .build_int_compare(predicate, left, right, "compare")
+                            .map_err(builder_error)?
+                    }
+                    NumericKind::Float => {
+                        let left = self.float_scalar(left_value)?;
+                        let right = self.float_scalar(right_value)?;
+                        let predicate = match operator {
+                            BinaryOp::Less => FloatPredicate::OLT,
+                            BinaryOp::LessEqual => FloatPredicate::OLE,
+                            BinaryOp::Greater => FloatPredicate::OGT,
+                            BinaryOp::GreaterEqual => FloatPredicate::OGE,
+                            _ => unreachable!(),
+                        };
+                        self.backend
+                            .builder
+                            .build_float_compare(predicate, left, right, "compare")
+                            .map_err(builder_error)?
+                    }
+                };
+                self.store_bool(destination, result)?;
+            }
+            BinaryOp::And | BinaryOp::Or => unreachable!(),
+        }
+        Ok(true)
+    }
+
+    fn emit_logical(
+        &self,
+        operator: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let left_value = self.alloc_value("logical.left");
+        if !self.emit_expr(left, left_value)? {
+            return Ok(false);
+        }
+        let condition = self.bool_value(left_value)?;
+        let evaluate_right = self.append_block("logical.right");
+        let constant = self.append_block("logical.constant");
+        let merge = self.append_block("logical.merge");
+        let (true_block, false_block, constant_value) = if operator == BinaryOp::And {
+            (evaluate_right, constant, false)
+        } else {
+            (constant, evaluate_right, true)
+        };
+        self.backend
+            .builder
+            .build_conditional_branch(condition, true_block, false_block)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(constant);
+        self.emit_constant(&Constant::Bool(constant_value), destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(evaluate_right);
+        let right_continues = self.emit_expr(right, destination)?;
+        if right_continues {
+            self.backend.branch(merge)?;
+        }
+        self.backend.builder.position_at_end(merge);
+        if right_continues {
+            Ok(true)
+        } else {
+            // The constant branch always reaches the merge.
+            Ok(true)
+        }
+    }
+
+    fn emit_if(
+        &self,
+        condition: &Expr,
+        then_branch: &Block,
+        else_branch: &Block,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let value = self.alloc_value("if.condition");
+        if !self.emit_expr(condition, value)? {
+            return Ok(false);
+        }
+        let condition = self.bool_value(value)?;
+        let then_block = self.append_block("if.then");
+        let else_block = self.append_block("if.else");
+        let merge = self.append_block("if.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(condition, then_block, else_block)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(then_block);
+        let then_continues = self.emit_block(then_branch, destination)?;
+        if then_continues {
+            self.backend.branch(merge)?;
+        }
+        self.backend.builder.position_at_end(else_block);
+        let else_continues = self.emit_block(else_branch, destination)?;
+        if else_continues {
+            self.backend.branch(merge)?;
+        }
+        self.backend.builder.position_at_end(merge);
+        if then_continues || else_continues {
+            Ok(true)
+        } else {
+            self.backend
+                .builder
+                .build_unreachable()
+                .map_err(builder_error)?;
+            Ok(false)
+        }
+    }
+
+    fn emit_checked_integer(
+        &self,
+        operator: BinaryOp,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        if operator == BinaryOp::Divide {
+            let zero = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    right,
+                    self.backend.i64_type.const_zero(),
+                    "division.zero",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(zero, "IntegerDivisionByZero")?;
+            let min = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    left,
+                    self.backend.signed_i64(i64::MIN),
+                    "division.min",
+                )
+                .map_err(builder_error)?;
+            let minus_one = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    right,
+                    self.backend.signed_i64(-1),
+                    "division.minus_one",
+                )
+                .map_err(builder_error)?;
+            let overflow = self
+                .backend
+                .builder
+                .build_and(min, minus_one, "division.overflow")
+                .map_err(builder_error)?;
+            self.fail_if(overflow, "IntegerDivisionOverflow")?;
+            return self
+                .backend
+                .builder
+                .build_int_signed_div(left, right, "division")
+                .map_err(builder_error);
+        }
+
+        let name = match operator {
+            BinaryOp::Add => "llvm.sadd.with.overflow",
+            BinaryOp::Subtract => "llvm.ssub.with.overflow",
+            BinaryOp::Multiply => "llvm.smul.with.overflow",
+            _ => unreachable!(),
+        };
+        let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
+            .and_then(|intrinsic| {
+                intrinsic.get_declaration(&self.backend.module, &[self.backend.i64_type.into()])
+            })
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing {name}")))?;
+        let aggregate = self
+            .backend
+            .builder
+            .build_call(intrinsic, &[left.into(), right.into()], "checked.integer")
+            .map_err(builder_error)?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "overflow intrinsic returned void"))?
+            .into_struct_value();
+        let result = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 0, "integer.result")
+            .map_err(builder_error)?
+            .into_int_value();
+        let overflow = self
+            .backend
+            .builder
+            .build_extract_value(aggregate, 1, "integer.overflow")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.fail_if(overflow, "IntegerOverflow")?;
+        Ok(result)
+    }
+
+    fn fail_if(&self, condition: IntValue<'ctx>, code: &str) -> Result<(), CodegenError> {
+        let fail = self.append_block("operation.fail");
+        let pass = self.append_block("operation.pass");
+        self.backend
+            .builder
+            .build_conditional_branch(condition, fail, pass)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(fail);
+        self.backend.puts(code)?;
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&self.failure_status()))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(pass);
+        Ok(())
+    }
+
+    fn failure_status(&self) -> IntValue<'ctx> {
+        self.backend.context.i32_type().const_int(
+            self.unwind_status.get().unwrap_or_else(|| {
+                if self.task.is_some() {
+                    TASK_STEP_FAULTED
+                } else {
+                    1
+                }
+            }),
+            false,
+        )
+    }
+
+    fn numeric_kind(&self, ty: &Type) -> Result<NumericKind, CodegenError> {
+        match ty {
+            Type::Int => Ok(NumericKind::Int),
+            Type::Float => Ok(NumericKind::Float),
+            Type::Nominal(id, _) => {
+                let definition = self.backend.program.type_def(*id).ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidTypeReference",
+                        format!("type #{} does not exist", id.0),
+                    )
+                })?;
+                if let TypeDefKind::Refined { base, .. } = &definition.kind {
+                    self.numeric_kind(base)
+                } else {
+                    Err(CodegenError::new(
+                        "InvalidNumericType",
+                        format!("{} is not numeric", definition.name),
+                    ))
+                }
+            }
+            _ => Err(CodegenError::new(
+                "InvalidNumericType",
+                "checked numeric expression has a non-numeric type",
+            )),
+        }
+    }
+
+    fn int_scalar(&self, value: PointerValue<'ctx>) -> Result<IntValue<'ctx>, CodegenError> {
+        let value = self.unwrap(value)?;
+        self.backend.load_i64_field(
+            self.backend.value_type,
+            value,
+            VALUE_FIELD_SCALAR,
+            "int.scalar",
+        )
+    }
+
+    fn float_scalar(
+        &self,
+        value: PointerValue<'ctx>,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        let bits = self.int_scalar(value)?;
+        self.backend
+            .builder
+            .build_bit_cast(bits, self.backend.context.f64_type(), "float.scalar")
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_float_value)
+    }
+
+    fn store_bool(
+        &self,
+        destination: PointerValue<'ctx>,
+        value: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.initialize(destination, VALUE_TAG_BOOL)?;
+        let value = self
+            .backend
+            .builder
+            .build_int_z_extend(value, self.backend.i64_type, "bool.i64")
+            .map_err(builder_error)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_SCALAR,
+            value,
+        )
+    }
+
+    fn store_float(
+        &self,
+        destination: PointerValue<'ctx>,
+        value: inkwell::values::FloatValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.initialize(destination, VALUE_TAG_FLOAT)?;
+        let bits = self
+            .backend
+            .builder
+            .build_bit_cast(value, self.backend.i64_type, "float.bits")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_SCALAR,
+            bits,
+        )
+    }
+
+    fn emit_record(
+        &self,
+        ty: TypeId,
+        fields: &[Expr],
+        checked: bool,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let record = if checked {
+            self.alloc_value("record.candidate")
+        } else {
+            destination
+        };
+        let Some(values) = self.emit_values(fields)? else {
+            return Ok(false);
+        };
+        self.initialize(record, VALUE_TAG_RECORD)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            record,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(ty.0)),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            record,
+            VALUE_FIELD_AUX,
+            self.backend.tag(values.len() as u64),
+        )?;
+        let head = self.build_value_nodes(&values)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            record,
+            VALUE_FIELD_DATA,
+            head,
+        )?;
+        if !checked {
+            return Ok(true);
+        }
+        let definition = self.backend.program.type_def(ty).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidTypeReference",
+                format!("type #{} does not exist", ty.0),
+            )
+        })?;
+        let TypeDefKind::Record { invariant, .. } = &definition.kind else {
+            return Err(CodegenError::new(
+                "InvalidRecordConstruction",
+                format!("{} is not a record", definition.name),
+            ));
+        };
+        let Some(invariant) = invariant else {
+            self.shallow_copy(destination, record)?;
+            return Ok(true);
+        };
+        let context = ContractContext {
+            receiver: Some(TypedPointer {
+                pointer: record,
+                ty: Type::Nominal(ty, Vec::new()),
+            }),
+            result: None,
+            arguments: Vec::new(),
+            old_receiver: None,
+            old_arguments: Vec::new(),
+            bindings: Vec::new(),
+        };
+        self.emit_checked_construction(invariant, &context, record, ty, destination)
+    }
+
+    fn emit_tuple(
+        &self,
+        elements: &[Expr],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(values) = self.emit_values(elements)? else {
+            return Ok(false);
+        };
+        self.initialize(destination, VALUE_TAG_TUPLE)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(values.len() as u64),
+        )?;
+        let head = self.build_value_nodes(&values)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
+        )?;
+        Ok(true)
+    }
+
+    fn emit_list(
+        &self,
+        elements: &[Expr],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(values) = self.emit_values(elements)? else {
+            return Ok(false);
+        };
+        self.initialize(destination, VALUE_TAG_LIST)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(values.len() as u64),
+        )?;
+        let head = self.build_value_nodes(&values)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
+        )?;
+        Ok(true)
+    }
+
+    fn emit_refine(
+        &self,
+        ty: TypeId,
+        expression: &Expr,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let value = self.alloc_value("refine.value");
+        if !self.emit_expr(expression, value)? {
+            return Ok(false);
+        }
+        let definition = self.backend.program.type_def(ty).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidTypeReference",
+                format!("type #{} does not exist", ty.0),
+            )
+        })?;
+        let TypeDefKind::Refined { predicate, .. } = &definition.kind else {
+            return Err(CodegenError::new(
+                "InvalidRefinement",
+                format!("{} is not a refined type", definition.name),
+            ));
+        };
+        let refined = self.alloc_value("refined.candidate");
+        self.initialize(refined, VALUE_TAG_REFINED)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            refined,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(ty.0)),
+        )?;
+        let inner = call_pointer(
+            &self.backend.builder,
+            self.backend.native_gc_alloc_value(),
+            &[],
+            "refined.inner",
+        )?;
+        self.shallow_copy(inner, value)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            refined,
+            VALUE_FIELD_DATA,
+            inner,
+        )?;
+        let context = ContractContext {
+            receiver: Some(TypedPointer {
+                pointer: value,
+                ty: expression.ty.clone(),
+            }),
+            result: None,
+            arguments: Vec::new(),
+            old_receiver: None,
+            old_arguments: Vec::new(),
+            bindings: Vec::new(),
+        };
+        self.emit_checked_construction(predicate, &context, refined, ty, destination)
+    }
+
+    fn emit_checked_construction(
+        &self,
+        contract: &Contract,
+        context: &ContractContext<'ctx>,
+        accepted_value: PointerValue<'ctx>,
+        target_type: TypeId,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let condition = self.alloc_value("constraint");
+        if !self.emit_contract_expr(&contract.expression, context, condition)? {
+            return Ok(false);
+        }
+        let accepted = self.bool_value(condition)?;
+        let ok = self.append_block("constraint.ok");
+        let error = self.append_block("constraint.error");
+        let merge = self.append_block("constraint.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(accepted, ok, error)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(ok);
+        self.emit_result(true, accepted_value, destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(error);
+        let violation = self.alloc_value("violation");
+        self.initialize(violation, VALUE_TAG_VIOLATION)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            violation,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(target_type.0)),
+        )?;
+        self.emit_result(false, violation, destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(merge);
+        Ok(true)
+    }
+
+    fn emit_result(
+        &self,
+        ok: bool,
+        payload: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let result = self
+            .backend
+            .program
+            .prelude
+            .result
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Result type is missing"))?;
+        self.emit_variant_from_pointers(result, u32::from(!ok), &[payload], destination)
+    }
+
+    fn emit_variant(
+        &self,
+        ty: TypeId,
+        variant: u32,
+        payload: &[Expr],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(values) = self.emit_values(payload)? else {
+            return Ok(false);
+        };
+        self.emit_variant_from_pointers(ty, variant, &values, destination)?;
+        Ok(true)
+    }
+
+    fn emit_variant_from_pointers(
+        &self,
+        ty: TypeId,
+        variant: u32,
+        payload: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.initialize(destination, VALUE_TAG_ENUM)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(ty.0)),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(u64::from(variant)),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_SCALAR,
+            self.backend.tag(payload.len() as u64),
+        )?;
+        let head = self.build_value_nodes(payload)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
+        )
+    }
+
+    fn emit_values(
+        &self,
+        expressions: &[Expr],
+    ) -> Result<Option<Vec<PointerValue<'ctx>>>, CodegenError> {
+        let mut values = Vec::with_capacity(expressions.len());
+        for expression in expressions {
+            let value = self.alloc_value("aggregate.value");
+            if !self.emit_expr(expression, value)? {
+                return Ok(None);
+            }
+            values.push(value);
+        }
+        Ok(Some(values))
+    }
+
+    fn build_value_nodes(
+        &self,
+        values: &[PointerValue<'ctx>],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let mut head = self.backend.ptr_type.const_null();
+        for value in values.iter().rev() {
+            let node = call_pointer(
+                &self.backend.builder,
+                self.backend.native_gc_alloc_value_node(),
+                &[],
+                "aggregate.node",
+            )?;
+            let node_value = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_VALUE,
+                "node.value",
+            )?;
+            self.shallow_copy(node_value, *value)?;
+            self.backend.store_pointer_field(
+                self.backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_NEXT,
+                head,
+            )?;
+            head = node;
+        }
+        Ok(head)
+    }
+
+    fn emit_match(
+        &self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let value = self.alloc_value("match.value");
+        if !self.emit_expr(scrutinee, value)? {
+            return Ok(false);
+        }
+        let merge = self.append_block("match.merge");
+        let mut test_block = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "match has no insertion block")
+        })?;
+        let mut any_continues = false;
+        for arm in arms {
+            self.backend.builder.position_at_end(test_block);
+            let selected = self.append_block("match.arm");
+            let next = self.append_block("match.next");
+            let mut bindings = Vec::new();
+            self.emit_pattern_branch(&arm.pattern, value, selected, next, &mut bindings)?;
+            self.backend.builder.position_at_end(selected);
+            if bindings.len() != arm.bindings.len() {
+                return Err(CodegenError::new(
+                    "InvalidPattern",
+                    "pattern binding count does not match MIR locals",
+                ));
+            }
+            for (local, binding) in arm.bindings.iter().zip(bindings) {
+                self.clone_value(self.local(*local)?, binding)?;
+            }
+            let continues = self.emit_expr(&arm.value, destination)?;
+            if continues {
+                any_continues = true;
+                self.backend.branch(merge)?;
+            }
+            test_block = next;
+        }
+        self.backend.builder.position_at_end(test_block);
+        self.backend.puts("NonExhaustiveMatch")?;
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&self.failure_status()))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(merge);
+        if any_continues {
+            Ok(true)
+        } else {
+            self.backend
+                .builder
+                .build_unreachable()
+                .map_err(builder_error)?;
+            Ok(false)
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_pattern_branch(
+        &self,
+        pattern: &Pattern,
+        value: PointerValue<'ctx>,
+        success: inkwell::basic_block::BasicBlock<'ctx>,
+        failure: inkwell::basic_block::BasicBlock<'ctx>,
+        bindings: &mut Vec<PointerValue<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        match pattern {
+            Pattern::Wildcard => self.backend.branch(success),
+            Pattern::Binding => {
+                bindings.push(value);
+                self.backend.branch(success)
+            }
+            Pattern::Constant(constant) => {
+                let expected = self.alloc_value("pattern.constant");
+                self.emit_constant(constant, expected)?;
+                let equal = self
+                    .backend
+                    .module
+                    .get_function("loom.runtime.equal")
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "equal helper is missing"))?;
+                let matches = call_int(
+                    &self.backend.builder,
+                    equal,
+                    &[value.into(), expected.into()],
+                    "pattern.equal",
+                )?;
+                self.backend
+                    .builder
+                    .build_conditional_branch(matches, success, failure)
+                    .map_err(builder_error)?;
+                Ok(())
+            }
+            Pattern::Variant {
+                ty,
+                variant,
+                payload,
+            } => {
+                let tag = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    value,
+                    VALUE_FIELD_TAG,
+                    "pattern.tag",
+                )?;
+                let nominal = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    value,
+                    VALUE_FIELD_NOMINAL,
+                    "pattern.type",
+                )?;
+                let actual_variant = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    value,
+                    VALUE_FIELD_AUX,
+                    "pattern.variant",
+                )?;
+                let tag_ok = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        self.backend.tag(VALUE_TAG_ENUM),
+                        "pattern.enum",
+                    )
+                    .map_err(builder_error)?;
+                let type_ok = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        nominal,
+                        self.backend.tag(u64::from(ty.0)),
+                        "pattern.type.ok",
+                    )
+                    .map_err(builder_error)?;
+                let variant_ok = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        actual_variant,
+                        self.backend.tag(u64::from(variant.0)),
+                        "pattern.variant.ok",
+                    )
+                    .map_err(builder_error)?;
+                let header = self
+                    .backend
+                    .builder
+                    .build_and(tag_ok, type_ok, "pattern.header")
+                    .map_err(builder_error)?;
+                let header = self
+                    .backend
+                    .builder
+                    .build_and(header, variant_ok, "pattern.header.variant")
+                    .map_err(builder_error)?;
+                if payload.is_empty() {
+                    self.backend
+                        .builder
+                        .build_conditional_branch(header, success, failure)
+                        .map_err(builder_error)?;
+                    return Ok(());
+                }
+                let details = self.append_block("pattern.payload");
+                self.backend
+                    .builder
+                    .build_conditional_branch(header, details, failure)
+                    .map_err(builder_error)?;
+                self.backend.builder.position_at_end(details);
+                let data = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    value,
+                    VALUE_FIELD_DATA,
+                    "pattern.data",
+                )?;
+                for (index, child_pattern) in payload.iter().enumerate() {
+                    let node = self.value_node_at(
+                        data,
+                        u32::try_from(index).map_err(|_| {
+                            CodegenError::new("ProgramTooLarge", "pattern payload is too large")
+                        })?,
+                    )?;
+                    let child = self.backend.struct_pointer(
+                        self.backend.value_node_type,
+                        node,
+                        VALUE_NODE_FIELD_VALUE,
+                        "pattern.value",
+                    )?;
+                    let child_success = if index + 1 == payload.len() {
+                        success
+                    } else {
+                        self.append_block("pattern.child")
+                    };
+                    self.emit_pattern_branch(
+                        child_pattern,
+                        child,
+                        child_success,
+                        failure,
+                        bindings,
+                    )?;
+                    if index + 1 != payload.len() {
+                        self.backend.builder.position_at_end(child_success);
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_call(
+        &self,
+        target: &CallTarget,
+        arguments: &[CallArgument],
+        witnesses: &[WitnessRef],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if let CallTarget::Builtin(builtin) = target {
+            return self.emit_builtin(*builtin, arguments, destination);
+        }
+
+        let Some(mut values) = self.emit_call_arguments(arguments)? else {
+            return Ok(false);
+        };
+        let (direct, indirect, witness_head) = match target {
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => {
+                let target = self
+                    .backend
+                    .functions
+                    .get(function)
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "ReachabilityDefect",
+                            format!("call target #{} was not emitted", function.0),
+                        )
+                    })?;
+                (
+                    Some(target),
+                    None,
+                    self.build_witness_nodes(witnesses, self.backend.ptr_type.const_null())?,
+                )
+            }
+            CallTarget::StaticConcept {
+                requirement,
+                witness,
+                ..
+            } => {
+                let runtime_witness = self.resolve_witness(witness)?;
+                let proof_head = self.backend.load_pointer_field(
+                    self.backend.witness_type,
+                    runtime_witness,
+                    0,
+                    "witness.arguments",
+                )?;
+                let method_head =
+                    self.build_witness_nodes(witnesses, self.backend.ptr_type.const_null())?;
+                let witness_head = self.concat_witness_nodes(proof_head, method_head)?;
+                if let Some(witness_id) = concrete_witness_id(witness) {
+                    let function = self
+                        .backend
+                        .program
+                        .witness(witness_id)
+                        .and_then(|definition| definition.methods.get(requirement))
+                        .and_then(|function| self.backend.functions.get(function))
+                        .copied()
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "ReachabilityDefect",
+                                format!(
+                                    "witness #{} requirement #{} was not emitted",
+                                    witness_id.0, requirement.0
+                                ),
+                            )
+                        })?;
+                    (Some(function), None, witness_head)
+                } else {
+                    let method = self.load_witness_method(runtime_witness, *requirement)?;
+                    (None, Some(method), witness_head)
+                }
+            }
+            CallTarget::Dynamic { requirement } => {
+                let receiver = values.first().copied().ok_or_else(|| {
+                    CodegenError::new("InvalidDynamicCall", "dynamic call has no receiver")
+                })?;
+                let owner = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    receiver,
+                    VALUE_FIELD_DATA,
+                    "dyn.data",
+                )?;
+                let runtime_witness = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    receiver,
+                    VALUE_FIELD_WITNESS,
+                    "dyn.witness",
+                )?;
+                values[0] = owner;
+                let method = self.load_witness_method(runtime_witness, *requirement)?;
+                let witness_head = self.backend.load_pointer_field(
+                    self.backend.witness_type,
+                    runtime_witness,
+                    0,
+                    "dyn.witness.arguments",
+                )?;
+                (None, Some(method), witness_head)
+            }
+            CallTarget::Builtin(_) => unreachable!(),
+        };
+        let argument_head = self.build_argument_nodes(&values)?;
+        let status = if let Some(function) = direct {
+            call_int(
+                &self.backend.builder,
+                function,
+                &[
+                    destination.into(),
+                    argument_head.into(),
+                    witness_head.into(),
+                    self.executor.into(),
+                ],
+                "call",
+            )?
+        } else {
+            self.backend
+                .builder
+                .build_indirect_call(
+                    self.backend.loom_function_type,
+                    indirect.expect("one call target kind is present"),
+                    &[
+                        destination.into(),
+                        argument_head.into(),
+                        witness_head.into(),
+                        self.executor.into(),
+                    ],
+                    "dyn.call",
+                )
+                .map_err(builder_error)?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "dynamic call returned void"))?
+                .into_int_value()
+        };
+        self.propagate_status(status)?;
+        Ok(true)
+    }
+
+    fn emit_call_arguments(
+        &self,
+        arguments: &[CallArgument],
+    ) -> Result<Option<Vec<PointerValue<'ctx>>>, CodegenError> {
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            match argument {
+                CallArgument::Value(expression) => {
+                    let value = self.alloc_value("argument.value");
+                    if !self.emit_expr(expression, value)? {
+                        return Ok(None);
+                    }
+                    values.push(value);
+                }
+                CallArgument::InOut(place) => values.push(self.place(place)?),
+            }
+        }
+        Ok(Some(values))
+    }
+
+    fn build_argument_nodes(
+        &self,
+        arguments: &[PointerValue<'ctx>],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let mut head = self.backend.ptr_type.const_null();
+        for argument in arguments.iter().rev() {
+            let node = self
+                .backend
+                .builder
+                .build_alloca(self.backend.arg_node_type, "argument.node")
+                .map_err(builder_error)?;
+            self.backend.store_pointer_field(
+                self.backend.arg_node_type,
+                node,
+                ARG_NODE_FIELD_VALUE,
+                *argument,
+            )?;
+            self.backend.store_pointer_field(
+                self.backend.arg_node_type,
+                node,
+                ARG_NODE_FIELD_NEXT,
+                head,
+            )?;
+            head = node;
+        }
+        Ok(head)
+    }
+
+    fn build_witness_nodes(
+        &self,
+        witnesses: &[WitnessRef],
+        mut tail: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        for witness in witnesses.iter().rev() {
+            let value = self.resolve_witness(witness)?;
+            let node = self
+                .backend
+                .builder
+                .build_alloca(self.backend.witness_node_type, "witness.node")
+                .map_err(builder_error)?;
+            self.backend.store_pointer_field(
+                self.backend.witness_node_type,
+                node,
+                WITNESS_NODE_FIELD_VALUE,
+                value,
+            )?;
+            self.backend.store_pointer_field(
+                self.backend.witness_node_type,
+                node,
+                WITNESS_NODE_FIELD_NEXT,
+                tail,
+            )?;
+            tail = node;
+        }
+        Ok(tail)
+    }
+
+    fn concat_witness_nodes(
+        &self,
+        prefix: PointerValue<'ctx>,
+        suffix: PointerValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let concatenate = self
+            .backend
+            .module
+            .get_function("loom.runtime.concat_witnesses")
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "witness concat helper is missing")
+            })?;
+        call_pointer(
+            &self.backend.builder,
+            concatenate,
+            &[prefix.into(), suffix.into()],
+            "witness.arguments",
+        )
+    }
+
+    fn resolve_witness(&self, witness: &WitnessRef) -> Result<PointerValue<'ctx>, CodegenError> {
+        match witness {
+            WitnessRef::Concrete(id) => self
+                .backend
+                .witnesses
+                .get(id)
+                .map(|global| global.as_pointer_value())
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "ReachabilityDefect",
+                        format!("witness #{} was not emitted", id.0),
+                    )
+                }),
+            WitnessRef::Parameter(index) => {
+                let mut node = self.witness_arguments;
+                for _ in 0..*index {
+                    node = self.backend.load_pointer_field(
+                        self.backend.witness_node_type,
+                        node,
+                        WITNESS_NODE_FIELD_NEXT,
+                        "witness.next",
+                    )?;
+                }
+                self.backend.load_pointer_field(
+                    self.backend.witness_node_type,
+                    node,
+                    WITNESS_NODE_FIELD_VALUE,
+                    "witness.value",
+                )
+            }
+            WitnessRef::Apply { witness, arguments } => {
+                let base = self
+                    .backend
+                    .witnesses
+                    .get(witness)
+                    .map(|global| global.as_pointer_value())
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "ReachabilityDefect",
+                            format!("witness #{} was not emitted", witness.0),
+                        )
+                    })?;
+                let applied = self
+                    .backend
+                    .builder
+                    .build_alloca(self.backend.witness_type, "witness.application")
+                    .map_err(builder_error)?;
+                let value = self
+                    .backend
+                    .builder
+                    .build_load(self.backend.witness_type, base, "witness.base")
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_store(applied, value)
+                    .map_err(builder_error)?;
+                let arguments =
+                    self.build_witness_nodes(arguments, self.backend.ptr_type.const_null())?;
+                self.backend.store_pointer_field(
+                    self.backend.witness_type,
+                    applied,
+                    0,
+                    arguments,
+                )?;
+                Ok(applied)
+            }
+        }
+    }
+
+    fn load_witness_method(
+        &self,
+        witness: PointerValue<'ctx>,
+        requirement: RequirementId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let field = WITNESS_METHOD_FIELD_OFFSET
+            .checked_add(requirement.0)
+            .ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "requirement method index overflowed")
+            })?;
+        self.backend
+            .load_pointer_field(self.backend.witness_type, witness, field, "witness.method")
+    }
+
+    fn propagate_status(&self, status: IntValue<'ctx>) -> Result<(), CodegenError> {
+        let success = self.append_block("call.success");
+        let failure = self.append_block("call.failure");
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "call.ok",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(failure);
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&if self.task.is_some() {
+                self.failure_status()
+            } else {
+                status
+            }))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(success);
+        Ok(())
+    }
+
+    fn emit_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let Some(values) = self.emit_call_arguments(arguments)? else {
+            return Ok(false);
+        };
+        match (builtin, values.as_slice()) {
+            (Builtin::IsFinite, [value]) => {
+                let number = self.float_scalar(*value)?;
+                let ordered = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::ORD, number, number, "finite.ordered")
+                    .map_err(builder_error)?;
+                let upper = self
+                    .backend
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OLE,
+                        number,
+                        self.backend.context.f64_type().const_float(f64::MAX),
+                        "finite.upper",
+                    )
+                    .map_err(builder_error)?;
+                let lower = self
+                    .backend
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OGE,
+                        number,
+                        self.backend.context.f64_type().const_float(-f64::MAX),
+                        "finite.lower",
+                    )
+                    .map_err(builder_error)?;
+                let bounded = self
+                    .backend
+                    .builder
+                    .build_and(upper, lower, "finite.bounded")
+                    .map_err(builder_error)?;
+                let finite = self
+                    .backend
+                    .builder
+                    .build_and(ordered, bounded, "finite")
+                    .map_err(builder_error)?;
+                self.store_bool(destination, finite)?;
+                Ok(true)
+            }
+            (Builtin::ParseFloat, [value]) => self.emit_parse_float(*value, destination),
+            (Builtin::FormatFloat, [value]) => self.emit_format_float(*value, destination),
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
+    fn emit_parse_float(
+        &self,
+        value: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let text = self.unwrap(value)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_DATA,
+            "parse.data",
+        )?;
+        let length = self.backend.load_i64_field(
+            self.backend.value_type,
+            text,
+            VALUE_FIELD_AUX,
+            "parse.length",
+        )?;
+        let parsed = self
+            .backend
+            .builder
+            .build_alloca(self.backend.context.f64_type(), "parse.output")
+            .map_err(builder_error)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_parse_float(),
+            &[data.into(), length.into(), parsed.into()],
+            "parse.float",
+        )?;
+        let success = self.append_block("parse.success");
+        let failure = self.append_block("parse.failure");
+        let invalid = self.append_block("parse.invalid");
+        let out_of_range = self.append_block("parse.out_of_range");
+        let merge = self.append_block("parse.merge");
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "parse.ok",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(success);
+        let number = self
+            .backend
+            .builder
+            .build_load(self.backend.context.f64_type(), parsed, "parse.value")
+            .map_err(builder_error)?
+            .into_float_value();
+        let payload = self.alloc_value("parse.payload");
+        self.store_float(payload, number)?;
+        self.emit_result(true, payload, destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(failure);
+        let range_error = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_int(2, false),
+                "parse.range",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(range_error, out_of_range, invalid)
+            .map_err(builder_error)?;
+
+        let error_type = self
+            .backend
+            .program
+            .prelude
+            .parse_float_error
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "ParseFloatError is missing"))?;
+        for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
+            self.backend.builder.position_at_end(block);
+            let error = self.alloc_value("parse.error");
+            self.emit_variant_from_pointers(error_type, variant, &[], error)?;
+            self.emit_result(false, error, destination)?;
+            self.backend.branch(merge)?;
+        }
+        self.backend.builder.position_at_end(merge);
+        Ok(true)
+    }
+
+    fn emit_format_float(
+        &self,
+        value: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let number = self.float_scalar(value)?;
+        let data_slot = self
+            .backend
+            .builder
+            .build_alloca(self.backend.ptr_type, "format.data")
+            .map_err(builder_error)?;
+        let length_slot = self
+            .backend
+            .builder
+            .build_alloca(self.backend.i64_type, "format.length")
+            .map_err(builder_error)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_format_float(),
+            &[number.into(), data_slot.into(), length_slot.into()],
+            "format.float",
+        )?;
+        let failed = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "format.failed",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(failed, "NativeFloatFormatFailure")?;
+        let data = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, data_slot, "format.data.value")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let length = self
+            .backend
+            .builder
+            .build_load(self.backend.i64_type, length_slot, "format.length.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.initialize(destination, VALUE_TAG_TEXT)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            length,
+        )?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            data,
+        )?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_contract_expr(
+        &self,
+        expression: &ContractExpr,
+        context: &ContractContext<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        match &expression.kind {
+            ContractExprKind::Constant(constant) => {
+                self.emit_constant(constant, destination)?;
+                Ok(true)
+            }
+            ContractExprKind::Value(value) => {
+                let value = Self::contract_value(*value, context)?;
+                self.clone_value(destination, value.pointer)?;
+                Ok(true)
+            }
+            ContractExprKind::Binding(index) => {
+                let value = context.bindings.get(*index as usize).ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidContract",
+                        format!("contract binding #{index} does not exist"),
+                    )
+                })?;
+                self.clone_value(destination, value.pointer)?;
+                Ok(true)
+            }
+            ContractExprKind::Field(value, field) => {
+                let temporary = self.alloc_value("contract.field.base");
+                if !self.emit_contract_expr(value, context, temporary)? {
+                    return Ok(false);
+                }
+                let base_type = self.contract_expr_type(value, context)?;
+                let projected = self.project_runtime_field(temporary, *field)?;
+                let _field_type = self.projected_type(&base_type, *field)?;
+                self.clone_value(destination, projected)?;
+                Ok(true)
+            }
+            ContractExprKind::Unary(operator, value) => {
+                let temporary = self.alloc_value("contract.unary");
+                if !self.emit_contract_expr(value, context, temporary)? {
+                    return Ok(false);
+                }
+                match operator {
+                    UnaryOp::Not => {
+                        let value = self.bool_value(temporary)?;
+                        let value = self
+                            .backend
+                            .builder
+                            .build_not(value, "contract.not")
+                            .map_err(builder_error)?;
+                        self.store_bool(destination, value)?;
+                    }
+                    UnaryOp::Negate => {
+                        match self.numeric_kind(&self.contract_expr_type(value, context)?)? {
+                            NumericKind::Int => {
+                                let value = self.int_scalar(temporary)?;
+                                let overflow = self
+                                    .backend
+                                    .builder
+                                    .build_int_compare(
+                                        IntPredicate::EQ,
+                                        value,
+                                        self.backend.signed_i64(i64::MIN),
+                                        "contract.negate.overflow",
+                                    )
+                                    .map_err(builder_error)?;
+                                self.fail_if(overflow, "IntegerOverflow")?;
+                                let value = self
+                                    .backend
+                                    .builder
+                                    .build_int_sub(
+                                        self.backend.i64_type.const_zero(),
+                                        value,
+                                        "contract.negate",
+                                    )
+                                    .map_err(builder_error)?;
+                                self.initialize(destination, VALUE_TAG_INT)?;
+                                self.backend.store_i64_field(
+                                    self.backend.value_type,
+                                    destination,
+                                    VALUE_FIELD_SCALAR,
+                                    value,
+                                )?;
+                            }
+                            NumericKind::Float => {
+                                let value = self.float_scalar(temporary)?;
+                                let value = self
+                                    .backend
+                                    .builder
+                                    .build_float_neg(value, "contract.negate")
+                                    .map_err(builder_error)?;
+                                self.store_float(destination, value)?;
+                            }
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            ContractExprKind::Binary(operator, left, right) => {
+                self.emit_contract_binary(*operator, left, right, context, destination)
+            }
+            ContractExprKind::IsFinite(value) => {
+                let temporary = self.alloc_value("contract.finite");
+                if !self.emit_contract_expr(value, context, temporary)? {
+                    return Ok(false);
+                }
+                let number = self.float_scalar(temporary)?;
+                let ordered = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::ORD, number, number, "finite.ordered")
+                    .map_err(builder_error)?;
+                let upper = self
+                    .backend
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OLE,
+                        number,
+                        self.backend.context.f64_type().const_float(f64::MAX),
+                        "finite.upper",
+                    )
+                    .map_err(builder_error)?;
+                let lower = self
+                    .backend
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OGE,
+                        number,
+                        self.backend.context.f64_type().const_float(-f64::MAX),
+                        "finite.lower",
+                    )
+                    .map_err(builder_error)?;
+                let bounded = self
+                    .backend
+                    .builder
+                    .build_and(upper, lower, "finite.bounded")
+                    .map_err(builder_error)?;
+                let finite = self
+                    .backend
+                    .builder
+                    .build_and(ordered, bounded, "finite")
+                    .map_err(builder_error)?;
+                self.store_bool(destination, finite)?;
+                Ok(true)
+            }
+            ContractExprKind::Match { scrutinee, arms } => {
+                self.emit_contract_match(scrutinee, arms, context, destination)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_contract_binary(
+        &self,
+        operator: BinaryOp,
+        left: &ContractExpr,
+        right: &ContractExpr,
+        context: &ContractContext<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if matches!(operator, BinaryOp::And | BinaryOp::Or) {
+            let left_value = self.alloc_value("contract.logical.left");
+            if !self.emit_contract_expr(left, context, left_value)? {
+                return Ok(false);
+            }
+            let condition = self.bool_value(left_value)?;
+            let evaluate_right = self.append_block("contract.logical.right");
+            let constant = self.append_block("contract.logical.constant");
+            let merge = self.append_block("contract.logical.merge");
+            let (true_block, false_block, constant_value) = if operator == BinaryOp::And {
+                (evaluate_right, constant, false)
+            } else {
+                (constant, evaluate_right, true)
+            };
+            self.backend
+                .builder
+                .build_conditional_branch(condition, true_block, false_block)
+                .map_err(builder_error)?;
+            self.backend.builder.position_at_end(constant);
+            self.emit_constant(&Constant::Bool(constant_value), destination)?;
+            self.backend.branch(merge)?;
+            self.backend.builder.position_at_end(evaluate_right);
+            let continues = self.emit_contract_expr(right, context, destination)?;
+            if continues {
+                self.backend.branch(merge)?;
+            }
+            self.backend.builder.position_at_end(merge);
+            return Ok(true);
+        }
+
+        let left_value = self.alloc_value("contract.left");
+        if !self.emit_contract_expr(left, context, left_value)? {
+            return Ok(false);
+        }
+        let right_value = self.alloc_value("contract.right");
+        if !self.emit_contract_expr(right, context, right_value)? {
+            return Ok(false);
+        }
+        let left_type = self.contract_expr_type(left, context)?;
+        match operator {
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                let equal = self
+                    .backend
+                    .module
+                    .get_function("loom.runtime.equal")
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "equal helper is missing"))?;
+                let mut result = call_int(
+                    &self.backend.builder,
+                    equal,
+                    &[left_value.into(), right_value.into()],
+                    "contract.equal",
+                )?;
+                if operator == BinaryOp::NotEqual {
+                    result = self
+                        .backend
+                        .builder
+                        .build_not(result, "contract.not_equal")
+                        .map_err(builder_error)?;
+                }
+                self.store_bool(destination, result)?;
+            }
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                match self.numeric_kind(&left_type)? {
+                    NumericKind::Int => {
+                        let left = self.int_scalar(left_value)?;
+                        let right = self.int_scalar(right_value)?;
+                        let value = self.emit_checked_integer(operator, left, right)?;
+                        self.initialize(destination, VALUE_TAG_INT)?;
+                        self.backend.store_i64_field(
+                            self.backend.value_type,
+                            destination,
+                            VALUE_FIELD_SCALAR,
+                            value,
+                        )?;
+                    }
+                    NumericKind::Float => {
+                        let left = self.float_scalar(left_value)?;
+                        let right = self.float_scalar(right_value)?;
+                        let value = match operator {
+                            BinaryOp::Add => {
+                                self.backend
+                                    .builder
+                                    .build_float_add(left, right, "contract.add")
+                            }
+                            BinaryOp::Subtract => {
+                                self.backend
+                                    .builder
+                                    .build_float_sub(left, right, "contract.sub")
+                            }
+                            BinaryOp::Multiply => {
+                                self.backend
+                                    .builder
+                                    .build_float_mul(left, right, "contract.mul")
+                            }
+                            BinaryOp::Divide => {
+                                self.backend
+                                    .builder
+                                    .build_float_div(left, right, "contract.div")
+                            }
+                            _ => unreachable!(),
+                        }
+                        .map_err(builder_error)?;
+                        self.store_float(destination, value)?;
+                    }
+                }
+            }
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                let result = match self.numeric_kind(&left_type)? {
+                    NumericKind::Int => {
+                        let left = self.int_scalar(left_value)?;
+                        let right = self.int_scalar(right_value)?;
+                        let predicate = match operator {
+                            BinaryOp::Less => IntPredicate::SLT,
+                            BinaryOp::LessEqual => IntPredicate::SLE,
+                            BinaryOp::Greater => IntPredicate::SGT,
+                            BinaryOp::GreaterEqual => IntPredicate::SGE,
+                            _ => unreachable!(),
+                        };
+                        self.backend
+                            .builder
+                            .build_int_compare(predicate, left, right, "contract.compare")
+                            .map_err(builder_error)?
+                    }
+                    NumericKind::Float => {
+                        let left = self.float_scalar(left_value)?;
+                        let right = self.float_scalar(right_value)?;
+                        let predicate = match operator {
+                            BinaryOp::Less => FloatPredicate::OLT,
+                            BinaryOp::LessEqual => FloatPredicate::OLE,
+                            BinaryOp::Greater => FloatPredicate::OGT,
+                            BinaryOp::GreaterEqual => FloatPredicate::OGE,
+                            _ => unreachable!(),
+                        };
+                        self.backend
+                            .builder
+                            .build_float_compare(predicate, left, right, "contract.compare")
+                            .map_err(builder_error)?
+                    }
+                };
+                self.store_bool(destination, result)?;
+            }
+            BinaryOp::And | BinaryOp::Or => unreachable!(),
+        }
+        Ok(true)
+    }
+
+    fn emit_contract_match(
+        &self,
+        scrutinee: &ContractExpr,
+        arms: &[ContractArm],
+        context: &ContractContext<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let value = self.alloc_value("contract.match.value");
+        if !self.emit_contract_expr(scrutinee, context, value)? {
+            return Ok(false);
+        }
+        let merge = self.append_block("contract.match.merge");
+        let mut test_block = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "contract match has no insertion block")
+        })?;
+        let mut any_continues = false;
+        for arm in arms {
+            self.backend.builder.position_at_end(test_block);
+            let selected = self.append_block("contract.match.arm");
+            let next = self.append_block("contract.match.next");
+            let mut binding_values = Vec::new();
+            self.emit_pattern_branch(&arm.pattern, value, selected, next, &mut binding_values)?;
+            self.backend.builder.position_at_end(selected);
+            if binding_values.len() != arm.bindings.len() {
+                return Err(CodegenError::new(
+                    "InvalidContract",
+                    "contract pattern binding count is inconsistent",
+                ));
+            }
+            let mut nested = context.clone();
+            nested
+                .bindings
+                .extend(
+                    binding_values
+                        .into_iter()
+                        .zip(&arm.bindings)
+                        .map(|(pointer, ty)| TypedPointer {
+                            pointer,
+                            ty: ty.clone(),
+                        }),
+                );
+            let continues = self.emit_contract_expr(&arm.value, &nested, destination)?;
+            if continues {
+                any_continues = true;
+                self.backend.branch(merge)?;
+            }
+            test_block = next;
+        }
+        self.backend.builder.position_at_end(test_block);
+        self.backend.puts("InvalidContractMatch")?;
+        self.emit_all_cleanups()?;
+        self.backend
+            .builder
+            .build_return(Some(&self.failure_status()))
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(merge);
+        if any_continues {
+            Ok(true)
+        } else {
+            self.backend
+                .builder
+                .build_unreachable()
+                .map_err(builder_error)?;
+            Ok(false)
+        }
+    }
+
+    fn contract_value(
+        value: ContractValue,
+        context: &ContractContext<'ctx>,
+    ) -> Result<TypedPointer<'ctx>, CodegenError> {
+        let selected = match value {
+            ContractValue::SelfValue => context.receiver.as_ref(),
+            ContractValue::Result => context.result.as_ref(),
+            ContractValue::Argument(index) => context.arguments.get(index as usize),
+            ContractValue::OldSelf => context.old_receiver.as_ref(),
+            ContractValue::OldArgument(index) => context
+                .old_arguments
+                .get(index as usize)
+                .and_then(Option::as_ref),
+        };
+        selected.cloned().ok_or_else(|| {
+            CodegenError::new(
+                "InvalidContract",
+                format!("contract value {value:?} is unavailable"),
+            )
+        })
+    }
+
+    fn contract_expr_type(
+        &self,
+        expression: &ContractExpr,
+        context: &ContractContext<'ctx>,
+    ) -> Result<Type, CodegenError> {
+        match &expression.kind {
+            ContractExprKind::Constant(constant) => Ok(match constant {
+                Constant::Unit => Type::Unit,
+                Constant::Bool(_) => Type::Bool,
+                Constant::Int(_) => Type::Int,
+                Constant::Float(_) => Type::Float,
+                Constant::Text(_) => Type::Text,
+            }),
+            ContractExprKind::Value(value) => Ok(Self::contract_value(*value, context)?.ty),
+            ContractExprKind::Binding(index) => context
+                .bindings
+                .get(*index as usize)
+                .map(|binding| binding.ty.clone())
+                .ok_or_else(|| {
+                    CodegenError::new("InvalidContract", "contract binding type is unavailable")
+                }),
+            ContractExprKind::Field(value, field) => {
+                let base = self.contract_expr_type(value, context)?;
+                self.projected_type(&base, *field)
+            }
+            ContractExprKind::Unary(UnaryOp::Not, _)
+            | ContractExprKind::Binary(
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+                | BinaryOp::And
+                | BinaryOp::Or,
+                _,
+                _,
+            )
+            | ContractExprKind::IsFinite(_)
+            | ContractExprKind::Match { .. } => Ok(Type::Bool),
+            ContractExprKind::Unary(UnaryOp::Negate, value)
+            | ContractExprKind::Binary(
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide,
+                value,
+                _,
+            ) => self.contract_expr_type(value, context),
+        }
+    }
+
+    fn project_runtime_field(
+        &self,
+        value: PointerValue<'ctx>,
+        field: u32,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let value = self.unwrap(value)?;
+        let data = self.backend.load_pointer_field(
+            self.backend.value_type,
+            value,
+            VALUE_FIELD_DATA,
+            "contract.record.data",
+        )?;
+        let node = self.value_node_at(data, field)?;
+        self.backend.struct_pointer(
+            self.backend.value_node_type,
+            node,
+            VALUE_NODE_FIELD_VALUE,
+            "contract.field",
+        )
+    }
+
+    fn projected_type(&self, ty: &Type, field: u32) -> Result<Type, CodegenError> {
+        match ty {
+            Type::Nominal(id, arguments) => {
+                let definition = self.backend.program.type_def(*id).ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidTypeReference",
+                        format!("type #{} does not exist", id.0),
+                    )
+                })?;
+                match &definition.kind {
+                    TypeDefKind::Record { fields, .. } => fields
+                        .get(field as usize)
+                        .map(|field| substitute_type(&field.ty, arguments))
+                        .ok_or_else(|| {
+                            CodegenError::new("InvalidField", "record field is out of bounds")
+                        }),
+                    TypeDefKind::Refined { base, .. } => self.projected_type(base, field),
+                    TypeDefKind::Enum { .. } => {
+                        Err(CodegenError::new("InvalidField", "enum has no fields"))
+                    }
+                }
+            }
+            _ => Err(CodegenError::new(
+                "InvalidField",
+                "field projection targets a non-record",
+            )),
+        }
+    }
+
+    fn emit_constant(
+        &self,
+        constant: &Constant,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        match constant {
+            Constant::Unit => self.initialize(destination, VALUE_TAG_UNIT),
+            Constant::Bool(value) => {
+                self.initialize(destination, VALUE_TAG_BOOL)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    self.backend.tag(u64::from(*value)),
+                )
+            }
+            Constant::Int(value) => {
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    self.backend.signed_i64(*value),
+                )
+            }
+            Constant::Float(value) => {
+                self.initialize(destination, VALUE_TAG_FLOAT)?;
+                let bits = self
+                    .backend
+                    .builder
+                    .build_bit_cast(
+                        self.backend.context.f64_type().const_float(*value),
+                        self.backend.i64_type,
+                        "float.bits",
+                    )
+                    .map_err(builder_error)?
+                    .into_int_value();
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    bits,
+                )
+            }
+            Constant::Text(value) => {
+                self.initialize(destination, VALUE_TAG_TEXT)?;
+                let data = self
+                    .backend
+                    .builder
+                    .build_global_string_ptr(value, &self.backend.unique("text"))
+                    .map_err(builder_error)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_AUX,
+                    self.backend.i64_type.const_int(value.len() as u64, false),
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_DATA,
+                    data.as_pointer_value(),
+                )
+            }
+        }
+    }
+
+    fn initialize(&self, destination: PointerValue<'ctx>, tag: u64) -> Result<(), CodegenError> {
+        self.backend
+            .builder
+            .build_store(destination, self.backend.value_type.const_zero())
+            .map_err(builder_error)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_TAG,
+            self.backend.tag(tag),
+        )
+    }
+
+    fn clone_value(
+        &self,
+        destination: PointerValue<'ctx>,
+        source: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let clone = self
+            .backend
+            .module
+            .get_function("loom.runtime.clone")
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+        self.backend
+            .builder
+            .build_call(clone, &[destination.into(), source.into()], "clone")
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn shallow_copy(
+        &self,
+        destination: PointerValue<'ctx>,
+        source: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let value = self
+            .backend
+            .builder
+            .build_load(self.backend.value_type, source, "move")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(destination, value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn alloc_value(&self, name: &str) -> PointerValue<'ctx> {
+        if self.task.is_some() {
+            let builder = self.backend.context.create_builder();
+            let entry = self
+                .function
+                .get_first_basic_block()
+                .expect("checked coroutine has an entry block");
+            if let Some(instruction) = entry.get_first_instruction() {
+                builder.position_before(&instruction);
+            } else {
+                builder.position_at_end(entry);
+            }
+            return builder
+                .build_alloca(self.backend.value_type, &self.backend.unique(name))
+                .expect("coroutine entry accepts temporary allocation");
+        }
+        self.backend
+            .builder
+            .build_alloca(self.backend.value_type, &self.backend.unique(name))
+            .expect("builder is positioned while compiling a checked function")
+    }
+
+    fn local(&self, local: LocalId) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.locals.get(&local).copied().ok_or_else(|| {
+            CodegenError::new(
+                "InvalidLocalReference",
+                format!("local #{} does not exist", local.0),
+            )
+        })
+    }
+
+    fn place(&self, place: &Place) -> Result<PointerValue<'ctx>, CodegenError> {
+        let mut current = self.local(place.local)?;
+        for field in &place.projection {
+            current = self.unwrap(current)?;
+            let data = self.backend.load_pointer_field(
+                self.backend.value_type,
+                current,
+                VALUE_FIELD_DATA,
+                "record.data",
+            )?;
+            let node = self.value_node_at(data, *field)?;
+            current = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_VALUE,
+                "field.value",
+            )?;
+        }
+        Ok(current)
+    }
+
+    fn value_node_at(
+        &self,
+        mut node: PointerValue<'ctx>,
+        index: u32,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        for _ in 0..index {
+            node = self.backend.load_pointer_field(
+                self.backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_NEXT,
+                "node.next",
+            )?;
+        }
+        Ok(node)
+    }
+
+    fn unwrap(&self, value: PointerValue<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        let function = self
+            .backend
+            .module
+            .get_function("loom.runtime.unwrap")
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "unwrap helper is missing"))?;
+        call_pointer(&self.backend.builder, function, &[value.into()], "unwrap")
+    }
+
+    fn bool_value(&self, value: PointerValue<'ctx>) -> Result<IntValue<'ctx>, CodegenError> {
+        let value = self.unwrap(value)?;
+        let scalar = self.backend.load_i64_field(
+            self.backend.value_type,
+            value,
+            VALUE_FIELD_SCALAR,
+            "bool.scalar",
+        )?;
+        self.backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                scalar,
+                self.backend.i64_type.const_zero(),
+                "bool.value",
+            )
+            .map_err(builder_error)
+    }
+
+    fn append_block(&self, name: &str) -> inkwell::basic_block::BasicBlock<'ctx> {
+        self.backend
+            .context
+            .append_basic_block(self.function, &self.backend.unique(name))
+    }
+
+    fn current_block_terminated(&self) -> bool {
+        self.backend
+            .builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_terminator)
+            .is_some()
+    }
+}
+
+#[derive(Clone)]
+struct TypedPointer<'ctx> {
+    pointer: PointerValue<'ctx>,
+    ty: Type,
+}
+
+#[derive(Clone)]
+struct ContractContext<'ctx> {
+    receiver: Option<TypedPointer<'ctx>>,
+    result: Option<TypedPointer<'ctx>>,
+    arguments: Vec<TypedPointer<'ctx>>,
+    old_receiver: Option<TypedPointer<'ctx>>,
+    old_arguments: Vec<Option<TypedPointer<'ctx>>>,
+    bindings: Vec<TypedPointer<'ctx>>,
+}
+
+#[derive(Clone, Copy)]
+enum NumericKind {
+    Int,
+    Float,
+}
+
+#[allow(clippy::needless_pass_by_value)] // `Result::map_err` passes it by value.
+fn builder_error(error: inkwell::builder::BuilderError) -> CodegenError {
+    CodegenError::new("LlvmBuilderFailed", error.to_string())
+}
+
+fn parameter_pointer(
+    function: FunctionValue<'_>,
+    index: u32,
+) -> Result<PointerValue<'_>, CodegenError> {
+    function
+        .get_nth_param(index)
+        .map(BasicValueEnum::into_pointer_value)
+        .ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("function is missing pointer parameter {index}"),
+            )
+        })
+}
+
+fn parameter_int(function: FunctionValue<'_>, index: u32) -> Result<IntValue<'_>, CodegenError> {
+    function
+        .get_nth_param(index)
+        .map(BasicValueEnum::into_int_value)
+        .ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("function is missing integer parameter {index}"),
+            )
+        })
+}
+
+fn call_pointer<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> Result<PointerValue<'ctx>, CodegenError> {
+    builder
+        .build_call(function, arguments, name)
+        .map_err(builder_error)?
+        .try_as_basic_value()
+        .basic()
+        .map(BasicValueEnum::into_pointer_value)
+        .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return a pointer"))
+}
+
+fn call_int<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> Result<IntValue<'ctx>, CodegenError> {
+    builder
+        .build_call(function, arguments, name)
+        .map_err(builder_error)?
+        .try_as_basic_value()
+        .basic()
+        .map(BasicValueEnum::into_int_value)
+        .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return an integer"))
+}
+
+fn concrete_witness_id(reference: &WitnessRef) -> Option<WitnessId> {
+    match reference {
+        WitnessRef::Concrete(witness) | WitnessRef::Apply { witness, .. } => Some(*witness),
+        WitnessRef::Parameter(_) => None,
+    }
+}
+
+fn join_result_shape(mode: TaskJoinMode, task_ty: &Type) -> u64 {
+    let output = match task_ty {
+        Type::Task(output) => output.as_ref(),
+        other => other,
+    };
+    match mode {
+        TaskJoinMode::Race => JOIN_RESULT_OUTCOME,
+        TaskJoinMode::Any => JOIN_RESULT_SCALAR,
+        TaskJoinMode::Settled => match output {
+            Type::Tuple(_) => JOIN_RESULT_OUTCOME_TUPLE,
+            Type::List(_) => JOIN_RESULT_OUTCOME_LIST,
+            _ => JOIN_RESULT_OUTCOME,
+        },
+        TaskJoinMode::All => match output {
+            Type::Tuple(_) => JOIN_RESULT_TUPLE,
+            Type::List(_) => JOIN_RESULT_LIST,
+            _ => JOIN_RESULT_SCALAR,
+        },
+    }
+}
+
+fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
+    match ty {
+        Type::Parameter(index) => arguments
+            .get(*index as usize)
+            .cloned()
+            .unwrap_or(Type::Error),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| substitute_type(element, arguments))
+                .collect(),
+        ),
+        Type::List(element) => Type::List(Box::new(substitute_type(element, arguments))),
+        Type::Nominal(id, nested) => Type::Nominal(
+            *id,
+            nested
+                .iter()
+                .map(|nested| substitute_type(nested, arguments))
+                .collect(),
+        ),
+        Type::Task(output) => Type::Task(Box::new(substitute_type(output, arguments))),
+        Type::TaskOutcome(output) => {
+            Type::TaskOutcome(Box::new(substitute_type(output, arguments)))
+        }
+        Type::View {
+            mutable,
+            concept,
+            bindings,
+        } => Type::View {
+            mutable: *mutable,
+            concept: *concept,
+            bindings: bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_type(ty, arguments)))
+                .collect(),
+        },
+        Type::Never => Type::Never,
+        Type::Unit => Type::Unit,
+        Type::Bool => Type::Bool,
+        Type::Int => Type::Int,
+        Type::Float => Type::Float,
+        Type::Text => Type::Text,
+        Type::AssociatedProjection {
+            witness,
+            associated,
+        } => Type::AssociatedProjection {
+            witness: *witness,
+            associated: associated.clone(),
+        },
+        Type::Error => Type::Error,
+    }
+}
+
+fn mangle(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}

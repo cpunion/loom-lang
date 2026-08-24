@@ -1,0 +1,16 @@
+[package]
+name = "loom-interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+loom-core.workspace = true
+loom-mir.workspace = true
+loom-runtime.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

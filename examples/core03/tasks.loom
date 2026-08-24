@@ -1,0 +1,294 @@
+module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+record Packet {
+    value Int
+}
+
+record CleanupProbe {
+    value Int
+}
+
+enum TaskProblem {
+    Failed
+}
+
+impl Packet {
+    method decode(self) Int {
+        self.value + 1
+    }
+}
+
+impl CleanupProbe {
+    method propagateFailure(mut self) Result[Int, TaskProblem] {
+        defer {
+            self.value = self.value + 1
+        }
+        let value = failedResult()?
+        Ok(value)
+    }
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+async fn child() Int {
+    7
+}
+
+async fn label() Text {
+    "loom"
+}
+
+async fn packet() Packet {
+    Packet { value = 8 }
+}
+
+async fn decoded() Int {
+    packet().await.decode()
+}
+
+fn successfulResult() Result[Int, TaskProblem] {
+    Ok(9)
+}
+
+fn failedResult() Result[Int, TaskProblem] {
+    Err(TaskProblem.Failed)
+}
+
+fn propagatedResult() Result[Int, TaskProblem] {
+    let value = successfulResult()?
+    Ok(value + 1)
+}
+
+fn changedSuccessType() Result[Text, TaskProblem] {
+    let value = failedResult()?
+    Ok("unreachable")
+}
+
+async fn asyncSuccessfulResult() Result[Int, TaskProblem] {
+    successfulResult()
+}
+
+async fn asyncFailedResult() Result[Int, TaskProblem] {
+    failedResult()
+}
+
+async fn awaitedPropagation() Result[Int, TaskProblem] {
+    let value = asyncSuccessfulResult().await?
+    Ok(value + 2)
+}
+
+async fn awaitedFailurePropagation() Result[Int, TaskProblem] {
+    let value = asyncFailedResult().await?
+    Ok(value)
+}
+
+async fn delayedValue() Int {
+    Task.sleep(1).await
+    12
+}
+
+fn pair() (Int, Text) {
+    (3, "tuple")
+}
+
+async fn parent() Int {
+    child().await + 1
+}
+
+async fn nestedChoice(flag Bool) Int {
+    if flag {
+        delayedValue().await
+    } else {
+        child().await
+    }
+}
+
+fn cleanupOrder() Int {
+    var order = 0
+    {
+        defer {
+            order = order * 10 + 1
+        }
+        defer {
+            order = order * 10 + 2
+        }
+        Unit
+    }
+    order
+}
+
+pub async fn main() Unit {
+    let order = cleanupOrder()
+    assert order == 21
+    scoped resource = Resource { value = 3 }
+    let value = parent().await
+    assert value == 8
+    let decodedValue = decoded().await
+    assert decodedValue == 9
+    let number, text = Task.all(child(), label()).await
+    assert number == 7
+    assert text == "loom"
+    let pairedNumber, pairedText = pair()
+    assert pairedNumber == 3
+    assert pairedText == "tuple"
+    match propagatedResult() {
+        Ok(propagated) => {
+            assert propagated == 10
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match changedSuccessType() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    var probe = CleanupProbe { value = 0 }
+    match probe.propagateFailure() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => {
+            let cleaned = probe.value
+            assert cleaned == 1
+            Unit
+        }
+    }
+    match awaitedPropagation().await {
+        Ok(propagated) => {
+            assert propagated == 11
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match awaitedFailurePropagation().await {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    let delayed = delayedValue().await
+    assert delayed == 12
+    let nested = nestedChoice(true).await
+    assert nested == 12
+    Task.waitWritable(1).await
+    let storedFirst = delayedValue()
+    let storedSecond = delayedValue()
+    let storedValues = Task.all([storedFirst, storedSecond]).await
+    let winner = Task.any([delayedValue(), delayedValue()]).await
+    assert winner == 12
+    let settled = Task.settled([delayedValue(), delayedValue()]).await
+    let raced = Task.race([delayedValue(), delayedValue()]).await
+    Task.sleep(1).await
+    let firstTimer, secondTimer = Task.all(Task.sleep(2), Task.sleep(1)).await
+    assert firstTimer == Unit
+    assert secondTimer == Unit
+    Unit
+}
+
+test async fn task_and_cleanup() {
+    let order = cleanupOrder()
+    assert order == 21
+    scoped resource = Resource { value = 3 }
+    let value = parent().await
+    assert value == 8
+    let decodedValue = decoded().await
+    assert decodedValue == 9
+    let number, text = Task.all(child(), label()).await
+    assert number == 7
+    assert text == "loom"
+    let pairedNumber, pairedText = pair()
+    assert pairedNumber == 3
+    assert pairedText == "tuple"
+    match propagatedResult() {
+        Ok(propagated) => {
+            assert propagated == 10
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match changedSuccessType() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    var probe = CleanupProbe { value = 0 }
+    match probe.propagateFailure() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => {
+            let cleaned = probe.value
+            assert cleaned == 1
+            Unit
+        }
+    }
+    match awaitedPropagation().await {
+        Ok(propagated) => {
+            assert propagated == 11
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match awaitedFailurePropagation().await {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    let delayed = delayedValue().await
+    assert delayed == 12
+    let nested = nestedChoice(false).await
+    assert nested == 7
+    Task.waitWritable(1).await
+    let storedFirst = delayedValue()
+    let storedSecond = delayedValue()
+    let storedValues = Task.all([storedFirst, storedSecond]).await
+    let winner = Task.any([delayedValue(), delayedValue()]).await
+    assert winner == 12
+    let settled = Task.settled([delayedValue(), delayedValue()]).await
+    let raced = Task.race([delayedValue(), delayedValue()]).await
+    Task.sleep(1).await
+    let firstTimer, secondTimer = Task.all(Task.sleep(2), Task.sleep(1)).await
+    assert firstTimer == Unit
+    assert secondTimer == Unit
+    Unit
+}

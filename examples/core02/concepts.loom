@@ -1,0 +1,129 @@
+module example.concepts
+
+pub record Label {
+    text Text
+}
+
+pub dyn concept Labeled {
+    method label(self) Text
+}
+
+impl Labeled for Label {
+    method label(self) Text {
+        self.text
+    }
+}
+
+pub fn static_label(value Labeled) Text {
+    value.label()
+}
+
+pub enum FormatError {
+    Rejected
+}
+
+pub record IdentityFormatter {}
+
+pub dyn concept Formatter {
+    associated type Error
+    method format(self, text Text) Result[Text, Self.Error]
+}
+
+impl Formatter for IdentityFormatter {
+    associated type Error = FormatError
+
+    method format(self, text Text) Result[Text, FormatError] {
+        Ok(text)
+    }
+}
+
+pub fn dynamic_format(
+    formatter Formatter[Error = FormatError],
+    text Text,
+) Result[Text, FormatError] {
+    formatter.format(text)
+}
+
+pub record Counter {
+    value Int
+}
+
+pub dyn concept Source {
+    associated type Item
+    method next(mut self) Option[Self.Item]
+}
+
+impl Source for Counter {
+    associated type Item = Int
+
+    method next(mut self) Option[Int] {
+        self.value = self.value + 1
+        Some(self.value)
+    }
+}
+
+pub fn take_one(source Source[Item = Int]) Option[Int] {
+    source.next()
+}
+
+pub fn main() Unit {
+    let label = Label { text = "loom" }
+    let rendered = static_label(label)
+    assert rendered == "loom"
+
+    let formatter = IdentityFormatter {}
+    match dynamic_format(formatter, "value") {
+        Ok(text) => {
+            assert text == "value"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+
+    var counter = Counter { value = 0 }
+    match take_one(counter) {
+        Some(value) => {
+            assert value == 1
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn static_and_readonly_dynamic_dispatch() {
+    let label = Label { text = "loom" }
+    let rendered = static_label(label)
+    assert rendered == "loom"
+
+    let formatter = IdentityFormatter {}
+    match dynamic_format(formatter, "value") {
+        Ok(text) => {
+            assert text == "value"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn mutable_dynamic_dispatch_writes_the_owner() {
+    var counter = Counter { value = 0 }
+    match take_one(counter) {
+        Some(value) => {
+            assert value == 1
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+}

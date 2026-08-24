@@ -1,0 +1,150 @@
+module example.shop
+
+import standard.float.is_finite
+
+pub type Price = Float where is_finite(self) && self >= 0.0
+
+pub enum DiscountError {
+    ExceedsSubtotal
+}
+
+pub record Order {
+    subtotal Price
+    discount Price
+
+    invariant self.discount <= self.subtotal
+}
+
+impl Order {
+    pub method total(self) Float
+        ensures result >= 0.0
+    {
+        self.subtotal - self.discount
+    }
+
+    pub method apply_discount(mut self, discount Price) Result[Unit, DiscountError]
+        ensures match result {
+            Ok(_) => self.discount == discount
+            Err(_) => self.discount == old(self.discount)
+        }
+    {
+        if discount > self.subtotal {
+            return Err(DiscountError.ExceedsSubtotal)
+        }
+
+        self.discount = discount
+        Ok(Unit)
+    }
+}
+
+pub fn main() Unit {
+    match Price(100.0) {
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(subtotal) => match Price(20.0) {
+            Err(_) => {
+                assert false
+                Unit
+            }
+            Ok(discount) => match (Order {
+                subtotal = subtotal,
+                discount = discount,
+            }) {
+                Err(_) => {
+                    assert false
+                    Unit
+                }
+                Ok(order) => {
+                    let total = order.total()
+                    assert total == 80.0
+                    Unit
+                }
+            }
+        }
+    }
+}
+
+test fn constrained_values_and_record_invariant() {
+    match Price(100.0) {
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(subtotal) => match Price(20.0) {
+            Err(_) => {
+                assert false
+                Unit
+            }
+            Ok(discount) => match (Order {
+                subtotal = subtotal,
+                discount = discount,
+            }) {
+                Err(_) => {
+                    assert false
+                    Unit
+                }
+                Ok(order) => {
+                    let total = order.total()
+                    assert total == 80.0
+                    Unit
+                }
+            }
+        }
+    }
+}
+
+test fn negative_price_is_rejected() {
+    match Price(-0.01) {
+        Err(_) => Unit
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn rejected_discount_preserves_receiver() {
+    match Price(100.0) {
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(subtotal) => match Price(0.0) {
+            Err(_) => {
+                assert false
+                Unit
+            }
+            Ok(discount) => match (Order {
+                subtotal = subtotal,
+                discount = discount,
+            }) {
+                Err(_) => {
+                    assert false
+                    Unit
+                }
+                Ok(order) => match Price(120.0) {
+                    Err(_) => {
+                        assert false
+                        Unit
+                    }
+                    Ok(too_large) => {
+                        var mutable_order = order
+                        match mutable_order.apply_discount(too_large) {
+                            Ok(_) => {
+                                assert false
+                                Unit
+                            }
+                            Err(DiscountError.ExceedsSubtotal) => {
+                                let total = mutable_order.total()
+                                assert total == 100.0
+                                Unit
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

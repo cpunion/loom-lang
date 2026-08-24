@@ -1,0 +1,68 @@
+name: compiler-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-llvm19:
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
+      LOOM_CC: clang-19
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace --all-targets
+      - name: Core 0.1 LLVM closure
+        run: |
+          cargo run -p loom-cli -- check examples/core01
+          cargo run -p loom-cli -- build --output target/ci-core01 examples/core01
+          cargo run -p loom-cli -- test examples/core01
+          cargo run -p loom-cli -- run examples/core01
+          cargo run -p loom-cli -- run --artifact target/ci-core01
+      - name: Core 0.2 interpreter closure
+        run: |
+          cargo run -p loom-cli -- --backend interpreter check examples/core02
+          cargo run -p loom-cli -- --backend interpreter build --output target/ci-core02.loomi examples/core02
+          cargo run -p loom-cli -- --backend interpreter test examples/core02
+          cargo run -p loom-cli -- --backend interpreter run examples/core02
+          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-core02.loomi
+      - name: Package targets on both backends
+        run: |
+          cargo run -p loom-cli -- check --target app examples/packages/application
+          cargo run -p loom-cli -- build --target app --output target/ci-package examples/packages/application
+          cargo run -p loom-cli -- test --target unit examples/packages/application
+          cargo run -p loom-cli -- run --target app examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter check --target app examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter build --target app --output target/ci-package.loomi examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter test --target unit examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter run --target app examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter run --entry application.start --artifact target/ci-package.loomi
+      - name: Verify embedded Linux DWARF
+        run: |
+          llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
+          llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'

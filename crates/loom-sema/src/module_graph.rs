@@ -1,0 +1,290 @@
+//! Deterministic module dependency graph construction.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use loom_core::{Diagnostic, ModuleName};
+use loom_hir::{Import, ModuleId, Path, Program};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportEdge {
+    pub from: ModuleId,
+    pub to: ModuleId,
+    pub import_index: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModuleGraph {
+    outgoing: BTreeMap<ModuleId, Vec<ImportEdge>>,
+}
+
+impl ModuleGraph {
+    #[must_use]
+    pub fn outgoing(&self, module: ModuleId) -> &[ImportEdge] {
+        self.outgoing.get(&module).map_or(&[], Vec::as_slice)
+    }
+
+    #[must_use]
+    pub fn imports(&self, from: ModuleId, to: ModuleId) -> bool {
+        self.outgoing(from).iter().any(|edge| edge.to == to)
+    }
+
+    /// Produces a dependency-first order when the graph is acyclic.
+    #[must_use]
+    pub fn dependency_order(&self, program: &Program) -> Option<Vec<ModuleId>> {
+        let mut state = BTreeMap::new();
+        let mut order = Vec::new();
+        let mut modules = program.modules.iter().map(|(id, _)| id).collect::<Vec<_>>();
+        modules.sort_by(|left, right| {
+            program.modules[*left]
+                .name
+                .cmp(&program.modules[*right].name)
+        });
+
+        for module in modules {
+            if !visit_for_order(module, self, &mut state, &mut order) {
+                return None;
+            }
+        }
+        Some(order)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModuleGraphBuild {
+    pub graph: ModuleGraph,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ModuleGraphBuild {
+    #[must_use]
+    pub fn build(program: &Program) -> Self {
+        let mut build = Self::default();
+        let mut modules = program.modules.iter().map(|(id, _)| id).collect::<Vec<_>>();
+        modules.sort_by(|left, right| {
+            program.modules[*left]
+                .name
+                .cmp(&program.modules[*right].name)
+        });
+
+        for module in modules {
+            let mut seen_targets = BTreeSet::new();
+            for (import_index, import) in program.modules[module].imports.iter().enumerate() {
+                if is_compiler_known_import(&import.path) {
+                    continue;
+                }
+                let Some(imported_name) = imported_module_name(&import.path) else {
+                    build.diagnostics.push(Diagnostic::error(
+                        "UnexpectedToken",
+                        "an import must contain a module and a declaration name",
+                        import.span,
+                    ));
+                    continue;
+                };
+                let Some(target) = program.module_by_name(&imported_name) else {
+                    build.diagnostics.push(Diagnostic::error(
+                        "UnknownName",
+                        format!("module `{imported_name}` does not exist"),
+                        import.span,
+                    ));
+                    continue;
+                };
+                if seen_targets.insert((target, import_index)) {
+                    build
+                        .graph
+                        .outgoing
+                        .entry(module)
+                        .or_default()
+                        .push(ImportEdge {
+                            from: module,
+                            to: target,
+                            import_index,
+                        });
+                }
+            }
+        }
+
+        build.sort_edges(program);
+        build.report_cycles(program);
+        build
+    }
+
+    fn sort_edges(&mut self, program: &Program) {
+        for edges in self.graph.outgoing.values_mut() {
+            edges.sort_by(|left, right| {
+                program.modules[left.to]
+                    .name
+                    .cmp(&program.modules[right.to].name)
+                    .then(left.import_index.cmp(&right.import_index))
+            });
+        }
+    }
+
+    fn report_cycles(&mut self, program: &Program) {
+        let mut state = BTreeMap::new();
+        let mut stack = Vec::new();
+        let mut reported = BTreeSet::new();
+        let mut modules = program.modules.iter().map(|(id, _)| id).collect::<Vec<_>>();
+        modules.sort_by(|left, right| {
+            program.modules[*left]
+                .name
+                .cmp(&program.modules[*right].name)
+        });
+
+        for module in modules {
+            self.visit_for_cycles(module, program, &mut state, &mut stack, &mut reported);
+        }
+    }
+
+    fn visit_for_cycles(
+        &mut self,
+        module: ModuleId,
+        program: &Program,
+        state: &mut BTreeMap<ModuleId, VisitState>,
+        stack: &mut Vec<ModuleId>,
+        reported: &mut BTreeSet<Vec<ModuleId>>,
+    ) {
+        match state.get(&module) {
+            Some(VisitState::Done | VisitState::Visiting) => return,
+            None => {}
+        }
+        state.insert(module, VisitState::Visiting);
+        stack.push(module);
+
+        let outgoing = self.graph.outgoing(module).to_vec();
+        for edge in outgoing {
+            if state.get(&edge.to) == Some(&VisitState::Visiting) {
+                let start = stack
+                    .iter()
+                    .position(|candidate| *candidate == edge.to)
+                    .unwrap_or(0);
+                let mut cycle = stack[start..].to_vec();
+                canonicalize_cycle(&mut cycle, program);
+                if reported.insert(cycle.clone()) {
+                    let import = &program.modules[module].imports[edge.import_index];
+                    let display = cycle
+                        .iter()
+                        .map(|id| program.modules[*id].name.as_str())
+                        .chain(std::iter::once(program.modules[cycle[0]].name.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    self.diagnostics.push(Diagnostic::error(
+                        "ModuleCycle",
+                        format!("module import cycle: {display}"),
+                        import.span,
+                    ));
+                }
+            } else if state.get(&edge.to) != Some(&VisitState::Done) {
+                self.visit_for_cycles(edge.to, program, state, stack, reported);
+            }
+        }
+
+        stack.pop();
+        state.insert(module, VisitState::Done);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VisitState {
+    Visiting,
+    Done,
+}
+
+fn visit_for_order(
+    module: ModuleId,
+    graph: &ModuleGraph,
+    state: &mut BTreeMap<ModuleId, VisitState>,
+    order: &mut Vec<ModuleId>,
+) -> bool {
+    match state.get(&module) {
+        Some(VisitState::Done) => return true,
+        Some(VisitState::Visiting) => return false,
+        None => {}
+    }
+    state.insert(module, VisitState::Visiting);
+    for edge in graph.outgoing(module) {
+        if !visit_for_order(edge.to, graph, state, order) {
+            return false;
+        }
+    }
+    state.insert(module, VisitState::Done);
+    order.push(module);
+    true
+}
+
+fn imported_module_name(path: &Path) -> Option<ModuleName> {
+    if path.segments.len() < 2 {
+        return None;
+    }
+    Some(ModuleName::new(
+        path.segments[..path.segments.len() - 1]
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>()
+            .join("."),
+    ))
+}
+
+pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
+    import.path.last()
+}
+
+pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
+    matches!(
+        path.as_string().as_str(),
+        "standard.float.parse_float" | "standard.float.format_float" | "standard.float.is_finite"
+    )
+}
+
+fn canonicalize_cycle(cycle: &mut [ModuleId], program: &Program) {
+    let Some((start, _)) = cycle
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, module)| &program.modules[**module].name)
+    else {
+        return;
+    };
+    cycle.rotate_left(start);
+}
+
+#[cfg(test)]
+mod tests {
+    use loom_core::{FileId, ModuleName, Name, Span};
+    use loom_hir::{Import, Path, PathSegment, Program};
+
+    use super::ModuleGraphBuild;
+
+    fn import(file: FileId, module: &str, item: &str) -> Import {
+        let span = Span::new(file, 0, 10);
+        Import {
+            path: Path {
+                segments: module
+                    .split('.')
+                    .chain(std::iter::once(item))
+                    .map(|name| PathSegment {
+                        name: Name::new(name),
+                        span,
+                    })
+                    .collect(),
+            },
+            span,
+        }
+    }
+
+    #[test]
+    fn reports_import_cycle_once_in_canonical_order() {
+        let mut program = Program::default();
+        let a = program.intern_module(ModuleName::new("a"), FileId(1), Span::new(FileId(1), 0, 8));
+        let b = program.intern_module(ModuleName::new("b"), FileId(2), Span::new(FileId(2), 0, 8));
+        program.modules[a]
+            .imports
+            .push(import(FileId(1), "b", "Thing"));
+        program.modules[b]
+            .imports
+            .push(import(FileId(2), "a", "Thing"));
+
+        let build = ModuleGraphBuild::build(&program);
+        assert_eq!(build.diagnostics.len(), 1);
+        assert_eq!(build.diagnostics[0].code, "ModuleCycle");
+        assert!(build.graph.dependency_order(&program).is_none());
+    }
+}

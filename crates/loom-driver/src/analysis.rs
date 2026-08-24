@@ -1,0 +1,506 @@
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use loom_core::{Diagnostic, FileId, Severity, Span};
+use loom_hir::{LoweringResult, SourceUnit, lower_files};
+use loom_interpreter::{Interpreter, TestResult};
+use loom_lowering::lower_to_mir;
+use loom_mir::Program as MirProgram;
+use loom_sema::{Analysis, DefMapBuild, ModuleGraph, analyze};
+use loom_syntax::{Parse, parse_with_file};
+use serde::Serialize;
+
+use crate::source::normalized_project_path;
+use crate::{
+    CacheLookup, DiagnosticRecord, DriverError, ModuleInterface, PersistentCache, ProjectGraph,
+    SourceMap,
+};
+
+/// Furthest compiler stage completed by a snapshot.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStage {
+    Parsed,
+    Lowered,
+    NamesResolved,
+    TypeChecked,
+    Executable,
+}
+
+/// Explicit host-boundary result when a requested compiler stage is not yet
+/// connected. It must not be converted to a successful check/test/run result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StageUnavailable {
+    pub code: &'static str,
+    pub requested: PipelineStage,
+    pub completed: PipelineStage,
+    pub message: String,
+}
+
+impl fmt::Display for StageUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for StageUnavailable {}
+
+/// Stable input boundary for the semantic/MIR pipeline.
+pub struct CompilerInput<'a> {
+    pub hir: &'a loom_hir::Program,
+    pub analysis: &'a Analysis,
+}
+
+/// Output supplied by a semantic/MIR adapter.
+#[derive(Clone, Debug)]
+pub struct CompilerOutput {
+    pub completed: PipelineStage,
+    pub diagnostics: Vec<Diagnostic>,
+    pub executable: Option<MirProgram>,
+    pub unavailable_reason: Option<String>,
+}
+
+/// Adapter kept at the driver boundary while `loom-sema` and MIR lowering
+/// stabilize their public end-to-end API.
+pub trait CompilerAdapter: Send + Sync {
+    fn compile(&self, input: CompilerInput<'_>) -> CompilerOutput;
+}
+
+/// Production adapter from error-free typed HIR to validated executable MIR.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExecutableAdapter;
+
+impl CompilerAdapter for ExecutableAdapter {
+    fn compile(&self, input: CompilerInput<'_>) -> CompilerOutput {
+        if input.analysis.has_errors() {
+            return CompilerOutput {
+                completed: PipelineStage::TypeChecked,
+                diagnostics: Vec::new(),
+                executable: None,
+                unavailable_reason: Some(
+                    "executable lowering requires an error-free program".to_owned(),
+                ),
+            };
+        }
+        match lower_to_mir(input.hir, input.analysis) {
+            Ok(program) => CompilerOutput {
+                completed: PipelineStage::Executable,
+                diagnostics: Vec::new(),
+                executable: Some(program),
+                unavailable_reason: None,
+            },
+            Err(failure) => CompilerOutput {
+                completed: PipelineStage::TypeChecked,
+                diagnostics: failure.into_diagnostics(),
+                executable: None,
+                unavailable_reason: Some("typed HIR to MIR lowering failed".to_owned()),
+            },
+        }
+    }
+}
+
+/// Immutable result consumed by both CLI and LSP.
+pub struct AnalysisSnapshot {
+    project: ProjectGraph,
+    sources: SourceMap,
+    parses: BTreeMap<FileId, Parse>,
+    hir: loom_hir::Program,
+    analysis: Analysis,
+    diagnostics: Vec<Diagnostic>,
+    completed: PipelineStage,
+    executable: Option<MirProgram>,
+    unavailable_reason: Option<String>,
+}
+
+impl AnalysisSnapshot {
+    #[must_use]
+    pub const fn project(&self) -> &ProjectGraph {
+        &self.project
+    }
+
+    #[must_use]
+    pub fn sources(&self) -> &SourceMap {
+        &self.sources
+    }
+
+    #[must_use]
+    pub fn parse(&self, file: FileId) -> Option<&Parse> {
+        self.parses.get(&file)
+    }
+
+    #[must_use]
+    pub const fn hir(&self) -> &loom_hir::Program {
+        &self.hir
+    }
+
+    #[must_use]
+    pub const fn module_graph(&self) -> &ModuleGraph {
+        &self.analysis.module_graph
+    }
+
+    #[must_use]
+    pub const fn def_maps(&self) -> &DefMapBuild {
+        &self.analysis.def_maps
+    }
+
+    #[must_use]
+    pub const fn semantic_analysis(&self) -> &Analysis {
+        &self.analysis
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    #[must_use]
+    pub fn diagnostic_records(&self) -> Vec<DiagnosticRecord> {
+        self.diagnostics
+            .iter()
+            .filter_map(|diagnostic| DiagnosticRecord::from_diagnostic(diagnostic, &self.sources))
+            .collect()
+    }
+
+    /// Returns canonical public-interface fingerprints by module name.
+    #[must_use]
+    pub fn module_interfaces(&self) -> Vec<ModuleInterface> {
+        crate::incremental::module_interfaces(&self.sources, &self.parses)
+    }
+
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+    }
+
+    #[must_use]
+    pub const fn completed_stage(&self) -> PipelineStage {
+        self.completed
+    }
+
+    /// Confirms that the snapshot completed at least `requested`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the stable unavailable-stage report when compilation stopped
+    /// before the requested boundary.
+    pub fn require_stage(&self, requested: PipelineStage) -> Result<(), StageUnavailable> {
+        if self.completed >= requested {
+            return Ok(());
+        }
+        Err(StageUnavailable {
+            code: "CompilerPipelineIncomplete",
+            requested,
+            completed: self.completed,
+            message: self.unavailable_reason.clone().unwrap_or_else(|| {
+                format!(
+                    "compiler completed {:?}, but {:?} is required",
+                    self.completed, requested
+                )
+            }),
+        })
+    }
+
+    /// Returns the validated executable MIR published by the compiler adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageUnavailable`] if executable lowering did not complete or
+    /// an adapter violated its completion contract.
+    pub fn executable(&self) -> Result<&MirProgram, StageUnavailable> {
+        self.require_stage(PipelineStage::Executable)?;
+        self.executable.as_ref().ok_or_else(|| StageUnavailable {
+            code: "CompilerPipelineIncomplete",
+            requested: PipelineStage::Executable,
+            completed: self.completed,
+            message: "compiler adapter reported executable completion without an artifact"
+                .to_owned(),
+        })
+    }
+
+    /// Executes every ordinary language test in deterministic name order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageUnavailable`] when this snapshot has no executable MIR.
+    pub fn run_tests(&self) -> Result<Vec<TestResult>, StageUnavailable> {
+        let program = self.executable()?;
+        Ok(Interpreter::new(program).run_tests())
+    }
+}
+
+/// Mutable owner of editor overlays and the adapter used to produce snapshots.
+pub struct AnalysisHost {
+    project: ProjectGraph,
+    overlays: BTreeMap<PathBuf, String>,
+    adapter: Arc<dyn CompilerAdapter>,
+}
+
+/// Aggregate result of consulting per-source lossless parse entries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParseCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+}
+
+impl ParseCacheStats {
+    #[must_use]
+    pub const fn is_full_hit(self) -> bool {
+        self.misses == 0 && self.hits != 0
+    }
+}
+
+impl AnalysisHost {
+    /// Opens a project directory or a single `.loom` file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when the input cannot be canonicalized or read.
+    pub fn new(input: impl AsRef<Path>) -> Result<Self, DriverError> {
+        Self::with_adapter(input, Arc::new(ExecutableAdapter))
+    }
+
+    /// Opens a host using an explicit compiler adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when the input cannot be canonicalized or read.
+    pub fn with_adapter(
+        input: impl AsRef<Path>,
+        adapter: Arc<dyn CompilerAdapter>,
+    ) -> Result<Self, DriverError> {
+        let project = ProjectGraph::load(input)?;
+        Ok(Self {
+            project,
+            overlays: BTreeMap::new(),
+            adapter,
+        })
+    }
+
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        self.project.root()
+    }
+
+    #[must_use]
+    pub const fn project(&self) -> &ProjectGraph {
+        &self.project
+    }
+
+    /// Resolves an absolute or project-relative editor path through the same
+    /// normalization used by overlays and source lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when the normalized path leaves the project.
+    pub fn resolve_path(&self, path: impl AsRef<Path>) -> Result<PathBuf, DriverError> {
+        normalized_project_path(self.project.root(), path.as_ref())
+    }
+
+    /// Installs or replaces an in-memory source overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when `path` leaves the project.
+    pub fn set_overlay(
+        &mut self,
+        path: impl AsRef<Path>,
+        text: impl Into<String>,
+    ) -> Result<(), DriverError> {
+        let path = self.resolve_path(path)?;
+        self.overlays.insert(path, text.into());
+        Ok(())
+    }
+
+    /// Removes an in-memory source overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when `path` leaves the project.
+    pub fn clear_overlay(&mut self, path: impl AsRef<Path>) -> Result<(), DriverError> {
+        let path = self.resolve_path(path)?;
+        self.overlays.remove(&path);
+        Ok(())
+    }
+
+    /// Rebuilds an immutable analysis snapshot from disk plus current overlays.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when project discovery or source loading fails.
+    pub fn snapshot(&self) -> Result<AnalysisSnapshot, DriverError> {
+        let sources = self.load_sources()?;
+        Ok(self.snapshot_from_sources(sources))
+    }
+
+    /// Loads the exact source set used by the next compiler snapshot.
+    ///
+    /// This split lets command-line caching hash a stable in-memory source set
+    /// and then compile those same bytes, avoiding a hash/compile filesystem
+    /// race.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when project discovery or source loading fails.
+    pub fn load_sources(&self) -> Result<SourceMap, DriverError> {
+        SourceMap::load(&self.project, &self.overlays)
+    }
+
+    /// Compiles a source map previously returned by [`Self::load_sources`].
+    #[must_use]
+    pub fn snapshot_from_sources(&self, sources: SourceMap) -> AnalysisSnapshot {
+        let mut diagnostics = Vec::new();
+        let mut parses = BTreeMap::new();
+        for source in sources.documents() {
+            if let Some(text) = source.text() {
+                let parse = parse_with_file(source.id(), text);
+                diagnostics.extend(parse.diagnostics().iter().cloned());
+                parses.insert(source.id(), parse);
+            } else {
+                let start = source.invalid_utf8_at().unwrap_or(0);
+                diagnostics.push(Diagnostic::error(
+                    "InvalidUtf8",
+                    "source file is not valid UTF-8",
+                    Span::new(
+                        source.id(),
+                        start,
+                        start.saturating_add(1).min(source.byte_len()),
+                    ),
+                ));
+            }
+        }
+
+        self.finish_snapshot(sources, parses, diagnostics)
+    }
+
+    /// Compiles an exact source map while reusing verified per-source parses.
+    #[must_use]
+    pub fn snapshot_from_sources_with_parse_cache(
+        &self,
+        sources: SourceMap,
+        cache: &PersistentCache,
+        compiler_version: &str,
+    ) -> (AnalysisSnapshot, ParseCacheStats) {
+        let mut diagnostics = Vec::new();
+        let mut parses = BTreeMap::new();
+        let mut stats = ParseCacheStats::default();
+        for source in sources.documents() {
+            if let Some(text) = source.text() {
+                let key = PersistentCache::source_parse_key(
+                    source.relative_path(),
+                    text,
+                    compiler_version,
+                );
+                let parse = match cache.load_parse(&key, text, source.id()) {
+                    CacheLookup::Hit(parse) => {
+                        stats.hits += 1;
+                        parse
+                    }
+                    CacheLookup::Miss => {
+                        stats.misses += 1;
+                        let parse = parse_with_file(source.id(), text);
+                        let _ = cache.store_parse(&key, &parse, text);
+                        parse
+                    }
+                };
+                diagnostics.extend(parse.diagnostics().iter().cloned());
+                parses.insert(source.id(), parse);
+            } else {
+                stats.misses += 1;
+                let start = source.invalid_utf8_at().unwrap_or(0);
+                diagnostics.push(Diagnostic::error(
+                    "InvalidUtf8",
+                    "source file is not valid UTF-8",
+                    Span::new(
+                        source.id(),
+                        start,
+                        start.saturating_add(1).min(source.byte_len()),
+                    ),
+                ));
+            }
+        }
+        (self.finish_snapshot(sources, parses, diagnostics), stats)
+    }
+
+    fn finish_snapshot(
+        &self,
+        sources: SourceMap,
+        parses: BTreeMap<FileId, Parse>,
+        mut diagnostics: Vec<Diagnostic>,
+    ) -> AnalysisSnapshot {
+        let LoweringResult {
+            program: hir,
+            diagnostics: lowering_diagnostics,
+        } = lower_files(parses.iter().map(|(file, parse)| SourceUnit {
+            file: *file,
+            syntax: parse.ast(),
+        }));
+        diagnostics.extend(lowering_diagnostics);
+
+        let analysis = analyze(&hir);
+        diagnostics.extend(analysis.diagnostics.iter().cloned());
+
+        let output = if diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            CompilerOutput {
+                completed: PipelineStage::TypeChecked,
+                diagnostics: Vec::new(),
+                executable: None,
+                unavailable_reason: Some(
+                    "executable lowering requires an error-free source snapshot".to_owned(),
+                ),
+            }
+        } else {
+            self.adapter.compile(CompilerInput {
+                hir: &hir,
+                analysis: &analysis,
+            })
+        };
+        diagnostics.extend(output.diagnostics);
+        sort_diagnostics(&mut diagnostics, &sources);
+
+        AnalysisSnapshot {
+            project: self.project.clone(),
+            sources,
+            parses,
+            hir,
+            analysis,
+            diagnostics,
+            completed: output.completed,
+            executable: output.executable,
+            unavailable_reason: output.unavailable_reason,
+        }
+    }
+}
+
+fn sort_diagnostics(diagnostics: &mut [Diagnostic], sources: &SourceMap) {
+    diagnostics
+        .sort_by(|left, right| diagnostic_key(left, sources).cmp(&diagnostic_key(right, sources)));
+    for diagnostic in diagnostics {
+        diagnostic.labels.sort_by(|left, right| {
+            span_sort_key(left.span, sources)
+                .cmp(&span_sort_key(right.span, sources))
+                .then(left.message.cmp(&right.message))
+        });
+    }
+}
+
+fn diagnostic_key<'a>(
+    diagnostic: &'a Diagnostic,
+    sources: &'a SourceMap,
+) -> (&'a str, u32, u32, &'a str, &'a str) {
+    let (path, start, end) = span_sort_key(diagnostic.primary, sources);
+    (path, start, end, &diagnostic.code, &diagnostic.message)
+}
+
+fn span_sort_key(span: Span, sources: &SourceMap) -> (&str, u32, u32) {
+    let path = sources
+        .document(span.file)
+        .map_or("", crate::SourceDocument::relative_path);
+    (path, span.range.start, span.range.end)
+}

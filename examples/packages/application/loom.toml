@@ -1,0 +1,17 @@
+schema = 1
+
+[package]
+name = "application"
+version = "0.1.0"
+
+[dependencies]
+utility = { path = "../utility", version = "^1" }
+
+[[target]]
+name = "app"
+kind = "bin"
+entry = "application.start"
+
+[[target]]
+name = "unit"
+kind = "test"

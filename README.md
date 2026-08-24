@@ -1,10 +1,10 @@
 # loom-lang
 
-状态：**Active Language Design / Core 0.1 + Confirmed Core 0.2 Static/Borrowed Dyn**
+状态：**Core 0.1–0.3 Executable Reference**
 
-阶段：Core 0.1 正在闭合 executable contract；Core 0.2 的 static concept 与 borrowed dyn 已定稿；owned/shared dyn 仅确认方向，尚无编译器实现
+阶段：Core 0.1–0.3 已接入同一条 source → package graph → checked MIR → LLVM object → native executable 工具链；解释器保留为显式语义对照后端
 
-日期：2026-08-21
+日期：2026-08-24
 
 `loom-lang` 先实现一组小而完整的 Core 0.1：代数数据类型、函数与方法、显式失败、穷尽匹配、模块、基本泛型、普通测试、受约束值与契约编程。在此基础上，Core 0.2 已确认由同一个 `concept` 同时支持静态泛型约束和显式动态派发。
 
@@ -29,11 +29,13 @@
 
 - 唯一的行为抽象 `concept`、显式 conformance 和 associated type；
 - `T: Concept` 的定义处检查与静态派发；
-- `dyn concept` 的运行时投影；
-- 不允许裸 `dyn C`，Core 0.2 动态值必须显式选择 `view[dyn C]` 或 `view[mut dyn C]`；
-- owning carrier 方向确定为 `box[dyn C]` / `shared[dyn C]`，但在 affine/shared 所有权合同闭合前不是可接受源码。
+- Go 风格书写的接口参数 `value Display`，具体实参只在静态证明存在时自动适配；
+- `dyn concept` 与 `dyn C` 表示携带显式 conformance proof 的擦除接口；物理布局不是语言 ABI，当前 LLVM C1 仅在间接派发仍然存在时使用 compiler-private data/witness 表示；
+- 不引入 `view[...]`、borrow、lifetime、`box/shared` 等所有权语法。
 
-Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-baseline.md)，具体书写见 [核心表面与代码风格](docs/03-surface-and-style.md)；Core 0.2 的行为抽象见 [concept 与动态多态规范](docs/05-concepts-and-dynamic-polymorphism.md)。尚待闭合的可执行细节与实现边界见 [核心能力分期](docs/04-capability-stages.md)。
+Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-baseline.md)，具体书写见 [核心表面与代码风格](docs/03-surface-and-style.md)；Core 0.2 的行为抽象见 [concept 与多态规范](docs/05-concepts-and-dynamic-polymorphism.md)。lexer/parser、数值、failure、Task 表面、native artifact 和工具边界见 [Core 0.1–0.3 可执行合同](docs/06-executable-contract.md)，完整编译流程见 [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md)。
+
+已确认的下一条普通语言扩展是 [GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md)：自动且地址不可观察的可移动 GC；块级 `scoped`/`defer`；stackless coroutine；单指针 `Task[T]`；显式后缀 `.await`；ready-queue executor；静态异构 tuple join、动态同构 list join，以及 `all/settled/any/race`。源码仍不增加 ownership、borrow、lifetime、`Pin` 或用户可实现的 coroutine trait。
 
 ## 尚未确认
 
@@ -41,9 +43,10 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 
 - AOP-like 静态组合、注入点、贡献与排序；
 - desired-state、operator 与持续调和；
-- capability/provider、effect、异步与并发；
+- capability/provider 与一般 effect system；
+- 多线程 shared-memory executor、分布式执行和持久化 coroutine；
 - `example`、`scenario`、`property` 等专用验证声明；
-- package、target、feature/bundle 与大型工程组合治理。
+- registry dependency、lockfile、feature/bundle 与大型工程组合治理；基础 path package 和 bin/test target 已实现。
 
 普通 `test` 已足够验证当前核心；不会为了未来能力提前保留关键字或运行时模型。
 
@@ -57,11 +60,14 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 | Core 0.1 语义 | [最小语言核心规范](docs/02-language-design-baseline.md) |
 | Core 0.1 表面写法 | [核心表面与代码风格](docs/03-surface-and-style.md) |
 | Core 0.2 concept/dyn 语义与表面 | [concept 与动态多态规范](docs/05-concepts-and-dynamic-polymorphism.md) |
+| Core 0.1–0.3 parser/checker/runtime 可执行合同 | [Core 0.1–0.3 可执行合同](docs/06-executable-contract.md) |
+| root graph、LLVM、artifact、缓存边界 | [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md) |
+| GC、scoped/defer、Task、coroutine 与 join | [GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md) |
 | 实现顺序与开放问题 | [核心能力分期](docs/04-capability-stages.md) |
 
 [历史设计草案](docs/draft/README.md)保存此前的声明式组合、AOP-like 与 desired-state/operator 方案；其中 [Checkout 对照实验](docs/draft/03-checkout-composition-experiment.md)及其 [fixture](docs/draft/04-checkout-composition-fixture.md) 均不是当前语言规范。
 
-## 目标交付形态
+## 当前交付形态
 
 Core 0.1 采用普通、静态的工具链：
 
@@ -74,12 +80,27 @@ Core 0.1 采用普通、静态的工具链：
 Git add / commit / branch / merge 仍是普通 Git
 ```
 
-计划命令只描述产品边界，并不表示已有实现：
+workspace 已提供 `loomc`、LLVM native artifact、普通测试 runner、formatter 和 LSP；解释式 `.loomi` 只作为显式对照后端。Core 0.1、Core 0.2 与 Core 0.3 的验收源码分别是 [shop.loom](examples/core01/shop.loom)、[concepts.loom](examples/core02/concepts.loom) 和 [tasks.loom](examples/core03/tasks.loom)，三者都有可执行 `main`：
 
-```text
-loomc check
-loomc build
-loomc test
+```sh
+cargo run -p loom-cli -- check examples/core01
+cargo run -p loom-cli -- build --output target/core01 examples/core01
+cargo run -p loom-cli -- test examples/core01
+cargo run -p loom-cli -- run examples/core01
+cargo run -p loom-cli -- run --artifact target/core01
 ```
 
-下一步是在不引入组合或 operator 能力的前提下，先为 Core 0.1 补齐 executable grammar、诊断 golden 和最小解释器/编译器切片；随后按 C1e static concept、C1f borrowed dyn 两个独立证据门实现 Core 0.2。owned/shared dyn 必须先另行闭合 C0 所有权规范。
+基础多包工程使用 `loom.toml`、本地 path dependency 和显式 bin/test target；[application manifest](examples/packages/application/loom.toml) 可直接闭环：
+
+```sh
+cargo run -p loom-cli -- check --target app examples/packages/application
+cargo run -p loom-cli -- build --target app --output target/package-app examples/packages/application
+cargo run -p loom-cli -- test --target unit examples/packages/application
+cargo run -p loom-cli -- run --target app examples/packages/application
+```
+
+源码命令默认使用项目内 `target/loom/cache/v1` 的内容寻址缓存；`--cache-dir DIR` 可改位置，`--no-cache` 可做冷路径对照。缓存当前真实复用逐文件 lossless token/AST、canonical module public-interface、经过 decoder 与 MIR validator 的整图 checked MIR、按 root/witness reachability 裁剪的 LLVM target object，以及最终 native/`.loomi` artifact。不可达私有函数的等长实现修改会使 checked MIR miss，但可继续命中 object/final-link；损坏 ref/blob 只会安全 miss 并重建。
+
+`llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、scheduler、reactor 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、CLI 和 LSP 的回归证据。
+
+LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。当前仍不声称跨进程复用 typed-HIR body checking：整图 checked-MIR miss 后 sema 会检查所有 declaration/body；module interface 已是稳定依赖键，但把它接成 selective semantic query 是后续性能工作。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。

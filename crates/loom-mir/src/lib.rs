@@ -1,0 +1,609 @@
+//! Typed executable IR with explicit contract and dispatch operations.
+
+mod artifact;
+mod validation;
+
+use std::collections::BTreeMap;
+
+use loom_core::Span;
+use serde::{Deserialize, Serialize};
+
+pub use artifact::{
+    ArtifactError, INTERPRETED_ARTIFACT_FORMAT, INTERPRETED_ARTIFACT_VERSION,
+    decode_interpreted_artifact, encode_interpreted_artifact,
+};
+pub use validation::{
+    CheckedProgram, MirValidationCode, MirValidationError, MirValidationErrors, check_program,
+    validate_program,
+};
+
+macro_rules! id_type {
+    ($name:ident) => {
+        #[derive(
+            Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+        )]
+        #[serde(transparent)]
+        pub struct $name(pub u32);
+    };
+}
+
+id_type!(TypeId);
+id_type!(FunctionId);
+id_type!(LocalId);
+id_type!(VariantId);
+id_type!(ConceptId);
+id_type!(RequirementId);
+id_type!(WitnessId);
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Program {
+    pub types: Vec<TypeDef>,
+    /// Compiler-private concept metadata, indexed directly by [`ConceptId`].
+    #[serde(default)]
+    pub concepts: Vec<ConceptDef>,
+    /// Compiler-private method metadata, indexed directly by [`RequirementId`].
+    #[serde(default)]
+    pub requirements: Vec<RequirementDef>,
+    pub functions: Vec<Function>,
+    pub witnesses: Vec<Witness>,
+    pub tests: Vec<FunctionId>,
+    pub exports: BTreeMap<String, FunctionId>,
+    /// Compiler-known prelude identities. Entries remain optional so focused
+    /// MIR tests can construct programs which do not exercise that facility.
+    #[serde(default)]
+    pub prelude: PreludeIds,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreludeIds {
+    pub result: Option<TypeId>,
+    pub option: Option<TypeId>,
+    pub violation: Option<TypeId>,
+    pub parse_float_error: Option<TypeId>,
+}
+
+impl Program {
+    #[must_use]
+    pub fn function(&self, id: FunctionId) -> Option<&Function> {
+        self.functions.get(id.0 as usize)
+    }
+
+    #[must_use]
+    pub fn type_def(&self, id: TypeId) -> Option<&TypeDef> {
+        self.types.get(id.0 as usize)
+    }
+
+    #[must_use]
+    pub fn concept(&self, id: ConceptId) -> Option<&ConceptDef> {
+        self.concepts.get(id.0 as usize)
+    }
+
+    #[must_use]
+    pub fn requirement(&self, id: RequirementId) -> Option<&RequirementDef> {
+        self.requirements.get(id.0 as usize)
+    }
+
+    #[must_use]
+    pub fn witness(&self, id: WitnessId) -> Option<&Witness> {
+        self.witnesses.get(id.0 as usize)
+    }
+
+    /// Validates every index and executable type shape in this MIR program.
+    ///
+    /// # Errors
+    ///
+    /// Returns all independently discoverable validation failures.
+    pub fn validate(&self) -> Result<(), MirValidationErrors> {
+        validate_program(self)
+    }
+
+    /// Consumes this unchecked program and returns the checked boundary type.
+    ///
+    /// # Errors
+    ///
+    /// Returns all independently discoverable validation failures.
+    pub fn into_checked(self) -> Result<CheckedProgram, MirValidationErrors> {
+        check_program(self)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum Type {
+    /// Internal control-flow bottom; no runtime value can inhabit this type.
+    Never,
+    Unit,
+    Bool,
+    Int,
+    Float,
+    Text,
+    Tuple(Vec<Type>),
+    List(Box<Type>),
+    Nominal(TypeId, Vec<Type>),
+    Parameter(u32),
+    /// Projection through a function's witness parameter. The witness index is
+    /// stable within that function's frame; the associated key is nominal.
+    AssociatedProjection {
+        witness: u32,
+        associated: String,
+    },
+    /// Compiler-managed, affine handle produced by an async constructor.
+    Task(Box<Type>),
+    TaskOutcome(Box<Type>),
+    View {
+        mutable: bool,
+        concept: ConceptId,
+        bindings: BTreeMap<String, Type>,
+    },
+    Error,
+}
+
+/// A concept requirement's compiler-private type schema.
+///
+/// `SelfType` and `Associated` are substituted by a witness before a call can
+/// enter executable MIR. `MethodParameter` is alpha-normalized within one
+/// requirement and is instantiated from a static call's explicit type arguments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RequirementType {
+    Unit,
+    Bool,
+    Int,
+    Float,
+    Text,
+    Tuple(Vec<RequirementType>),
+    Nominal(TypeId, Vec<RequirementType>),
+    SelfType,
+    Associated(String),
+    MethodParameter(u32),
+    /// Projection through a requirement's method-specific witness parameter.
+    /// The witness index addresses [`RequirementDef::witness_params`].
+    AssociatedProjection {
+        witness: u32,
+        associated: String,
+    },
+    View {
+        mutable: bool,
+        concept: ConceptId,
+        bindings: BTreeMap<String, RequirementType>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConceptDef {
+    pub id: ConceptId,
+    pub name: String,
+    pub span: Span,
+    pub dynamic: bool,
+    pub associated_types: Vec<AssociatedTypeDef>,
+    /// Requirement ids in source declaration order.
+    pub requirements: Vec<RequirementId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssociatedTypeDef {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequirementDef {
+    pub id: RequirementId,
+    pub concept: ConceptId,
+    pub name: String,
+    pub span: Span,
+    pub receiver: Option<Receiver>,
+    pub method_type_parameters: u32,
+    /// Includes the receiver as parameter zero for receiver requirements.
+    pub params: Vec<RequirementType>,
+    pub return_ty: RequirementType,
+    /// Method-specific generic proof parameters, excluding conformance
+    /// prerequisites supplied by a conditional witness application.
+    pub witness_params: Vec<RequirementWitnessParam>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequirementWitnessParam {
+    pub target: RequirementType,
+    pub concept: ConceptId,
+    pub bindings: BTreeMap<String, RequirementType>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TypeDef {
+    pub id: TypeId,
+    pub name: String,
+    pub span: Span,
+    /// Declared generic arity, including phantom parameters not recoverable
+    /// from field/payload shape.
+    pub type_parameters: u32,
+    pub kind: TypeDefKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TypeDefKind {
+    Record {
+        fields: Vec<FieldDef>,
+        invariant: Option<Contract>,
+    },
+    Enum {
+        variants: Vec<VariantDef>,
+    },
+    Refined {
+        base: Type,
+        predicate: Contract,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: Type,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VariantDef {
+    pub id: VariantId,
+    pub name: String,
+    pub payload: Vec<Type>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Function {
+    pub id: FunctionId,
+    pub name: String,
+    pub span: Span,
+    pub type_parameters: u32,
+    #[serde(default)]
+    pub is_async: bool,
+    #[serde(default)]
+    pub suspension_points: Vec<SuspensionPoint>,
+    pub params: Vec<LocalDecl>,
+    pub witness_params: Vec<WitnessParam>,
+    pub locals: Vec<LocalDecl>,
+    pub return_ty: Type,
+    pub receiver: Option<Receiver>,
+    pub body: Block,
+    pub call_plan: CallPlan,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SuspensionPoint {
+    /// Resume states start at one; state zero is the coroutine entry.
+    pub state: u32,
+    pub span: Span,
+    /// C1 conservatively frame-promotes all locals live in the containing
+    /// async function. Later liveness shrinking does not change semantics.
+    pub live_locals: Vec<LocalId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalDecl {
+    pub id: LocalId,
+    pub name: String,
+    pub ty: Type,
+    pub mutable: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Receiver {
+    Readonly,
+    Mutable,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CallPlan {
+    pub receiver_invariant: Option<Contract>,
+    pub requires: Vec<Contract>,
+    pub ensures: Vec<Contract>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Contract {
+    pub code: String,
+    pub span: Span,
+    pub expression: ContractExpr,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContractExpr {
+    pub kind: ContractExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ContractExprKind {
+    Constant(Constant),
+    Value(ContractValue),
+    /// Payload binding in the contract's lexical binding stack. The index is
+    /// absolute: nested match arms retain outer slots and append their own.
+    Binding(u32),
+    Field(Box<ContractExpr>, u32),
+    Unary(UnaryOp, Box<ContractExpr>),
+    Binary(BinaryOp, Box<ContractExpr>, Box<ContractExpr>),
+    IsFinite(Box<ContractExpr>),
+    Match {
+        scrutinee: Box<ContractExpr>,
+        arms: Vec<ContractArm>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractValue {
+    SelfValue,
+    Result,
+    Argument(u32),
+    OldSelf,
+    OldArgument(u32),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContractArm {
+    pub pattern: Pattern,
+    /// New binding slot types in pattern traversal order. These are appended
+    /// to the lexical stack while validating/evaluating `value`.
+    pub bindings: Vec<Type>,
+    pub value: ContractExpr,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Block {
+    pub statements: Vec<Statement>,
+    pub tail: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Statement {
+    pub kind: StatementKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum StatementKind {
+    Let {
+        local: LocalId,
+        value: Expr,
+    },
+    /// Destructures a fixed tuple into locals in source order.
+    LetTuple {
+        locals: Vec<LocalId>,
+        value: Expr,
+    },
+    Assign {
+        place: Place,
+        value: Expr,
+    },
+    Assert {
+        condition: Expr,
+    },
+    Evaluate(Expr),
+    /// Registers a cleanup in the current lexical block. Backends execute
+    /// registered blocks in LIFO order on every observable scope exit.
+    Defer(Block),
+    Return(Option<Expr>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub ty: Type,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ExprKind {
+    Constant(Constant),
+    Tuple(Vec<Expr>),
+    List(Vec<Expr>),
+    Copy(Place),
+    Move(Place),
+    Unary(UnaryOp, Box<Expr>),
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    Block(Block),
+    If {
+        condition: Box<Expr>,
+        then_branch: Block,
+        else_branch: Block,
+    },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    Record {
+        ty: TypeId,
+        type_arguments: Vec<Type>,
+        fields: Vec<Expr>,
+        checked: bool,
+    },
+    Variant {
+        ty: TypeId,
+        type_arguments: Vec<Type>,
+        variant: VariantId,
+        payload: Vec<Expr>,
+    },
+    Refine {
+        ty: TypeId,
+        value: Box<Expr>,
+    },
+    /// Explicitly reads a constrained nominal value as its declared base.
+    Unrefine(Box<Expr>),
+    Call {
+        target: CallTarget,
+        /// Explicit instantiation shared by direct, inherent, and static
+        /// concept calls. Dynamic and builtin calls require this to be empty.
+        type_arguments: Vec<Type>,
+        arguments: Vec<CallArgument>,
+        witnesses: Vec<WitnessRef>,
+    },
+    MakeView {
+        owner: Place,
+        witness: WitnessRef,
+        mutable: bool,
+        token: u32,
+    },
+    Await {
+        /// State entered after the child task completes.
+        state: u32,
+        task: Box<Expr>,
+    },
+    /// Compiler-known timer task constructed from a nonnegative millisecond
+    /// duration and consumed by `Await`.
+    Sleep {
+        milliseconds: Box<Expr>,
+    },
+    WaitFd {
+        descriptor: Box<Expr>,
+        writable: bool,
+    },
+    TaskJoin {
+        mode: TaskJoinMode,
+        arguments: Vec<Expr>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskJoinMode {
+    All,
+    Settled,
+    Any,
+    Race,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub bindings: Vec<LocalId>,
+    pub value: Expr,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Pattern {
+    Wildcard,
+    Binding,
+    Constant(Constant),
+    Variant {
+        ty: TypeId,
+        variant: VariantId,
+        payload: Vec<Pattern>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Place {
+    pub local: LocalId,
+    pub projection: Vec<u32>,
+}
+
+impl Place {
+    #[must_use]
+    pub fn local(local: LocalId) -> Self {
+        Self {
+            local,
+            projection: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CallTarget {
+    Direct(FunctionId),
+    Inherent(FunctionId),
+    StaticConcept {
+        requirement: RequirementId,
+        witness: WitnessRef,
+        /// Resolved conformance `Self` at this call site. This remains explicit
+        /// even for receiver requirements so static methods have the same ABI.
+        dispatch_type: Type,
+    },
+    Dynamic {
+        requirement: RequirementId,
+    },
+    Builtin(Builtin),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CallArgument {
+    Value(Expr),
+    InOut(Place),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Builtin {
+    IsFinite,
+    ParseFloat,
+    FormatFloat,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Witness {
+    pub id: WitnessId,
+    pub concept: ConceptId,
+    pub concrete: Type,
+    pub methods: BTreeMap<RequirementId, FunctionId>,
+    pub associated: BTreeMap<String, Type>,
+    /// Number of alpha-normalized parameters used by `concrete`, associated
+    /// bindings, and prerequisite schemas.
+    pub type_parameters: u32,
+    /// Proof schema for a conditional conformance. Concrete proof trees live
+    /// at call sites in [`WitnessRef::Apply`].
+    pub prerequisites: Vec<WitnessParam>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WitnessParam {
+    pub target: Type,
+    pub concept: ConceptId,
+    pub bindings: BTreeMap<String, Type>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WitnessRef {
+    Concrete(WitnessId),
+    Parameter(u32),
+    Apply {
+        witness: WitnessId,
+        arguments: Vec<WitnessRef>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Constant {
+    Unit,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnaryOp {
+    Negate,
+    Not,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    And,
+    Or,
+}
