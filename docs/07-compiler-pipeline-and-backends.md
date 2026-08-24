@@ -58,7 +58,7 @@ source files
 
 ### library/package target
 
-未来 library target 的 roots 是 manifest 明确列出的 public exports 和 ABI metadata，不是“所有 `pub` 自动永久保留”。动态库/FFI/plugin 若进入设计，必须单独定义 open-world roots；当前没有该行为。
+manifest `kind = "lib"` target 不声明 entry。`loomc build --target name` 产出 versioned、经 decoder/MIR validator 校验且不绑定宿主平台的 checked-MIR `.loomlib`；相同制品可由内容缓存恢复。它保存当前 package graph 的 public export map，但不是 native archive、动态库或稳定 FFI ABI，`run`/`test` 会拒绝把它当 executable target。动态库/FFI/plugin 若进入设计，必须单独定义 ABI 与 open-world roots；当前没有该行为。
 
 ## 3. 调用图与动态边
 
@@ -207,7 +207,7 @@ loomc --backend interpreter run --artifact program.loomi
 
 - module：源码名字空间和 import 节点；
 - package：`loom.toml` 管理的一组 modules、版本和显式依赖；
-- target：root package 上的 bin/test root policy 和 artifact kind；
+- target：root package 上的 bin/test/lib root policy 和 artifact kind；
 - crate 不是 Loom 源码关键字；Rust workspace crate 只属于编译器实现。
 
 ### manifest v1
@@ -233,9 +233,13 @@ entry = "application.start" # 默认 main
 [[target]]
 name = "unit"
 kind = "test"
+
+[[target]]
+name = "api"
+kind = "lib" # 无 entry，产出 portable checked-MIR library
 ```
 
-dependency path 相对当前 manifest；依赖包也必须有 schema v1 manifest。resolver 检查 SemVer、循环依赖、重复 package identity、越界 source root 和重复 target。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定，不做隐式 alias 重写。当前没有 registry、网络解析、lockfile、feature、library/dynamic target 或 open-world plugin root。
+dependency path 相对当前 manifest；依赖包也必须有 schema v1 manifest。resolver 检查 SemVer、循环依赖、重复 package identity、越界 source root 和重复 target。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定，不做隐式 alias 重写。当前没有 registry、网络解析、lockfile、dynamic target 或 open-world plugin root。
 
 ### 为什么需要缓存
 
@@ -251,7 +255,7 @@ dependency path 相对当前 manifest；依赖包也必须有 schema v1 manifest
 2. 每个 module 的 canonical public interface；包含 import、exported declaration、generic bound、concept requirement、associated type、contract、public inherent method 与 conformance header，排除实现 body 和 source range；
 3. 整张 package graph 的 validated checked MIR 与稳定 diagnostics；
 4. 已选 run/test root 的 LLVM target object；key 只包含全局 type/concept schema、reachable function body、live witness method/proof edge、target/data layout/optimization 与 debug-source policy，不包含不可达私有函数 body；
-5. 最终 native executable、macOS dSYM payload 或解释器 `.loomi` artifact。
+5. 最终 native executable、macOS dSYM payload、解释器 `.loomi` 或 portable `.loomlib` artifact。
 
 CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，native artifact 只有在内容验证后才原子 materialize 并设置执行权限。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 target 可 materialize 到不同位置。
 
@@ -263,13 +267,14 @@ CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key�
 source hash
   → lossless token/AST cache                         已实现并复用
   → public interface fingerprint                    已实现并缓存
-  → whole-graph typed HIR/check + checked MIR       MIR 已缓存；sema 仍整图
+  → module typed-HIR body semantic query            长驻 host 已选择性复用
+  → whole-graph checked MIR                         已跨进程缓存
   → reachable function/witness/proof fingerprint    已实现
   → target object cache                             已实现并复用
   → runtime/linker/debug-tool keyed final link       已实现并复用
 ```
 
-这里把两种主张严格分开：不可达私有 body 修改已经可以复用同一 target object/final artifact，测试还会在破坏 final ref 后证明只重新链接；但 checked-MIR miss 后，当前 semantic analyzer 仍对整张 package graph 的全部 declaration/body 做检查。module interface fingerprint 已为 selective query 提供正确依赖键，尚未据此宣称“无关 module 不重新 type-check”。当前 shared-generic ABI 没有独立 monomorphized machine instance；generic/witness proof 参数直接进入 reachable object fingerprint，将来增加单态化时再把 canonical type/proof arguments 拆成 instance CAS entry。
+这里把三种主张严格分开：长驻 `AnalysisHost` 的连续 snapshot 会同时比较 public interface、全声明 semantic shape 和 body fingerprint；声明形状不变时只重查 body 变化的 module，并复用其余 module 的 `BodySemantics`，形状变化则安全回退整图检查。跨进程仍从 validated whole-graph checked MIR 恢复，不序列化 typed-HIR body。不可达私有 body 修改还可复用同一 target object/final artifact，测试会在破坏 final ref 后证明只重新链接。当前 shared-generic ABI 没有独立 monomorphized machine instance；generic/witness proof 参数直接进入 reachable object fingerprint，将来增加单态化时再把 canonical type/proof arguments 拆成 instance CAS entry。
 
 cache 必须 content-addressed，不以 mtime、绝对路径、文件遍历顺序或编辑器状态作为语义输入。每个 entry 至少包含：
 

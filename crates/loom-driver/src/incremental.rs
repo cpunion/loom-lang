@@ -19,11 +19,61 @@ pub struct ModuleInterface {
     pub fingerprint: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ModuleQueryKey {
+    pub module: String,
+    pub interface_fingerprint: String,
+    pub shape_fingerprint: String,
+    pub body_fingerprint: String,
+}
+
 pub(crate) fn module_interfaces(
     sources: &SourceMap,
     parses: &BTreeMap<FileId, Parse>,
 ) -> Vec<ModuleInterface> {
-    let mut modules = BTreeMap::<String, Vec<(String, serde_json::Value)>>::new();
+    module_query_data(sources, parses)
+        .into_iter()
+        .map(|module| module.interface)
+        .collect()
+}
+
+pub(crate) fn module_query_keys(
+    sources: &SourceMap,
+    parses: &BTreeMap<FileId, Parse>,
+) -> BTreeMap<String, ModuleQueryKey> {
+    module_query_data(sources, parses)
+        .into_iter()
+        .map(|module| {
+            let key = ModuleQueryKey {
+                module: module.interface.module.clone(),
+                interface_fingerprint: module.interface.fingerprint,
+                shape_fingerprint: module.shape_fingerprint,
+                body_fingerprint: module.body_fingerprint,
+            };
+            (key.module.clone(), key)
+        })
+        .collect()
+}
+
+struct ModuleQueryData {
+    interface: ModuleInterface,
+    shape_fingerprint: String,
+    body_fingerprint: String,
+}
+
+fn module_query_data(
+    sources: &SourceMap,
+    parses: &BTreeMap<FileId, Parse>,
+) -> Vec<ModuleQueryData> {
+    let mut modules = BTreeMap::<
+        String,
+        Vec<(
+            String,
+            serde_json::Value,
+            serde_json::Value,
+            serde_json::Value,
+        )>,
+    >::new();
     for (file, parse) in parses {
         let ast = parse.ast();
         let module = ast.module.as_ref().map_or_else(
@@ -31,37 +81,106 @@ pub(crate) fn module_interfaces(
             |declaration| declaration.name.as_string(),
         );
         let imports = serde_json::to_value(&ast.imports).unwrap_or(serde_json::Value::Null);
-        let declarations = ast
+        let interface_declarations = ast
             .declarations
             .iter()
             .filter_map(project_declaration)
             .collect::<Vec<_>>();
-        let mut surface = serde_json::json!({
+        let shape_declarations = ast
+            .declarations
+            .iter()
+            .map(project_shape_declaration)
+            .collect::<Vec<_>>();
+        let mut interface = serde_json::json!({
             "imports": imports,
-            "declarations": declarations,
+            "declarations": interface_declarations,
         });
-        erase_source_ranges(&mut surface);
+        let mut shape = serde_json::json!({
+            "imports": &ast.imports,
+            "declarations": shape_declarations,
+        });
+        let mut body = serde_json::json!({
+            "imports": &ast.imports,
+            "declarations": &ast.declarations,
+        });
+        erase_source_ranges(&mut interface);
+        erase_source_ranges(&mut shape);
+        erase_source_ranges(&mut body);
         let path = sources.document(*file).map_or_else(
             || format!("file-{}", file.0),
             |source| source.relative_path().to_owned(),
         );
-        modules.entry(module).or_default().push((path, surface));
+        modules
+            .entry(module)
+            .or_default()
+            .push((path, interface, shape, body));
     }
 
     modules
         .into_iter()
         .map(|(module, mut files)| {
             files.sort_by(|left, right| left.0.cmp(&right.0));
-            let paths = files.iter().map(|(path, _)| path.clone()).collect();
-            let wire = serde_json::to_vec(&("loom-module-interface-v1", &module, &files))
-                .expect("module interface JSON values are serializable");
-            ModuleInterface {
-                module,
-                files: paths,
-                fingerprint: format!("{:x}", Sha256::digest(wire)),
+            let paths = files.iter().map(|(path, ..)| path.clone()).collect();
+            let interface_files = files
+                .iter()
+                .map(|(path, interface, _, _)| (path, interface))
+                .collect::<Vec<_>>();
+            let shape_files = files
+                .iter()
+                .map(|(path, _, shape, _)| (path, shape))
+                .collect::<Vec<_>>();
+            let body_files = files
+                .iter()
+                .map(|(path, _, _, body)| (path, body))
+                .collect::<Vec<_>>();
+            ModuleQueryData {
+                interface: ModuleInterface {
+                    module: module.clone(),
+                    files: paths,
+                    fingerprint: fingerprint("loom-module-interface-v1", &module, &interface_files),
+                },
+                shape_fingerprint: fingerprint(
+                    "loom-module-semantic-shape-v1",
+                    &module,
+                    &shape_files,
+                ),
+                body_fingerprint: fingerprint("loom-module-semantic-body-v1", &module, &body_files),
             }
         })
         .collect()
+}
+
+fn fingerprint<T: Serialize>(format: &str, module: &str, files: &T) -> String {
+    let wire = serde_json::to_vec(&(format, module, files))
+        .expect("module query JSON values are serializable");
+    format!("{:x}", Sha256::digest(wire))
+}
+
+fn project_shape_declaration(declaration: &Decl) -> Decl {
+    let mut projected = declaration.clone();
+    match &mut projected.kind {
+        DeclKind::Function(function) => function.body = empty_block(),
+        DeclKind::Impl(implementation) => match &mut implementation.kind {
+            ImplKind::Inherent { methods, .. } => {
+                for method in methods {
+                    strip_method_body(method);
+                }
+            }
+            ImplKind::Conformance { members, .. } => {
+                for member in members {
+                    if let ConformanceMember::Method(method) = member {
+                        strip_method_body(method);
+                    }
+                }
+            }
+        },
+        DeclKind::ConstrainedType(_)
+        | DeclKind::Record(_)
+        | DeclKind::Enum(_)
+        | DeclKind::Concept(_)
+        | DeclKind::Error(_) => {}
+    }
+    projected
 }
 
 fn project_declaration(declaration: &Decl) -> Option<Decl> {

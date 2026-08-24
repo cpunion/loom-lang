@@ -63,7 +63,7 @@ Core 0.1 闭合后，下一项语言扩展已经定稿：
 - desired-state、operator 和 reconciliation runtime；
 - capability/provider 与 effect system；
 - 多线程共享内存、持久化 coroutine 和分布式执行；
-- registry package、lockfile、feature/bundle 和 library/dynamic target；基础 `loom.toml`、path dependency、bin/test target 与持久缓存已进入工具链；
+- registry package、lockfile、feature/bundle 和 dynamic target；基础 `loom.toml`、path dependency、bin/test/lib target 与持久缓存已进入工具链；
 - `example`、`scenario`、`property` 专用声明；
 - entity/ORM、第二套 `trait` 抽象、继承、开放/多重派发、运行期实现发现和宏。
 

@@ -47,16 +47,41 @@ impl Analysis {
 /// Resolves modules, declarations and all declared types, then checks bodies.
 #[must_use]
 pub fn analyze(program: &Program) -> Analysis {
+    analyze_with_reused_bodies(program, None)
+}
+
+/// Rebuilds declarations and checks only bodies absent from `reusable`.
+///
+/// The caller must provide a previous error-free analysis of the same HIR
+/// declaration shape. Keeping the previous type interner preserves every
+/// cached [`TyId`] while changed bodies may append newly inferred types.
+#[must_use]
+pub fn analyze_reusing_bodies(
+    program: &Program,
+    previous: &Analysis,
+    reusable: &BTreeSet<BodyId>,
+) -> Analysis {
+    analyze_with_reused_bodies(program, Some((previous, reusable)))
+}
+
+fn analyze_with_reused_bodies(
+    program: &Program,
+    previous: Option<(&Analysis, &BTreeSet<BodyId>)>,
+) -> Analysis {
     let graph = ModuleGraphBuild::build(program);
     let def_maps = DefMapBuild::build(program);
     let mut diagnostics = graph.diagnostics;
     diagnostics.extend(def_maps.diagnostics.iter().cloned());
 
     let (typed, impl_index, mut diagnostics) = {
+        let mut typed = TypedProgram::default();
+        if let Some((previous, _)) = previous {
+            typed.types = previous.typed.types.clone();
+        }
         let mut analyzer = Analyzer {
             program,
             def_maps: &def_maps,
-            typed: TypedProgram::default(),
+            typed,
             impl_index: crate::ImplIndex::default(),
             diagnostics,
         };
@@ -65,7 +90,7 @@ pub fn analyze(program: &Program) -> Analysis {
         analyzer.build_conformances();
         analyzer.validate_resource_concepts();
         analyzer.validate_async_functions();
-        analyzer.check_bodies();
+        analyzer.check_bodies(previous);
         (analyzer.typed, analyzer.impl_index, analyzer.diagnostics)
     };
     sort_diagnostics(&mut diagnostics);
@@ -1600,7 +1625,7 @@ impl Analyzer<'_> {
         }
     }
 
-    fn check_bodies(&mut self) {
+    fn check_bodies(&mut self, previous: Option<(&Analysis, &BTreeSet<BodyId>)>) {
         // Body checking is implemented below in this module; keeping this
         // separate from signature collection guarantees definition-site generic
         // checking and order-independent call resolution.
@@ -1611,6 +1636,13 @@ impl Analyzer<'_> {
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
         for body in bodies {
+            if let Some((previous, reusable)) = previous
+                && reusable.contains(&body)
+                && let Some(semantics) = previous.typed.bodies.get(body)
+            {
+                self.typed.bodies.insert(body, semantics.clone());
+                continue;
+            }
             self.check_body(body);
         }
     }

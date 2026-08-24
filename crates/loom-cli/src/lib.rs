@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--no-cache | --cache-dir DIR] <check|build|test|run|fmt> [options] [PATH]\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
-    build [--target NAME | --entry NAME] [--output FILE] [PATH] build a native executable\n\
+    build [--target NAME | --entry NAME] [--output FILE] [PATH] build an executable or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
@@ -177,6 +177,22 @@ impl TargetSelectionError {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BuildTarget {
+    Binary(String),
+    Library(String),
+}
+
+fn target_kind_mismatch(name: &str, actual: TargetKind, required: &str) -> TargetSelectionError {
+    TargetSelectionError {
+        code: "TargetKindMismatch",
+        message: format!(
+            "target `{name}` is `{}`, but this command requires {required}",
+            actual.as_str()
+        ),
+    }
+}
+
 fn select_binary_target(
     project: &ProjectGraph,
     requested: Option<&str>,
@@ -187,10 +203,7 @@ fn select_binary_target(
             .target(name)
             .ok_or_else(|| TargetSelectionError::unknown(name))?;
         if target.kind() != TargetKind::Bin {
-            return Err(TargetSelectionError {
-                code: "TargetKindMismatch",
-                message: format!("target `{name}` is `test`, but this command requires `bin`"),
-            });
+            return Err(target_kind_mismatch(name, target.kind(), "`bin`"));
         }
         return Ok(target
             .entry()
@@ -225,6 +238,86 @@ fn select_binary_target(
     }
 }
 
+fn select_build_target(
+    project: &ProjectGraph,
+    requested: Option<&str>,
+    explicit_entry: Option<&str>,
+) -> Result<BuildTarget, TargetSelectionError> {
+    if let Some(name) = requested {
+        let target = project
+            .target(name)
+            .ok_or_else(|| TargetSelectionError::unknown(name))?;
+        return match target.kind() {
+            TargetKind::Bin => Ok(BuildTarget::Binary(
+                target
+                    .entry()
+                    .expect("validated bin target has an entry")
+                    .to_owned(),
+            )),
+            TargetKind::Lib => Ok(BuildTarget::Library(target.name().to_owned())),
+            TargetKind::Test => Err(target_kind_mismatch(name, target.kind(), "`bin` or `lib`")),
+        };
+    }
+    if let Some(entry) = explicit_entry {
+        return Ok(BuildTarget::Binary(entry.to_owned()));
+    }
+
+    let binaries = project
+        .targets()
+        .iter()
+        .filter(|target| target.kind() == TargetKind::Bin)
+        .collect::<Vec<_>>();
+    match binaries.as_slice() {
+        [target] => {
+            return Ok(BuildTarget::Binary(
+                target
+                    .entry()
+                    .expect("validated bin target has an entry")
+                    .to_owned(),
+            ));
+        }
+        [] => {}
+        _ => {
+            return Err(TargetSelectionError {
+                code: "AmbiguousTarget",
+                message: format!(
+                    "multiple binary targets are available: {}; pass --target NAME",
+                    binaries
+                        .iter()
+                        .map(|target| target.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+    }
+
+    let libraries = project
+        .targets()
+        .iter()
+        .filter(|target| target.kind() == TargetKind::Lib)
+        .collect::<Vec<_>>();
+    match libraries.as_slice() {
+        [target] => Ok(BuildTarget::Library(target.name().to_owned())),
+        [] if project.targets().is_empty() => Ok(BuildTarget::Binary("main".to_owned())),
+        [] => Err(TargetSelectionError {
+            code: "NoBuildTarget",
+            message: "manifest does not define a `bin` or `lib` target".to_owned(),
+        }),
+        _ => Err(TargetSelectionError {
+            code: "AmbiguousTarget",
+            message: format!(
+                "multiple library targets are available: {}; pass --target NAME",
+                libraries
+                    .iter()
+                    .map(|target| target.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }),
+    }
+}
+
 fn select_test_target(
     project: &ProjectGraph,
     requested: Option<&str>,
@@ -234,10 +327,7 @@ fn select_test_target(
             .target(name)
             .ok_or_else(|| TargetSelectionError::unknown(name))?;
         if target.kind() != TargetKind::Test {
-            return Err(TargetSelectionError {
-                code: "TargetKindMismatch",
-                message: format!("target `{name}` is `bin`, but this command requires `test`"),
-            });
+            return Err(target_kind_mismatch(name, target.kind(), "`test`"));
         }
         return Ok(());
     }
@@ -339,12 +429,12 @@ fn run_build(
     if emit_source_diagnostics(&compilation, options.json, stdout, stderr)? {
         return Ok(EXIT_FAILURE);
     }
-    let entry = match select_binary_target(
+    let target = match select_build_target(
         compilation.project(),
         options.target.as_deref(),
         explicit_entry,
     ) {
-        Ok(entry) => entry,
+        Ok(target) => target,
         Err(error) => return emit_target_error(options, stdout, stderr, &error),
     };
     let program = match compilation.executable() {
@@ -354,16 +444,6 @@ fn run_build(
             return Ok(EXIT_USAGE);
         }
     };
-    if !program.exports.contains_key(&entry) {
-        emit_tool_error(
-            options.json,
-            stdout,
-            stderr,
-            "UnknownEntry",
-            &format!("no exported entry named `{entry}`"),
-        )?;
-        return Ok(EXIT_FAILURE);
-    }
     // An explicit artifact path follows ordinary CLI rules and is resolved
     // from the caller's working directory, independently of the source root.
     let output = output.to_path_buf();
@@ -379,6 +459,30 @@ fn run_build(
             &format!("{}: {error}", output.display()),
         )?;
         return Ok(EXIT_USAGE);
+    }
+    if let BuildTarget::Library(name) = &target {
+        return build_library(
+            &compilation,
+            program,
+            name,
+            &output,
+            options,
+            stdout,
+            stderr,
+        );
+    }
+    let BuildTarget::Binary(entry) = target else {
+        unreachable!("library target returned above")
+    };
+    if !program.exports.contains_key(&entry) {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "UnknownEntry",
+            &format!("no exported entry named `{entry}`"),
+        )?;
+        return Ok(EXIT_FAILURE);
     }
     let artifact_key =
         final_artifact_key(&compilation, program, options.backend, "run", Some(&entry));
@@ -450,6 +554,68 @@ fn run_build(
     }
     store_artifact_best_effort(&compilation, artifact_key.as_ref(), &output);
     emit_build_result(options, stdout, &output)?;
+    Ok(EXIT_SUCCESS)
+}
+
+fn build_library(
+    compilation: &Compilation,
+    program: &loom_mir::Program,
+    target: &str,
+    output: &Path,
+    options: &Options,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let artifact_key = library_artifact_key(compilation, target);
+    match restore_cached_artifact(
+        compilation,
+        artifact_key.as_ref(),
+        output,
+        false,
+        options,
+        stdout,
+    )? {
+        Ok(true) => {
+            emit_build_result(options, stdout, output)?;
+            return Ok(EXIT_SUCCESS);
+        }
+        Ok(false) => {}
+        Err(message) => {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "ArtifactWriteFailed",
+                &message,
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+    }
+    let bytes = match loom_mir::encode_interpreted_artifact(program) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "CompilerDefect",
+                &error.to_string(),
+            )?;
+            return Ok(EXIT_DEFECT);
+        }
+    };
+    if let Err(error) = std::fs::write(output, bytes) {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "ArtifactWriteFailed",
+            &format!("{}: {error}", output.display()),
+        )?;
+        return Ok(EXIT_USAGE);
+    }
+    store_artifact_best_effort(compilation, artifact_key.as_ref(), output);
+    emit_build_result(options, stdout, output)?;
     Ok(EXIT_SUCCESS)
 }
 
@@ -1154,6 +1320,19 @@ fn final_artifact_key(
             ("entry", entry.unwrap_or("")),
             ("artifact-toolchain", &toolchain),
             ("runtime", &runtime),
+        ],
+    ))
+}
+
+fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<CacheKey> {
+    let version = loom_mir::INTERPRETED_ARTIFACT_VERSION.to_string();
+    Some(PersistentCache::derived_key(
+        compilation.key()?,
+        &[
+            ("layer", "portable-library-artifact-v1"),
+            ("target", target),
+            ("format", loom_mir::INTERPRETED_ARTIFACT_FORMAT),
+            ("version", &version),
         ],
     ))
 }

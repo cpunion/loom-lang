@@ -1,17 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use loom_core::{Diagnostic, FileId, Severity, Span};
-use loom_hir::{LoweringResult, SourceUnit, lower_files};
+use loom_hir::{BodyId, LoweringResult, SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestResult};
 use loom_lowering::lower_to_mir;
 use loom_mir::Program as MirProgram;
-use loom_sema::{Analysis, DefMapBuild, ModuleGraph, analyze};
+use loom_sema::{Analysis, DefMapBuild, ModuleGraph, analyze, analyze_reusing_bodies};
 use loom_syntax::{Parse, parse_with_file};
 use serde::Serialize;
 
+use crate::incremental::{ModuleQueryKey, module_query_keys};
 use crate::source::normalized_project_path;
 use crate::{
     CacheLookup, DiagnosticRecord, DriverError, ModuleInterface, PersistentCache, ProjectGraph,
@@ -112,6 +113,16 @@ pub struct AnalysisSnapshot {
     completed: PipelineStage,
     executable: Option<MirProgram>,
     unavailable_reason: Option<String>,
+    semantic_query_stats: SemanticQueryStats,
+}
+
+/// In-process typed-HIR body-query reuse performed by one analysis host.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct SemanticQueryStats {
+    pub modules_reused: usize,
+    pub modules_checked: usize,
+    pub bodies_reused: usize,
+    pub bodies_checked: usize,
 }
 
 impl AnalysisSnapshot {
@@ -181,6 +192,11 @@ impl AnalysisSnapshot {
         self.completed
     }
 
+    #[must_use]
+    pub const fn semantic_query_stats(&self) -> SemanticQueryStats {
+        self.semantic_query_stats
+    }
+
     /// Confirms that the snapshot completed at least `requested`.
     ///
     /// # Errors
@@ -237,6 +253,12 @@ pub struct AnalysisHost {
     project: ProjectGraph,
     overlays: BTreeMap<PathBuf, String>,
     adapter: Arc<dyn CompilerAdapter>,
+    semantic_state: Mutex<Option<SemanticState>>,
+}
+
+struct SemanticState {
+    keys: BTreeMap<String, ModuleQueryKey>,
+    analysis: Analysis,
 }
 
 /// Aggregate result of consulting per-source lossless parse entries.
@@ -277,6 +299,7 @@ impl AnalysisHost {
             project,
             overlays: BTreeMap::new(),
             adapter,
+            semantic_state: Mutex::new(None),
         })
     }
 
@@ -440,7 +463,12 @@ impl AnalysisHost {
         }));
         diagnostics.extend(lowering_diagnostics);
 
-        let analysis = analyze(&hir);
+        let query_keys = module_query_keys(&sources, &parses);
+        let source_has_errors = diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error);
+        let (analysis, semantic_query_stats) =
+            self.analyze_semantics(&hir, query_keys, source_has_errors);
         diagnostics.extend(analysis.diagnostics.iter().cloned());
 
         let output = if diagnostics
@@ -474,7 +502,78 @@ impl AnalysisHost {
             completed: output.completed,
             executable: output.executable,
             unavailable_reason: output.unavailable_reason,
+            semantic_query_stats,
         }
+    }
+
+    fn analyze_semantics(
+        &self,
+        hir: &loom_hir::Program,
+        keys: BTreeMap<String, ModuleQueryKey>,
+        source_has_errors: bool,
+    ) -> (Analysis, SemanticQueryStats) {
+        let mut state = self
+            .semantic_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let total_bodies = hir.bodies.iter().count();
+        let mut reusable_modules = BTreeSet::new();
+        let compatible = !source_has_errors
+            && state.as_ref().is_some_and(|previous| {
+                previous.keys.len() == keys.len()
+                    && keys.iter().all(|(module, current)| {
+                        previous.keys.get(module).is_some_and(|cached| {
+                            cached.interface_fingerprint == current.interface_fingerprint
+                                && cached.shape_fingerprint == current.shape_fingerprint
+                        })
+                    })
+            });
+        if compatible {
+            let previous = state.as_ref().expect("compatible state exists");
+            for (module, current) in &keys {
+                if previous
+                    .keys
+                    .get(module)
+                    .is_some_and(|cached| cached.body_fingerprint == current.body_fingerprint)
+                {
+                    reusable_modules.insert(module.clone());
+                }
+            }
+        }
+        let reusable_bodies = if compatible {
+            hir.bodies
+                .iter()
+                .filter_map(|(body, definition)| {
+                    let owner = &hir.definitions[definition.owner];
+                    let module = hir.modules[owner.module].name.to_string();
+                    reusable_modules.contains(&module).then_some(body)
+                })
+                .collect::<BTreeSet<BodyId>>()
+        } else {
+            BTreeSet::new()
+        };
+        let analysis = if compatible {
+            analyze_reusing_bodies(
+                hir,
+                &state.as_ref().expect("compatible state exists").analysis,
+                &reusable_bodies,
+            )
+        } else {
+            analyze(hir)
+        };
+        let semantic_stats = SemanticQueryStats {
+            modules_reused: reusable_modules.len(),
+            modules_checked: keys.len().saturating_sub(reusable_modules.len()),
+            bodies_reused: reusable_bodies.len(),
+            bodies_checked: total_bodies.saturating_sub(reusable_bodies.len()),
+        };
+        if !source_has_errors && !analysis.has_errors() {
+            *state = Some(SemanticState {
+                keys,
+                analysis: analysis.clone(),
+            });
+        }
+        (analysis, semantic_stats)
     }
 }
 

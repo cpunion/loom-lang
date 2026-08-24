@@ -334,6 +334,69 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
 }
 
 #[test]
+fn library_targets_build_portable_validated_artifacts() {
+    let project = TestProject::empty();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"api\"\nkind = \"lib\"\n",
+    );
+    project.write(
+        "src/lib.loom",
+        "module sample\n\npub fn answer() Int {\n    42\n}\n",
+    );
+    let first_artifact = project.0.join("sample.loomlib");
+    let first = loomc()
+        .args(["--json", "build", "--target", "api", "--output"])
+        .arg(&first_artifact)
+        .arg(&project.0)
+        .output()
+        .expect("build portable library");
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        cache_status(&first.stdout, "final_artifact").as_deref(),
+        Some("miss")
+    );
+    let checked = loom_mir::decode_interpreted_artifact(
+        &fs::read(&first_artifact).expect("read portable library"),
+    )
+    .expect("decode and validate portable library");
+    assert!(checked.as_program().exports.contains_key("sample.answer"));
+
+    let second_artifact = project.0.join("sample-copy.loomlib");
+    let second = loomc()
+        .args(["--json", "build", "--target", "api", "--output"])
+        .arg(&second_artifact)
+        .arg(&project.0)
+        .output()
+        .expect("restore cached portable library");
+    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&second.stdout, "final_artifact").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        fs::read(first_artifact).expect("read first library"),
+        fs::read(second_artifact).expect("read cached library")
+    );
+
+    for command in ["run", "test"] {
+        let rejected = loomc()
+            .args(["--json", command, "--target", "api"])
+            .arg(&project.0)
+            .output()
+            .expect("reject library as executable target");
+        assert_eq!(rejected.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&rejected.stdout).contains("TargetKindMismatch"));
+    }
+}
+
+#[test]
 fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
     let project = TestProject::new("module demo\r\n\r\nfn main() Unit {\r\n\tUnit   \r\n}\r\n\r\n");
     let first = loomc()

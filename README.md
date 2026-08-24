@@ -46,7 +46,7 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 - capability/provider 与一般 effect system；
 - 多线程 shared-memory executor、分布式执行和持久化 coroutine；
 - `example`、`scenario`、`property` 等专用验证声明；
-- registry dependency、lockfile、feature/bundle 与大型工程组合治理；基础 path package 和 bin/test target 已实现。
+- registry dependency、lockfile、feature/bundle 与大型工程组合治理；基础 path package 和 bin/test/lib target 已实现。
 
 普通 `test` 已足够验证当前核心；不会为了未来能力提前保留关键字或运行时模型。
 
@@ -90,7 +90,7 @@ cargo run -p loom-cli -- run examples/core01
 cargo run -p loom-cli -- run --artifact target/core01
 ```
 
-基础多包工程使用 `loom.toml`、本地 path dependency 和显式 bin/test target；[application manifest](examples/packages/application/loom.toml) 可直接闭环：
+基础多包工程使用 `loom.toml`、本地 path dependency 和显式 bin/test/lib target；bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
 
 ```sh
 cargo run -p loom-cli -- check --target app examples/packages/application
@@ -103,4 +103,4 @@ cargo run -p loom-cli -- run --target app examples/packages/application
 
 `llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。`standard.time.milliseconds` 提供平台无关 `Duration`；`standard.file.open_read/create` 和 `standard.net.connect` 返回真实异步 `File`/`Socket` task，这两类 `MustScope` 资源由块级 `scoped` 自动关闭。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、scheduler、reactor、I/O 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、CLI 和 LSP 的回归证据。
 
-LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。当前仍不声称跨进程复用 typed-HIR body checking：整图 checked-MIR miss 后 sema 会检查所有 declaration/body；module interface 已是稳定依赖键，但把它接成 selective semantic query 是后续性能工作。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。
+LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。长驻 `AnalysisHost` 已按 module interface/semantic-shape/body 指纹复用未改 module 的 typed-HIR body semantics；任一声明形状变化会安全退回整图检查。跨进程仍以 validated checked-MIR 整图缓存为边界，不声称序列化 typed-HIR body。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。

@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use loom_core::FileId;
+use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, PersistentCache, PipelineStage, Position, TargetKind,
     discover_loom_files, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
-use loom_interpreter::TestStatus;
+use loom_interpreter::{Interpreter, TestStatus, Value};
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -144,7 +144,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
     );
     project.write(
         "application/loom.toml",
-        "schema = 1\n\n[package]\nname = \"application\"\nversion = \"0.1.0\"\nsources = [\"src\"]\n\n[dependencies]\nutility = { path = \"../utility\", version = \"^1.0\" }\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.start\"\n\n[[target]]\nname = \"unit\"\nkind = \"test\"\n",
+        "schema = 1\n\n[package]\nname = \"application\"\nversion = \"0.1.0\"\nsources = [\"src\"]\n\n[dependencies]\nutility = { path = \"../utility\", version = \"^1.0\" }\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.start\"\n\n[[target]]\nname = \"unit\"\nkind = \"test\"\n\n[[target]]\nname = \"api\"\nkind = \"lib\"\n",
     );
     project.write(
         "application/src/main.loom",
@@ -157,6 +157,9 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
     let target = host.project().target("app").expect("binary target");
     assert_eq!(target.kind(), TargetKind::Bin);
     assert_eq!(target.entry(), Some("application.start"));
+    let library = host.project().target("api").expect("library target");
+    assert_eq!(library.kind(), TargetKind::Lib);
+    assert_eq!(library.entry(), None);
 
     let snapshot = host.snapshot().expect("compile package graph");
     let paths = snapshot
@@ -173,6 +176,25 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
             .expect("manifest graph lowers to MIR")
             .exports
             .contains_key("application.start")
+    );
+}
+
+#[test]
+fn library_targets_reject_executable_entries() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"api\"\nkind = \"lib\"\nentry = \"sample.main\"\n",
+    );
+    project.write("src/lib.loom", "module sample\n");
+    let error = AnalysisHost::new(&project.root)
+        .err()
+        .expect("library entry is rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("library target `api` cannot declare entry"),
+        "{error}"
     );
 }
 
@@ -359,6 +381,47 @@ fn module_interface_ignores_bodies_but_tracks_public_contracts() {
         .expect("compile contract-edited interface")
         .module_interfaces();
     assert_ne!(first[0].fingerprint, contract_changed[0].fingerprint);
+}
+
+#[test]
+fn typed_hir_queries_reuse_unmodified_modules() {
+    let project = TestProject::new();
+    project.write(
+        "a.loom",
+        "module sample.a\n\npub fn value(input Int) Int {\n    input + 1\n}\n",
+    );
+    project.write(
+        "b.loom",
+        "module sample.b\n\nimport sample.a.value\n\npub fn main() Unit {\n    let output = value(1)\n    assert output > 0\n    Unit\n}\n\ntest fn calls_dependency() {\n    main()\n}\n",
+    );
+    let host = AnalysisHost::new(&project.root).expect("open incremental project");
+    let first = host.snapshot().expect("compile initial graph");
+    assert!(!first.has_errors(), "{:#?}", first.diagnostics());
+    let first_stats = first.semantic_query_stats();
+    assert_eq!(first_stats.modules_checked, 2);
+    assert_eq!(first_stats.modules_reused, 0);
+
+    let unchanged = host.snapshot().expect("compile unchanged graph");
+    let unchanged_stats = unchanged.semantic_query_stats();
+    assert_eq!(unchanged_stats.modules_reused, 2);
+    assert_eq!(unchanged_stats.bodies_checked, 0);
+
+    project.write(
+        "a.loom",
+        "module sample.a\n\npub fn value(input Int) Int {\n    input + 2\n}\n",
+    );
+    let changed = host.snapshot().expect("compile one changed module");
+    assert!(!changed.has_errors(), "{:#?}", changed.diagnostics());
+    let changed_stats = changed.semantic_query_stats();
+    assert_eq!(changed_stats.modules_checked, 1);
+    assert_eq!(changed_stats.modules_reused, 1);
+    assert!(changed_stats.bodies_reused >= 2);
+    let program = changed.executable().expect("incremental checked MIR");
+    let function = program.exports["sample.a.value"];
+    let result = Interpreter::new(program)
+        .invoke(function, vec![Value::Int { value: 1 }], Span::default())
+        .expect("invoke changed body");
+    assert_eq!(result, Value::Int { value: 3 });
 }
 
 #[test]

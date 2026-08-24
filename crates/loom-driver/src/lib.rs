@@ -15,7 +15,7 @@ mod symbols;
 
 pub use analysis::{
     AnalysisHost, AnalysisSnapshot, CompilerAdapter, CompilerInput, CompilerOutput,
-    ExecutableAdapter, ParseCacheStats, PipelineStage, StageUnavailable,
+    ExecutableAdapter, ParseCacheStats, PipelineStage, SemanticQueryStats, StageUnavailable,
 };
 pub use cache::{
     CacheContext, CacheError, CacheKey, CacheLookup, CachedCompilation, PersistentCache,

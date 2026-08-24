@@ -113,6 +113,7 @@ impl Package {
 pub enum TargetKind {
     Bin,
     Test,
+    Lib,
 }
 
 impl TargetKind {
@@ -121,6 +122,7 @@ impl TargetKind {
         match self {
             Self::Bin => "bin",
             Self::Test => "test",
+            Self::Lib => "lib",
         }
     }
 }
@@ -434,6 +436,7 @@ struct RawTarget {
 enum RawTargetKind {
     Bin,
     Test,
+    Lib,
 }
 
 #[derive(Default)]
@@ -704,6 +707,15 @@ fn resolve_targets(
                     ));
                 }
                 (TargetKind::Test, None)
+            }
+            RawTargetKind::Lib => {
+                if raw.entry.is_some() {
+                    return Err(manifest_error(
+                        manifest,
+                        format!("library target `{}` cannot declare entry", raw.name),
+                    ));
+                }
+                (TargetKind::Lib, None)
             }
         };
         targets.push(Target {

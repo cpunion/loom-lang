@@ -119,7 +119,7 @@ source → parser → HIR → sema → checked MIR
 
 ## 8. root graph 与 DCE
 
-`build` 从选定 entry 遍历；`test` 从全部 `test fn` 遍历；未来 library target 从 manifest 明确 exports 遍历。类型检查仍覆盖项目中的全部声明，不能因不可达而跳过错误。
+`build` 的 bin target 从选定 entry 遍历；`test` 从全部 `test fn` 遍历；lib target 保存 validated checked-MIR 与 public export map，不承诺 native/open-world ABI。类型检查仍覆盖项目中的全部声明，不能因不可达而跳过错误。
 
 可达分析至少包含：
 
@@ -186,20 +186,20 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 
 ## 13. C1k：module/package/cache
 
-多文件 module、schema-versioned `loom.toml`、本地 path dependency、SemVer requirement、bin/test target 与 `--target` 已接入 driver/CLI。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
+多文件 module、schema-versioned `loom.toml`、本地 path dependency、SemVer requirement、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
 
 持久缓存已经落地逐 source lossless token/AST、module public-interface、整张 package graph checked MIR（连同稳定 diagnostics）、closed-world reachable LLVM object、最终 native/`.loomi` artifact，以及 macOS dSYM payload。key 包含 compiler/backend/stdlib/ABI 版本、canonical package/dependency/target identity、稳定相对源码路径及内容、reachable function/witness/proof、target triple/data layout、CPU policy、优化、合同、runtime archive、linker 和 debug tool identity。mtime、绝对 checkout 路径、文件遍历顺序和编辑器状态不参与 identity；读取时验证 ref、size、SHA-256，parse 重建源码，checked MIR 重新通过 artifact decoder/MIR validator。损坏只产生 miss，写入采用同目录原子替换。
 
 当前增量分层状态：
 
 1. source/token/AST：已真实复用；
-2. public interface fingerprint：已缓存；typed-HIR selective body query 尚未接入；
+2. public interface/semantic shape/body fingerprint：已接入长驻 host 的 typed-HIR selective body query；声明形状变化安全回退整图；
 3. checked MIR：整图缓存；reachable function body 进入 object fingerprint；
 4. generic/witness：当前 shared generic body，proof/witness edge 进入 reachability fingerprint；未来单态化才新增独立 instance entry；
 5. target triple/data layout 下的 object：已真实复用；
 6. runtime/linker/debug-tool keyed final link：已真实复用。
 
-当前明确只宣称“不可达 private body 修改可复用 object/final link”，不宣称“无关 module 不重查”。后一个主张要等 semantic analyzer 按已落地的 interface dependency key 切成 selective typed-HIR query 后才成立。
+当前明确宣称两层复用：同一长驻 host 的无关 module 不重查 body semantics；跨进程则恢复 validated whole-graph checked MIR，不序列化 typed-HIR body。不可达 private body 修改还可继续复用 object/final link。
 
 ## 14. 明确后置
 
