@@ -13,18 +13,23 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|fmt> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|debug|fmt> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
+    debug [--target NAME | --entry NAME] [--debugger PROGRAM] [PATH] [-- ARGS...] build with source info and launch LLDB/GDB\n\
     fmt [--check] [PATH]     format .loom files (default PATH is .)";
 
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
 const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
+#[cfg(target_os = "macos")]
+const DEFAULT_DEBUGGER: &str = "lldb";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_DEBUGGER: &str = "gdb";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Backend {
@@ -47,6 +52,10 @@ enum Command {
     Run {
         entry: Option<String>,
         artifact: Option<PathBuf>,
+    },
+    Debug {
+        entry: Option<String>,
+        debugger: PathBuf,
     },
     Format {
         check: bool,
@@ -430,6 +439,9 @@ pub fn run(
             } else {
                 run_program(&options, entry.as_deref(), stdout, stderr)
             }
+        }
+        Command::Debug { entry, debugger } => {
+            run_debug(&options, entry.as_deref(), debugger, stdout, stderr)
         }
     }
 }
@@ -983,6 +995,152 @@ fn run_program(
             stderr,
         ),
     }
+}
+
+fn run_debug(
+    options: &Options,
+    explicit_entry: Option<&str>,
+    debugger: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let Some(compilation) = load_compilation(options, stdout, stderr)? else {
+        return Ok(EXIT_USAGE);
+    };
+    if emit_source_diagnostics(&compilation, options.json, stdout, stderr)? {
+        return Ok(EXIT_FAILURE);
+    }
+    let entry = match select_binary_target(
+        compilation.project(),
+        options.target.as_deref(),
+        explicit_entry,
+    ) {
+        Ok(entry) => entry,
+        Err(error) => return emit_target_error(options, stdout, stderr, &error),
+    };
+    let program = match compilation.executable() {
+        Ok(program) => program,
+        Err(unavailable) => {
+            emit_unavailable(&unavailable, options.json, stdout, stderr)?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if !program.exports.contains_key(&entry) {
+        emit_tool_error(
+            options.json,
+            stdout,
+            stderr,
+            "UnknownEntry",
+            &format!("no exported entry named `{entry}`"),
+        )?;
+        return Ok(EXIT_FAILURE);
+    }
+
+    let directory = tempfile::tempdir()?;
+    let executable = directory.path().join("loom-debug-program");
+    let emit_options =
+        configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
+    let artifact_key = final_artifact_key(
+        &compilation,
+        program,
+        options.backend,
+        "debug",
+        Some(&entry),
+        Some(&emit_options),
+    );
+    let restored = match restore_cached_artifact(
+        &compilation,
+        artifact_key.as_ref(),
+        &executable,
+        true,
+        options,
+        stdout,
+    )? {
+        Ok(restored) => restored,
+        Err(message) => {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "ArtifactWriteFailed",
+                &message,
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if !restored {
+        if let Err(error) = emit_native_with_cache(
+            &compilation,
+            program,
+            &executable,
+            &emit_options,
+            options,
+            stdout,
+        )? {
+            emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
+            return Ok(EXIT_DEFECT);
+        }
+        store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
+    }
+
+    writeln!(
+        stdout,
+        "debugging {} with {}",
+        executable.display(),
+        debugger.display()
+    )?;
+    stdout.flush()?;
+    stderr.flush()?;
+    launch_debugger(
+        debugger,
+        &executable,
+        compilation.project().root(),
+        &options.program_arguments,
+        stdout,
+        stderr,
+    )
+}
+
+fn launch_debugger(
+    debugger: &Path,
+    executable: &Path,
+    project_root: &Path,
+    arguments: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let debugger_name = debugger
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut command = ProcessCommand::new(debugger);
+    command.current_dir(project_root);
+    if debugger_name == "gdb" || debugger_name.ends_with("-gdb") {
+        command.arg("--args").arg(executable).args(arguments);
+    } else {
+        // LLDB uses this form directly. Custom debugger wrappers intentionally
+        // receive the same stable contract: PROGRAM EXECUTABLE -- ARGS...
+        command.arg(executable).arg("--").args(arguments);
+    }
+    let status = match command.status() {
+        Ok(status) => status,
+        Err(error) => {
+            emit_tool_error(
+                false,
+                stdout,
+                stderr,
+                "DebuggerLaunchFailed",
+                &format!("{}: {error}", debugger.display()),
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    Ok(if status.success() {
+        EXIT_SUCCESS
+    } else {
+        EXIT_FAILURE
+    })
 }
 
 fn run_artifact(
@@ -2012,6 +2170,11 @@ fn parse_command(
             let artifact = take_option(arguments, "--artifact")?.map(PathBuf::from);
             Command::Run { entry, artifact }
         }
+        "debug" => Command::Debug {
+            entry: take_option(arguments, "--entry")?,
+            debugger: take_option(arguments, "--debugger")?
+                .map_or_else(|| PathBuf::from(DEFAULT_DEBUGGER), PathBuf::from),
+        },
         "fmt" => Command::Format {
             check: take_flag(arguments, "--check"),
         },
@@ -2022,8 +2185,10 @@ fn parse_command(
 
 fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<(), String> {
     let command = &options.command;
-    if !options.program_arguments.is_empty() && !matches!(command, Command::Run { .. }) {
-        return Err("program arguments after `--` are only valid for run".to_owned());
+    if !options.program_arguments.is_empty()
+        && !matches!(command, Command::Run { .. } | Command::Debug { .. })
+    {
+        return Err("program arguments after `--` are only valid for run or debug".to_owned());
     }
     if let Some(flag) = remaining.iter().find(|argument| argument.starts_with('-')) {
         return Err(format!("unknown option `{flag}`"));
@@ -2036,6 +2201,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
         && matches!(
             &command,
             Command::Build { entry: Some(_), .. }
+                | Command::Debug { entry: Some(_), .. }
                 | Command::Run {
                     entry: Some(_),
                     artifact: None
@@ -2077,7 +2243,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
                 }
         )
     {
-        return Err("--target is only valid for source check/build/test/run".to_owned());
+        return Err("--target is only valid for source check/build/test/run/debug".to_owned());
     }
     if (options.no_cache || options.cache_dir.is_some())
         && matches!(
@@ -2090,7 +2256,9 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
                 }
         )
     {
-        return Err("cache options are only valid for source check/build/test/run".to_owned());
+        return Err(
+            "cache options are only valid for source check/build/test/run/debug".to_owned(),
+        );
     }
     if matches!(
         command,
@@ -2111,6 +2279,13 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
         return Err("--target-triple is only valid for build".to_owned());
     }
     if options.optimization == loom_codegen_llvm::OptimizationProfile::Release
+        && matches!(command, Command::Debug { .. })
+    {
+        return Err(
+            "debug always uses the development profile and does not accept --release".to_owned(),
+        );
+    }
+    if options.optimization == loom_codegen_llvm::OptimizationProfile::Release
         && matches!(
             command,
             Command::Resolve { .. }
@@ -2124,7 +2299,8 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
         return Err("--release is only valid for source check/build/test/run".to_owned());
     }
     if options.backend == Backend::Interpreter
-        && (options.target_triple.is_some()
+        && (matches!(command, Command::Debug { .. })
+            || options.target_triple.is_some()
             || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
             || matches!(
                 command,
@@ -2135,8 +2311,12 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             ))
     {
         return Err(
-            "--release, --target-triple, and --emit object require the LLVM backend".to_owned(),
+            "debug, --release, --target-triple, and --emit object require the LLVM backend"
+                .to_owned(),
         );
+    }
+    if options.json && matches!(command, Command::Debug { .. }) {
+        return Err("debug is interactive and does not accept --json".to_owned());
     }
     Ok(())
 }

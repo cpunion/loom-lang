@@ -33,6 +33,16 @@ impl TestProject {
             .expect("create source parent");
         fs::write(path, text).expect("write project file");
     }
+
+    #[cfg(unix)]
+    fn make_executable(&self, relative: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = self.0.join(relative);
+        let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("make script executable");
+    }
 }
 
 impl Drop for TestProject {
@@ -636,6 +646,63 @@ fn build_writes_a_runnable_native_artifact() {
         String::from_utf8(run.stdout).expect("UTF-8 stdout"),
         "Unit\n"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    project.write(
+        "debug-wrapper",
+        "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ntest \"$1\" = \"alpha\" || exit 93\ntest \"$2\" = \"beta gamma\" || exit 94\nprintf 'debug-wrapper:%s:%s\\n' \"$1\" \"$2\"\n\"$executable\" \"$@\"\n",
+    );
+    project.make_executable("debug-wrapper");
+    let output = loomc()
+        .args(["debug", "--debugger"])
+        .arg(project.0.join("debug-wrapper"))
+        .arg(&project.0)
+        .args(["--", "alpha", "beta gamma"])
+        .output()
+        .expect("launch source debugger wrapper");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("debugging "), "{stdout}");
+    assert!(
+        stdout.contains("debug-wrapper:alpha:beta gamma"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Unit"), "{stdout}");
+}
+
+#[test]
+fn debug_rejects_non_native_noninteractive_and_release_modes() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    for (arguments, expected) in [
+        (
+            vec!["--backend", "interpreter", "debug"],
+            "require the LLVM backend",
+        ),
+        (vec!["--release", "debug"], "does not accept --release"),
+        (vec!["--json", "debug"], "does not accept --json"),
+    ] {
+        let output = loomc()
+            .args(arguments)
+            .arg(&project.0)
+            .output()
+            .expect("reject invalid debug mode");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

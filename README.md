@@ -88,6 +88,7 @@ cargo run -p loom-cli -- build --output target/core01 examples/core01
 cargo run -p loom-cli -- test examples/core01
 cargo run -p loom-cli -- run examples/core01
 cargo run -p loom-cli -- run --artifact target/core01
+cargo run -p loom-cli -- debug --debugger lldb examples/core01
 ```
 
 `loom-lsp` 与 CLI 复用长驻 `AnalysisHost`，现已提供 diagnostics、hover、definition、references、prepare rename/rename、语义 completion、document symbols 和 workspace symbols。引用与重命名按定义身份覆盖跨文件全局声明以及 callable 内的泛型参数、参数和局部变量；源码存在错误时会拒绝生成不完整的引用编辑。
@@ -109,3 +110,5 @@ cargo run -p loom-cli -- run --target app examples/packages/application
 LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；profile、规范化 target triple 与 data layout 都进入 object/cache identity。`loomc build --target-triple aarch64-unknown-linux-gnu --emit object ...` 会用对应 LLVM TargetMachine 产生真实 relocatable object；非宿主 executable 因尚无对应 Rust runtime archive/linker 而以 `CrossLinkUnavailable` 拒绝，不会误链宿主 runtime。
 
 LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。长驻 `AnalysisHost` 已按 module interface/semantic-shape/body 指纹复用未改 module 的 typed-HIR body semantics；任一声明形状变化会安全退回整图检查。跨进程仍以 validated checked-MIR 整图缓存为边界，不声称序列化 typed-HIR body。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。
+
+`loomc debug` 固定使用 LLVM development profile，在项目根目录启动 macOS 默认 LLDB、其他平台默认 GDB，也可用 `--debugger PROGRAM` 接入包装器。LLDB 收到 `EXECUTABLE -- ARGS...`，GDB 收到 `--args EXECUTABLE ARGS...`；调试进程继承终端，临时 executable 与 dSYM 在整个会话中保持有效。解释器、release、JSON 和交叉目标模式会显式拒绝，不伪装成源码调试。

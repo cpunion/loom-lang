@@ -74,7 +74,7 @@ source → parser → HIR → sema → checked MIR
 
 交付内容：
 
-- `loomc check/build/test/run/fmt`；
+- `loomc check/build/test/run/debug/fmt`；
 - LLVM 19 + Inkwell 后端；
 - 优化前后 LLVM verifier；
 - 平台 object 与 linker 产物；

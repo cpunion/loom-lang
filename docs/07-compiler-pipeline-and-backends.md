@@ -121,6 +121,7 @@ InstanceKey = (
 - TargetMachine 输出所选 triple 的 relocatable object；
 - object emission 与 final link 是独立 API/cache 边界；native object 由 `clang` 链接，可由 `LOOM_CC` 覆盖；
 - 用户函数和 statement/expr span 生成 DWARF line table；Linux ELF 直接保留 DWARF，macOS 在 object 尚存时用 `dsymutil` 生成标准 dSYM，并把 DWARF payload 与 executable 同 key 缓存；
+- `loomc debug` 只走 development LLVM native 路径，在 project root 启动 LLDB/GDB 并继承终端；稳定相对源码因此可直接解析，临时 executable/dSYM 的生命周期覆盖完整调试会话；
 - compiler-private runtime 是 Cargo 构建并嵌入 codegen crate 的 Rust static library；float codec、moving GC、Task scheduler 与 reactor 共用该 runtime，不编译 C++ 源码。
 
 选择 Inkwell 的原因是它在 Rust 侧为 LLVM C API 提供更强类型的安全封装，支持本项目需要的 LLVM 版本，并且与 workspace 的 `unsafe_code = forbid` 边界相容。binding 仍是 pre-1.0 依赖，因此版本必须锁入 `Cargo.lock`，升级 LLVM/Inkwell 时运行完整 native golden。
