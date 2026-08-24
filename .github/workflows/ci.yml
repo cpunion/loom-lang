@@ -37,31 +37,35 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test workspace
         run: cargo test --workspace --all-targets
-      - name: Core 0.1 LLVM closure
+      - name: Core 0.1-0.3 dual-backend closure
         run: |
-          cargo run -p loom-cli -- check examples/core01
-          cargo run -p loom-cli -- build --output target/ci-core01 examples/core01
-          cargo run -p loom-cli -- test examples/core01
-          cargo run -p loom-cli -- run examples/core01
-          cargo run -p loom-cli -- run --artifact target/ci-core01
-      - name: Core 0.2 interpreter closure
-        run: |
-          cargo run -p loom-cli -- --backend interpreter check examples/core02
-          cargo run -p loom-cli -- --backend interpreter build --output target/ci-core02.loomi examples/core02
-          cargo run -p loom-cli -- --backend interpreter test examples/core02
-          cargo run -p loom-cli -- --backend interpreter run examples/core02
-          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-core02.loomi
+          for version in core01 core02 core03; do
+            source="examples/$version"
+            native="target/ci-$version"
+            interpreted="target/ci-$version.loomi"
+            cargo run -p loom-cli -- --no-cache check "$source"
+            cargo run -p loom-cli -- --no-cache build --output "$native" "$source"
+            cargo run -p loom-cli -- --no-cache test "$source"
+            cargo run -p loom-cli -- --no-cache run "$source"
+            cargo run -p loom-cli -- run --artifact "$native"
+            cargo run -p loom-cli -- --backend interpreter --no-cache check "$source"
+            cargo run -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
+            cargo run -p loom-cli -- --backend interpreter --no-cache test "$source"
+            cargo run -p loom-cli -- --backend interpreter --no-cache run "$source"
+            cargo run -p loom-cli -- --backend interpreter run --artifact "$interpreted"
+          done
       - name: Package targets on both backends
         run: |
-          cargo run -p loom-cli -- check --target app examples/packages/application
-          cargo run -p loom-cli -- build --target app --output target/ci-package examples/packages/application
-          cargo run -p loom-cli -- test --target unit examples/packages/application
-          cargo run -p loom-cli -- run --target app examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter check --target app examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter build --target app --output target/ci-package.loomi examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter test --target unit examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter run --target app examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter run --entry application.start --artifact target/ci-package.loomi
+          cargo run -p loom-cli -- --no-cache check --target app examples/packages/application
+          cargo run -p loom-cli -- --no-cache build --target app --output target/ci-package examples/packages/application
+          cargo run -p loom-cli -- --no-cache test --target unit examples/packages/application
+          cargo run -p loom-cli -- --no-cache run --target app examples/packages/application
+          cargo run -p loom-cli -- run --artifact target/ci-package
+          cargo run -p loom-cli -- --backend interpreter --no-cache check --target app examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-package.loomi examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
+          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
       - name: Verify embedded Linux DWARF
         run: |
           llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
