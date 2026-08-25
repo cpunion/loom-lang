@@ -45,6 +45,10 @@ fn copy(id: u32, ty: Type) -> Expr {
     expr(ExprKind::Copy(Place::local(LocalId(id))), ty)
 }
 
+fn copy_place(place: Place, ty: Type) -> Expr {
+    expr(ExprKind::Copy(place), ty)
+}
+
 fn function(
     id: u32,
     params: Vec<LocalDecl>,
@@ -139,6 +143,50 @@ fn generic_carrier_type(id: u32) -> TypeDef {
             invariant: None,
         },
     }
+}
+
+fn empty_dyn_concept() -> ConceptDef {
+    ConceptDef {
+        id: ConceptId(0),
+        name: "Viewable".to_owned(),
+        span: span(),
+        dynamic: true,
+        associated_types: Vec::new(),
+        requirements: Vec::new(),
+    }
+}
+
+fn view_type(mutable: bool) -> Type {
+    Type::View {
+        mutable,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+    }
+}
+
+fn empty_witness(id: u32, concrete: Type) -> Witness {
+    Witness {
+        id: WitnessId(id),
+        concept: ConceptId(0),
+        concrete,
+        methods: BTreeMap::new(),
+        associated: BTreeMap::new(),
+        type_parameters: 0,
+        prerequisites: Vec::new(),
+    }
+}
+
+fn borrowed_view(place: Place, witness: u32, token: u32, mutable: bool) -> Expr {
+    expr(
+        ExprKind::MakeView {
+            value: Box::new(copy_place(place.clone(), Type::Int)),
+            writeback: Some(place),
+            witness: WitnessRef::Concrete(WitnessId(witness)),
+            mutable,
+            token,
+        },
+        view_type(mutable),
+    )
 }
 
 #[test]
@@ -3250,6 +3298,536 @@ fn borrowed_view_carriers_protect_the_owner() {
         ..Program::default()
     });
     assert!(errors.contains(MirValidationCode::BorrowShape));
+}
+
+#[test]
+fn borrowed_views_cannot_hide_in_value_carriers_or_naked_evaluate() {
+    let view = view_type(true);
+    let record = TypeDef {
+        id: TypeId(0),
+        name: "ViewBox".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "value".to_owned(),
+                ty: view.clone(),
+                span: span(),
+            }],
+            invariant: None,
+        },
+    };
+    let enumeration = TypeDef {
+        id: TypeId(1),
+        name: "MaybeView".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![VariantDef {
+                id: VariantId(0),
+                name: "Some".to_owned(),
+                payload: vec![view.clone()],
+                span: span(),
+            }],
+        },
+    };
+    let make = |token| borrowed_view(Place::local(LocalId(0)), 0, token, true);
+    let expressions = vec![
+        make(1),
+        expr(
+            ExprKind::Tuple(vec![make(2)]),
+            Type::Tuple(vec![view.clone()]),
+        ),
+        expr(
+            ExprKind::List(vec![make(3)]),
+            Type::List(Box::new(view.clone())),
+        ),
+        expr(
+            ExprKind::Record {
+                ty: TypeId(0),
+                type_arguments: Vec::new(),
+                fields: vec![make(4)],
+                construction: ConstructionMode::Plain,
+            },
+            Type::Nominal(TypeId(0), Vec::new()),
+        ),
+        expr(
+            ExprKind::Variant {
+                ty: TypeId(1),
+                type_arguments: Vec::new(),
+                variant: VariantId(0),
+                payload: vec![make(5)],
+            },
+            Type::Nominal(TypeId(1), Vec::new()),
+        ),
+    ];
+    let borrower = function(
+        0,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: expressions
+                .into_iter()
+                .map(|expression| Statement {
+                    kind: StatementKind::Evaluate(expression),
+                    span: span(),
+                })
+                .collect(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        types: vec![record, enumeration],
+        functions: vec![borrower],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    });
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| {
+                error.code == MirValidationCode::BorrowShape
+                    && error.message.contains("direct value expression")
+            })
+            .count(),
+        5
+    );
+}
+
+#[test]
+fn reborrowed_views_are_direct_sync_call_arguments_only() {
+    let view = view_type(false);
+    let sink = function(
+        0,
+        vec![local(0, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let reborrow = |token| {
+        expr(
+            ExprKind::ReborrowView {
+                owner: Place::local(LocalId(0)),
+                mutable: false,
+                token,
+            },
+            view.clone(),
+        )
+    };
+    let valid = function(
+        1,
+        vec![local(0, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(0)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(reborrow(1))],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            ))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![sink.clone(), valid],
+        ..Program::default()
+    })
+    .expect("a direct reborrow into a synchronous call is valid");
+
+    let invalid = function(
+        1,
+        vec![local(0, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(reborrow(2)),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    assert!(
+        validation_errors(&Program {
+            concepts: vec![empty_dyn_concept()],
+            functions: vec![sink, invalid],
+            ..Program::default()
+        })
+        .contains(MirValidationCode::BorrowShape)
+    );
+}
+
+#[test]
+fn borrowed_view_async_rejection_uses_the_real_callee() {
+    let view = view_type(true);
+    let mut asynchronous = function(
+        0,
+        vec![local(0, view, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    asynchronous.is_async = true;
+    let caller = function(
+        1,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Call {
+                        target: CallTarget::Direct(FunctionId(0)),
+                        type_arguments: Vec::new(),
+                        arguments: vec![CallArgument::Value(borrowed_view(
+                            Place::local(LocalId(0)),
+                            0,
+                            1,
+                            true,
+                        ))],
+                        witnesses: Vec::new(),
+                    },
+                    // Deliberately corrupt the declared result so this test
+                    // cannot pass by checking Type::Task on the call node.
+                    Type::Unit,
+                )),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![asynchronous, caller],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape
+            && error.message.contains("target is not proven synchronous")
+    }));
+}
+
+#[test]
+fn borrowed_view_dynamic_dispatch_checks_the_witness_target() {
+    let requirement = RequirementDef {
+        id: RequirementId(0),
+        concept: ConceptId(0),
+        name: "inspect".to_owned(),
+        span: span(),
+        receiver: Some(Receiver::Readonly),
+        method_type_parameters: 0,
+        params: vec![RequirementType::SelfType],
+        return_ty: RequirementType::Unit,
+        witness_params: Vec::new(),
+    };
+    let concept = ConceptDef {
+        id: ConceptId(0),
+        name: "Viewable".to_owned(),
+        span: span(),
+        dynamic: true,
+        associated_types: Vec::new(),
+        requirements: vec![RequirementId(0)],
+    };
+    let mut method = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    method.receiver = Some(Receiver::Readonly);
+    method.is_async = true;
+    let caller = function(
+        1,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Call {
+                    target: CallTarget::Dynamic {
+                        requirement: RequirementId(0),
+                    },
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(borrowed_view(
+                        Place::local(LocalId(0)),
+                        0,
+                        1,
+                        false,
+                    ))],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            ))),
+            span: span(),
+        },
+    );
+    let mut methods = BTreeMap::new();
+    methods.insert(RequirementId(0), FunctionId(0));
+    let witness = Witness {
+        id: WitnessId(0),
+        concept: ConceptId(0),
+        concrete: Type::Int,
+        methods,
+        associated: BTreeMap::new(),
+        type_parameters: 0,
+        prerequisites: Vec::new(),
+    };
+    let errors = validation_errors(&Program {
+        concepts: vec![concept],
+        requirements: vec![requirement],
+        functions: vec![method, caller],
+        witnesses: vec![witness],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape
+            && error.message.contains("target is not proven synchronous")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::WitnessShape
+            && error.message.contains("async concept requirements")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn borrowed_view_places_use_projection_prefix_overlap() {
+    let pair = Type::Nominal(TypeId(0), Vec::new());
+    let pair_def = TypeDef {
+        id: TypeId(0),
+        name: "Pair".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "left".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "right".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+            ],
+            invariant: None,
+        },
+    };
+    let view = view_type(true);
+    let sink = function(
+        0,
+        vec![local(0, view.clone(), false), local(1, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let call = |left: Expr, right: Expr| {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(left), CallArgument::Value(right)],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let sibling_caller = function(
+        1,
+        vec![local(0, pair.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(call(
+                borrowed_view(
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    0,
+                    1,
+                    true,
+                ),
+                borrowed_view(
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![1],
+                    },
+                    0,
+                    2,
+                    true,
+                ),
+            ))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        concepts: vec![empty_dyn_concept()],
+        types: vec![pair_def.clone()],
+        functions: vec![sink.clone(), sibling_caller],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    })
+    .expect("mutable borrows of sibling fields do not overlap");
+
+    let parent = expr(
+        ExprKind::MakeView {
+            value: Box::new(copy_place(Place::local(LocalId(0)), pair.clone())),
+            writeback: Some(Place::local(LocalId(0))),
+            witness: WitnessRef::Concrete(WitnessId(1)),
+            mutable: true,
+            token: 3,
+        },
+        view.clone(),
+    );
+    let child = borrowed_view(
+        Place {
+            local: LocalId(0),
+            projection: vec![0],
+        },
+        0,
+        4,
+        true,
+    );
+    let overlapping_caller = function(
+        1,
+        vec![local(0, pair.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(call(parent, child))),
+            span: span(),
+        },
+    );
+    assert!(
+        validation_errors(&Program {
+            concepts: vec![empty_dyn_concept()],
+            types: vec![pair_def],
+            functions: vec![sink, overlapping_caller],
+            witnesses: vec![empty_witness(0, Type::Int), empty_witness(1, pair)],
+            ..Program::default()
+        })
+        .contains(MirValidationCode::BorrowShape)
+    );
+}
+
+#[test]
+fn borrowed_make_view_copy_must_match_its_writeback_place() {
+    let pair = Type::Nominal(TypeId(0), Vec::new());
+    let pair_def = TypeDef {
+        id: TypeId(0),
+        name: "Pair".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "left".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "right".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+            ],
+            invariant: None,
+        },
+    };
+    let view = view_type(true);
+    let sink = function(
+        0,
+        vec![local(0, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let left = Place {
+        local: LocalId(0),
+        projection: vec![0],
+    };
+    let right = Place {
+        local: LocalId(0),
+        projection: vec![1],
+    };
+    let mismatched = expr(
+        ExprKind::MakeView {
+            value: Box::new(copy_place(left, Type::Int)),
+            writeback: Some(right),
+            witness: WitnessRef::Concrete(WitnessId(0)),
+            mutable: true,
+            token: 1,
+        },
+        view,
+    );
+    let caller = function(
+        1,
+        vec![local(0, pair, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(0)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(mismatched)],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            ))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        types: vec![pair_def],
+        functions: vec![sink, caller],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape
+            && error.message.contains("copy exactly its writeback place")
+    }));
 }
 
 #[test]

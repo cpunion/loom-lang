@@ -640,7 +640,7 @@ pub enum Pattern {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Place {
     pub local: LocalId,
     pub projection: Vec<u32>,

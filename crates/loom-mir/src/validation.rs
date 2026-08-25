@@ -263,11 +263,17 @@ enum SlotState {
     MaybeUnavailable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ViewLoan {
-    owner: LocalId,
+    owner: Place,
     mutable: bool,
     token: u32,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BorrowedViewPosition {
+    DirectCallArgument,
+    Other,
 }
 
 #[derive(Clone)]
@@ -1685,6 +1691,15 @@ impl<'program> Validator<'program> {
                 );
                 continue;
             };
+
+            if function.is_async {
+                self.push(
+                    MirValidationCode::WitnessShape,
+                    "async concept requirements are not part of the current MIR contract",
+                    function.span,
+                    format!("{method_path}.is_async"),
+                );
+            }
 
             let expected_type_parameters = witness
                 .type_parameters
@@ -5427,6 +5442,14 @@ impl<'program> Validator<'program> {
             );
         }
         if let Some(writeback) = writeback {
+            if !matches!(&value.kind, ExprKind::Copy(source) if source == writeback) {
+                self.push(
+                    MirValidationCode::BorrowShape,
+                    "borrowed interface adaptation must copy exactly its writeback place",
+                    value.span,
+                    format!("{path}.value"),
+                );
+            }
             let writeback_ty = self.validate_place(
                 function,
                 writeback,
@@ -6914,7 +6937,423 @@ impl<'program> Validator<'program> {
             .map_or(Type::Error, |id| Type::Nominal(id, vec![output]))
     }
 
+    fn call_target_is_proven_synchronous(&self, target: &CallTarget) -> bool {
+        match target {
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => self
+                .program
+                .function(*function)
+                .is_some_and(|function| !function.is_async),
+            CallTarget::StaticConcept {
+                requirement,
+                witness,
+                ..
+            } => {
+                if self.program.requirement(*requirement).is_none() {
+                    return false;
+                }
+                let witness = match witness {
+                    WitnessRef::Concrete(witness) | WitnessRef::Apply { witness, .. } => {
+                        Some(*witness)
+                    }
+                    // The current requirement schema has no async form. Every
+                    // concrete proof supplied for this parameter is separately
+                    // required to map to a synchronous witness method.
+                    WitnessRef::Parameter(_) => None,
+                };
+                witness.is_none_or(|witness| {
+                    self.program
+                        .witness(witness)
+                        .and_then(|witness| witness.methods.get(requirement))
+                        .and_then(|function| self.program.function(*function))
+                        .is_some_and(|function| !function.is_async)
+                })
+            }
+            CallTarget::Dynamic { requirement } => {
+                self.program.requirement(*requirement).is_some()
+                    && self
+                        .program
+                        .witnesses
+                        .iter()
+                        .filter_map(|witness| witness.methods.get(requirement))
+                        .all(|function| {
+                            self.program
+                                .function(*function)
+                                .is_some_and(|function| !function.is_async)
+                        })
+            }
+            CallTarget::Builtin(builtin) => Self::builtin_is_proven_synchronous(*builtin),
+        }
+    }
+
+    const fn builtin_is_proven_synchronous(builtin: Builtin) -> bool {
+        match builtin {
+            Builtin::FileOpenRead
+            | Builtin::FileCreate
+            | Builtin::FileOpenReadPath
+            | Builtin::FileCreatePath
+            | Builtin::FileReadText
+            | Builtin::FileWriteText
+            | Builtin::SocketConnect
+            | Builtin::SocketReadText
+            | Builtin::SocketWriteText
+            | Builtin::FileTryOpenRead
+            | Builtin::FileTryCreate
+            | Builtin::FileTryOpenReadPath
+            | Builtin::FileTryCreatePath
+            | Builtin::FileTryReadText
+            | Builtin::FileTryWriteText
+            | Builtin::SocketTryConnect
+            | Builtin::SocketTryReadText
+            | Builtin::SocketTryWriteText => false,
+            Builtin::IsFinite
+            | Builtin::ParseFloat
+            | Builtin::FormatFloat
+            | Builtin::TextLength
+            | Builtin::TextGet
+            | Builtin::TextConcat
+            | Builtin::TextContains
+            | Builtin::TextEncodeUtf8
+            | Builtin::BytesLength
+            | Builtin::BytesGet
+            | Builtin::BytesAppend
+            | Builtin::BytesDecodeUtf8
+            | Builtin::PathFromText
+            | Builtin::PathAsText
+            | Builtin::PathJoin
+            | Builtin::ListAdd
+            | Builtin::ListLength
+            | Builtin::ListGet
+            | Builtin::ProcessArguments
+            | Builtin::ProcessEnvironment
+            | Builtin::ParseInt
+            | Builtin::TaskFaultCode
+            | Builtin::TaskFaultMessage
+            | Builtin::DurationMilliseconds
+            | Builtin::DurationAsMilliseconds
+            | Builtin::FileClose
+            | Builtin::SocketClose
+            | Builtin::TextMapNew
+            | Builtin::TextMapLength
+            | Builtin::TextMapContains
+            | Builtin::TextMapGet
+            | Builtin::TextMapInsert
+            | Builtin::TextMapRemove
+            | Builtin::JsonParse
+            | Builtin::JsonFormat
+            | Builtin::IoErrorKind
+            | Builtin::IoErrorMessage
+            | Builtin::LogDebug
+            | Builtin::LogInfo
+            | Builtin::LogWarn
+            | Builtin::LogError
+            | Builtin::LogWrite => true,
+        }
+    }
+
+    fn validate_borrowed_view_uses(&mut self, function: &Function, path: &str) {
+        self.validate_borrowed_view_block(function, &function.body, &format!("{path}.body"), 0);
+    }
+
+    fn validate_borrowed_view_block(
+        &mut self,
+        function: &Function,
+        block: &Block,
+        path: &str,
+        depth: u16,
+    ) {
+        if !self.enter(depth, block.span, path) {
+            return;
+        }
+        for (index, statement) in block.statements.iter().enumerate() {
+            self.validate_borrowed_view_statement(
+                function,
+                statement,
+                &format!("{path}.statements[{index}]"),
+                depth + 1,
+            );
+        }
+        if let Some(tail) = block.tail.as_deref() {
+            self.validate_borrowed_view_expr(
+                function,
+                tail,
+                BorrowedViewPosition::Other,
+                &format!("{path}.tail"),
+                depth + 1,
+            );
+        }
+    }
+
+    fn validate_borrowed_view_statement(
+        &mut self,
+        function: &Function,
+        statement: &Statement,
+        path: &str,
+        depth: u16,
+    ) {
+        match &statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. } => self.validate_borrowed_view_expr(
+                function,
+                value,
+                BorrowedViewPosition::Other,
+                &format!("{path}.value"),
+                depth,
+            ),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                self.validate_borrowed_view_expr(
+                    function,
+                    start,
+                    BorrowedViewPosition::Other,
+                    &format!("{path}.start"),
+                    depth,
+                );
+                self.validate_borrowed_view_expr(
+                    function,
+                    end,
+                    BorrowedViewPosition::Other,
+                    &format!("{path}.end"),
+                    depth,
+                );
+                self.validate_borrowed_view_block(function, body, &format!("{path}.body"), depth);
+            }
+            StatementKind::Assert { condition } => self.validate_borrowed_view_expr(
+                function,
+                condition,
+                BorrowedViewPosition::Other,
+                &format!("{path}.condition"),
+                depth,
+            ),
+            StatementKind::Defer(cleanup) => self.validate_borrowed_view_block(
+                function,
+                cleanup,
+                &format!("{path}.cleanup"),
+                depth,
+            ),
+            StatementKind::Evaluate(expression) => self.validate_borrowed_view_expr(
+                function,
+                expression,
+                BorrowedViewPosition::Other,
+                &format!("{path}.expression"),
+                depth,
+            ),
+            StatementKind::Return(value) => {
+                if let Some(value) = value {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        value,
+                        BorrowedViewPosition::Other,
+                        &format!("{path}.value"),
+                        depth,
+                    );
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_borrowed_view_expr(
+        &mut self,
+        function: &Function,
+        expression: &Expr,
+        position: BorrowedViewPosition,
+        path: &str,
+        depth: u16,
+    ) {
+        if !self.enter(depth, expression.span, path) {
+            return;
+        }
+        let is_borrowed = matches!(
+            &expression.kind,
+            ExprKind::MakeView {
+                writeback: Some(_),
+                ..
+            } | ExprKind::ReborrowView { .. }
+        );
+        if is_borrowed && position != BorrowedViewPosition::DirectCallArgument {
+            self.push(
+                MirValidationCode::BorrowShape,
+                "borrowed interface adaptation must be the direct value expression of a synchronous call argument",
+                expression.span,
+                path,
+            );
+        }
+
+        let other = BorrowedViewPosition::Other;
+        match &expression.kind {
+            ExprKind::Constant(_)
+            | ExprKind::Copy(_)
+            | ExprKind::Move(_)
+            | ExprKind::ReborrowView { .. } => {}
+            ExprKind::Tuple(elements) | ExprKind::List(elements) => {
+                for (index, element) in elements.iter().enumerate() {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        element,
+                        other,
+                        &format!("{path}.elements[{index}]"),
+                        depth + 1,
+                    );
+                }
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Unrefine(operand) => self
+                .validate_borrowed_view_expr(
+                    function,
+                    operand,
+                    other,
+                    &format!("{path}.operand"),
+                    depth + 1,
+                ),
+            ExprKind::Binary(_, left, right) => {
+                self.validate_borrowed_view_expr(
+                    function,
+                    left,
+                    other,
+                    &format!("{path}.left"),
+                    depth + 1,
+                );
+                self.validate_borrowed_view_expr(
+                    function,
+                    right,
+                    other,
+                    &format!("{path}.right"),
+                    depth + 1,
+                );
+            }
+            ExprKind::Block(block) => self.validate_borrowed_view_block(
+                function,
+                block,
+                &format!("{path}.block"),
+                depth + 1,
+            ),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.validate_borrowed_view_expr(
+                    function,
+                    condition,
+                    other,
+                    &format!("{path}.condition"),
+                    depth + 1,
+                );
+                self.validate_borrowed_view_block(
+                    function,
+                    then_branch,
+                    &format!("{path}.then"),
+                    depth + 1,
+                );
+                self.validate_borrowed_view_block(
+                    function,
+                    else_branch,
+                    &format!("{path}.else"),
+                    depth + 1,
+                );
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.validate_borrowed_view_expr(
+                    function,
+                    scrutinee,
+                    other,
+                    &format!("{path}.scrutinee"),
+                    depth + 1,
+                );
+                for (index, arm) in arms.iter().enumerate() {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        &arm.value,
+                        other,
+                        &format!("{path}.arms[{index}].value"),
+                        depth + 1,
+                    );
+                }
+            }
+            ExprKind::Record { fields, .. } => {
+                for (index, field) in fields.iter().enumerate() {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        field,
+                        other,
+                        &format!("{path}.fields[{index}]"),
+                        depth + 1,
+                    );
+                }
+            }
+            ExprKind::Variant { payload, .. } => {
+                for (index, value) in payload.iter().enumerate() {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        value,
+                        other,
+                        &format!("{path}.payload[{index}]"),
+                        depth + 1,
+                    );
+                }
+            }
+            ExprKind::Refine { value, .. } | ExprKind::MakeView { value, .. } => self
+                .validate_borrowed_view_expr(
+                    function,
+                    value,
+                    other,
+                    &format!("{path}.value"),
+                    depth + 1,
+                ),
+            ExprKind::Call { arguments, .. } => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    if let CallArgument::Value(value) = argument {
+                        self.validate_borrowed_view_expr(
+                            function,
+                            value,
+                            BorrowedViewPosition::DirectCallArgument,
+                            &format!("{path}.arguments[{index}]"),
+                            depth + 1,
+                        );
+                    }
+                }
+            }
+            ExprKind::Await { task, .. } => self.validate_borrowed_view_expr(
+                function,
+                task,
+                other,
+                &format!("{path}.task"),
+                depth + 1,
+            ),
+            ExprKind::Sleep { milliseconds } => self.validate_borrowed_view_expr(
+                function,
+                milliseconds,
+                other,
+                &format!("{path}.milliseconds"),
+                depth + 1,
+            ),
+            ExprKind::WaitFd { descriptor, .. } => self.validate_borrowed_view_expr(
+                function,
+                descriptor,
+                other,
+                &format!("{path}.descriptor"),
+                depth + 1,
+            ),
+            ExprKind::TaskJoin { arguments, .. } => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    self.validate_borrowed_view_expr(
+                        function,
+                        argument,
+                        other,
+                        &format!("{path}.arguments[{index}]"),
+                        depth + 1,
+                    );
+                }
+            }
+        }
+    }
+
     fn validate_function_dataflow(&mut self, function: &Function, path: &str) {
+        self.validate_borrowed_view_uses(function, path);
+        if self.nesting_failed {
+            return;
+        }
         let local_count = function.params.len() + function.locals.len();
         let mut state = DataflowState {
             slots: vec![SlotState::Uninitialized; local_count],
@@ -7138,21 +7577,11 @@ impl<'program> Validator<'program> {
                 }
                 let index = place.local.0 as usize;
                 if place.projection.is_empty() {
-                    self.reject_owner_mutation_while_borrowed(
-                        place.local,
-                        state,
-                        statement.span,
-                        path,
-                    );
+                    self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
                     Self::dataflow_store(index, value.loans, state);
                 } else {
                     self.require_available(place.local, state, statement.span, path);
-                    self.reject_owner_mutation_while_borrowed(
-                        place.local,
-                        state,
-                        statement.span,
-                        path,
-                    );
+                    self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
                 }
                 false
             }
@@ -7259,7 +7688,7 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Copy(place) => {
                 self.require_available(place.local, state, expression.span, path);
-                if Self::owner_has_mutable_loan(place.local, state) {
+                if Self::owner_has_mutable_loan(place, state) {
                     self.push(
                         MirValidationCode::BorrowShape,
                         "argument cannot be read while mutable interface access is active",
@@ -7274,12 +7703,7 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Move(place) => {
                 self.require_available(place.local, state, expression.span, path);
-                self.reject_owner_mutation_while_borrowed(
-                    place.local,
-                    state,
-                    expression.span,
-                    path,
-                );
+                self.reject_owner_mutation_while_borrowed(place, state, expression.span, path);
                 let index = place.local.0 as usize;
                 let loans = state
                     .view_loans
@@ -7482,7 +7906,10 @@ impl<'program> Validator<'program> {
                     loans: flow.loans,
                 }
             }
-            ExprKind::Call { arguments, .. } => {
+            ExprKind::Call {
+                target, arguments, ..
+            } => {
+                let target_is_synchronous = self.call_target_is_proven_synchronous(target);
                 let checkpoint = state.temporary_loans.len();
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
@@ -7499,10 +7926,10 @@ impl<'program> Validator<'program> {
                                 state.temporary_loans.truncate(checkpoint);
                                 return no_value(true);
                             }
-                            if matches!(expression.ty, Type::Task(_)) && !flow.loans.is_empty() {
+                            if !target_is_synchronous && !flow.loans.is_empty() {
                                 self.push(
                                     MirValidationCode::BorrowShape,
-                                    "call-scoped interface carrier cannot enter an asynchronous call",
+                                    "call-scoped interface carrier cannot enter a call whose target is not proven synchronous",
                                     value.span,
                                     format!("{path}.arguments[{index}]"),
                                 );
@@ -7515,7 +7942,7 @@ impl<'program> Validator<'program> {
                                 .is_some_and(|local| matches!(local.ty, Type::View { .. }));
                             if !is_view {
                                 self.reject_owner_mutation_while_borrowed(
-                                    place.local,
+                                    place,
                                     state,
                                     expression.span,
                                     path,
@@ -7639,7 +8066,7 @@ impl<'program> Validator<'program> {
         path: &str,
     ) -> ExprFlow {
         self.require_available(owner.local, state, expression.span, path);
-        let conflicts = Self::active_loans(owner.local, state).any(|loan| mutable || loan.mutable);
+        let conflicts = Self::active_loans(owner, state).any(|loan| mutable || loan.mutable);
         if conflicts {
             self.push(
                 MirValidationCode::BorrowShape,
@@ -7659,7 +8086,7 @@ impl<'program> Validator<'program> {
         ExprFlow {
             diverges: expression.ty == Type::Never,
             loans: vec![ViewLoan {
-                owner: owner.local,
+                owner: owner.clone(),
                 mutable,
                 token,
             }],
@@ -7689,22 +8116,25 @@ impl<'program> Validator<'program> {
         }
     }
 
-    fn active_loans(owner: LocalId, state: &DataflowState) -> impl Iterator<Item = &ViewLoan> {
+    fn active_loans<'state>(
+        owner: &'state Place,
+        state: &'state DataflowState,
+    ) -> impl Iterator<Item = &'state ViewLoan> + 'state {
         state
             .view_loans
             .iter()
             .flat_map(|loans| loans.iter())
             .chain(state.temporary_loans.iter())
-            .filter(move |loan| loan.owner == owner)
+            .filter(move |loan| places_overlap(&loan.owner, owner))
     }
 
-    fn owner_has_mutable_loan(owner: LocalId, state: &DataflowState) -> bool {
+    fn owner_has_mutable_loan(owner: &Place, state: &DataflowState) -> bool {
         Self::active_loans(owner, state).any(|loan| loan.mutable)
     }
 
     fn reject_owner_mutation_while_borrowed(
         &mut self,
-        owner: LocalId,
+        owner: &Place,
         state: &DataflowState,
         span: Span,
         path: &str,
@@ -7945,6 +8375,12 @@ fn union_loans(mut left: Vec<ViewLoan>, right: Vec<ViewLoan>) -> Vec<ViewLoan> {
         }
     }
     left
+}
+
+fn places_overlap(left: &Place, right: &Place) -> bool {
+    left.local == right.local
+        && (left.projection.starts_with(&right.projection)
+            || right.projection.starts_with(&left.projection))
 }
 
 fn join_dataflow_states(states: &[DataflowState]) -> DataflowState {
