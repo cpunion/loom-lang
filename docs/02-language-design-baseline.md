@@ -4,7 +4,7 @@
 
 证据等级：C1 executable core（Core 0.1 fixture 已通过真实工具链闭环）
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文是 Core 0.1 的语言语义基线，只规范已经确认的最小核心。本文明确写出的规则具有规范性；parser/checker 开工所需的精确 token、grammar、数值、failure 与 artifact 选择由 [Core 0.1–0.3 可执行合同](06-executable-contract.md)补齐。下一版已确认的行为抽象由 [Core 0.2 concept 与动态多态规范](05-concepts-and-dynamic-polymorphism.md)单独定义；AOP-like 组合和 desired-state/operator 仍在讨论。
 
@@ -166,7 +166,8 @@ fn add_tax(price Price, rate Float) Result[Price, ConstraintError] {
 规则：
 
 - 参数默认不可变；
-- public 函数必须写出参数和返回类型；
+- public/private 函数都必须写出参数类型；非 `Unit` 返回类型必须显式写出；
+- 省略返回类型固定等价于 `Unit`，不从函数体推断返回类型；显式 `Unit` 仍合法；
 - 局部变量允许类型推断；
 - 普通函数体按源码顺序执行；
 - 尾表达式是返回值，`return` 用于提前返回；
@@ -415,7 +416,7 @@ Core 0.1 不包含 `example`、`scenario`、`property`。
 - capability/provider/effect；
 - Core 0.3 已单独定义的 GC、scoped/defer 与结构化 async/Task 不属于 Core 0.1；持久化 coroutine 和分布式执行仍开放；
 - 继承、concept conformance 之外的自由 extension declaration、开放/多重派发和第二套 trait/interface 抽象；
-- 网络 registry 发布、composition bundle；manifest、path/文件 registry dependency、lockfile、optional-dependency feature 和 bin/test/lib target 属于工具链层，不改变 Core 0.1 表达式语义；
+- composition bundle；manifest、path/文件/HTTPS registry dependency、认证发布、lockfile、optional-dependency feature 和 bin/test/lib target 属于已实现的工具链层，不改变 Core 0.1 表达式语义；
 - `?`、pattern guard、默认字段和复杂解构；
 - 一般所有权、借用与公开底层内存布局；Core 0.2 的 `dyn C` 是普通一等值，同步参数写回由编译器管理为不可逃逸的 call-scoped inout，不增加 borrow、lifetime 或 owning-carrier 源码语法。
 

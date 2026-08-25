@@ -2,7 +2,7 @@
 
 状态：Normative Toolchain Design + Core 0.1–0.3 LLVM/Package/Cache C1 Reference
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文固定从普通 `.loom` 源码到 native executable 的完整流程。范围只含源码、静态类型、受约束值/合同、concept、多态、自动内存管理、词法清理、结构化 Task、编译产物和工具链；不含 live、AST 编辑、AOP、operator runtime 或所有权语法。Core 0.3 的语言语义见 [GC、词法清理与异步任务定案](08-memory-cleanup-and-async.md)。
 
@@ -91,7 +91,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端使用 uniform compiler-private Value ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递，concrete call 仍可被 LLVM 内联和去虚化。未来优化不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端使用 uniform compiler-private Value ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递，concrete call 仍可被 LLVM 内联和去虚化。这只是 reference lowering，不是最终表示目标。后续可以对 concrete value 去标签化，并让 shared generic body 每个调用、container 或 allocation 只携带一次 layout descriptor，而不是让每个值重复携带 kind tag。未来优化不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -132,7 +132,9 @@ InstanceKey = (
 
 ### 普通值
 
-MIR value 在 LLVM 层使用统一 tag/payload representation。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，move 可以转移当前表示。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 把 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。该布局只能被 codegen/runtime helpers 观察。
+
+最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。C1 tag 消除属于后端表示优化，不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 
@@ -191,7 +193,19 @@ loomc run PATH -- arg1 arg2
 loomc run --artifact target/loom/program -- arg1 arg2
 ```
 
-`build` 默认产生宿主平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。显式 target triple 目前闭环到真实 LLVM relocatable object。只有 triple 规范化后等于 host 时才能继续与内嵌 Rust runtime/linker 组成 executable；其他 triple 稳定报告 `CrossLinkUnavailable`，因为 Loom 不会把宿主 runtime archive 伪装成目标 runtime。portable `.loomlib` 不接受 release/target-triple/object 选项。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
+`build` 默认产生宿主平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。显式 target triple 闭环到真实 LLVM relocatable object。宿主 executable 默认使用编译器内嵌 Rust runtime 与宿主 linker；交叉 executable 必须成对提供 `--runtime-bundle DIR --linker PROGRAM`。bundle 必须与同一个规范化 triple/data layout/runtime ABI 精确匹配，archive SHA-256 每次链接前后复核；缺少 bundle/linker 稳定报告 `CrossLinkUnavailable`，不把宿主 archive 伪装成目标 runtime。portable `.loomlib` 不接受 release/target-triple/object 选项。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
+
+`loomc runtime export --output DIR` 把当前宿主的内嵌 runtime 导出为只含 manifest 与 `libloom_runtime.a` 的原子目录。目标 runtime bundle 应由运行在该目标平台的相同版本 Loom 工具导出，再与具备该目标能力的显式 linker 配对：
+
+```sh
+loomc runtime export --output target/loom/runtime
+loomc --target-triple aarch64-unknown-linux-gnu \
+  --runtime-bundle /opt/loom/aarch64-linux-runtime \
+  --linker aarch64-linux-gnu-clang \
+  build --output target/loom/program PATH
+```
+
+bundle loader 拒绝未知 manifest 字段、额外目录/文件、symlink、路径穿越、oversize 内容和不安全 linker 参数；显式 linker 必须解析为 bounded executable regular file，并提供成功且有界的 `--version` identity。Loom 固定参数顺序为 target object、runtime archive、manifest link args、`-o OUTPUT`。
 
 `--` 后的参数原样进入 `standard.process.arguments()`，但 executable path 不进入该 list。source run、native artifact 和 interpreted artifact 使用同一规则；环境变量由 child process/当前 interpreter host environment 提供，保持 `environment(Text) Option[Text]` 的相同 Unicode 边界。
 
@@ -215,7 +229,7 @@ loomc --backend interpreter run --artifact program.loomi
 
 ### manifest v1
 
-当前实现可离线、可重复解析的 path 与文件系统 registry 依赖闭环：
+当前实现同时闭环 path、文件系统 registry 与 HTTPS registry 依赖：
 
 ```toml
 schema = 1
@@ -232,6 +246,7 @@ codec = { registry = "local", version = "^2", optional = true }
 
 [registries]
 local = "../registry"
+remote = { url = "https://registry.example", token-env = "LOOM_REGISTRY_TOKEN" }
 
 [features]
 default = []
@@ -253,9 +268,13 @@ kind = "lib" # 无 entry，产出 portable checked-MIR library
 
 `language` 固定选择源码语义与静态证明域；省略时为兼容现有 manifest 等价于 `"0.3"`。当前编译器只接受 `0.3`，未知版本以 `UnsupportedLanguageVersion` fail closed。该值进入 resolved `PackageId`、`loom.lock`、module identity、checked-MIR/object/final-artifact cache key 与 `.loomi`/`.loomlib` envelope；扩大可证明检查消除能力必须发布新的 language version，不能静默改变旧包的推断类型。
 
-dependency path 与 registry root 相对当前 manifest；registry 布局是 `<root>/<package>/<semver>/loom.toml`，resolver 选择满足 requirement 的最高版本。已有 `loom.lock` pin 优先，`loomc resolve --update` 忽略旧 pin 后更新；registry package 的 manifest 与被选 `.loom` source 进入 SHA-256，同一已锁版本内容变化会 fail closed。`--locked` 要求当前 feature/package graph 与 lock 完全一致。resolver 还检查 SemVer、feature 引用/循环、依赖循环、重复 package identity、越界 source root 和重复 target。
+dependency path 与文件 registry root 相对当前 manifest；文件 registry 布局是 `<root>/<package>/<semver>/loom.toml`。两类 registry 都选择满足 requirement 的最高版本。已有 `loom.lock` pin 优先，`loomc resolve --update` 忽略旧 pin 后更新；registry package 的 manifest 与被选 `.loom` source 进入 SHA-256，同一已锁版本内容变化会 fail closed。`--locked` 要求当前 feature/package graph 与 lock 完全一致。resolver 还检查 SemVer、feature 引用/循环、依赖循环、重复 package identity、越界 source root 和重复 target。
 
-feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖；dependency 可用 `features = [...]` 与 `default-features = false` 请求下游 feature。它不裁剪同一 package 内的源码，不增加 `cfg` 表面，不隐式 import，更不激活 contribution/AOP 行为。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定。当前没有网络 registry 协议/认证/发布、dynamic target 或 open-world plugin root。
+HTTPS registry protocol v1 使用 `GET /v1/packages/{package}` 取得带 version/SHA-256 的 index，使用 `GET`/`PUT /v1/packages/{package}/versions/{version}` 下载或发布确定性 JSON source bundle。`loomc publish --registry NAME PATH` 只接受 manifest 中具名的网络 registry。token 只从 `token-env` 指定的环境变量读取；认证请求必须使用 HTTPS，重定向被禁用，认证失败的响应正文不进入诊断。为本地协议测试，无认证 HTTP 只接受 literal `127.0.0.0/8` 或 `::1` authority；`localhost`、userinfo、query/fragment 和任何 HTTP token 均在网络请求前拒绝。
+
+index schema、重复版本、SemVer、digest 和响应大小先验证；bundle 再验证 schema、package/version/language 内外 identity、内嵌 `loom.toml`、文件数量/大小、重复或冲突 path、绝对/反斜杠/`.`/`..` 路径及保留 cache 文件。下载以原始 bundle SHA-256 为 immutable identity，原子物化到项目的 `target/loom/registry/http`。每次 cache hit 都重新散列原始 bundle，并逐文件比对物化内容、拒绝额外文件/特殊文件/symlink；sidecar 只记录 identity，不是信任根。`--offline` 禁止 index/package 请求，只在上述完整复核成功时命中，否则返回 `OfflineRegistryMiss`。
+
+feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖；dependency 可用 `features = [...]` 与 `default-features = false` 请求下游 feature。它不裁剪同一 package 内的源码，不增加 `cfg` 表面，不隐式 import，更不激活 contribution/AOP 行为。source label 使用 `src/...` 与 `deps/name@version/...`，因此 package 整体移动不改变 FileId 顺序或缓存 identity。dependency alias 只属于 manifest graph；源码名字空间仍由显式 `module`/`import` 决定。registry 传输只解析 package bytes，不形成 open-world plugin root、运行期实现搜索或 contribution/AOP 激活。
 
 ### 为什么需要缓存
 
@@ -275,7 +294,7 @@ feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖�
 
 CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，native artifact 只有在内容验证后才原子 materialize 并设置执行权限。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 target 可 materialize 到不同位置。
 
-整图 key 以 length-delimited fields 编码，包含 compiler source + Rust version fingerprint、debug/release profile、MIR/backend/stdlib/runtime ABI、canonical package/dependency/feature/target graph、registry checksum、稳定 source path 与 bytes、target triple/data layout、CPU/features、optimization/relocation 和 contract mode。编译器 fingerprint 只散列 workspace-relative compiler source path/content，不含 checkout 绝对路径。LLVM target identity 来自 emission 共用的同一个 TargetMachine policy，而不是另写一份猜测值；final native artifact 的派生 key 还包含精确 Rust runtime archive SHA-256、所选 linker 与 macOS `dsymutil` 的 version identity，工具 identity 无法确认时停用 final-artifact cache 而不影响前端检查。
+整图 key 以 length-delimited fields 编码，包含 compiler source + Rust version fingerprint、debug/release profile、MIR/backend/stdlib/runtime ABI、canonical package/dependency/feature/target graph、registry checksum、稳定 source path 与 bytes、target triple/data layout、CPU/features、optimization/relocation 和 contract mode。编译器 fingerprint 只散列 workspace-relative compiler source path/content，不含 checkout 绝对路径。LLVM target identity 来自 emission 共用的同一个 TargetMachine policy，而不是另写一份猜测值；final native artifact 的派生 key 还包含内嵌 runtime identity，或外部 runtime manifest/archive SHA-256 与显式 linker path/executable/version identity，以及 macOS `dsymutil` identity。任一输入变化都会 miss；工具 identity 无法确认时停用 final-artifact cache 而不影响前端检查。
 
 ### 增量层与当前边界
 

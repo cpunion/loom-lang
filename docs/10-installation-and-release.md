@@ -1,9 +1,16 @@
 # 安装、LLVM 探测与版本回滚
 
-Loom 0.1.0 的发布包同时包含 `loomc` 与 `loom-lsp`。每个平台 archive 旁都有同名
+Loom 0.1.0 的发布包同时包含 `loomc`、`loom-lsp` 与该平台的 `runtime/` bundle。每个平台 archive 旁都有同名
 `.sha256` 文件；安装前必须用 `shasum -a 256 -c`（Linux 可用 `sha256sum -c` 转换后的
 清单）验证。当前 release workflow 生成 Linux x86-64 与 macOS arm64 两种包，不把某一
 宿主的 runtime archive 冒充为其他 target 的 runtime。
+
+`runtime/loom-runtime-bundle.json` 固定目标 triple、LLVM data layout、runtime ABI、archive
+SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从本机同版本工具重新
+导出完全相同语义边界的宿主 bundle；目标目录必须不存在。交叉 executable 构建必须显式成对
+传入 `--runtime-bundle DIR --linker PROGRAM`。推荐直接使用对应目标发布包中的 `runtime/`，并
+使用真正支持该 target 的 linker；编译器会在链接前校验 bundle target/ABI/digest，并把 bundle
+与 linker identity 纳入缓存。仅需要 relocatable object 时不需要 runtime bundle。
 
 ## LLVM 19
 
@@ -21,7 +28,7 @@ llvm-config --version
 
 `llvm-config --version` 必须报告 `19.x`；找不到 LLVM、版本不匹配或目标机器信息无法建立
 都会让构建失败，不会静默退回另一 LLVM。Loom 当前的语言标准库是编译器随版本固定的
-`loom-core-inline-v1`，没有环境搜索路径，也不会从当前目录加载同名模块。package source
+`loom-core-inline-v2`，没有环境搜索路径，也不会从当前目录加载同名模块。package source
 只来自 resolved manifest/path/registry/validated `.loomlib` graph。
 
 ## 兼容与回滚

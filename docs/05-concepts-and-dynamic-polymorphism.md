@@ -52,6 +52,8 @@ pub concept Zero {
 }
 ```
 
+concept requirement、inherent method 与 conformance method 和普通函数使用同一返回规则：省略返回类型固定为 `Unit`，不从 implementation body 推断；非 `Unit` requirement 必须显式声明返回类型。
+
 能够形成接口值的 concept 必须在定义处承诺动态兼容：
 
 ```loom

@@ -4,7 +4,7 @@
 
 证据等级：C1 executable core（Core 0.1–0.3 fixture 与 artifact 已闭环）
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文闭合 [Core 0.1 语义基线](02-language-design-baseline.md)、[Core 0.1 表面](03-surface-and-style.md)、[Core 0.2 concept/dyn 规范](05-concepts-and-dynamic-polymorphism.md)和 [Core 0.3 GC/cleanup/Task 规范](08-memory-cleanup-and-async.md)留给 parser、checker、编译器和工具的可执行选择。它只把已确认语义降到 token、grammar、failure envelope 和 artifact 合同，**不增加任何语言能力**。
 
@@ -106,7 +106,7 @@ lexer 总是发出 `NL`，parser 按下列唯一规则消费：
 3. 一个 `NL` 的前一个非 trivia token 若为 opening delimiter `(`、`[` 或 `{`，该 `NL` 是 continuation trivia。
 4. 前一个非 trivia token 若为需要右 operand 的 operator，该 `NL` 是 continuation trivia。该组是 `.`、unary `!`、unary/binary `-`、`+`、`*`、`/`、`<`、`<=`、`>`、`>=`、`==`、`!=`、`&&`、`||`、assignment `=` 和 match `=>`。
 5. 换行前置 operator 不会 continuation；`left NL + right` 不等价于 `left + right`。formatter 必须把跨行 infix operator 放在前一行末尾。
-6. fn/method/concept-method 声明头中，参数列表后的返回类型、`requires`/`ensures` 和 body opening `{` 是同一 declaration 的 grammar；它们之间的 `NL` 是 declaration trivia，不会把声明截断。
+6. fn/method/concept-method 声明头中，参数列表后的可选返回类型、`requires`/`ensures` 和 body opening `{` 是同一 declaration 的 grammar；它们之间的 `NL` 是 declaration trivia，不会把声明截断。返回类型缺失时固定为 `Unit`，不是 body inference。
 
 分隔规则：
 
@@ -154,6 +154,8 @@ return expression?
 assert expression
 Unit-valued expression
 ```
+
+无 operand 的 `return` 等价于 `return Unit`；因此只能匹配逻辑返回类型 `Unit`。显式返回其他类型的 callable 使用它会得到普通返回类型不匹配诊断。空 block 和只有 Unit-valued statements、没有尾 expression 的 block 都产生 `Unit`。省略只适用于 callable 的返回 annotation；`Result[Unit, E]`、`Task[Unit]`、字段、参数和其他类型位置仍须显式写 `Unit`。
 
 assignment 只是 statement，不是 expression；不能用在 initializer、argument、condition、match RHS 或 block tail，不能链式，违反报 `AssignmentInExpression`。左侧必须是 checker 认可的可写 place，权限仍由 `let`/`var`、field visibility 和 `self`/`mut self` 规则决定。
 
@@ -588,4 +590,4 @@ parser recovery 的 declaration start set 必须识别 `async fn`、`pub async f
 6. 冷路径与任何未来增量路径必须得到相同 typed program、diagnostic ordering、reachability 和运行结果；
 7. parser/checker/backend 实现细节可以替换，但不能自行发明第二套换行、overflow、fault、snapshot、builtin、interface 或 code 规则。
 
-所有权/借用、AOP-like 组合、live/AST 编辑、desired-state/operator、一般 capability/effect、网络 registry 发布/composition bundle 与专用 example/scenario 均不是 Core 0.1–0.3 blocker。基础 package manifest、path/文件 registry dependency、lockfile、optional-dependency feature、target 和持久缓存已经闭环。
+所有权/借用、AOP-like 组合、live/AST 编辑、desired-state/operator、一般 capability/effect、composition bundle 与专用 example/scenario 均不是 Core 0.1–0.3 blocker。基础 package manifest、path/文件/HTTPS registry dependency、认证发布、lockfile、optional-dependency feature、target、可信离线 registry cache 和持久编译 cache 已经闭环。

@@ -1,6 +1,6 @@
 # Loom Core 0.3 标准值、JSON、I/O 与日志
 
-状态：Normative P1 Surface
+状态：Implemented / Normative Core 0.3 Surface
 
 日期：2026-08-25
 
@@ -16,6 +16,12 @@
 - 可预期的数据拒绝使用 `Option`/`Result`；compiler/runtime defect、非法 checked MIR、日志设备失败和不可恢复 OOM 不伪装成业务 `Err`。
 
 这些类型都可由 GC 移动。`Text`、`Bytes`、`Path` 和 `TextMap[V]` 的 copy 保持值语义；实现可以共享 immutable storage，但源码不能观察共享。
+
+`Text` 是本语言的规范名称，不另设 `String`/`string` alias，也不引入带 borrow/lifetime 含义的 `str`。这个名字强调它与任意 `Bytes` 的边界；它不代表 UI rich text、可变 buffer 或特殊大对象。若以后需要高效增量构造，将使用独立的 `TextBuilder` 一类普通库类型，不改变 `Text` 的不可变值语义。
+
+当前 C1 native backend 为了 shared generic body，把所有值暂存在统一 compiler-private slot；其中 `Text` 使用 kind tag、UTF-8 byte length 和 immutable data pointer。字面量 data 位于只读 LLVM global，动态 data 位于 moving-GC byte arena；copy 可以共享 data，equality 先比较长度再比较 bytes，concat 产生新平坦 buffer。当前 `length/get` 扫描 UTF-8，因此都是线性时间。这个 slot tag 不是 `Text` 语义或最终 ABI。
+
+目标 typed representation 是单个 `Text` managed pointer，指向含 byte length、已缓存 scalar length 和 UTF-8 bytes 的不可变对象；可选 hash cache、small-string optimization 或静态字面量对象只能由性能证据驱动。编译器已知 `Text` 的位置不需要 per-value tag；GC 可以通过 allocation/layout descriptor 追踪，移动后重写 root。第一版不采用 rope、隐式 normalization、稳定地址、NUL terminator 或 borrowed slice。
 
 ## 2. Text、Bytes 与 Path
 
@@ -118,7 +124,7 @@ socket.try_read_text() Task[Result[Text, IoError]]
 socket.try_write_text(Text) Task[Result[Unit, IoError]]
 ```
 
-成功取得的 `File`/`Socket` 仍是 `MustScope`。惯用写法可以把 `?` 与后缀 `.await` 放入 `scoped` initializer；错误提前返回时尚未建立 resource binding，因此不会登记虚假的 cleanup：
+成功取得的 `File`/`Socket` 仍是结构性 `MustScope`；Option/Result/tuple/list/record/enum 等包装不会消除 obligation。包装值不能被普通保存、丢弃、传参或用 wildcard 丢掉资源 payload。惯用写法可以把 `?` 与后缀 `.await` 放入 `scoped` initializer；错误提前返回时尚未建立 resource binding，因此不会登记虚假的 cleanup：
 
 ```loom
 scoped file = try_open_read_path(path).await?
@@ -141,7 +147,7 @@ Other
 
 kind 由 host I/O error category 映射，不暴露不稳定的 OS integer code；message 用于人类诊断，不作为稳定比较键。Text read 得到无效 UTF-8 时映射为 `InvalidInput`。参数越出稳定语言范围、正常 OS 拒绝和资源状态错误进入 `Err(IoError)`；OOM、runtime ABI/version 错误和 checked-MIR defect 仍走不可恢复 fault 边界。
 
-所有这些 I/O Task 使用与 `Task.sleep` 相同的 executor：blocking file/DNS 工作进入有界 worker pool，socket `WouldBlock` 进入 kqueue/epoll registration，完成只 enqueue ready task，不在 callback 栈重入 coroutine。
+所有这些 I/O Task 使用与 `Task.sleep` 相同的 executor：blocking file/DNS 工作进入有界 worker pool，socket `WouldBlock` 进入 kqueue/epoll registration，完成只 enqueue ready task，不在 callback 栈重入 coroutine。对已有 `File`/`Socket` 调用 I/O method 时，Task 在构造点复制并拥有所需 host handle；因此原 `scoped` block 可以先退出，Task 完成/取消/销毁仍只操作并关闭自己的副本，不会读取已经关闭或被复用的 raw descriptor。这是 compiler-known runtime snapshot，不允许普通 scoped value 被 task 捕获。
 
 ## 6. 日志
 

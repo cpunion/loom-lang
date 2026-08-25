@@ -66,6 +66,11 @@ jobs:
           cargo run -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
           cargo run -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
           cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
+      - name: Standard library differential gate
+        run: |
+          cargo test -p loom-codegen-llvm --test standard_values
+          cargo test -p loom-codegen-llvm --test structured_standard_values
+          cargo test -p loom-codegen-llvm --test runtime_bundle
       - name: C3 repository check/build/test/run on both backends
         run: |
           cargo run -p loom-cli -- --no-cache check --target app examples/c3/application
@@ -138,6 +143,11 @@ jobs:
           cargo fmt --all -- --check
           cargo check --workspace --all-targets
           cargo test --workspace --all-targets
+      - name: Standard library differential gate
+        run: |
+          cargo test -p loom-codegen-llvm --test standard_values
+          cargo test -p loom-codegen-llvm --test structured_standard_values
+          cargo test -p loom-codegen-llvm --test runtime_bundle
       - name: C3 repository check/build/test/run on both backends
         run: |
           cargo run -p loom-cli -- --no-cache check --target app examples/c3/application

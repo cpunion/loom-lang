@@ -4,7 +4,7 @@
 
 证据等级：C1 executable core（parser、formatter 与 checker 已共享该表面合同）
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文规定 [Core 0.1](02-language-design-baseline.md) 已确认能力的常用写法。Core 0.2 的 `concept`、显式 conformance、Go 风格参数书写与 `dyn C` 由 [独立规范](05-concepts-and-dynamic-polymorphism.md)定稿；Go-like 仅指 `name Type` 表面，不包含 structural conformance 或运行时接口发现。Core 0.3 的 GC、词法清理和 Task/coroutine 由 [独立规范](08-memory-cleanup-and-async.md)定稿。精确 token、换行、precedence、statement 和 Core 0.2 parser 形状以 [可执行合同](06-executable-contract.md)为准。所有权/借用表面、AOP-like 组合、desired-state/operator、capability 和专用 `example`/`scenario` 不在本文中，也不预留关键字。
 
@@ -74,11 +74,12 @@ parser 的恢复规则同样属于表面合同：
 Core 0.1 的常用拼写为：
 
 - 参数和字段采用 `name Type`；
-- 返回类型写在参数列表之后，不使用 `->`；
+- 非 `Unit` 返回类型写在参数列表之后，不使用 `->`；
+- 省略返回类型固定表示 `Unit`，不触发返回类型推断；惯用源码省略，显式 `Unit` 仍合法；
 - 泛型实参使用方括号，如 `Result[Price, ConstraintError]`；
 - 缺失值写作 `Option[T]`，Core 0.1 不引入 `T?` 糖；
 - `let` 声明不可变局部，`var` 声明可变局部；
-- block 的尾表达式是返回值，`return` 只用于提前返回；
+- block 的尾表达式是返回值，`return` 只用于提前返回；无 operand 的 `return` 等价于 `return Unit`；
 - record literal 的字段使用 `=`；
 - Core 0.1 不提供 `?` 错误传播糖，失败分支使用显式 `match`。
 
@@ -349,7 +350,7 @@ Core 0.1 不定义或保留以下表面：
 - desired-state、operator、reconcile；
 - capability、provider、effect；
 - `example`、`scenario`、`property`；
-- 网络 registry 发布与 composition bundle；`loom.toml`、path/文件 registry dependency、lockfile、optional-dependency feature 与 bin/test/lib target 已由工具链定义；
+- composition bundle；`loom.toml`、path/文件/HTTPS registry dependency、认证发布、lockfile、optional-dependency feature 与 bin/test/lib target 已由工具链定义；
 - 第二套 trait/interface、concept conformance 之外的自由 extension declaration、继承、开放/多重派发和运行期实现发现。
 
 `concept` 与显式 dyn receiver dispatch 已经进入 Core 0.2；GC、scoped/defer 与结构化 Task 已进入 Core 0.3，均不属于本节。其余方向不是被永久否决；它们必须先由独立的小例子闭合语义，再进入后续 Core 版本。

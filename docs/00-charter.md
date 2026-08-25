@@ -2,7 +2,7 @@
 
 状态：Active / Core 0.1–0.3 C1 Executable Reference + C3 Repository Evidence
 
-日期：2026-08-24
+日期：2026-08-25
 
 ## 1. 当前命题
 
@@ -63,7 +63,7 @@ Core 0.1 闭合后，下一项语言扩展已经定稿：
 - desired-state、operator 和 reconciliation runtime；
 - capability/provider 与 effect system；
 - 多线程共享内存、持久化 coroutine 和分布式执行；
-- 网络 registry 发布/认证、composition bundle 和 dynamic target；基础 `loom.toml`、path/文件 registry dependency、lockfile、optional-dependency feature、bin/test/lib target 与持久缓存已进入工具链；
+- composition bundle 和 open-world dynamic target；基础 `loom.toml`、path/文件/HTTPS registry dependency、认证发布、可信离线缓存、lockfile、optional-dependency feature、bin/test/lib target 与持久缓存已进入工具链；
 - `example`、`scenario`、`property` 专用声明；
 - entity/ORM、第二套 `trait` 抽象、继承、开放/多重派发、运行期实现发现和宏。
 

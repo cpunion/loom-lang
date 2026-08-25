@@ -56,10 +56,21 @@ jobs:
           cargo run --locked --release -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
       - name: Portable package artifact release gate
         run: cargo test --locked --release -p loom-cli --test cli library_targets_build_portable_validated_artifacts
+      - name: Standard library differential release gate
+        run: |
+          cargo test --locked --release -p loom-codegen-llvm --test structured_standard_values
+          cargo test --locked --release -p loom-codegen-llvm --test runtime_bundle
+      - name: Controlled quality release gate
+        run: cargo run --locked --release -p loom-quality > target/c3-evidence.json
       - name: Verify release tools
         run: |
           target/release/loomc --help
           target/release/loom-lsp --help || test "$?" -eq 2
+      - name: Export and verify host runtime bundle
+        run: |
+          target/release/loomc runtime export --output target/release-runtime
+          target/release/loomc --runtime-bundle target/release-runtime --linker "$LOOM_CC" build --output target/release-bundle-smoke examples/core01
+          target/release-bundle-smoke
       - name: Archive and checksum
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
@@ -70,6 +81,7 @@ jobs:
           staging="target/release-package"
           mkdir -p "$staging"
           cp target/release/loomc target/release/loom-lsp README.md "$staging/"
+          cp -R target/release-runtime "$staging/runtime"
           tar -czf "$archive" -C "$staging" .
           shasum -a 256 "$archive" > "$archive.sha256"
       - name: Upload release archive

@@ -2,7 +2,7 @@
 
 状态：Core 0.3 Confirmed Normative Design / C1 Native Loop Closed
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文固定自动内存管理、`scoped`/`defer`、stackless coroutine、`Task[T]` 与任务组合语义。它扩展 Core 0.1–0.2，但不引入 Rust 风格 ownership/borrow/lifetime 表面，也不引入 live、AST 编辑、AOP-like 组合或 operator runtime。
 
@@ -99,14 +99,18 @@ scoped socket Socket = connect(address)
 - resource 可以通过自己的 `mut self` method 修改内部状态；
 - scoped value 不能复制、逃出所在 scope、存入更长寿命 aggregate 或由 closure/task 捕获；
 - scoped value 不能作为普通返回值从当前 scope 离开；新创建的 `MustScope` 返回值必须在 caller 处立即进入新的 `scoped` binding；
-- compiler 在 binding 成功建立后注册一次静态选择的 `Dispose.dispose(mut self) Unit`；
+- compiler 在 binding 成功建立后注册一次静态选择的 `Dispose.dispose(mut self)`；其省略返回固定为 `Unit`；
 - 对 scoped value 手动调用同一个 `dispose` 是静态错误，避免双重清理。
+
+compiler-known `File`/`Socket` I/O method 是窄化的运行时边界：调用 method 时立刻复制所需 host handle，并把副本交给新 Task 独占；Task 不捕获 Loom scoped value。因而 Task 可以在原 resource block 退出后才被结构化等待，原 resource 仍在 block exit 关闭，Task 副本在完成、取消或 Task 销毁时关闭。复制失败在 typed `try_` 表面形成 `Err(IoError)`；实现不得把 raw descriptor 延迟到首次 resume 才复制，否则 descriptor reuse 会把操作错误地施加到另一个资源。此规则不开放普通 scoped capture，也不增加 clone/borrow/lifetime 源码语法。
+
+`MustScope` 是结构性 obligation：它穿透 tuple、List、TextMap、Option、Result、TaskOutcome、record 与 enum，不能靠 `Result[File, E]` 或其他 aggregate 隐藏。含 obligation 的值不能由普通 `let` 保存、丢弃、传给普通参数或存入 aggregate；pattern 也不能用 `_` 丢弃资源 payload。允许的解包路径是直接 `?` 进入 `scoped`，或在 `match` 成功 arm 中把 pattern binding 立即转入 `scoped`。`Task[T]` 是唯一窄化暂停边界：尚未交付的资源由 runtime Task 拥有，所以 Task 可以存储和 join；`.await` 产生 `T` 后，上述结构性规则立即恢复。这个规则是 compiler-known obligation/consume 检查，不增加通用 move、borrow 或 lifetime 表面。
 
 `standard.resource` 中的 compiler-known concepts：
 
 ```loom
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -197,7 +201,7 @@ let combined = Task.all(taskA, taskB)
 let a, b = combined.await
 ```
 
-compiler-known 外部等待构造器包括 `Task.sleep(milliseconds)`、`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)`，都返回可存储的 `Task[Unit]`。sleep 参数为非负 `Int`；解释器按 deadline 挂起，LLVM 把相对毫秒安全换算为绝对 monotonic nanoseconds 并登记 TIMER `WaitSource`。fd 参数必须适配平台 descriptor 范围；runtime 只借用它直到 readiness/cancel，不取得所有权或负责关闭。固定或动态 join 会先建立全部 Task 再暂停 parent，不把等待串行相加。非法 descriptor、负数、换算/deadline 溢出进入 `RuntimeFault`。标准 `Duration` 与更高层 socket/file API 尚未定案。
+compiler-known 外部等待构造器包括 `Task.sleep(milliseconds)`、`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)`，都返回可存储的 `Task[Unit]`。sleep 参数为非负 `Int`；解释器按 deadline 挂起，LLVM 把相对毫秒安全换算为绝对 monotonic nanoseconds 并登记 TIMER `WaitSource`。fd 参数必须适配平台 descriptor 范围；裸 readiness Task 只借用它直到 readiness/cancel，不取得所有权或负责关闭。固定或动态 join 会先建立全部 Task 再暂停 parent，不把等待串行相加。非法 descriptor、负数、换算/deadline 溢出进入 `RuntimeFault`。`Duration` 是 compiler-known millisecond value；typed file/socket API 及其 handle snapshot、错误与 cleanup 规则见[标准库规范](11-standard-library.md)。
 
 ### 4.2 coroutine ABI
 
@@ -415,4 +419,4 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 - native precise moving heap 在 resume 之间以 Task slots/runtime results 为 roots，追踪 `Value` 与 `ValueNode`，回收不可达对象、复制存活对象并重写指针；Task identity 与 immutable witness metadata 非移动。fixture 直接验证旧/新地址不同和垃圾回收计数；
 - `examples/core03` 以及专用 stored/dynamic join、nested await、取消 cleanup、fd readiness、moving-GC fixtures 均真实通过 check/build/test/source-run/native-run。runtime 全部使用 Rust 实现，不再保留 C++ wait/float runtime。
 
-这关闭的是 C1 executable reference；package/path dependency、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。当前 file/socket 是已执行闭环的最小文本 I/O 表面，不表示完整标准库。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。
+这关闭的是 C1 executable reference；package/HTTPS registry、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。Core 0.3 的最小普通程序标准库还包括 Text/Bytes/Path、TextMap、JSON、typed file/socket I/O 与日志，其权威边界见[标准库规范](11-standard-library.md)。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。

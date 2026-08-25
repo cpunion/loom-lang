@@ -4,7 +4,7 @@
 
 证据等级：C1 executable reference + C3 implementation-controlled repository evidence
 
-日期：2026-08-24
+日期：2026-08-25
 
 本文只安排普通编程语言闭环：源码、静态类型、约束/合同、`concept`、多态、自动内存管理、词法资源清理、异步任务、编译产物和工具链。live、AST 编辑、AOP-like 组合、operator runtime 与所有权语法不进入当前排期。
 
@@ -186,7 +186,7 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 
 ## 13. C1k：module/package/cache
 
-多文件 module、schema-versioned `loom.toml`、path/文件系统 registry dependency、SemVer requirement、optional-dependency feature、SHA-256 `loom.lock`、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。`resolve --update` 显式更新 pin，`--locked` 保证图不漂移；feature 不增加源码 `cfg` 或运行时注册。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
+多文件 module、schema-versioned `loom.toml`、path/文件系统/HTTPS registry dependency、认证发布、可信离线 cache、SemVer requirement、optional-dependency feature、SHA-256 `loom.lock`、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。`resolve --update` 显式更新 pin，`--locked` 保证图不漂移，`--offline` 只使用重新验证过的 immutable bundle；feature 不增加源码 `cfg` 或运行时注册。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
 
 持久缓存已经落地逐 source lossless token/AST、module public-interface、整张 package graph checked MIR（连同稳定 diagnostics）、closed-world reachable LLVM object、最终 native/`.loomi` artifact，以及 macOS dSYM payload。key 包含 compiler/backend/stdlib/ABI 版本、canonical package/dependency/target identity、稳定相对源码路径及内容、reachable function/witness/proof、target triple/data layout、CPU policy、优化、合同、runtime archive、linker 和 debug tool identity。mtime、绝对 checkout 路径、文件遍历顺序和编辑器状态不参与 identity；读取时验证 ref、size、SHA-256，parse 重建源码，checked MIR 重新通过 artifact decoder/MIR validator。损坏只产生 miss，写入采用同目录原子替换。
 
@@ -196,12 +196,25 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 2. public interface/semantic shape/body fingerprint：已接入长驻 host 的 typed-HIR selective body query；声明形状变化安全回退整图；
 3. checked MIR：整图缓存；reachable function body 进入 object fingerprint；
 4. generic/witness：当前 shared generic body，proof/witness edge 进入 reachability fingerprint；未来单态化才新增独立 instance entry；
-5. development/release profile 与显式 target triple/data layout 下的 object：已真实复用；非宿主 triple 可真实发出 relocatable object，跨目标 executable 在缺少匹配 runtime/linker 时 fail closed；
-6. runtime/linker/debug-tool keyed final link：已真实复用。
+5. development/release profile 与显式 target triple/data layout 下的 object：已真实复用；非宿主 triple 可真实发出 relocatable object；跨目标 executable 只有在显式 runtime bundle、linker、triple、data layout、ABI 和 archive digest 全部匹配时才链接，否则 fail closed；
+6. embedded 或外部 runtime bundle、linker executable/version 与 debug-tool keyed final link：已真实复用。
 
 当前明确宣称两层复用：同一长驻 host 的无关 module 不重查 body semantics；跨进程则恢复 validated whole-graph checked MIR，不序列化 typed-HIR body。不可达 private body 修改还可继续复用 object/final link。
 
-## 14. 明确后置
+## 14. C1l：普通程序标准库与发布闭环
+
+范围：
+
+- 不可变、有效 Unicode scalar sequence 的 `Text`，以及显式分离的任意 `Bytes`；
+- portable lexical `Path`、不可变 `TextMap[V]`、有界 canonical JSON；
+- typed async file/TCP socket I/O、稳定 `IoErrorKind` 与 canonical JSON-line logging；
+- 结构性 `MustScope`，包括 wrapper/pattern/argument 边界与 Task 暂存后的直接 scoped 解包；
+- HTTPS registry resolve/publish、credential transport、bundle/cache 全量复核；
+- `loomc runtime export`、目标 runtime bundle、显式 linker 与发布 archive。
+
+`Text` 保持规范名称，不增加 `String`/`str` alias。当前 uniform value tag 只是 C1 backend helper 的临时分派表示；目标 typed lowering 让 concrete `Text` 使用单个 managed pointer，并以 layout descriptor 代替 per-value tag。release workflow 必须真实导出并重新链接宿主 runtime bundle，标准库 fixture 必须在解释器/native 两条路径产生相同值、文件、日志和错误结果。
+
+## 15. 明确后置
 
 - universal `any`、reflection、type registry、dyn downcast/upcast/intersection；
 - stable plugin/dynamic-library/FFI witness ABI；

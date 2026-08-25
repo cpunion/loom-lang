@@ -21,6 +21,7 @@
 - `module`、显式 import 与 public/private 边界；
 - rank-1 基本泛型；
 - 普通 `test`；
+- callable 省略返回类型时固定返回 `Unit`，不做返回类型推断；
 - `type Price = Float where self >= 0` 一类名义受约束类型；
 - proof-classified construction：`Price(10.0)` 静态成立时直接得到 `Price`，未知输入才得到 `Result[Price, ConstraintError]`；
 - proven contract elimination：有独立类型/路径依据的 `requires`、`ensures`、invariant 与 `assert` 不进入 checked MIR，unknown/failing 路径仍保留完整 fault/blame；
@@ -48,7 +49,7 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 - capability/provider 与一般 effect system；
 - 多线程 shared-memory executor、分布式执行和持久化 coroutine；
 - `example`、`scenario`、`property` 等专用验证声明；
-- 网络 registry 发布/认证、composition bundle 与大型工程组合治理；文件系统 registry dependency、lockfile、只激活 optional dependency 的 package feature，以及 bin/test/lib target 已实现。
+- composition bundle 与大型工程组合治理；文件系统/HTTPS registry dependency、认证发布、可信离线缓存、lockfile、只激活 optional dependency 的 package feature，以及 bin/test/lib target 已实现。
 
 普通 `test` 已足够验证当前核心；不会为了未来能力提前保留关键字或运行时模型。
 
@@ -98,7 +99,7 @@ cargo run -p loom-cli -- debug --debugger lldb examples/core01
 
 `loom-lsp` 与 CLI 复用长驻 `AnalysisHost`，现已提供 diagnostics、hover、definition、references、prepare rename/rename、语义 completion、document symbols 和 workspace symbols。引用与重命名按定义身份覆盖跨文件全局声明以及 callable 内的泛型参数、参数和局部变量；源码存在错误时会拒绝生成不完整的引用编辑。
 
-基础多包工程使用 `loom.toml`、path/文件系统 registry dependency、显式 feature 和 bin/test/lib target；manifest 的 `language = "0.3"`（省略时同值）固定源码语义和证明域，并进入 package/artifact/cache identity，未知版本拒绝加载。`loomc resolve` 生成锁定语言版本、registry 版本与 SHA-256 的 `loom.lock`，`--locked` 禁止隐式变更，`resolve --update` 才重新选择最高兼容 SemVer。feature 只激活显式 optional dependency，不做源码 `cfg`、隐式 import 或运行时注册。bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
+基础多包工程使用 `loom.toml`、path/文件系统或 HTTPS registry dependency、显式 feature 和 bin/test/lib target；manifest 的 `language = "0.3"`（省略时同值）固定源码语义和证明域，并进入 package/artifact/cache identity，未知版本拒绝加载。`loomc resolve` 生成锁定语言版本、registry 版本与 SHA-256 的 `loom.lock`，`--locked` 禁止隐式变更，`resolve --update` 才重新选择最高兼容 SemVer；`--offline` 只接受完整复核过的本地 bundle cache。feature 只激活显式 optional dependency，不做源码 `cfg`、隐式 import 或运行时注册。bin/test 可直接闭环，lib target 产出经过完整 MIR 校验的 portable `.loomlib`，不冒充尚未定义的稳定 native/FFI ABI。[application manifest](examples/packages/application/loom.toml) 可直接闭环：
 
 ```sh
 cargo run -p loom-cli -- check --target app examples/packages/application
@@ -109,11 +110,24 @@ cargo run -p loom-cli -- run --target app examples/packages/application
 cargo run -p loom-cli -- build --target utility --output target/utility.loomlib examples/packages/utility
 ```
 
+网络 registry 配置使用 `{ url = "https://…", token-env = "LOOM_REGISTRY_TOKEN" }`；token 只从具名环境变量读取，任何带 token 的明文 HTTP 在发请求前拒绝，认证响应正文也不进入诊断。`loomc publish --registry NAME PATH` 发布确定性 source bundle；下载必须同时通过 index SHA-256、bundle 内嵌 package/version/language identity、路径和大小限制。cache 每次读取都会重新验证原始 bundle digest 与全部物化文件，sidecar 本身不是信任根。无认证 HTTP 仅允许 literal loopback 地址用于本地测试。
+
 源码命令默认使用项目内 `target/loom/cache/v2` 的内容寻址缓存；`--cache-dir DIR` 可改位置，`--no-cache` 可做冷路径对照。`loomc cache stat` 可查看引用、blob 和可回收空间，`loomc cache prune` 只清理显式版本目录中的损坏引用与孤立 blob。缓存当前真实复用逐文件 lossless token/AST、带 package identity 的 canonical module public-interface、经过 decoder 与 MIR validator 的整图 checked MIR、按 root/witness reachability 裁剪的 LLVM target object，以及最终 native/`.loomi` artifact。不可达私有函数的等长实现修改会使 checked MIR miss，但可继续命中 object/final-link；损坏 ref/blob 只会安全 miss并重建。
 
-`llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。`standard.time.milliseconds` 提供平台无关 `Duration`；`standard.file.open_read/create` 和 `standard.net.connect` 返回真实异步 `File`/`Socket` task，这两类 `MustScope` 资源由块级 `scoped` 自动关闭。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、scheduler、reactor、I/O 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、CLI 和 LSP 的回归证据。
+`llvm` 是默认 backend；`--backend interpreter` 显式选择 `.loomi` 对照路径。把命令中的 `core01` 换成 `core02` 即走 static concept、associated type、readonly/mutable interface dispatch；换成 `core03` 即走 scoped/defer、后缀 `.await`、cleanup-aware `Result` 后缀 `?`、timer/fd readiness、可存储单 Task、静态 tuple 与动态 list join，以及 `all/settled/any/race`。Core 0.3 标准库还提供 `Text`/`Bytes`/`Path`、不可变 `TextMap[V]`、有界 canonical JSON、typed async file/socket I/O 与 canonical JSON-line logging。`File`/`Socket` 是 `MustScope`，由最内层块的 `scoped` 自动关闭。Rust native runtime 提供平台无关 WaitSource/Registration ABI、macOS kqueue/Linux epoll reactor、真正返回 `Pending` 的单线程 scheduler、取消/drain 和精确 moving GC；LLVM 的 numbered state dispatch 可恢复线性表达式及 if/match/block 内的 await。浮点 codec、标准值、scheduler、reactor、I/O 与 GC 均在同一个 Rust static runtime 中，不再编译 C++ runtime。`cargo test --workspace --all-targets` 固化 parser、静态语义、MIR 校验、LLVM verifier、native artifact、runtime reactor/GC、标准库双后端 fixture、CLI 和 LSP 的回归证据。
 
-LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；profile、规范化 target triple 与 data layout 都进入 object/cache identity。`loomc build --target-triple aarch64-unknown-linux-gnu --emit object ...` 会用对应 LLVM TargetMachine 产生真实 relocatable object；非宿主 executable 因尚无对应 Rust runtime archive/linker 而以 `CrossLinkUnavailable` 拒绝，不会误链宿主 runtime。
+LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；profile、规范化 target triple 与 data layout 都进入 object/cache identity。`loomc build --target-triple aarch64-unknown-linux-gnu --emit object ...` 会用对应 LLVM TargetMachine 产生真实 relocatable object。executable 交叉链接必须同时显式提供由目标平台 Loom 工具导出的 runtime bundle 和目标 linker；缺少它们仍以 `CrossLinkUnavailable` 拒绝，bundle 的 triple/data layout/runtime ABI 或 archive digest 不匹配也会在调用 linker 前失败，绝不误链宿主 runtime：
+
+```sh
+# 在目标平台工具安装中导出；发布包也自带该宿主平台的 runtime/ 目录。
+loomc runtime export --output target/loom/runtime
+loomc --target-triple aarch64-unknown-linux-gnu \
+  --runtime-bundle /opt/loom/aarch64-linux-runtime \
+  --linker aarch64-linux-gnu-clang \
+  build --output target/app examples/core01
+```
+
+runtime manifest、runtime archive、linker executable bytes 与 version identity 都进入 final-artifact cache key；bundle 目录只允许 manifest 声明的 bounded regular archive，不接受额外文件、symlink 或路径穿越。
 
 LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。长驻 `AnalysisHost` 已按 module interface/semantic-shape/body 指纹复用未改 module 的 typed-HIR body semantics；任一声明形状变化会安全退回整图检查。跨进程仍以 validated checked-MIR 整图缓存为边界，不声称序列化 typed-HIR body。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。
 
