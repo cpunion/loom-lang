@@ -67,13 +67,36 @@ test fn list_result_lifetime() {
     let print = llvm
         .find("call void @loom.runtime.print")
         .expect("root must consume its result");
-    let destroy = llvm
-        .find("call void @loom_executor_destroy")
+    let destroy = llvm[print..]
+        .find("call i32 @loom_runtime_destroy_v1")
+        .map(|offset| print + offset)
         .expect("allocating root must release its runtime");
     assert!(
         print < destroy,
         "root runtime was destroyed before result use:\n{llvm}"
     );
+    assert!(llvm.contains("call ptr @loom_runtime_create_v1"), "{llvm}");
+    assert!(
+        llvm.contains("call i32 @loom_runtime_activate_v1"),
+        "{llvm}"
+    );
+    assert!(
+        llvm.contains("call i32 @loom_runtime_deactivate_v1"),
+        "{llvm}"
+    );
+    assert!(llvm.contains("@loom_context_raise_fault_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_create("), "{llvm}");
+    assert!(
+        !llvm.contains("@loom_executor_create_for_runtime_v1"),
+        "{llvm}"
+    );
+    assert!(!llvm.contains("@loom_gc_activate_executor"), "{llvm}");
+    assert!(!llvm.contains("@loom_gc_deactivate_executor"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_raise_fault"), "{llvm}");
+    assert!(llvm.contains("runtime.root.failed"), "{llvm}");
+    assert!(llvm.contains("runtime.root.activation.failed"), "{llvm}");
+    assert!(llvm.contains("runtime.root.activation.destroy"), "{llvm}");
 
     let output = Command::new(executable)
         .output()
@@ -95,12 +118,18 @@ test fn list_result_lifetime() {
     let inspect = llvm
         .find("test.tag")
         .expect("test harness must inspect its root result");
-    let destroy = llvm
-        .find("call void @loom_executor_destroy")
+    let destroy = llvm[inspect..]
+        .find("call i32 @loom_runtime_destroy_v1")
+        .map(|offset| inspect + offset)
         .expect("allocating test root must release its runtime");
     assert!(
         inspect < destroy,
         "test runtime was destroyed before result inspection:\n{llvm}"
+    );
+    assert!(!llvm.contains("@loom_executor_create("), "{llvm}");
+    assert!(
+        !llvm.contains("@loom_executor_create_for_runtime_v1"),
+        "{llvm}"
     );
     let output = Command::new(tests)
         .output()
@@ -300,7 +329,7 @@ pub fn main() Unit {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn scalar_int_abi_is_recursive_checked_and_compatible_at_the_root() {
+fn scalar_int_abi_is_recursive_checked_and_uses_runtime_at_the_root() {
     let source = r"module scalar_int
 
 fn fibonacci(value Int) Int {
@@ -367,6 +396,13 @@ pub fn main() Int {
         "{contracted}"
     );
     assert!(llvm.contains("define internal i32 @loom.fn.2.scalar_int_main"));
+    assert!(llvm.contains("call ptr @loom_runtime_create_v1"), "{llvm}");
+    assert!(
+        llvm.contains("call i32 @loom_runtime_activate_v1"),
+        "{llvm}"
+    );
+    assert!(llvm.contains("@loom_context_raise_fault_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_"), "{llvm}");
 
     let output = Command::new(executable)
         .output()
@@ -472,8 +508,17 @@ pub fn main() Int {
     assert!(!identity.lines().next().unwrap_or_default().contains("ptr"));
     assert!(!choose.lines().next().unwrap_or_default().contains("ptr"));
     assert!(!main.lines().next().unwrap_or_default().contains("ptr"));
-    assert!(!llvm.contains("@loom_executor_create"), "{llvm}");
+    assert!(!llvm.contains("@loom_runtime_create_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_runtime_activate_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_runtime_destroy_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_create("), "{llvm}");
+    assert!(
+        !llvm.contains("@loom_executor_create_for_runtime_v1"),
+        "{llvm}"
+    );
     assert!(!llvm.contains("@loom_gc_activate_executor"), "{llvm}");
+    assert!(!llvm.contains("@loom_gc_deactivate_executor"), "{llvm}");
+    assert!(!llvm.contains("@loom_executor_raise_fault"), "{llvm}");
 
     let output = Command::new(executable)
         .output()
@@ -1218,6 +1263,38 @@ fn core_examples_compile_and_run_as_native_programs() {
             assert!(ir.contains("@loom_join_create"), "{ir}");
             assert!(ir.contains("@loom_wait_now_ns"), "{ir}");
             assert!(ir.contains("state.resume."), "{ir}");
+            assert!(ir.contains("call ptr @loom_runtime_create_v1"), "{ir}");
+            assert!(ir.contains("call i32 @loom_runtime_activate_v1"), "{ir}");
+            assert!(
+                ir.contains("call ptr @loom_executor_create_for_runtime_v1"),
+                "{ir}"
+            );
+            assert!(ir.contains("call void @loom_executor_destroy"), "{ir}");
+            assert!(ir.contains("call i32 @loom_runtime_deactivate_v1"), "{ir}");
+            assert!(ir.contains("call i32 @loom_runtime_destroy_v1"), "{ir}");
+            assert!(ir.contains("@loom_context_raise_fault_v1"), "{ir}");
+            assert!(!ir.contains("@loom_executor_create("), "{ir}");
+            assert!(!ir.contains("@loom_gc_activate_executor"), "{ir}");
+            assert!(!ir.contains("@loom_gc_deactivate_executor"), "{ir}");
+            assert!(!ir.contains("@loom_executor_raise_fault"), "{ir}");
+            assert!(ir.contains("executor.root.failed"), "{ir}");
+            assert!(ir.contains("executor.root.failure.deactivate"), "{ir}");
+            assert!(ir.contains("executor.root.failure.destroy.runtime"), "{ir}");
+
+            let executor_destroy = ir
+                .rfind("call void @loom_executor_destroy")
+                .expect("async root destroys its executor");
+            let teardown = &ir[executor_destroy..];
+            let runtime_deactivate = teardown
+                .find("call i32 @loom_runtime_deactivate_v1")
+                .expect("async root deactivates its runtime");
+            let runtime_destroy = teardown
+                .find("call i32 @loom_runtime_destroy_v1")
+                .expect("async root destroys its runtime");
+            assert!(
+                runtime_deactivate < runtime_destroy,
+                "async root teardown order is invalid: {ir}"
+            );
         }
 
         let tests = directory.path().join("tests");

@@ -519,6 +519,29 @@ enum ScalarIntAbi {
     Fallible,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RootContextPlan {
+    None,
+    Runtime,
+    Executor,
+}
+
+#[derive(Clone, Copy)]
+struct RootContext<'ctx> {
+    plan: RootContextPlan,
+    runtime: PointerValue<'ctx>,
+    executor: PointerValue<'ctx>,
+}
+
+impl<'ctx> RootContext<'ctx> {
+    fn hidden(self) -> PointerValue<'ctx> {
+        match self.plan {
+            RootContextPlan::None | RootContextPlan::Runtime => self.runtime,
+            RootContextPlan::Executor => self.executor,
+        }
+    }
+}
+
 struct Backend<'ctx, 'program> {
     context: &'ctx Context,
     program: &'program Program,
@@ -2738,13 +2761,45 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_executor_create(&self) -> FunctionValue<'ctx> {
+    fn native_runtime_create(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_executor_create")
+            .get_function("loom_runtime_create_v1")
             .unwrap_or_else(|| {
                 let function_type = self.ptr_type.fn_type(&[], false);
                 self.module
-                    .add_function("loom_executor_create", function_type, None)
+                    .add_function("loom_runtime_create_v1", function_type, None)
+            })
+    }
+
+    fn native_runtime_activate(&self) -> FunctionValue<'ctx> {
+        self.native_runtime_status_function("loom_runtime_activate_v1")
+    }
+
+    fn native_runtime_deactivate(&self) -> FunctionValue<'ctx> {
+        self.native_runtime_status_function("loom_runtime_deactivate_v1")
+    }
+
+    fn native_runtime_destroy(&self) -> FunctionValue<'ctx> {
+        self.native_runtime_status_function("loom_runtime_destroy_v1")
+    }
+
+    fn native_runtime_status_function(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self
+                .context
+                .i32_type()
+                .fn_type(&[self.ptr_type.into()], false);
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
+    fn native_executor_create_for_runtime(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_create_for_runtime_v1")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_executor_create_for_runtime_v1", function_type, None)
             })
     }
 
@@ -2975,9 +3030,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_executor_raise_fault(&self) -> FunctionValue<'ctx> {
+    fn native_context_raise_fault(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_executor_raise_fault")
+            .get_function("loom_context_raise_fault_v1")
             .unwrap_or_else(|| {
                 let function_type = self.context.i32_type().fn_type(
                     &[
@@ -2994,7 +3049,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     false,
                 );
                 self.module
-                    .add_function("loom_executor_raise_fault", function_type, None)
+                    .add_function("loom_context_raise_fault_v1", function_type, None)
             })
     }
 
@@ -3158,7 +3213,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
 
     fn raise_fault(
         &self,
-        executor: PointerValue<'ctx>,
+        context: PointerValue<'ctx>,
         code: &str,
         message: &str,
         display: &str,
@@ -3182,9 +3237,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
         self.builder
             .build_call(
-                self.native_executor_raise_fault(),
+                self.native_context_raise_fault(),
                 &[
-                    executor.into(),
+                    context.into(),
                     code_data.as_pointer_value().into(),
                     self.i64_type.const_int(code.len() as u64, false).into(),
                     message_data.as_pointer_value().into(),
@@ -3497,109 +3552,190 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
-    fn root_needs_executor(&self, root: FunctionId) -> Result<bool, CodegenError> {
+    fn root_context_plan(&self, root: FunctionId) -> Result<RootContextPlan, CodegenError> {
         let requirements = self.requirements.function(root)?.invocation;
         // The first context-free root slice is intentionally restricted to a
         // private typed ABI whose wrapper only unboxes/boxes scalar words.
-        // Compatibility bodies may hide representation allocations even when
-        // their source operations look pure, so they retain the executor-owned
-        // heap until their typed layout exists.
-        Ok(
-            self.scalar_int_abis.get(&root) != Some(&ScalarIntAbi::PureNoFault)
-                || !requirements.is_pure_no_fault(),
-        )
-    }
-
-    fn native_gc_activate_executor(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_gc_activate_executor")
-            .unwrap_or_else(|| {
-                let function_type = self
-                    .context
-                    .i32_type()
-                    .fn_type(&[self.ptr_type.into()], false);
-                self.module
-                    .add_function("loom_gc_activate_executor", function_type, None)
-            })
-    }
-
-    fn native_gc_deactivate_executor(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_gc_deactivate_executor")
-            .unwrap_or_else(|| {
-                let function_type = self
-                    .context
-                    .i32_type()
-                    .fn_type(&[self.ptr_type.into()], false);
-                self.module
-                    .add_function("loom_gc_deactivate_executor", function_type, None)
-            })
-    }
-
-    fn create_root_executor(&self, required: bool) -> Result<PointerValue<'ctx>, CodegenError> {
-        if !required {
-            return Ok(self.ptr_type.const_null());
+        // Universal Value bodies may hide representation allocations even
+        // when their source operations look pure, so they retain a standalone
+        // runtime until their typed layout exists.
+        if self.scalar_int_abis.get(&root) == Some(&ScalarIntAbi::PureNoFault)
+            && requirements.is_pure_no_fault()
+        {
+            return Ok(RootContextPlan::None);
         }
-        let executor = call_pointer(
+        if requirements.needs_executor()
+            || self
+                .program
+                .function(root)
+                .is_some_and(|function| function.is_async)
+        {
+            Ok(RootContextPlan::Executor)
+        } else {
+            Ok(RootContextPlan::Runtime)
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_root_context(
+        &self,
+        plan: RootContextPlan,
+    ) -> Result<RootContext<'ctx>, CodegenError> {
+        let null = self.ptr_type.const_null();
+        if plan == RootContextPlan::None {
+            return Ok(RootContext {
+                plan,
+                runtime: null,
+                executor: null,
+            });
+        }
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_parent)
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "root has no function"))?;
+        let runtime = call_pointer(
             &self.builder,
-            self.native_executor_create(),
+            self.native_runtime_create(),
             &[],
-            "executor.root",
+            "runtime.root",
         )?;
-        let ready = self.context.append_basic_block(
-            self.builder
-                .get_insert_block()
-                .and_then(inkwell::basic_block::BasicBlock::get_parent)
-                .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "root has no function"))?,
-            "executor.root.ready",
-        );
-        let failed = self.context.append_basic_block(
-            ready.get_parent().ok_or_else(|| {
-                CodegenError::new("LlvmBuilderFailed", "root block has no function")
-            })?,
-            "executor.root.failed",
-        );
+        let ready = self
+            .context
+            .append_basic_block(function, "runtime.root.ready");
+        let failed = self
+            .context
+            .append_basic_block(function, "runtime.root.failed");
         let exists = self
             .builder
-            .build_is_not_null(executor, "executor.root.exists")
+            .build_is_not_null(runtime, "runtime.root.exists")
             .map_err(builder_error)?;
         self.builder
             .build_conditional_branch(exists, ready, failed)
             .map_err(builder_error)?;
         self.builder.position_at_end(failed);
+        self.puts("RuntimeFault: runtime creation failed")?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_int(6, false)))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(ready);
+        let activation = call_int(
+            &self.builder,
+            self.native_runtime_activate(),
+            &[runtime.into()],
+            "runtime.root.activate",
+        )?;
+        let activated = self
+            .context
+            .append_basic_block(function, "runtime.root.activated");
+        let activation_failed = self
+            .context
+            .append_basic_block(function, "runtime.root.activation.failed");
+        let activation_ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                activation,
+                self.context.i32_type().const_zero(),
+                "runtime.root.activation.ok",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(activation_ok, activated, activation_failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(activation_failed);
+        self.builder
+            .build_call(
+                self.native_runtime_destroy(),
+                &[runtime.into()],
+                "runtime.root.activation.destroy",
+            )
+            .map_err(builder_error)?;
+        self.puts("RuntimeFault: runtime activation failed")?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_int(6, false)))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(activated);
+        if plan == RootContextPlan::Runtime {
+            return Ok(RootContext {
+                plan,
+                runtime,
+                executor: null,
+            });
+        }
+
+        let executor = call_pointer(
+            &self.builder,
+            self.native_executor_create_for_runtime(),
+            &[runtime.into()],
+            "executor.root",
+        )?;
+        let executor_ready = self
+            .context
+            .append_basic_block(function, "executor.root.ready");
+        let executor_failed = self
+            .context
+            .append_basic_block(function, "executor.root.failed");
+        let executor_exists = self
+            .builder
+            .build_is_not_null(executor, "executor.root.exists")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(executor_exists, executor_ready, executor_failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(executor_failed);
+        self.builder
+            .build_call(
+                self.native_runtime_deactivate(),
+                &[runtime.into()],
+                "executor.root.failure.deactivate",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_call(
+                self.native_runtime_destroy(),
+                &[runtime.into()],
+                "executor.root.failure.destroy.runtime",
+            )
+            .map_err(builder_error)?;
         self.puts("RuntimeFault: executor creation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
-        self.builder.position_at_end(ready);
-        self.builder
-            .build_call(
-                self.native_gc_activate_executor(),
-                &[executor.into()],
-                "executor.root.activate",
-            )
-            .map_err(builder_error)?;
-        Ok(executor)
+
+        self.builder.position_at_end(executor_ready);
+        Ok(RootContext {
+            plan,
+            runtime,
+            executor,
+        })
     }
 
-    fn destroy_root_executor(
-        &self,
-        executor: PointerValue<'ctx>,
-        required: bool,
-    ) -> Result<(), CodegenError> {
-        if required {
+    fn destroy_root_context(&self, context: RootContext<'ctx>) -> Result<(), CodegenError> {
+        if context.plan == RootContextPlan::Executor {
             self.builder
                 .build_call(
-                    self.native_gc_deactivate_executor(),
-                    &[executor.into()],
-                    "executor.root.deactivate",
+                    self.native_executor_destroy(),
+                    &[context.executor.into()],
+                    "executor.root.destroy",
+                )
+                .map_err(builder_error)?;
+        }
+        if context.plan != RootContextPlan::None {
+            self.builder
+                .build_call(
+                    self.native_runtime_deactivate(),
+                    &[context.runtime.into()],
+                    "runtime.root.deactivate",
                 )
                 .map_err(builder_error)?;
             self.builder
                 .build_call(
-                    self.native_executor_destroy(),
-                    &[executor.into()],
-                    "executor.root.destroy",
+                    self.native_runtime_destroy(),
+                    &[context.runtime.into()],
+                    "runtime.root.destroy",
                 )
                 .map_err(builder_error)?;
         }
@@ -3640,12 +3776,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .ok_or_else(|| {
                         CodegenError::new("NoCompilationRoots", "run harness has no root")
                     })?;
-                let needs_executor = self.root_needs_executor(root)?;
-                let executor = self.create_root_executor(needs_executor)?;
+                let context = self.create_root_context(self.root_context_plan(root)?)?;
                 let mut status = call_int(
                     &self.builder,
                     self.functions[&root],
-                    &[result.into(), null.into(), null.into(), executor.into()],
+                    &[
+                        result.into(),
+                        null.into(),
+                        null.into(),
+                        context.hidden().into(),
+                    ],
                     "run",
                 )?;
                 if self
@@ -3653,7 +3793,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .function(root)
                     .is_some_and(|function| function.is_async)
                 {
-                    status = self.drive_async_root(status, result, executor)?;
+                    status = self.drive_async_root(status, result, context.executor)?;
                 }
                 let success = self.context.append_basic_block(main, "run.success");
                 let failure = self.context.append_basic_block(main, "run.failure");
@@ -3681,12 +3821,12 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 // owned by this execution context. Consume it before tearing
                 // that context down; destroying first would leave print with
                 // dangling aggregate/Text/container payloads.
-                self.destroy_root_executor(executor, needs_executor)?;
+                self.destroy_root_context(context)?;
                 self.builder
                     .build_return(Some(&self.context.i32_type().const_zero()))
                     .map_err(builder_error)?;
                 self.builder.position_at_end(failure);
-                self.destroy_root_executor(executor, needs_executor)?;
+                self.destroy_root_context(context)?;
                 self.builder
                     .build_return(Some(&status))
                     .map_err(builder_error)?;
@@ -3700,12 +3840,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_store(failed, self.context.i32_type().const_zero())
                     .map_err(builder_error)?;
                 for root in self.roots.functions() {
-                    let needs_executor = self.root_needs_executor(*root)?;
-                    let executor = self.create_root_executor(needs_executor)?;
+                    let context = self.create_root_context(self.root_context_plan(*root)?)?;
                     let mut status = call_int(
                         &self.builder,
                         self.functions[root],
-                        &[result.into(), null.into(), null.into(), executor.into()],
+                        &[
+                            result.into(),
+                            null.into(),
+                            null.into(),
+                            context.hidden().into(),
+                        ],
                         "test",
                     )?;
                     if self
@@ -3713,7 +3857,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         .function(*root)
                         .is_some_and(|function| function.is_async)
                     {
-                        status = self.drive_async_root(status, result, executor)?;
+                        status = self.drive_async_root(status, result, context.executor)?;
                     }
                     let status_ok = self
                         .builder
@@ -3732,7 +3876,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     // `test_value_passed` may inspect a heap-backed root
                     // result. Finish that inspection before releasing the
                     // per-test execution context.
-                    self.destroy_root_executor(executor, needs_executor)?;
+                    self.destroy_root_context(context)?;
                     let pass = self.context.append_basic_block(main, "test.pass");
                     let fail = self.context.append_basic_block(main, "test.fail");
                     let next = self.context.append_basic_block(main, "test.next");
@@ -4233,7 +4377,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     output: PointerValue<'ctx>,
     scalar_int_abi: Option<ScalarIntAbi>,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
-    executor: PointerValue<'ctx>,
+    runtime_context: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
     loop_depth: Cell<u32>,
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
@@ -4265,7 +4409,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let output = parameter_pointer(function, 0)?;
         let arguments = parameter_pointer(function, 1)?;
         let mut witness_argument = parameter_pointer(function, 2)?;
-        let executor = parameter_pointer(function, 3)?;
+        let runtime_context = parameter_pointer(function, 3)?;
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
         backend.builder.position_at_end(entry);
@@ -4355,7 +4499,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             output,
             scalar_int_abi: None,
             witness_parameters,
-            executor,
+            runtime_context,
             task: None,
             loop_depth: Cell::new(0),
             resume_blocks: BTreeMap::new(),
@@ -4391,10 +4535,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         let function = backend.scalar_int_functions[&id];
         let abi = backend.scalar_int_abis[&id];
-        let executor = if abi == ScalarIntAbi::Fallible {
-            let executor_index = u32::try_from(source.params.len())
+        let runtime_context = if abi == ScalarIntAbi::Fallible {
+            let context_index = u32::try_from(source.params.len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
-            parameter_pointer(function, executor_index)?
+            parameter_pointer(function, context_index)?
         } else {
             backend.ptr_type.const_null()
         };
@@ -4488,7 +4632,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             output,
             scalar_int_abi: Some(abi),
             witness_parameters: BTreeMap::new(),
-            executor,
+            runtime_context,
             task: None,
             loop_depth: Cell::new(0),
             resume_blocks: BTreeMap::new(),
@@ -4726,7 +4870,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             output,
             scalar_int_abi: None,
             witness_parameters,
-            executor,
+            runtime_context: executor,
             task: Some(task),
             loop_depth: Cell::new(0),
             resume_blocks,
@@ -5593,7 +5737,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let suspend = call_int(
             &self.backend.builder,
             self.backend.native_task_suspend_value(),
-            &[self.executor.into(), task.into(), awaited.into()],
+            &[self.runtime_context.into(), task.into(), awaited.into()],
             "task.value.suspend",
         )?;
         let invalid = self
@@ -5677,7 +5821,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ],
             "task.join.write.result",
         )?;
-        self.propagate_runtime_status(write, self.executor, "task.join.write.result")?;
+        self.propagate_runtime_status(write, self.runtime_context, "task.join.write.result")?;
         Ok(true)
     }
 
@@ -5714,7 +5858,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let task = call_pointer(
             &self.backend.builder,
             self.backend.native_task_from_wait_source(),
-            &[self.executor.into(), source.into()],
+            &[self.runtime_context.into(), source.into()],
             "sleep.task",
         )?;
         let missing = self
@@ -5781,7 +5925,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let task = call_pointer(
             &self.backend.builder,
             self.backend.native_task_from_wait_source(),
-            &[self.executor.into(), source.into()],
+            &[self.runtime_context.into(), source.into()],
             "fd.task",
         )?;
         let missing = self
@@ -5824,7 +5968,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &self.backend.builder,
             self.backend.native_join_create(),
             &[
-                self.executor.into(),
+                self.runtime_context.into(),
                 self.backend
                     .context
                     .i32_type()
@@ -5863,7 +6007,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &[join.into(), list.into()],
                 "task.join.add.list",
             )?;
-            self.propagate_runtime_status(status, self.executor, "task.join.add.list")?;
+            self.propagate_runtime_status(status, self.runtime_context, "task.join.add.list")?;
         } else {
             for argument in arguments {
                 let value = self.alloc_value("task.join.argument");
@@ -5882,7 +6026,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &[join.into(), task.into()],
                     "task.join.add.task",
                 )?;
-                self.propagate_runtime_status(status, self.executor, "task.join.add.task")?;
+                self.propagate_runtime_status(status, self.runtime_context, "task.join.add.task")?;
             }
         }
         let task = call_pointer(
@@ -5951,7 +6095,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         result: PointerValue<'ctx>,
     ) -> Result<CompletionWait<'ctx>, CodegenError> {
         let frame = self.alloc_coroutine_frame(state, result)?;
-        let executor = self.executor;
+        let executor = self.runtime_context;
         let source = self.alloc_completion_wait_source()?;
         let registration =
             self.alloc_temporary(self.backend.registration_type, "wait.registration")?;
@@ -6013,14 +6157,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &self.backend.builder,
             self.backend.native_executor_register(),
             &[
-                self.executor.into(),
+                self.runtime_context.into(),
                 source.into(),
                 frame.into(),
                 registration.into(),
             ],
             "timer.register",
         )?;
-        self.propagate_runtime_status(register_status, self.executor, "timer.register")?;
+        self.propagate_runtime_status(register_status, self.runtime_context, "timer.register")?;
 
         let pending = self.append_block("coroutine.pending.timer");
         self.backend.branch(pending)?;
@@ -6030,14 +6174,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &self.backend.builder,
             self.backend.native_executor_wait(),
             &[
-                self.executor.into(),
+                self.runtime_context.into(),
                 self.backend.i64_type.const_int(u64::MAX, false).into(),
                 ready_count.into(),
             ],
             "timer.wait",
         )?;
-        self.propagate_runtime_status(wait_status, self.executor, "timer.wait")?;
-        self.consume_ready_frame(self.executor, frame, READY_EVENT_TIMER)?;
+        self.propagate_runtime_status(wait_status, self.runtime_context, "timer.wait")?;
+        self.consume_ready_frame(self.runtime_context, frame, READY_EVENT_TIMER)?;
         self.emit_constant(&Constant::Unit, destination)?;
         Ok(true)
     }
@@ -6087,14 +6231,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &self.backend.builder,
                 self.backend.native_executor_register(),
                 &[
-                    self.executor.into(),
+                    self.runtime_context.into(),
                     source.into(),
                     frame.into(),
                     registration.into(),
                 ],
                 "sleep.join.register",
             )?;
-            self.propagate_runtime_status(status, self.executor, "sleep.join.register")?;
+            self.propagate_runtime_status(status, self.runtime_context, "sleep.join.register")?;
         }
 
         for _ in tasks {
@@ -6107,14 +6251,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &self.backend.builder,
                 self.backend.native_executor_wait(),
                 &[
-                    self.executor.into(),
+                    self.runtime_context.into(),
                     self.backend.i64_type.const_int(u64::MAX, false).into(),
                     ready_count.into(),
                 ],
                 "sleep.join.wait",
             )?;
-            self.propagate_runtime_status(status, self.executor, "sleep.join.wait")?;
-            self.consume_ready_frame(self.executor, frame, READY_EVENT_TIMER)?;
+            self.propagate_runtime_status(status, self.runtime_context, "sleep.join.wait")?;
+            self.consume_ready_frame(self.runtime_context, frame, READY_EVENT_TIMER)?;
         }
 
         let values = tasks
@@ -6520,7 +6664,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn propagate_runtime_status(
         &self,
         status: IntValue<'ctx>,
-        _executor: PointerValue<'ctx>,
+        _runtime_context: PointerValue<'ctx>,
         name: &str,
     ) -> Result<(), CodegenError> {
         let success = self.append_block(&format!("{name}.success"));
@@ -6950,8 +7094,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         synchronous_display: &str,
         detail: &str,
     ) -> Result<(), CodegenError> {
-        self.backend
-            .raise_fault(self.executor, code, message, synchronous_display, detail)
+        self.backend.raise_fault(
+            self.runtime_context,
+            code,
+            message,
+            synchronous_display,
+            detail,
+        )
     }
 
     fn failure_status(&self) -> IntValue<'ctx> {
@@ -7923,7 +8072,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     destination.into(),
                     argument_head.into(),
                     witness_head.into(),
-                    self.executor.into(),
+                    self.runtime_context.into(),
                 ],
                 "call",
             )?
@@ -7937,7 +8086,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         destination.into(),
                         argument_head.into(),
                         witness_head.into(),
-                        self.executor.into(),
+                        self.runtime_context.into(),
                     ],
                     "dyn.call",
                 )
@@ -7994,7 +8143,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "integer.call",
             )?
         } else {
-            call_arguments.push(self.executor.into());
+            call_arguments.push(self.runtime_context.into());
             let (status, scalar) = call_scalar_int(
                 &self.backend.builder,
                 self.backend.scalar_int_functions[&function],
@@ -9667,7 +9816,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
-                    &[self.executor.into(), data.into(), length.into()],
+                    &[self.runtime_context.into(), data.into(), length.into()],
                     "file.task",
                 )?;
                 self.store_io_task(task, destination, "FileTaskAllocationFault")?;
@@ -9691,7 +9840,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
-                    &[self.executor.into(), descriptor.into()],
+                    &[self.runtime_context.into(), descriptor.into()],
                     "io.read.task",
                 )?;
                 self.store_io_task(task, destination, "IoTaskAllocationFault")?;
@@ -9717,7 +9866,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &self.backend.builder,
                     function,
                     &[
-                        self.executor.into(),
+                        self.runtime_context.into(),
                         descriptor.into(),
                         data.into(),
                         length.into(),
@@ -9763,7 +9912,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &self.backend.builder,
                     function,
                     &[
-                        self.executor.into(),
+                        self.runtime_context.into(),
                         data.into(),
                         length.into(),
                         port.into(),
@@ -9777,7 +9926,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_io_close(),
-                    &[self.executor.into(), (*resource).into()],
+                    &[self.runtime_context.into(), (*resource).into()],
                     "io.close",
                 )?;
                 let invalid = self

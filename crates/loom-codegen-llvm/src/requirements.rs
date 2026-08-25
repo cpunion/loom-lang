@@ -55,9 +55,8 @@ impl RuntimeRequirements {
         self.0 & Self::MAY_ALLOCATE_BIT != 0
     }
 
-    #[cfg(test)]
     #[must_use]
-    const fn needs_executor(self) -> bool {
+    pub(crate) const fn needs_executor(self) -> bool {
         self.0 & Self::NEEDS_EXECUTOR_BIT != 0
     }
 }
