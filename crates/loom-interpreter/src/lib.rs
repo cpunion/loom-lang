@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_FUEL: u64 = 1_000_000;
 const DEFAULT_MAX_DEPTH: u32 = 256;
+const SOCKET_IO_BUDGET: usize = 64 * 1024;
+const SOCKET_REACTOR_SLICE: Duration = Duration::from_millis(10);
 
 type HostIoJob = Box<dyn FnOnce() + Send + 'static>;
 
@@ -412,6 +414,41 @@ struct HostIoError {
     message: String,
 }
 
+enum SocketIoOperation {
+    Read { bytes: Vec<u8> },
+    Write { bytes: Vec<u8>, offset: usize },
+}
+
+struct PendingSocketIo {
+    socket: TcpStream,
+    registration: loom_runtime::WaitToken,
+    operation: SocketIoOperation,
+    fallible: bool,
+    span: Span,
+}
+
+enum SocketIoPoll {
+    Pending,
+    Completed(Value),
+    Failed(std::io::Error),
+}
+
+impl SocketIoOperation {
+    const fn interests(&self) -> u32 {
+        match self {
+            Self::Read { .. } => loom_runtime::WAIT_READABLE,
+            Self::Write { .. } => loom_runtime::WAIT_WRITABLE,
+        }
+    }
+
+    const fn fault_code(&self) -> &'static str {
+        match self {
+            Self::Read { .. } => "SocketReadFault",
+            Self::Write { .. } => "SocketWriteFault",
+        }
+    }
+}
+
 enum JsonConversionFailure {
     Invalid(ExecutionFailure),
     DepthLimit,
@@ -516,6 +553,8 @@ pub struct Interpreter<'program> {
     next_resource: u64,
     host_io_sender: mpsc::Sender<HostIoCompletion>,
     host_io_receiver: mpsc::Receiver<HostIoCompletion>,
+    socket_reactor: Option<loom_runtime::WaitSet>,
+    socket_io: BTreeMap<u64, PendingSocketIo>,
 }
 
 impl<'program> Interpreter<'program> {
@@ -547,7 +586,14 @@ impl<'program> Interpreter<'program> {
             next_resource: 0,
             host_io_sender,
             host_io_receiver,
+            socket_reactor: loom_runtime::WaitSet::new().ok(),
+            socket_io: BTreeMap::new(),
         }
+    }
+
+    fn reset_socket_executor(&mut self) {
+        self.socket_io.clear();
+        self.socket_reactor = loom_runtime::WaitSet::new().ok();
     }
 
     /// Supplies arguments visible through `standard.process.arguments`.
@@ -574,6 +620,7 @@ impl<'program> Interpreter<'program> {
             let (host_io_sender, host_io_receiver) = mpsc::channel();
             self.host_io_sender = host_io_sender;
             self.host_io_receiver = host_io_receiver;
+            self.reset_socket_executor();
             self.frames.clear();
             self.tasks.clear();
             self.ready.clear();
@@ -723,7 +770,10 @@ impl<'program> Interpreter<'program> {
     }
 
     fn wait_for_work(&mut self) -> bool {
-        if self.drain_host_io_completions() || !self.ready.is_empty() {
+        if self.drain_host_io_completions()
+            || self.poll_socket_io(Some(Duration::ZERO))
+            || !self.ready.is_empty()
+        {
             return true;
         }
         let deadline = self
@@ -738,11 +788,22 @@ impl<'program> Interpreter<'program> {
             .tasks
             .values()
             .any(|task| task.host_io && matches!(task.status, TaskStatus::Waiting));
-        if deadline.is_none() && !host_io_pending {
+        let socket_io_pending = !self.socket_io.is_empty();
+        if deadline.is_none() && !host_io_pending && !socket_io_pending {
             return false;
         }
 
-        if host_io_pending {
+        if host_io_pending && socket_io_pending {
+            let until_deadline = deadline.map_or(SOCKET_REACTOR_SLICE, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            let timeout = until_deadline.min(SOCKET_REACTOR_SLICE);
+            if let Ok(completion) = self.host_io_receiver.recv_timeout(timeout) {
+                self.finish_host_io_completion(completion);
+                self.drain_host_io_completions();
+            }
+            self.poll_socket_io(Some(Duration::ZERO));
+        } else if host_io_pending {
             let completion = deadline.map_or_else(
                 || self.host_io_receiver.recv().ok(),
                 |deadline| {
@@ -755,6 +816,10 @@ impl<'program> Interpreter<'program> {
                 self.finish_host_io_completion(completion);
                 self.drain_host_io_completions();
             }
+        } else if socket_io_pending {
+            let timeout =
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            self.poll_socket_io(timeout);
         } else if let Some(deadline) = deadline {
             std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
@@ -785,6 +850,142 @@ impl<'program> Interpreter<'program> {
             completed |= self.finish_host_io_completion(completion);
         }
         completed
+    }
+
+    fn poll_socket_io(&mut self, timeout: Option<Duration>) -> bool {
+        if self.socket_io.is_empty() {
+            return false;
+        }
+        if self.socket_reactor.is_none() {
+            self.fail_all_socket_io(&std::io::Error::other(
+                "interpreter socket reactor allocation failed",
+            ));
+            return true;
+        }
+        let notifications = match self
+            .socket_reactor
+            .as_mut()
+            .expect("socket reactor was checked above")
+            .wait(timeout)
+        {
+            Ok(notifications) => notifications,
+            Err(error) => {
+                self.fail_all_socket_io(&error);
+                return true;
+            }
+        };
+        let mut progressed = false;
+        for notification in notifications {
+            progressed |= self.finish_socket_notification(notification);
+        }
+        progressed
+    }
+
+    fn finish_socket_notification(&mut self, notification: loom_runtime::WaitEvent) -> bool {
+        let Some(task_id) = self.socket_io.iter().find_map(|(task_id, pending)| {
+            (pending.registration == notification.token).then_some(*task_id)
+        }) else {
+            return false;
+        };
+        let Some(mut pending) = self.socket_io.remove(&task_id) else {
+            return false;
+        };
+        let accepts_completion = self.tasks.get(&task_id).is_some_and(|task| {
+            !task.cancel_requested && matches!(task.status, TaskStatus::Waiting)
+        });
+        if !accepts_completion {
+            return false;
+        }
+        let poll = if notification.os_error == 0 {
+            poll_socket_operation(&mut pending)
+        } else {
+            SocketIoPoll::Failed(std::io::Error::from_raw_os_error(notification.os_error))
+        };
+        match poll {
+            SocketIoPoll::Pending => {
+                let interests = pending.operation.interests();
+                match self.register_socket_wait(&pending.socket, interests) {
+                    Ok(registration) => {
+                        pending.registration = registration;
+                        self.socket_io.insert(task_id, pending);
+                        false
+                    }
+                    Err(error) => {
+                        self.finish_socket_task(task_id, pending, Err(error));
+                        true
+                    }
+                }
+            }
+            SocketIoPoll::Completed(value) => {
+                self.finish_socket_task(task_id, pending, Ok(value));
+                true
+            }
+            SocketIoPoll::Failed(error) => {
+                self.finish_socket_task(task_id, pending, Err(error));
+                true
+            }
+        }
+    }
+
+    fn finish_socket_task(
+        &mut self,
+        task_id: u64,
+        pending: PendingSocketIo,
+        result: Result<Value, std::io::Error>,
+    ) {
+        let PendingSocketIo {
+            operation,
+            fallible,
+            span,
+            ..
+        } = pending;
+        let outcome = match (fallible, result) {
+            (false, Ok(value)) => Ok(value),
+            (false, Err(error)) => Err(io_failure(operation.fault_code(), &error, span)),
+            (true, Ok(value)) => self.result_value(true, value, span),
+            (true, Err(error)) => self.io_error_result(host_io_error(error), span),
+        };
+        let status = match outcome {
+            Ok(value) => TaskStatus::Completed(value),
+            Err(failure) => TaskStatus::Failed(failure),
+        };
+        if let Some(task) = self.tasks.get_mut(&task_id) {
+            task.status = status;
+        }
+        self.wake_parent(task_id);
+    }
+
+    fn fail_all_socket_io(&mut self, error: &std::io::Error) {
+        let message = error.to_string();
+        let pending = std::mem::take(&mut self.socket_io);
+        for (task_id, operation) in pending {
+            self.finish_socket_task(
+                task_id,
+                operation,
+                Err(std::io::Error::other(message.clone())),
+            );
+        }
+    }
+
+    fn register_socket_wait(
+        &mut self,
+        socket: &TcpStream,
+        interests: u32,
+    ) -> Result<loom_runtime::WaitToken, std::io::Error> {
+        self.socket_reactor
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("interpreter socket reactor allocation failed"))?
+            .register_fd(socket, interests)
+    }
+
+    fn cancel_socket_io(&mut self, task_id: u64) {
+        let Some(pending) = self.socket_io.remove(&task_id) else {
+            return;
+        };
+        if let Some(reactor) = &mut self.socket_reactor {
+            // A stale result is benign when readiness raced with cancellation.
+            let _ = reactor.cancel(pending.registration);
+        }
     }
 
     fn finish_host_io_completion(&mut self, completion: HostIoCompletion) -> bool {
@@ -905,6 +1106,7 @@ impl<'program> Interpreter<'program> {
         task.timer_deadline = None;
         let children = task.children.clone();
         task.status = TaskStatus::Runnable;
+        self.cancel_socket_io(task_id);
         for child in children {
             self.cancel_task(child);
         }
@@ -1474,6 +1676,7 @@ impl<'program> Interpreter<'program> {
             .filter_map(|(id, task)| (!task.marked).then_some((*id, task.frame)))
             .collect::<Vec<_>>();
         for (task, frame) in unreachable {
+            self.cancel_socket_io(task);
             self.tasks.remove(&task);
             self.frames.remove(&frame);
             self.gc_stats.reclaimed = self.gc_stats.reclaimed.saturating_add(1);
@@ -3961,13 +4164,12 @@ impl<'program> Interpreter<'program> {
                     },
                 );
                 match socket {
-                    Ok(mut socket) => self.spawn_host_io_task(span, move || {
-                        let mut value = String::new();
-                        socket
-                            .read_to_string(&mut value)
-                            .map(|_| HostIoValue::Value(Value::Text { value }))
-                            .map_err(|error| io_failure("SocketReadFault", &error, span))
-                    }),
+                    Ok(socket) => self.spawn_socket_io_task(
+                        socket,
+                        SocketIoOperation::Read { bytes: Vec::new() },
+                        false,
+                        span,
+                    ),
                     Err(failure) => self.spawn_terminal_task(Err(failure), span),
                 }
             }
@@ -3984,15 +4186,15 @@ impl<'program> Interpreter<'program> {
                     },
                 );
                 match socket {
-                    Ok(mut socket) => {
-                        let value = value.clone();
-                        self.spawn_host_io_task(span, move || {
-                            socket
-                                .write_all(value.as_bytes())
-                                .map(|()| HostIoValue::Value(Value::Unit))
-                                .map_err(|error| io_failure("SocketWriteFault", &error, span))
-                        })
-                    }
+                    Ok(socket) => self.spawn_socket_io_task(
+                        socket,
+                        SocketIoOperation::Write {
+                            bytes: value.as_bytes().to_vec(),
+                            offset: 0,
+                        },
+                        false,
+                        span,
+                    ),
                     Err(failure) => self.spawn_terminal_task(Err(failure), span),
                 }
             }
@@ -4013,13 +4215,12 @@ impl<'program> Interpreter<'program> {
                     return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
                 };
                 match socket.try_clone() {
-                    Ok(mut socket) => self.spawn_try_host_io_task(span, move || {
-                        let mut value = String::new();
-                        socket
-                            .read_to_string(&mut value)
-                            .map(|_| HostIoValue::Value(Value::Text { value }))
-                            .map_err(host_io_error)
-                    }),
+                    Ok(socket) => self.spawn_socket_io_task(
+                        socket,
+                        SocketIoOperation::Read { bytes: Vec::new() },
+                        true,
+                        span,
+                    ),
                     Err(error) => {
                         let error = host_io_error(error);
                         self.spawn_io_error_task(error.kind, error.message, span)
@@ -4044,15 +4245,15 @@ impl<'program> Interpreter<'program> {
                     return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
                 };
                 match socket.try_clone() {
-                    Ok(mut socket) => {
-                        let value = value.clone();
-                        self.spawn_try_host_io_task(span, move || {
-                            socket
-                                .write_all(value.as_bytes())
-                                .map(|()| HostIoValue::Value(Value::Unit))
-                                .map_err(host_io_error)
-                        })
-                    }
+                    Ok(socket) => self.spawn_socket_io_task(
+                        socket,
+                        SocketIoOperation::Write {
+                            bytes: value.as_bytes().to_vec(),
+                            offset: 0,
+                        },
+                        true,
+                        span,
+                    ),
                     Err(error) => {
                         let error = host_io_error(error);
                         self.spawn_io_error_task(error.kind, error.message, span)
@@ -4267,6 +4468,80 @@ impl<'program> Interpreter<'program> {
                 join_combined: false,
                 join_winner: None,
                 cancel_requested: false,
+            },
+        );
+        self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+        self.gc_stats.live = self.tasks.len() as u64;
+        Ok(Value::Task { id: task_id })
+    }
+
+    fn spawn_socket_io_task(
+        &mut self,
+        socket: TcpStream,
+        operation: SocketIoOperation,
+        fallible: bool,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let fault_code = operation.fault_code();
+        if let Err(error) = socket.set_nonblocking(true) {
+            return if fallible {
+                let error = host_io_error(error);
+                self.spawn_io_error_task(error.kind, error.message, span)
+            } else {
+                self.spawn_terminal_task(Err(io_failure(fault_code, &error, span)), span)
+            };
+        }
+        let task_id = self.next_task;
+        let next_task = self.next_task.checked_add(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "TaskIdExhausted",
+                "async task identity space was exhausted",
+                span,
+            ))
+        })?;
+        let registration = match self.register_socket_wait(&socket, operation.interests()) {
+            Ok(registration) => registration,
+            Err(error) => {
+                return if fallible {
+                    let error = host_io_error(error);
+                    self.spawn_io_error_task(error.kind, error.message, span)
+                } else {
+                    self.spawn_terminal_task(Err(io_failure(fault_code, &error, span)), span)
+                };
+            }
+        };
+        self.next_task = next_task;
+        self.tasks.insert(
+            task_id,
+            ManagedTask {
+                function: FunctionId(u32::MAX),
+                frame: u64::MAX,
+                parent: self.active_task,
+                children: Vec::new(),
+                cursor: 0,
+                awaiting_state: None,
+                cleanups: Vec::new(),
+                status: TaskStatus::Waiting,
+                queued: false,
+                marked: false,
+                timer_deadline: None,
+                host_io: false,
+                contract_state: None,
+                join_mode: TaskJoinMode::All,
+                join_dynamic: false,
+                join_combined: false,
+                join_winner: None,
+                cancel_requested: false,
+            },
+        );
+        self.socket_io.insert(
+            task_id,
+            PendingSocketIo {
+                socket,
+                registration,
+                operation,
+                fallible,
+                span,
             },
         );
         self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
@@ -5624,6 +5899,67 @@ fn io_failure(code: &str, error: &std::io::Error, span: Span) -> ExecutionFailur
     .into()
 }
 
+fn poll_socket_operation(pending: &mut PendingSocketIo) -> SocketIoPoll {
+    match &mut pending.operation {
+        SocketIoOperation::Read { bytes } => {
+            let mut consumed = 0_usize;
+            let mut buffer = [0_u8; 8 * 1024];
+            while consumed < SOCKET_IO_BUDGET {
+                let capacity = buffer.len().min(SOCKET_IO_BUDGET - consumed);
+                match pending.socket.read(&mut buffer[..capacity]) {
+                    Ok(0) => {
+                        return match String::from_utf8(std::mem::take(bytes)) {
+                            Ok(value) => SocketIoPoll::Completed(Value::Text { value }),
+                            Err(_) => SocketIoPoll::Failed(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "socket response is not valid UTF-8",
+                            )),
+                        };
+                    }
+                    Ok(count) => {
+                        bytes.extend_from_slice(&buffer[..count]);
+                        consumed += count;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return SocketIoPoll::Pending;
+                    }
+                    Err(error) => return SocketIoPoll::Failed(error),
+                }
+            }
+            SocketIoPoll::Pending
+        }
+        SocketIoOperation::Write { bytes, offset } => {
+            let mut consumed = 0_usize;
+            while *offset < bytes.len() && consumed < SOCKET_IO_BUDGET {
+                let end = bytes.len().min(*offset + (SOCKET_IO_BUDGET - consumed));
+                match pending.socket.write(&bytes[*offset..end]) {
+                    Ok(0) => {
+                        return SocketIoPoll::Failed(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "socket write made no progress",
+                        ));
+                    }
+                    Ok(count) => {
+                        *offset += count;
+                        consumed += count;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return SocketIoPoll::Pending;
+                    }
+                    Err(error) => return SocketIoPoll::Failed(error),
+                }
+            }
+            if *offset == bytes.len() {
+                SocketIoPoll::Completed(Value::Unit)
+            } else {
+                SocketIoPoll::Pending
+            }
+        }
+    }
+}
+
 fn host_io_error(error: std::io::Error) -> HostIoError {
     use std::io::ErrorKind;
     let kind = match error.kind() {
@@ -5719,6 +6055,83 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod socket_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_pending_socket_reads_do_not_starve_file_workers() {
+        const PENDING_READS: usize = 8;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind interpreter readiness fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let program = Program::default();
+        let mut interpreter = Interpreter::new(&program);
+        let mut peers = Vec::with_capacity(PENDING_READS);
+        let mut reads = Vec::with_capacity(PENDING_READS);
+        for _ in 0..PENDING_READS {
+            let client = TcpStream::connect(address).expect("connect readiness fixture");
+            let (peer, _) = listener.accept().expect("accept readiness fixture");
+            peers.push(peer);
+            let Value::Task { id } = interpreter
+                .spawn_socket_io_task(
+                    client,
+                    SocketIoOperation::Read { bytes: Vec::new() },
+                    false,
+                    Span::default(),
+                )
+                .expect("spawn pending socket read")
+            else {
+                panic!("socket read must produce a task");
+            };
+            reads.push(id);
+        }
+        assert_eq!(interpreter.socket_io.len(), PENDING_READS);
+        assert!(!interpreter.poll_socket_io(Some(Duration::ZERO)));
+
+        for task in &reads {
+            interpreter.cancel_task(*task);
+        }
+        assert!(interpreter.socket_io.is_empty());
+        for task in reads {
+            assert!(matches!(
+                interpreter.resume_task(task).expect("finish cancellation"),
+                TaskPoll::Failed
+            ));
+        }
+
+        let span = Span::default();
+        let Value::Task { id: file_task } = interpreter
+            .spawn_host_io_task(span, move || {
+                std::fs::read("/dev/null")
+                    .map(|bytes| {
+                        HostIoValue::Value(Value::Int {
+                            value: i64::try_from(bytes.len()).expect("fixture length fits Int"),
+                        })
+                    })
+                    .map_err(|error| io_failure("FileReadFault", &error, span))
+            })
+            .expect("spawn file task")
+        else {
+            panic!("file read must produce a task");
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while matches!(
+            interpreter.tasks.get(&file_task).map(|task| &task.status),
+            Some(TaskStatus::Waiting)
+        ) && Instant::now() < deadline
+        {
+            assert!(interpreter.wait_for_work());
+        }
+        assert!(matches!(
+            interpreter.tasks.get(&file_task).map(|task| &task.status),
+            Some(TaskStatus::Completed(Value::Int { value: 0 }))
+        ));
+        drop(peers);
     }
 }
 

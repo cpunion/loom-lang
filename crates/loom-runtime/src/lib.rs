@@ -29,9 +29,10 @@ pub use gc::{activate_executor, deactivate_executor};
 pub use value::value_summary;
 
 pub use reactor::{
-    LoomReadyNotification, LoomRegistration, LoomWaitSource, executor_cancel, executor_create,
-    executor_destroy, executor_last_os_error, executor_notify_completion, executor_pop_ready,
-    executor_register, executor_wait, wait_fd_once, wait_now_ns,
+    LoomReadyNotification, LoomRegistration, LoomWaitSource, WaitEvent, WaitSet, WaitToken,
+    executor_cancel, executor_create, executor_destroy, executor_last_os_error,
+    executor_notify_completion, executor_pop_ready, executor_register, executor_wait, wait_fd_once,
+    wait_now_ns,
 };
 pub use scheduler::{
     LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,

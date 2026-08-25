@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::c_void;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
-use std::ptr;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -107,6 +108,31 @@ pub struct LoomExecutor {
     pub(crate) worker_receiver: mpsc::Receiver<WorkerCompletion>,
 }
 
+/// Safe, cancellable owner for platform readiness registrations.
+///
+/// File descriptors are duplicated when registered, so closing or reusing the
+/// caller's descriptor cannot invalidate a live registration.
+pub struct WaitSet {
+    id: u64,
+    executor: Box<LoomExecutor>,
+    descriptors: BTreeMap<u64, OwnedFd>,
+}
+
+/// Opaque identity of one live [`WaitSet`] registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitToken {
+    set_id: u64,
+    registration: LoomRegistration,
+}
+
+/// One readiness event returned by [`WaitSet::wait`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitEvent {
+    pub token: WaitToken,
+    pub events: u32,
+    pub os_error: i32,
+}
+
 impl LoomExecutor {
     fn new() -> io::Result<Self> {
         let (worker_sender, worker_receiver) = mpsc::channel();
@@ -135,6 +161,154 @@ impl LoomExecutor {
             worker_sender,
             worker_receiver,
         })
+    }
+}
+
+impl WaitSet {
+    /// Allocates an empty readiness set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host error raised while creating the platform poller.
+    pub fn new() -> io::Result<Self> {
+        static NEXT_WAIT_SET_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_WAIT_SET_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| io::Error::other("Loom wait set identity space was exhausted"))?;
+        LoomExecutor::new().map(|executor| Self {
+            id,
+            executor: Box::new(executor),
+            descriptors: BTreeMap::new(),
+        })
+    }
+
+    /// Registers one descriptor interest as a cancellable one-shot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if descriptor duplication or poll registration
+    /// fails, or if `interests` is not a supported descriptor interest.
+    pub fn register_fd(&mut self, source: &impl AsFd, interests: u32) -> io::Result<WaitToken> {
+        let descriptor = source.as_fd().try_clone_to_owned()?;
+        let wait_source = LoomWaitSource {
+            abi_version: WAIT_ABI_VERSION,
+            kind: WAIT_SOURCE_FD,
+            handle: i64::from(descriptor.as_raw_fd()),
+            interests,
+            reserved: 0,
+            deadline_ns: 0,
+        };
+        let mut registration = LoomRegistration::default();
+        let frame = NonNull::<u8>::dangling().as_ptr().cast::<c_void>();
+        // SAFETY: the boxed executor has a stable address; wait_source and the
+        // out pointer live for this call. The duplicated descriptor remains
+        // owned below until readiness or cancellation. frame is opaque.
+        let status = unsafe {
+            executor_register(
+                &raw mut *self.executor,
+                &raw const wait_source,
+                frame,
+                &raw mut registration,
+            )
+        };
+        if status == WAIT_OK {
+            self.descriptors.insert(registration.key, descriptor);
+            Ok(WaitToken {
+                set_id: self.id,
+                registration,
+            })
+        } else {
+            Err(self.status_error("register", status))
+        }
+    }
+
+    /// Waits until one or more registrations are ready or `timeout` expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the platform poller cannot wait.
+    pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<Vec<WaitEvent>> {
+        let timeout_ns = timeout.map_or(WAIT_INFINITE, |duration| {
+            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX - 1)
+        });
+        let mut ready_count = 0;
+        // SAFETY: the executor and unique out pointer are live for this call.
+        let status =
+            unsafe { executor_wait(&raw mut *self.executor, timeout_ns, &raw mut ready_count) };
+        if status != WAIT_OK {
+            return Err(self.status_error("wait", status));
+        }
+        let capacity = usize::try_from(ready_count)
+            .unwrap_or(usize::MAX)
+            .min(self.descriptors.len());
+        let mut events = Vec::with_capacity(capacity);
+        let ready_limit =
+            ready_count.min(u32::try_from(self.descriptors.len()).unwrap_or(u32::MAX));
+        for _ in 0..ready_limit {
+            let mut notification = LoomReadyNotification::default();
+            // SAFETY: the executor and unique out pointer are live for this call.
+            let popped =
+                unsafe { executor_pop_ready(&raw mut *self.executor, &raw mut notification) };
+            if popped == 0 {
+                break;
+            }
+            if popped < 0 {
+                return Err(self.status_error("pop ready", -popped));
+            }
+            self.descriptors.remove(&notification.registration.key);
+            events.push(WaitEvent {
+                token: WaitToken {
+                    set_id: self.id,
+                    registration: notification.registration,
+                },
+                events: notification.events,
+                os_error: notification.os_error,
+            });
+        }
+        Ok(events)
+    }
+
+    /// Cancels one live registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if `token` is stale or belongs to another set.
+    pub fn cancel(&mut self, token: WaitToken) -> io::Result<()> {
+        if token.set_id != self.id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "wait token belongs to another wait set",
+            ));
+        }
+        // SAFETY: the boxed executor and token registration are live.
+        let status =
+            unsafe { executor_cancel(&raw mut *self.executor, &raw const token.registration) };
+        if status == WAIT_OK {
+            self.descriptors.remove(&token.registration.key);
+            Ok(())
+        } else {
+            Err(self.status_error("cancel", status))
+        }
+    }
+
+    fn status_error(&self, operation: &str, status: i32) -> io::Error {
+        let os_error = self.executor.reactor.last_os_error;
+        if status == WAIT_SYSTEM_ERROR && os_error != 0 {
+            return io::Error::from_raw_os_error(os_error);
+        }
+        let kind = if status == WAIT_INVALID_ARGUMENT || status == WAIT_DUPLICATE_SOURCE {
+            io::ErrorKind::InvalidInput
+        } else if status == WAIT_STALE_REGISTRATION {
+            io::ErrorKind::NotFound
+        } else if status == WAIT_NO_MEMORY {
+            io::ErrorKind::OutOfMemory
+        } else {
+            io::ErrorKind::Other
+        };
+        io::Error::new(
+            kind,
+            format!("Loom wait set {operation} failed with status {status}"),
+        )
     }
 }
 
@@ -529,4 +703,36 @@ pub fn wait_fd_once(handle: i64, interests: u32) -> io::Result<u32> {
         }
     }
     Ok(ready)
+}
+
+#[cfg(test)]
+mod wait_set_tests {
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+
+    #[test]
+    fn token_from_another_wait_set_cannot_cancel_a_colliding_registration() {
+        let (source, _peer) = UnixStream::pair().expect("create wait-set fixture");
+        let mut left = WaitSet::new().expect("create left wait set");
+        let mut right = WaitSet::new().expect("create right wait set");
+        let left_token = left
+            .register_fd(&source, WAIT_READABLE)
+            .expect("register left source");
+        let right_token = right
+            .register_fd(&source, WAIT_READABLE)
+            .expect("register right source");
+        assert_eq!(
+            left_token.registration.key, right_token.registration.key,
+            "the regression requires colliding executor-local keys"
+        );
+        assert_ne!(left_token.set_id, right_token.set_id);
+
+        let error = right
+            .cancel(left_token)
+            .expect_err("foreign token must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        right.cancel(right_token).expect("cancel right token");
+        left.cancel(left_token).expect("cancel left token");
+    }
 }
