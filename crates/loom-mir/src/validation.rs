@@ -32,6 +32,7 @@ pub enum MirValidationCode {
     ProjectedMove,
     TypeMismatch,
     ExpressionShape,
+    ObligationShape,
     CallArity,
     WitnessArity,
     RecordShape,
@@ -67,6 +68,7 @@ impl MirValidationCode {
             Self::ProjectedMove => "MirProjectedMove",
             Self::TypeMismatch => "MirTypeMismatch",
             Self::ExpressionShape => "MirExpressionShape",
+            Self::ObligationShape => "MirObligationShape",
             Self::CallArity => "MirCallArity",
             Self::WitnessArity => "MirWitnessArity",
             Self::RecordShape => "MirRecordShape",
@@ -278,6 +280,25 @@ struct DataflowState {
 struct ExprFlow {
     diverges: bool,
     loans: Vec<ViewLoan>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ValueObligations {
+    task: bool,
+    resource: bool,
+    unresolved: bool,
+}
+
+impl ValueObligations {
+    fn merge(&mut self, other: Self) {
+        self.task |= other.task;
+        self.resource |= other.resource;
+        self.unresolved |= other.unresolved;
+    }
+
+    const fn is_empty(self) -> bool {
+        !self.task && !self.resource && !self.unresolved
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2864,7 +2885,11 @@ impl<'program> Validator<'program> {
                 }
             }
             StatementKind::Evaluate(expression) => {
-                self.validate_expr(function, expression, &format!("{path}.expression"), depth);
+                let expression_path = format!("{path}.expression");
+                let ty = self.validate_expr(function, expression, &expression_path, depth);
+                if !expr_definitely_diverges(expression, 0) {
+                    self.reject_obligation_loss(&ty, expression.span, &expression_path, "discard");
+                }
             }
             StatementKind::Defer(cleanup) => {
                 self.validate_block(
@@ -3431,6 +3456,127 @@ impl<'program> Validator<'program> {
 
     fn supports_value_equality(&self, ty: &Type) -> bool {
         self.supports_value_equality_inner(ty, &mut Vec::new(), 0)
+    }
+
+    fn reject_obligation_loss(&mut self, ty: &Type, span: Span, path: &str, action: &str) {
+        let obligations = self.value_obligations_inner(ty, &mut Vec::new(), 0);
+        if obligations.is_empty() {
+            return;
+        }
+
+        let mut kinds = Vec::with_capacity(3);
+        if obligations.resource {
+            kinds.push("File or Socket");
+        }
+        if obligations.task {
+            kinds.push("an unconsumed Task");
+        }
+        if obligations.unresolved {
+            kinds.push("unresolved generic obligations");
+        }
+        self.push(
+            MirValidationCode::ObligationShape,
+            format!(
+                "checked MIR cannot {action} a value containing {}",
+                kinds.join(", ")
+            ),
+            span,
+            path,
+        );
+    }
+
+    fn value_obligations_inner(
+        &self,
+        ty: &Type,
+        active: &mut Vec<Type>,
+        depth: u16,
+    ) -> ValueObligations {
+        if depth >= MAX_VALIDATION_DEPTH {
+            return ValueObligations {
+                unresolved: true,
+                ..ValueObligations::default()
+            };
+        }
+        match ty {
+            Type::Never
+            | Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Text
+            | Type::Error
+            | Type::View { .. } => ValueObligations::default(),
+            Type::Parameter(_) | Type::AssociatedProjection { .. } => ValueObligations {
+                unresolved: true,
+                ..ValueObligations::default()
+            },
+            Type::Task(_) => ValueObligations {
+                task: true,
+                ..ValueObligations::default()
+            },
+            Type::Tuple(elements) => {
+                let mut obligations = ValueObligations::default();
+                for element in elements {
+                    obligations.merge(self.value_obligations_inner(element, active, depth + 1));
+                }
+                obligations
+            }
+            Type::List(element) | Type::TaskOutcome(element) => {
+                self.value_obligations_inner(element, active, depth + 1)
+            }
+            Type::Nominal(type_id, arguments) => {
+                if self.program.prelude.file == Some(*type_id)
+                    || self.program.prelude.socket == Some(*type_id)
+                {
+                    return ValueObligations {
+                        resource: true,
+                        ..ValueObligations::default()
+                    };
+                }
+                if active.contains(ty) {
+                    return ValueObligations::default();
+                }
+                let Some(definition) = self.program.type_def(*type_id) else {
+                    // The ordinary type-reference validator owns malformed nominal
+                    // references; obligation hardening only reasons about valid types.
+                    return ValueObligations::default();
+                };
+                if arguments.len() != definition.type_parameters as usize {
+                    return ValueObligations::default();
+                }
+
+                active.push(ty.clone());
+                let mut obligations = ValueObligations::default();
+                match &definition.kind {
+                    TypeDefKind::Record { fields, .. } => {
+                        for field in fields {
+                            let field_ty = substitute_type(&field.ty, arguments);
+                            obligations.merge(self.value_obligations_inner(
+                                &field_ty,
+                                active,
+                                depth + 1,
+                            ));
+                        }
+                    }
+                    TypeDefKind::Enum { variants } => {
+                        for payload in variants.iter().flat_map(|variant| &variant.payload) {
+                            let payload = substitute_type(payload, arguments);
+                            obligations.merge(self.value_obligations_inner(
+                                &payload,
+                                active,
+                                depth + 1,
+                            ));
+                        }
+                    }
+                    TypeDefKind::Refined { base, .. } => {
+                        let base = substitute_type(base, arguments);
+                        obligations.merge(self.value_obligations_inner(&base, active, depth + 1));
+                    }
+                }
+                active.pop();
+                obligations
+            }
+        }
     }
 
     fn supports_value_equality_inner(&self, ty: &Type, active: &mut Vec<Type>, depth: u16) -> bool {
@@ -5235,6 +5381,14 @@ impl<'program> Validator<'program> {
         depth: u16,
     ) -> Option<Type> {
         let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
+        if !expr_definitely_diverges(value, 0) {
+            self.reject_obligation_loss(
+                &value_ty,
+                value.span,
+                &format!("{path}.value"),
+                "erase into a dynamic concept interface",
+            );
+        }
         if let Some(writeback) = writeback {
             let writeback_ty = self.validate_place(
                 function,
@@ -8252,7 +8406,11 @@ fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
                 .map(|element| substitute_type(element, arguments))
                 .collect(),
         ),
+        Type::List(element) => Type::List(Box::new(substitute_type(element, arguments))),
         Type::Task(output) => Type::Task(Box::new(substitute_type(output, arguments))),
+        Type::TaskOutcome(output) => {
+            Type::TaskOutcome(Box::new(substitute_type(output, arguments)))
+        }
         Type::Nominal(id, nested) => Type::Nominal(
             *id,
             nested

@@ -95,12 +95,337 @@ fn validation_errors(program: &Program) -> loom_mir::MirValidationErrors {
     validate_program(program).expect_err("program should be invalid")
 }
 
+fn raw_handle_type(id: u32, name: &str) -> TypeDef {
+    TypeDef {
+        id: TypeId(id),
+        name: name.to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "raw".to_owned(),
+                ty: Type::Int,
+                span: span(),
+            }],
+            invariant: None,
+        },
+    }
+}
+
+fn generic_carrier_type(id: u32) -> TypeDef {
+    TypeDef {
+        id: TypeId(id),
+        name: "Carrier".to_owned(),
+        span: span(),
+        type_parameters: 1,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "items".to_owned(),
+                    ty: Type::List(Box::new(Type::Parameter(0))),
+                    span: span(),
+                },
+                FieldDef {
+                    name: "outcome".to_owned(),
+                    ty: Type::TaskOutcome(Box::new(Type::Parameter(0))),
+                    span: span(),
+                },
+            ],
+            invariant: None,
+        },
+    }
+}
+
 #[test]
 fn valid_program_crosses_checked_boundary() {
     let program = simple_program();
     validate_program(&program).expect("valid MIR");
     let checked = CheckedProgram::new(program).expect("checked MIR");
     assert_eq!(checked.functions.len(), 1);
+}
+
+#[test]
+fn checked_boundary_rejects_discarded_tasks_resources_and_unknown_generics() {
+    let file = Type::Nominal(TypeId(0), Vec::new());
+    let socket = Type::Nominal(TypeId(1), Vec::new());
+    let carrier = |argument| Type::Nominal(TypeId(2), vec![argument]);
+    let phantom = |argument| Type::Nominal(TypeId(3), vec![argument]);
+    let parameter = Type::Parameter(0);
+    let parameter_types = vec![
+        Type::Task(Box::new(Type::Int)),
+        carrier(Type::Task(Box::new(Type::Int))),
+        carrier(file),
+        socket,
+        parameter.clone(),
+        carrier(parameter.clone()),
+        phantom(parameter),
+        Type::Unit,
+    ];
+    let mut checked = function(
+        0,
+        (0_u32..)
+            .zip(&parameter_types)
+            .map(|(index, ty)| local(index, ty.clone(), false))
+            .collect(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: (0_u32..)
+                .zip(parameter_types)
+                .map(|(index, ty)| Statement {
+                    kind: StatementKind::Evaluate(copy(index, ty)),
+                    span: span(),
+                })
+                .collect(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    checked.type_parameters = 1;
+
+    let errors = validation_errors(&Program {
+        types: vec![
+            raw_handle_type(0, "File"),
+            raw_handle_type(1, "Socket"),
+            generic_carrier_type(2),
+            TypeDef {
+                id: TypeId(3),
+                name: "Phantom".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "marker".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        functions: vec![checked],
+        prelude: PreludeIds {
+            file: Some(TypeId(0)),
+            socket: Some(TypeId(1)),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    });
+    let obligation_errors = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::ObligationShape)
+        .collect::<Vec<_>>();
+    assert_eq!(obligation_errors.len(), 6, "{errors:?}");
+    assert!(
+        obligation_errors
+            .iter()
+            .any(|error| error.message.contains("unconsumed Task"))
+    );
+    assert!(
+        obligation_errors
+            .iter()
+            .any(|error| error.message.contains("File or Socket"))
+    );
+    assert!(
+        obligation_errors
+            .iter()
+            .any(|error| error.message.contains("unresolved generic"))
+    );
+}
+
+#[test]
+fn obligation_hardening_allows_unit_divergence_and_phantom_parameters() {
+    let parameter = Type::Parameter(0);
+    let phantom = Type::Nominal(TypeId(0), vec![parameter]);
+    let mut checked = function(
+        0,
+        vec![local(0, phantom.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(copy(0, phantom)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(constant(Constant::Unit, Type::Unit)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(Expr {
+                        kind: ExprKind::Block(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Return(None),
+                                span: span(),
+                            }],
+                            tail: None,
+                            span: span(),
+                        }),
+                        // A diverging expression produces no Task to discard even when
+                        // flow compatibility gives the expression a Task result type.
+                        ty: Type::Task(Box::new(Type::Int)),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    checked.type_parameters = 1;
+    let program = Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Phantom".to_owned(),
+            span: span(),
+            type_parameters: 1,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "marker".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![checked],
+        ..Program::default()
+    };
+    validate_program(&program).expect("safe Evaluate forms must remain valid");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn checked_boundary_rejects_dynamic_erasure_of_provable_obligations() {
+    let concept = ConceptDef {
+        id: ConceptId(0),
+        name: "Display".to_owned(),
+        span: span(),
+        dynamic: true,
+        associated_types: Vec::new(),
+        requirements: Vec::new(),
+    };
+    let view = Type::View {
+        mutable: false,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+    };
+    let task = Type::Task(Box::new(Type::Int));
+    let carried_file = Type::Nominal(TypeId(1), vec![Type::Nominal(TypeId(0), Vec::new())]);
+    let make_view = |local_id, ty: Type, witness, token| Expr {
+        kind: ExprKind::MakeView {
+            value: Box::new(copy(local_id, ty)),
+            writeback: None,
+            witness,
+            mutable: false,
+            token,
+        },
+        ty: view.clone(),
+        span: span(),
+    };
+    let concrete = function(
+        0,
+        vec![
+            local(0, task.clone(), false),
+            local(1, carried_file.clone(), false),
+        ],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(make_view(
+                        0,
+                        task.clone(),
+                        WitnessRef::Concrete(WitnessId(0)),
+                        1,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(make_view(
+                        1,
+                        carried_file.clone(),
+                        WitnessRef::Concrete(WitnessId(1)),
+                        2,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let parameter = Type::Parameter(0);
+    let mut generic = function(
+        1,
+        vec![local(0, parameter.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(make_view(
+                    0,
+                    parameter.clone(),
+                    WitnessRef::Parameter(0),
+                    3,
+                )),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    generic.type_parameters = 1;
+    generic.witness_params.push(WitnessParam {
+        target: parameter,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+        span: span(),
+    });
+
+    let errors = validation_errors(&Program {
+        types: vec![raw_handle_type(0, "File"), generic_carrier_type(1)],
+        concepts: vec![concept],
+        functions: vec![concrete, generic],
+        witnesses: vec![
+            Witness {
+                id: WitnessId(0),
+                concept: ConceptId(0),
+                concrete: task,
+                methods: BTreeMap::new(),
+                associated: BTreeMap::new(),
+                type_parameters: 0,
+                prerequisites: Vec::new(),
+            },
+            Witness {
+                id: WitnessId(1),
+                concept: ConceptId(0),
+                concrete: carried_file,
+                methods: BTreeMap::new(),
+                associated: BTreeMap::new(),
+                type_parameters: 0,
+                prerequisites: Vec::new(),
+            },
+        ],
+        prelude: PreludeIds {
+            file: Some(TypeId(0)),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    });
+    let obligation_errors = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::ObligationShape)
+        .collect::<Vec<_>>();
+    assert_eq!(obligation_errors.len(), 3, "{errors:?}");
+    assert!(obligation_errors.iter().all(|error| {
+        error
+            .message
+            .contains("erase into a dynamic concept interface")
+    }));
 }
 
 #[test]
