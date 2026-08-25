@@ -67,10 +67,10 @@ LLVM 19 CI 在每次 push/PR 运行该命令并上传 JSON artifact。报告包�
 - runtime sample 使用独立进程、monotonic clock、明确 warmup 和多次 measurement，报告原始样本以及 median/min/max，不只保存最佳值；
 - v1 build sample 对每种语言从源码构建一次 executable，Loom 显式使用 `--no-cache`；这项单样本数据只描述当前 cold build，不能当稳定统计。后续 warm/no-change 与单 body incremental suite 必须另表记录，不得把 Loom 持久缓存命中与其他语言冷编译直接比较；
 - Loom 使用 release LLVM native artifact；Go、Rust、C、C++ 使用各自明确记录的 release/优化参数。禁止把 Loom interpreter、debug build 或不同目标架构混入 native runtime 表；
-- v1 JSON 保存 OS、architecture、CPU、逻辑核数、编译器版本与完整命令、source SHA-256、case/scale/checksum、原始纳秒样本、统计值和 artifact bytes；机器或工具链 identity 不同的报告不得直接合并排名；
-- standard profile 保持冻结的基础规模；独立 `--throughput` profile 使用 int/record 100,000,000、list 10,000,000、fib 40 和默认 2 次 warmup/5 次测量，目的是让热计算更充分地压过进程启动噪声，仍不是语言排名；
+- v1 JSON 保存 OS、architecture、CPU、逻辑核数、编译器版本与完整命令、source SHA-256、profile/deadline、case/scale/checksum、原始纳秒样本、统计值和 artifact bytes；机器或工具链 identity 不同的报告不得直接合并排名；
+- standard profile 保持冻结的基础规模；独立 `--throughput` profile 使用 int/record 100,000,000、list 10,000,000、fib 40 和默认 2 次 warmup/5 次测量，目的是让热计算更充分地压过进程启动噪声，仍不是语言排名。5 个样本的 p05/p95 等同 min/max，不能解释成稳定尾延迟；
 - standard/throughput profile 在 build 前记录 1 分钟 load average，超过逻辑 CPU 数的 75% 时默认拒绝测量；`--allow-busy-host` 只用于明确保存带噪声的诊断结果，不能让该结果进入稳定趋势。quick correctness smoke 不做此限制；
-- runtime timed region 是每个独立子进程从 spawn 到退出的 wall time，包含参数解析、实际计算、动态 checksum 比较和固定 `Unit` 输出，不包含 build、runner JSON 编码或其他 case。进程开销对所有实现一致，但极短 case 仍不应用来判断热点；
+- runtime timed region 是每个独立子进程从 spawn 到退出的 wall time，包含参数解析、实际计算、动态 checksum 比较和固定 `Unit` 输出，不包含 build、runner JSON 编码或其他 case。进程开销对所有实现一致，但极短 case 仍不应用来判断热点。quick/standard/throughput 每次 fixture 默认 deadline 分别为 10/30/60 秒，可用 `--timeout-seconds` 覆盖；超时进程必须被 kill/wait 回收并使报告失败，不能让算法退化无限挂起或继续采样；
 - 在繁忙共享主机上手动放大 case 并读取 LLVM IR、汇编或 retired-instruction counter，只能定位结构变化，例如确认热循环少了固定次数的 header load。retired instructions 不在 v1 JSON 内；只有在同 binary/ISA/profile/scale 下保存原始样本、命令和 commit 才能作结构对照，同一次手动运行的 wall time 和语言倍数不得回填为受控 benchmark 结果；
 - peak RSS、目标 triple/data layout、机器内存、能耗和 profiler 样本尚不在 v1 JSON 内；需要分析分配、GC 或 ABI 热点时必须作为后续同机 profile 证据补充，不能从 wall time 猜测原因。
 
@@ -127,13 +127,13 @@ CI 用 nightly coverage instrumentation 各运行 20 秒。崩溃必须先最小
 2. concrete `Int`、递归 fib 和 primitive record 第一阶段已完成：closed-world requirements 让 pure/no-fault direct call 使用无 status/context 的 `i64` 私有 ABI，fallible path 使用 `{status, value}` 加 context，边界保留当前 universal `Value` wrapper；record 静态字段读写走 scalar path，安全的同步局部 POD record 由有预算的栈节点承接并交给 LLVM SROA。whole-value copy/call/return 时才从字段物化独立 managed chain，既保持深复制隔离，也消除热循环 node allocation/traversal。该路径仍是函数内优化，不是跨函数 POD typed ABI。
 3. `list_build_scan` 的算法级退化及首轮热路冗余已关闭：eligible 同步不逃逸局部 `List[Int]` 使用 compiler-private contiguous `{data, len, cap}`，几何扩容使 append 摊销 O(1)，length/get 为 O(1)，且纯 `Int` storage 在所有退出上显式释放而不进入 GC。canonical append range 通过 loop SSA 避免非增长迭代的 header reload，reserve 后只重载 data/cap并立即提交新 len；相同稳定 end 的 exact scan proof 删除不可达的逐元素 upper-bound/`None` edge，但保留 checked checksum。closed-world use scan 对 escape、copy、async、generic/witness/defer、multiple append、end/binding 不同与观察顺序不确定形状 fail closed，并回退到 checked generic-native 或 current universal `Value` lowering；因此这里不承诺稳定 List ABI，也不把只适用于 `Int` local 的路径外推到 generic container。
 4. terminal fault cold-layout hints 与 primary-fault 语义已由独立回归固定：生成的 terminal fault/status edge 是 unlikely，fault sink cold/noinline，普通控制流不被错误加权；native Task 实行 first-fault-wins，第二次 fault record 不覆盖最初 code/message/detail。
-5. `NativeLayout`/`NativeSignatureShape` 已为 scalar `Int` 建立 requirement graph 与 emitter 的共同 private-ABI selector。下一步是把 POD record/List/其他布局收敛到该 catalog/plan，再补齐 concrete private calling convention、clone/trace/drop plan 和 machine-instance identity；跨函数 POD record ABI 尚未实现，本阶段不写死 aggregate by-value、scalar fields 或 out-pointer 形状。随后再以基准和 profiler 证据推进 `Text` direct ABI、known generic instance、含 managed element 的 layout-driven container，以及 coroutine/`dyn` layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
+5. `NativeLayout` 已统一 scalar 与无 invariant、单态、直接 primitive-field POD record 的 shape-only 分类，现有 record 栈存储候选复用该 catalog；`NativeSignatureShape` 则为 scalar `Int` 建立 requirement graph 与 emitter 的共同 private-ABI selector。分类本身不会删除 allocation，只有完整 callable plan 可以。下一步是接入 List/其他布局，再补齐 concrete private calling convention、clone/trace/drop plan 和 machine-instance identity；跨函数 POD record ABI 尚未实现，本阶段不写死 aggregate by-value、scalar fields 或 out-pointer 形状。随后再以基准和 profiler 证据推进 `Text` direct ABI、known generic instance、含 managed element 的 layout-driven container，以及 coroutine/`dyn` layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
 6. 把用户定义 `MustScope` 的 canonical obligation identity 带入 versioned checked MIR，使 artifact/cache validator 能独立复核，不长期停留在只由 sema 保证的信任边界。
 7. 保持 Core 0.1–0.3 双后端、标准库、package/cache、LLVM verifier、fuzz 和 release bundle 门持续通过；性能变化不能靠关闭合同、检查或 cleanup 获得。
 
 ### P1：优化 ABI、增量和开发体验
 
-1. 把现有 scalar `Int` `NativeLayout`/`NativeSignatureShape` catalog 扩展到函数内 POD record/局部 `List[Int]`、跨函数 concrete call、managed/generic container 与 coroutine ABI，并在有实测收益时增加 hot-site specialization 或单态化；届时再把 canonical type/proof arguments 拆成独立 machine-instance cache entry。
+1. 把现有 scalar `Int` callable plan 与函数内 POD record `NativeLayout` catalog 扩展到局部 `List[Int]`、跨函数 concrete call、managed/generic container 与 coroutine ABI，并在有实测收益时增加 hot-site specialization 或单态化；届时再把 canonical type/proof arguments 拆成独立 machine-instance cache entry。
 2. 把当前长驻 `AnalysisHost` 的 module body selective reuse 扩展到可验证的跨进程 per-module typed-HIR/semantic cache；整图 checked MIR 仍保留为完整 artifact validation 边界。
 3. 只有真实 async API 需要时，才实现原子 Task reparent、取消传播和失败回滚，随后按证据放宽 TaskCarrier async 参数/返回及 partial container transfer；源码仍不增加 ownership、borrow 或 lifetime。
 4. 在 LLVM release/native 主后端稳定的前提下评估 Cranelift fast-dev backend，并补充 Loom 值 debugger pretty-printer 和更大的非生成工程 fixture。

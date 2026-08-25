@@ -21,7 +21,7 @@ Text 拼接和 `dyn` 分派没有放入 v1：各语言的字符串表示、分�
 
 `list_build_scan` 曾用于定位整表 receiver clone 与链式 add/get 叠加产生的 O(n²) 退化；当前源码满足同步、不逃逸局部 `List[Int]` 的保守形状检查，因此 LLVM 使用 compiler-private contiguous `{data, len, cap}` storage。canonical append loop 在 preheader 读取 header 并以 SSA/phi 携带 data/len/cap，非增长迭代不再重载 header，reserve 成功后只重载 data/cap，element store 后立即提交 len；仍然从空 list 几何增长，不做预 reserve。随后零起点 scan 与 build 使用同一稳定 end，且直接穷尽匹配 `Option[Int]`，因此 exact-length proof 可以删除逐元素 upper-bound 与不可达 `None` edge；独立的 checked checksum 仍然保留。storage 不经过 GC，所有退出路径显式释放。exact proof 的 direct/Unit shape、end、binder 或同一 list 不变性无法证明时保留 checked generic-native get；只有 native-storage eligibility 失败才回退当前 universal `Value` lowering。
 
-这些 case 固定的是当前 compiler-private 热路，不是统一容器/record ABI。首个 scalar `Int` `NativeLayout`/`NativeSignatureShape` catalog 已成为 requirement graph 与 emitter 的共同 selector；POD record/List/其他布局、跨函数 POD record ABI 和含 managed element 的 generic List layout 仍待后续扩展。每个 case 内五种语言继续使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
+这些 case 固定的是当前 compiler-private 热路，不是统一容器/record ABI。`NativeLayout` catalog 已统一 scalar 与当前 direct-primitive POD record 的物理分类，record 栈存储候选复用它；private callable selector 仍只支持 scalar `Int`。List/其他布局、跨函数 POD record ABI 和含 managed element 的 generic List layout 仍待后续扩展。每个 case 内五种语言继续使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
 
 ## 运行
 
@@ -44,12 +44,12 @@ target/release/loom-benchmark --quick --output target/basic-benchmark-quick.json
 target/release/loom-benchmark --throughput --output target/basic-benchmark-throughput.json
 ```
 
-可重复 `--case NAME` 只选部分用例，也可用 `--warmups N`、`--runs N` 覆盖次数。runner 默认使用 `target/release/loomc`、`go`、Rust 1.88.0（`rustup run 1.88.0 rustc`）、`clang` 和 `clang++`；`LOOM_BENCH_LOOMC`、`LOOM_BENCH_GO`、`LOOM_BENCH_RUSTC`、`LOOM_BENCH_CC`、`LOOM_BENCH_CXX` 可覆盖单个工具路径。
+可重复 `--case NAME` 只选部分用例，也可用 `--warmups N`、`--runs N` 覆盖次数。每次 fixture 执行都有 deadline：quick/standard/throughput 默认分别为 10/30/60 秒，可用 `--timeout-seconds N` 覆盖；超时进程会被 kill 并 wait 回收，runner 报告对应 stdout/stderr 后失败，避免算法退化长期挂起或继续进入后续样本。runner 默认使用 `target/release/loomc`、`go`、Rust 1.88.0（`rustup run 1.88.0 rustc`）、`clang` 和 `clang++`；`LOOM_BENCH_LOOMC`、`LOOM_BENCH_GO`、`LOOM_BENCH_RUSTC`、`LOOM_BENCH_CC`、`LOOM_BENCH_CXX` 可覆盖单个工具路径。
 
 standard/throughput profile 会在构建前记录 1 分钟 load average；超过逻辑 CPU 数的 75% 时拒绝产生看似精确的报告。等机器空闲后重跑是默认处理；确实需要保存带噪声的诊断样本时可显式传 `--allow-busy-host`。`--quick` 是 correctness smoke，不受此预检约束，其耗时不应进入趋势图。开发时可以在忙机上用更大规模、release IR、汇编或 retired-instruction counter 验证“每个元素少了固定指令”一类结构变化。retired instructions 不在 v1 JSON 内；只有在同 binary/ISA/profile/scale 下保存原始样本、命令和 commit 才能作结构对照，该手动样本的 wall time 和语言倍数不能写入受控结果。
 
 ## 结果边界
 
-JSON 保存工具版本和完整编译命令、源码 SHA-256、构建前 load average、一次构建时间、binary bytes、原始 runtime 纳秒样本、median/p05/p95/min/max/mean 和相对本 case 最快 median。runtime 是独立进程从 spawn 到 exit 的 wall time，包含参数解析、实际运算、动态 checksum 比较与固定输出。
+JSON 保存工具版本和完整编译命令、源码 SHA-256、构建前 load average、每次执行 deadline、一次构建时间、binary bytes、原始 runtime 纳秒样本、median/p05/p95/min/max/mean 和相对本 case 最快 median。runtime 是独立进程从 spawn 到 exit 的 wall time，包含参数解析、实际运算、动态 checksum 比较与固定输出。throughput 默认只有 5 个样本，因此 p05/p95 实际等同 min/max，不能解释成稳定尾延迟。
 
 构建时间只有一次 cold-like sample；binary size 还受静态/动态 runtime 和 strip 策略影响。共享机器结果不应做严格回归阈值，跨机器报告也不能直接求排名。稳定趋势应使用固定硬件和固定工具链；warm/incremental build、peak RSS、能耗和 profiler 属于后续独立证据。
