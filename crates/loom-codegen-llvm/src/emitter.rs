@@ -16,7 +16,7 @@ use inkwell::module::{FlagBehavior, Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::FileType;
 use inkwell::types::{
-    BasicMetadataTypeEnum, BasicType, FunctionType, IntType, PointerType, StructType,
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, PointerType, StructType,
 };
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
@@ -573,7 +573,6 @@ struct Backend<'ctx, 'program> {
     value_node_type: StructType<'ctx>,
     arg_node_type: StructType<'ctx>,
     int_list_type: StructType<'ctx>,
-    scalar_int_result_type: StructType<'ctx>,
     witness_node_type: StructType<'ctx>,
     witness_type: StructType<'ctx>,
     wait_source_type: StructType<'ctx>,
@@ -788,8 +787,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         arg_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
         let int_list_type = context.opaque_struct_type("loom.IntListStorage");
         int_list_type.set_body(&[ptr_type.into(), i64_type.into(), i64_type.into()], false);
-        let scalar_int_result_type =
-            context.struct_type(&[i32_type.into(), i64_type.into()], false);
         let witness_node_type = context.opaque_struct_type("loom.WitnessNode");
         witness_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
         let witness_type = context.opaque_struct_type("loom.Witness");
@@ -871,7 +868,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             value_node_type,
             arg_node_type,
             int_list_type,
-            scalar_int_result_type,
             witness_node_type,
             witness_type,
             wait_source_type,
@@ -902,8 +898,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.emit_async_constructor(*function)?;
                 self.emit_async_resume(*function)?;
             } else if self.native_functions.contains_key(function) {
-                self.emit_scalar_int_function(*function)?;
-                self.emit_scalar_int_wrapper(*function)?;
+                self.emit_native_function(*function)?;
+                self.emit_native_wrapper(*function)?;
             } else {
                 self.emit_function(*function)?;
             }
@@ -919,6 +915,55 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     fn set_debug_location(&self, function: FunctionValue<'ctx>, file: u32, offset: u32) {
         self.debug
             .set_location(self.context, &self.builder, function, file, offset);
+    }
+
+    fn native_value_type(&self, layout: NativeLayout) -> BasicTypeEnum<'ctx> {
+        match layout {
+            NativeLayout::Scalar(NativeScalar::Int) => self.i64_type.into(),
+        }
+    }
+
+    fn native_status_result_type(
+        &self,
+        signature: &NativeSignature,
+    ) -> Result<StructType<'ctx>, CodegenError> {
+        if signature.effect() != NativeEffectAbi::RuntimeStatus {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "a native status result requires the runtime-status effect ABI",
+            ));
+        }
+        Ok(self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.native_value_type(signature.shape().result()),
+            ],
+            false,
+        ))
+    }
+
+    fn native_function_type(
+        &self,
+        signature: &NativeSignature,
+    ) -> Result<FunctionType<'ctx>, CodegenError> {
+        let mut parameters = signature
+            .shape()
+            .parameters()
+            .iter()
+            .copied()
+            .map(|layout| BasicMetadataTypeEnum::from(self.native_value_type(layout)))
+            .collect::<Vec<_>>();
+        match signature.effect() {
+            NativeEffectAbi::PureNoFault => Ok(self
+                .native_value_type(signature.shape().result())
+                .fn_type(&parameters, false)),
+            NativeEffectAbi::RuntimeStatus => {
+                parameters.push(self.ptr_type.into());
+                Ok(self
+                    .native_status_result_type(signature)?
+                    .fn_type(&parameters, false))
+            }
+        }
     }
 
     fn declare_functions(&mut self) -> Result<(), CodegenError> {
@@ -948,43 +993,21 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     NativeEffectAbi::RuntimeStatus
                 };
                 let signature = shape.with_effect(effect);
-                let extra_parameters =
-                    usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus);
-                let mut parameters = Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(
-                    signature.shape().parameters().len() + extra_parameters,
-                );
-                parameters.extend(signature.shape().parameters().iter().map(
-                    |layout| match layout {
-                        NativeLayout::Scalar(NativeScalar::Int) => {
-                            BasicMetadataTypeEnum::from(self.i64_type)
-                        }
-                    },
-                ));
-                let result_type = match signature.shape().result() {
-                    NativeLayout::Scalar(NativeScalar::Int) => self.i64_type,
-                };
-                let scalar_type = match signature.effect() {
-                    NativeEffectAbi::PureNoFault => result_type.fn_type(&parameters, false),
-                    NativeEffectAbi::RuntimeStatus => {
-                        parameters.push(self.ptr_type.into());
-                        self.scalar_int_result_type.fn_type(&parameters, false)
-                    }
-                };
-                let scalar = self.module.add_function(
-                    &format!("loom.int.fn.{}.{}", id.0, mangle(&source.name)),
-                    scalar_type,
+                let native = self.module.add_function(
+                    &format!("loom.native.fn.{}.{}", id.0, mangle(&source.name)),
+                    self.native_function_type(&signature)?,
                     Some(Linkage::Internal),
                 );
                 self.debug.attach_function(
-                    scalar,
-                    &format!("{}$int", source.name),
+                    native,
+                    &format!("{}$native", source.name),
                     source.span.file.0,
                     source.span.range.start,
                 )?;
                 self.native_functions.insert(
                     *id,
                     NativeFunctionDecl {
-                        function: scalar,
+                        function: native,
                         signature,
                     },
                 );
@@ -3316,23 +3339,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         result
     }
 
-    fn emit_scalar_int_function(&self, id: FunctionId) -> Result<(), CodegenError> {
+    fn emit_native_function(&self, id: FunctionId) -> Result<(), CodegenError> {
         let source = self.program.function(id).ok_or_else(|| {
-            CodegenError::new("InvalidFunctionReference", "integer function is missing")
+            CodegenError::new("InvalidFunctionReference", "native function is missing")
         })?;
         self.set_debug_location(
             self.native_functions[&id].function,
             source.span.file.0,
             source.span.range.start,
         );
-        let result = FunctionCompiler::new_scalar_int(self, id)?.compile();
+        let result = FunctionCompiler::new_native(self, id)?.compile();
         self.builder.unset_current_debug_location();
         result
     }
 
-    fn emit_scalar_int_wrapper(&self, id: FunctionId) -> Result<(), CodegenError> {
+    fn emit_native_wrapper(&self, id: FunctionId) -> Result<(), CodegenError> {
         let source = self.program.function(id).ok_or_else(|| {
-            CodegenError::new("InvalidFunctionReference", "integer function is missing")
+            CodegenError::new("InvalidFunctionReference", "native function is missing")
         })?;
         let wrapper = self.functions[&id];
         self.set_debug_location(wrapper, source.span.file.0, source.span.range.start);
@@ -3381,9 +3404,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             )?
         } else {
             call_arguments.push(parameter_pointer(wrapper, 3)?.into());
-            let (status, scalar) = call_scalar_int(
+            let (status, scalar) = call_native_status(
                 &self.builder,
                 declaration.function,
+                signature,
                 &call_arguments,
                 "integer.call",
             )?;
@@ -4554,7 +4578,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn new_scalar_int(
+    fn new_native(
         backend: &'backend Backend<'ctx, 'program>,
         id: FunctionId,
     ) -> Result<Self, CodegenError> {
@@ -4567,7 +4591,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if NativeSignatureShape::for_supported_function(source).is_none() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "non-integer function selected for the scalar integer ABI",
+                "unsupported function selected for the native ABI",
             ));
         }
         let declaration = &backend.native_functions[&id];
@@ -4972,42 +4996,47 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 )
                 .map_err(builder_error)?;
         }
-        match self.native_signature.map(NativeSignature::effect) {
-            Some(NativeEffectAbi::PureNoFault) => {
-                self.backend
-                    .builder
-                    .build_return(Some(&scalar.ok_or_else(|| {
-                        CodegenError::new(
-                            "LlvmAbiDefect",
-                            "pure scalar return is missing its value",
+        match self.native_signature {
+            Some(signature) => match signature.effect() {
+                NativeEffectAbi::PureNoFault => {
+                    self.backend
+                        .builder
+                        .build_return(Some(&scalar.ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "pure native return is missing its value",
+                            )
+                        })?))
+                        .map_err(builder_error)?;
+                }
+                NativeEffectAbi::RuntimeStatus => {
+                    let aggregate = self
+                        .backend
+                        .native_status_result_type(signature)?
+                        .get_undef();
+                    let aggregate = self
+                        .backend
+                        .builder
+                        .build_insert_value(aggregate, status, 0, "integer.status")
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                    let aggregate = self
+                        .backend
+                        .builder
+                        .build_insert_value(
+                            aggregate,
+                            scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
+                            1,
+                            "integer.value",
                         )
-                    })?))
-                    .map_err(builder_error)?;
-            }
-            Some(NativeEffectAbi::RuntimeStatus) => {
-                let aggregate = self.backend.scalar_int_result_type.get_undef();
-                let aggregate = self
-                    .backend
-                    .builder
-                    .build_insert_value(aggregate, status, 0, "integer.status")
-                    .map_err(builder_error)?
-                    .into_struct_value();
-                let aggregate = self
-                    .backend
-                    .builder
-                    .build_insert_value(
-                        aggregate,
-                        scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
-                        1,
-                        "integer.value",
-                    )
-                    .map_err(builder_error)?
-                    .into_struct_value();
-                self.backend
-                    .builder
-                    .build_return(Some(&aggregate))
-                    .map_err(builder_error)?;
-            }
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                    self.backend
+                        .builder
+                        .build_return(Some(&aggregate))
+                        .map_err(builder_error)?;
+                }
+            },
             None => {
                 self.backend
                     .builder
@@ -8342,7 +8371,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let CallTarget::Direct(function) = target
             && self.backend.native_functions.contains_key(function)
         {
-            return self.emit_scalar_int_call(*function, arguments, witnesses, destination);
+            return self.emit_native_call(*function, arguments, witnesses, destination);
         }
 
         let Some(mut values) = self.emit_call_arguments(arguments)? else {
@@ -8490,7 +8519,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(true)
     }
 
-    fn emit_scalar_int_call(
+    fn emit_native_call(
         &self,
         function: FunctionId,
         arguments: &[CallArgument],
@@ -8500,7 +8529,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if !witnesses.is_empty() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "scalar integer call unexpectedly carries witnesses",
+                "native ABI call unexpectedly carries witnesses",
             ));
         }
         let Some(values) = self.emit_call_arguments(arguments)? else {
@@ -8532,9 +8561,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?
         } else {
             call_arguments.push(self.runtime_context.into());
-            let (status, scalar) = call_scalar_int(
+            let (status, scalar) = call_native_status(
                 &self.backend.builder,
                 declaration.function,
+                signature,
                 &call_arguments,
                 "integer.call",
             )?;
@@ -11630,29 +11660,36 @@ fn call_int<'ctx>(
         .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return an integer"))
 }
 
-fn call_scalar_int<'ctx>(
+fn call_native_status<'ctx>(
     builder: &Builder<'ctx>,
     function: FunctionValue<'ctx>,
+    signature: &NativeSignature,
     arguments: &[BasicMetadataValueEnum<'ctx>],
     name: &str,
 ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+    if signature.effect() != NativeEffectAbi::RuntimeStatus {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "a native status call requires the runtime-status effect ABI",
+        ));
+    }
     let aggregate = builder
         .build_call(function, arguments, name)
         .map_err(builder_error)?
         .try_as_basic_value()
         .basic()
         .map(BasicValueEnum::into_struct_value)
-        .ok_or_else(|| {
-            CodegenError::new("LlvmAbiDefect", "scalar integer call did not return a pair")
-        })?;
+        .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "native call returned no status pair"))?;
     let status = builder
         .build_extract_value(aggregate, 0, &format!("{name}.status"))
         .map_err(builder_error)?
         .into_int_value();
     let value = builder
         .build_extract_value(aggregate, 1, &format!("{name}.value"))
-        .map_err(builder_error)?
-        .into_int_value();
+        .map_err(builder_error)?;
+    let value = match signature.shape().result() {
+        NativeLayout::Scalar(NativeScalar::Int) => value.into_int_value(),
+    };
     Ok((status, value))
 }
 

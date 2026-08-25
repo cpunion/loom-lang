@@ -317,7 +317,7 @@ pub fn main() Unit {
         .filter(|line| line.starts_with("define "))
         .collect::<Vec<_>>();
     assert!(
-        development.contains("define internal { i32, i64 } @loom.int.fn.0.optimize_folded"),
+        development.contains("define internal { i32, i64 } @loom.native.fn.0.optimize_folded"),
         "{development_definitions:#?}"
     );
     assert!(!development.contains("optimize_unreachable"));
@@ -369,7 +369,7 @@ pub fn main() Int {
     emit_native(program, &executable, &options).expect("emit scalar Int executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read scalar Int LLVM IR");
-    let fibonacci = llvm_integer_function(&llvm, "scalar_int_fibonacci");
+    let fibonacci = llvm_native_function(&llvm, "scalar_int_fibonacci");
     assert!(
         fibonacci
             .lines()
@@ -378,7 +378,7 @@ pub fn main() Int {
         "{fibonacci}"
     );
     assert!(
-        fibonacci.contains("call { i32, i64 } @loom.int.fn.0.scalar_int_fibonacci"),
+        fibonacci.contains("call { i32, i64 } @loom.native.fn.0.scalar_int_fibonacci"),
         "{fibonacci}"
     );
     assert!(!fibonacci.contains("%loom.ArgNode"), "{fibonacci}");
@@ -424,7 +424,7 @@ pub fn main() Int {
     let fault_attributes = llvm_declaration_attributes(&llvm, "loom_context_raise_fault_v1");
     assert!(fault_attributes.contains("cold"), "{fault_attributes}");
     assert!(fault_attributes.contains("noinline"), "{fault_attributes}");
-    let contracted = llvm_integer_function(&llvm, "scalar_int_contracted");
+    let contracted = llvm_native_function(&llvm, "scalar_int_contracted");
     assert!(
         contracted.contains("call void @loom.runtime.clone"),
         "{contracted}"
@@ -521,9 +521,10 @@ pub fn main() Int {
     emit_native(program, &executable, &options).expect("emit pure scalar executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read pure scalar LLVM IR");
-    let identity = llvm_integer_function(&llvm, "pure_scalar_int_identity");
-    let choose = llvm_integer_function(&llvm, "pure_scalar_int_choose");
-    let main = llvm_integer_function(&llvm, "pure_scalar_int_main");
+    let identity = llvm_native_function(&llvm, "pure_scalar_int_identity");
+    let choose = llvm_native_function(&llvm, "pure_scalar_int_choose");
+    let main = llvm_native_function(&llvm, "pure_scalar_int_main");
+    assert!(!llvm.contains("@loom.int.fn."), "{llvm}");
     assert!(
         identity
             .lines()
@@ -532,11 +533,11 @@ pub fn main() Int {
         "{identity}"
     );
     assert!(
-        choose.contains("call i64 @loom.int.fn.0.pure_scalar_int_identity"),
+        choose.contains("call i64 @loom.native.fn.0.pure_scalar_int_identity"),
         "{choose}"
     );
     assert!(
-        main.contains("call i64 @loom.int.fn.1.pure_scalar_int_choose"),
+        main.contains("call i64 @loom.native.fn.1.pure_scalar_int_choose"),
         "{main}"
     );
     assert!(!identity.lines().next().unwrap_or_default().contains("ptr"));
@@ -1132,7 +1133,7 @@ pub fn faultMain() Unit {
 
     for ir in [&development_ir, &release_ir] {
         let llvm = std::fs::read_to_string(ir).expect("read native Int list LLVM IR");
-        let scan = llvm_integer_function(&llvm, "native_int_list_renamedSameShape");
+        let scan = llvm_native_function(&llvm, "native_int_list_renamedSameShape");
         assert!(scan.contains("@loom_int_list_reserve_v1"), "{scan}");
         assert!(scan.contains("@loom_int_list_drop_v1"), "{scan}");
         assert_eq!(
@@ -1198,7 +1199,7 @@ pub fn faultMain() Unit {
         }
 
         if ir == &development_ir {
-            let append = llvm_integer_function(&llvm, "native_int_list_appendOnly");
+            let append = llvm_native_function(&llvm, "native_int_list_appendOnly");
             for phi in [
                 "int.list.loop.data = phi ptr",
                 "int.list.loop.length = phi i64",
@@ -1235,12 +1236,12 @@ pub fn faultMain() Unit {
                 );
             }
 
-            let observed = llvm_integer_function(&llvm, "native_int_list_appendObservedLength");
+            let observed = llvm_native_function(&llvm, "native_int_list_appendObservedLength");
             assert!(
                 observed.contains("int.list.loop.length = phi i64"),
                 "same-list length observation lost append-loop SSA: {observed}"
             );
-            let fallback = llvm_integer_function(&llvm, "native_int_list_twoAppends");
+            let fallback = llvm_native_function(&llvm, "native_int_list_twoAppends");
             assert!(
                 !fallback.contains("int.list.loop.length = phi i64"),
                 "multiple append statements must conservatively fall back: {fallback}"
@@ -1285,7 +1286,7 @@ pub fn faultMain() Unit {
                 "native_int_list_interveningAppendKeepsCheck",
                 "native_int_list_noneSideEffectFallsBack",
             ] {
-                let body = llvm_integer_function(&llvm, fallback);
+                let body = llvm_native_function(&llvm, fallback);
                 assert!(body.contains("int.list.get.past.end"), "{body}");
                 assert!(body.contains("int.list.get.none"), "{body}");
             }
@@ -1395,7 +1396,7 @@ pub async fn main() Unit {
         "native_int_list_fallback_textList",
         "native_int_list_fallback_receiverObservationHazard",
     ] {
-        let body = llvm_integer_function(&llvm, function);
+        let body = llvm_native_function(&llvm, function);
         assert!(body.contains("@loom_runtime_list_add"), "{body}");
         assert!(!body.contains("@loom_int_list_reserve_v1"), "{body}");
     }
@@ -1517,18 +1518,17 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
     &ir[start..start + marker.len() + end]
 }
 
-fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
+fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
     let marker = "define internal ";
     let start = ir
         .match_indices(marker)
         .map(|(index, _)| index)
         .find(|index| {
-            ir[*index..]
-                .lines()
-                .next()
-                .is_some_and(|line| line.contains("@loom.int.fn.") && line.contains(symbol_suffix))
+            ir[*index..].lines().next().is_some_and(|line| {
+                line.contains("@loom.native.fn.") && line.contains(symbol_suffix)
+            })
         })
-        .unwrap_or_else(|| panic!("missing scalar Int LLVM function containing `{symbol_suffix}`"));
+        .unwrap_or_else(|| panic!("missing native LLVM function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
