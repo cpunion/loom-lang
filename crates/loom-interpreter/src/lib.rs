@@ -3111,6 +3111,7 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn eval_builtin(
         &mut self,
         builtin: Builtin,
@@ -3672,7 +3673,7 @@ impl<'program> Interpreter<'program> {
             .map_err(|error| {
                 self.runtime_fault(
                     "LogWriteFault",
-                    &format!("could not write log: {error}"),
+                    format!("could not write log: {error}"),
                     span,
                 )
             })?;
@@ -3732,6 +3733,7 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn eval_standard_value_builtin(
         &self,
         builtin: Builtin,
@@ -3790,27 +3792,25 @@ impl<'program> Interpreter<'program> {
                 self.bytes_value(value, span)
             }
             (Builtin::BytesDecodeUtf8, [bytes]) => {
-                match String::from_utf8(self.bytes_payload(bytes, span)?.to_vec()) {
-                    Ok(value) => self.result_value(true, Value::Text { value }, span),
-                    Err(_) => {
-                        let ty = self.program.prelude.decode_text_error.ok_or_else(|| {
-                            self.runtime_fault(
-                                "LOOM_RUNTIME_INVALID_MIR",
-                                "prelude DecodeTextError type is missing",
-                                span,
-                            )
-                        })?;
-                        self.result_value(
-                            false,
-                            Value::Enum {
-                                ty,
-                                variant: VariantId(0),
-                                payload: Vec::new(),
-                            },
+                let Ok(value) = String::from_utf8(self.bytes_payload(bytes, span)?.to_vec()) else {
+                    let ty = self.program.prelude.decode_text_error.ok_or_else(|| {
+                        self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "prelude DecodeTextError type is missing",
                             span,
                         )
-                    }
-                }
+                    })?;
+                    return self.result_value(
+                        false,
+                        Value::Enum {
+                            ty,
+                            variant: VariantId(0),
+                            payload: Vec::new(),
+                        },
+                        span,
+                    );
+                };
+                self.result_value(true, Value::Text { value }, span)
             }
             (Builtin::PathFromText, [Value::Text { value }]) => {
                 if value.as_bytes().contains(&0) {
@@ -3922,6 +3922,7 @@ impl<'program> Interpreter<'program> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn eval_file_builtin(
         &mut self,
         builtin: Builtin,
@@ -4096,6 +4097,7 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn eval_socket_builtin(
         &mut self,
         builtin: Builtin,
@@ -4104,13 +4106,10 @@ impl<'program> Interpreter<'program> {
     ) -> Result<Value, ExecutionFailure> {
         match (builtin, arguments) {
             (Builtin::SocketConnect, [Value::Text { value: host }, Value::Int { value: port }]) => {
-                let port = match u16::try_from(*port) {
-                    Ok(port) => port,
-                    Err(_) => {
-                        let failure =
-                            self.runtime_fault("InvalidPort", "socket port must fit UInt16", span);
-                        return self.spawn_terminal_task(Err(failure.into()), span);
-                    }
+                let Ok(port) = u16::try_from(*port) else {
+                    let failure =
+                        self.runtime_fault("InvalidPort", "socket port must fit UInt16", span);
+                    return self.spawn_terminal_task(Err(failure.into()), span);
                 };
                 let host = host.clone();
                 self.spawn_host_io_task(span, move || {
@@ -5960,6 +5959,7 @@ fn poll_socket_operation(pending: &mut PendingSocketIo) -> SocketIoPoll {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // also serves directly as a `map_err` adapter
 fn host_io_error(error: std::io::Error) -> HostIoError {
     use std::io::ErrorKind;
     let kind = match error.kind() {

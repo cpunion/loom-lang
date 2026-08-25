@@ -78,6 +78,7 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     let mut program = Program::default();
     program.concepts.push(ConceptDef {

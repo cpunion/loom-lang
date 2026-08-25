@@ -34,6 +34,7 @@ fn interpreter_standard_library_child() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn structured_values_match_in_interpreter_and_native_runtime() {
     assert_eq!(
         NATIVE_RUNTIME_ABI,

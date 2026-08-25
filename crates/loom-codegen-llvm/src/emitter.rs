@@ -357,6 +357,7 @@ impl<'ctx> DebugState<'ctx> {
 }
 
 impl<'ctx, 'program> Backend<'ctx, 'program> {
+    #[allow(clippy::too_many_lines)]
     fn new(
         context: &'ctx Context,
         program: &'program Program,
@@ -2967,7 +2968,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
-    fn needs_executor(&self) -> bool {
+    const fn needs_executor() -> bool {
         // The executor also owns the moving heap used by synchronous roots.
         // Keeping one root heap for every invocation avoids process-lifetime
         // fallback allocations in programs that do not use async functions.
@@ -3001,7 +3002,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     }
 
     fn create_root_executor(&self) -> Result<PointerValue<'ctx>, CodegenError> {
-        if !self.needs_executor() {
+        if !Self::needs_executor() {
             return Ok(self.ptr_type.const_null());
         }
         let executor = call_pointer(
@@ -3047,7 +3048,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     }
 
     fn destroy_root_executor(&self, executor: PointerValue<'ctx>) -> Result<(), CodegenError> {
-        if self.needs_executor() {
+        if Self::needs_executor() {
             self.builder
                 .build_call(
                     self.native_gc_deactivate_executor(),
@@ -3651,6 +3652,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
 }
 
 impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
+    #[allow(clippy::too_many_lines)]
     fn new(
         backend: &'backend Backend<'ctx, 'program>,
         id: FunctionId,
@@ -4222,6 +4224,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_cleanups_from(0)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_statement(&self, statement: &Statement) -> Result<bool, CodegenError> {
         self.backend.set_debug_location(
             self.function,
@@ -6367,6 +6370,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         )
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn emit_checked_construction(
         &self,
         contract: &Contract,
@@ -7189,6 +7193,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_builtin(
         &self,
         builtin: Builtin,

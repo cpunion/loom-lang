@@ -276,6 +276,7 @@ fn scan_block_with_flow(block: &Block, edges: &mut FunctionEdges, flow: &mut Wit
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlow) {
     match &expression.kind {
         ExprKind::Tuple(elements) | ExprKind::List(elements) => {

@@ -12,6 +12,7 @@ fn loom_text_literal(value: &str) -> String {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn text_bytes_paths_and_path_files_match_in_both_backends() {
     let project = tempfile::tempdir().expect("create standard-value project");
     let file = loom_text_literal(
