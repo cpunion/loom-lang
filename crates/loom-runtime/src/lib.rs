@@ -19,6 +19,7 @@
 mod float;
 mod gc;
 mod int;
+mod int_list;
 mod process;
 mod reactor;
 mod scheduler;
@@ -27,6 +28,7 @@ mod text;
 mod value;
 
 pub use gc::{activate_executor, deactivate_executor};
+pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
 
 pub use reactor::{
