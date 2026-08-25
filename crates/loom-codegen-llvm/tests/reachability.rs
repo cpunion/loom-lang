@@ -1,12 +1,15 @@
 #![allow(clippy::default_trait_access)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 use loom_codegen_llvm::{EmitOptions, Roots, analyze_reachability, native_object_fingerprint};
+use loom_driver::AnalysisHost;
 use loom_mir::{
-    Block, CallArgument, CallPlan, CallTarget, ConceptDef, ConceptId, Constant, Expr, ExprKind,
-    Function, FunctionId, LocalDecl, LocalId, Place, Program, Receiver, RequirementDef,
+    Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef, ConceptId, Constant, Expr,
+    ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program, Receiver, RequirementDef,
     RequirementId, RequirementType, Statement, StatementKind, Type, Witness, WitnessId, WitnessRef,
+    decode_interpreted_artifact, encode_interpreted_artifact,
 };
 
 #[test]
@@ -245,6 +248,196 @@ fn object_fingerprint_excludes_unreachable_function_bodies() {
     assert_ne!(initial, live_changed);
 }
 
+#[test]
+fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
+    let view_ty = Type::View {
+        mutable: false,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+    };
+    let mut live = unit_function(FunctionId(0), "main");
+    live.body.statements = vec![
+        Statement {
+            kind: StatementKind::Evaluate(Expr {
+                kind: ExprKind::Call {
+                    target: CallTarget::Builtin(Builtin::TextMapInsert),
+                    type_arguments: Vec::new(),
+                    arguments: vec![
+                        CallArgument::Value(builtin_call(Builtin::TextMapNew, Vec::new())),
+                        CallArgument::Value(Expr {
+                            kind: ExprKind::Constant(Constant::Text("live".into())),
+                            ty: Type::Text,
+                            span: Default::default(),
+                        }),
+                        CallArgument::Value(make_view(
+                            WitnessId(0),
+                            Expr {
+                                kind: ExprKind::Constant(Constant::Int(7)),
+                                ty: Type::Int,
+                                span: Default::default(),
+                            },
+                            view_ty.clone(),
+                        )),
+                    ],
+                    witnesses: Vec::new(),
+                },
+                ty: Type::Error,
+                span: Default::default(),
+            }),
+            span: Default::default(),
+        },
+        Statement {
+            kind: StatementKind::Evaluate(builtin_call(
+                Builtin::LogInfo,
+                vec![Expr {
+                    kind: ExprKind::Constant(Constant::Text("live".into())),
+                    ty: Type::Text,
+                    span: Default::default(),
+                }],
+            )),
+            span: Default::default(),
+        },
+    ];
+    let mut dead = unit_function(FunctionId(1), "dead");
+    dead.body.statements = vec![
+        Statement {
+            kind: StatementKind::Evaluate(builtin_call(
+                Builtin::JsonParse,
+                vec![Expr {
+                    kind: ExprKind::Constant(Constant::Text("null".into())),
+                    ty: Type::Text,
+                    span: Default::default(),
+                }],
+            )),
+            span: Default::default(),
+        },
+        Statement {
+            kind: StatementKind::Evaluate(make_view(
+                WitnessId(1),
+                Expr {
+                    kind: ExprKind::Constant(Constant::Text("dead".into())),
+                    ty: Type::Text,
+                    span: Default::default(),
+                },
+                view_ty,
+            )),
+            span: Default::default(),
+        },
+    ];
+    let program = Program {
+        functions: vec![live, dead],
+        witnesses: vec![empty_witness(WitnessId(0)), empty_witness(WitnessId(1))],
+        ..Program::default()
+    };
+
+    let reachable =
+        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    assert_eq!(reachable.functions, BTreeSet::from([FunctionId(0)]));
+    assert_eq!(reachable.witnesses, BTreeSet::from([WitnessId(0)]));
+    assert_eq!(
+        reachable.builtins,
+        BTreeSet::from([
+            Builtin::TextMapNew,
+            Builtin::TextMapInsert,
+            Builtin::LogInfo,
+        ])
+    );
+    assert!(!reachable.builtins.contains(&Builtin::JsonParse));
+}
+
+#[test]
+fn structured_artifact_and_native_cache_identities_respect_dce_boundary() {
+    let directory = tempfile::tempdir().expect("create source project");
+    let source = directory.path().join("main.loom");
+    fs::write(
+        &source,
+        r#"module cache.structured
+
+import standard.json.parse_json
+import standard.log.info
+import standard.log.warn
+
+pub fn main() Unit {
+    let fields = TextMap[Text]().insert("live", "value")
+    info("live")
+    Unit
+}
+
+fn dead(text Text) Unit {
+    let parsed = parse_json(text)
+    warn("dead")
+    Unit
+}
+"#,
+    )
+    .expect("write source");
+    let snapshot = AnalysisHost::new(&source)
+        .expect("load source")
+        .snapshot()
+        .expect("analyze source");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower executable MIR");
+    let options = EmitOptions::run("main");
+    let roots = Roots::for_entry(program, "main").expect("main root");
+    let reachable = analyze_reachability(program, &roots).expect("analyze structured graph");
+    assert_eq!(
+        reachable.builtins,
+        BTreeSet::from([
+            Builtin::TextMapNew,
+            Builtin::TextMapInsert,
+            Builtin::LogInfo,
+        ])
+    );
+    assert!(!reachable.builtins.contains(&Builtin::JsonParse));
+    assert!(!reachable.builtins.contains(&Builtin::LogWarn));
+
+    let artifact = encode_interpreted_artifact(program).expect("encode structured artifact");
+    assert_eq!(
+        artifact,
+        encode_interpreted_artifact(program).expect("encode deterministically")
+    );
+    let decoded = decode_interpreted_artifact(&artifact).expect("round trip structured artifact");
+    assert!(decoded.prelude.text_map.is_some());
+    assert!(decoded.prelude.json.is_some());
+    assert!(decoded.prelude.json_error.is_some());
+    assert!(decoded.prelude.io_error.is_some());
+    assert!(decoded.prelude.io_error_kind.is_some());
+    assert!(decoded.prelude.log_level.is_some());
+
+    let fingerprint = native_object_fingerprint(program, &options).expect("object identity");
+    let mut dead_changed = program.clone();
+    replace_builtin_in_named_function(
+        &mut dead_changed,
+        "dead",
+        Builtin::LogWarn,
+        Builtin::LogError,
+    );
+    let dead_artifact =
+        encode_interpreted_artifact(&dead_changed).expect("encode valid dead mutation");
+    assert_ne!(artifact, dead_artifact);
+    decode_interpreted_artifact(&dead_artifact).expect("decode valid dead mutation");
+    assert_eq!(
+        fingerprint,
+        native_object_fingerprint(&dead_changed, &options).expect("dead-change identity")
+    );
+
+    let mut live_changed = program.clone();
+    replace_builtin_in_named_function(
+        &mut live_changed,
+        "main",
+        Builtin::LogInfo,
+        Builtin::LogDebug,
+    );
+    let live_artifact =
+        encode_interpreted_artifact(&live_changed).expect("encode valid live mutation");
+    assert_ne!(artifact, live_artifact);
+    decode_interpreted_artifact(&live_artifact).expect("decode valid live mutation");
+    assert_ne!(
+        fingerprint,
+        native_object_fingerprint(&live_changed, &options).expect("live-change identity")
+    );
+}
+
 fn root_function() -> Function {
     let view = Expr {
         kind: ExprKind::MakeView {
@@ -328,6 +521,72 @@ fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
         },
         ty,
         span: Default::default(),
+    }
+}
+
+fn builtin_call(builtin: Builtin, arguments: Vec<Expr>) -> Expr {
+    Expr {
+        kind: ExprKind::Call {
+            target: CallTarget::Builtin(builtin),
+            type_arguments: Vec::new(),
+            arguments: arguments.into_iter().map(CallArgument::Value).collect(),
+            witnesses: Vec::new(),
+        },
+        ty: Type::Error,
+        span: Default::default(),
+    }
+}
+
+fn empty_witness(id: WitnessId) -> Witness {
+    Witness {
+        id,
+        concept: ConceptId(0),
+        concrete: Type::Error,
+        methods: BTreeMap::new(),
+        associated: BTreeMap::new(),
+        type_parameters: 0,
+        prerequisites: Vec::new(),
+    }
+}
+
+fn replace_builtin_in_named_function(
+    program: &mut Program,
+    function_name: &str,
+    from: Builtin,
+    to: Builtin,
+) {
+    let function = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.rsplit('.').next() == Some(function_name))
+        .unwrap_or_else(|| panic!("missing function {function_name}"));
+    let mut value = serde_json::to_value(&*function).expect("serialize MIR function");
+    let needle = serde_json::to_value(CallTarget::Builtin(from)).expect("serialize old builtin");
+    let replacement =
+        serde_json::to_value(CallTarget::Builtin(to)).expect("serialize replacement builtin");
+    assert_eq!(replace_json_value(&mut value, &needle, &replacement), 1);
+    *function = serde_json::from_value(value).expect("deserialize mutated MIR function");
+}
+
+fn replace_json_value(
+    value: &mut serde_json::Value,
+    needle: &serde_json::Value,
+    replacement: &serde_json::Value,
+) -> usize {
+    if value == needle {
+        *value = replacement.clone();
+        return 1;
+    }
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter_mut()
+            .map(|value| replace_json_value(value, needle, replacement))
+            .sum(),
+        serde_json::Value::Object(fields) => fields
+            .values_mut()
+            .map(|value| replace_json_value(value, needle, replacement))
+            .sum(),
+        _ => 0,
     }
 }
 

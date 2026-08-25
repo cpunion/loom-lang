@@ -1,14 +1,19 @@
 #![no_main]
 
+mod support;
+
 use libfuzzer_sys::fuzz_target;
-use loom_core::{FileId, Span};
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::Span;
 use loom_interpreter::{Interpreter, Value};
-use loom_lowering::lower_to_mir;
-use loom_sema::analyze;
-use loom_syntax::parse_with_file;
+
+use support::{STRUCTURED_STANDARD_SOURCE, compile};
 
 fuzz_target!(|input: &[u8]| {
+    if input.first().copied().unwrap_or_default() & 0x80 != 0 {
+        exercise_structured_standard_values(input);
+        return;
+    }
+
     let candidate = bounded(input, 0);
     let first = bounded(input, 8);
     let second = bounded(input, 16);
@@ -69,9 +74,8 @@ fuzz_target!(|input: &[u8]| {
          }}\n",
         !accepted
     );
-    let program = compile(&source).unwrap_or_else(|error| {
-        panic!("generated proof program must compile:\n{source}\n{error}")
-    });
+    let program = compile(&source)
+        .unwrap_or_else(|error| panic!("generated proof program must compile:\n{source}\n{error}"));
     let main = *program.exports.get("main").expect("main export");
     let result = Interpreter::new(&program)
         .invoke(main, Vec::new(), Span::default())
@@ -88,37 +92,79 @@ fuzz_target!(|input: &[u8]| {
     assert!(compile(&rejected_source).is_err());
 });
 
+fn exercise_structured_standard_values(input: &[u8]) {
+    let program = compile(STRUCTURED_STANDARD_SOURCE).unwrap_or_else(|error| {
+        panic!("generated structured standard-value program must compile: {error}")
+    });
+    assert!(program.prelude.text_map.is_some());
+    assert!(program.prelude.json.is_some());
+    assert!(program.prelude.json_error.is_some());
+    assert!(program.prelude.io_error.is_some());
+    assert!(program.prelude.io_error_kind.is_some());
+    assert!(program.prelude.log_level.is_some());
+
+    let invalid = match input.get(1).copied().unwrap_or_default() % 6 {
+        0 => {
+            r#"
+module fuzz.structured.reject
+fn bad[V](left TextMap[V], right TextMap[V]) Bool { left == right }
+"#
+        }
+        1 => {
+            r#"
+module fuzz.structured.reject
+fn bad() TextMap[Int] { TextMap[Int]().insert("key", "wrong") }
+"#
+        }
+        2 => {
+            r#"
+module fuzz.structured.reject
+fn bad(value Json) Unit {
+    match value {
+        Null => Unit
+        Bool(_) => Unit
+    }
+}
+"#
+        }
+        3 => {
+            r#"
+module fuzz.structured.reject
+fn bad() Json { Json.Null() }
+"#
+        }
+        4 => {
+            r#"
+module fuzz.structured.reject
+fn bad(value IoErrorKind) Unit {
+    match value {
+        NotFound => Unit
+        Other => Unit
+    }
+}
+"#
+        }
+        _ => {
+            r#"
+module fuzz.structured.reject
+import standard.log.write
+fn bad() Unit {
+    write(LogLevel.Info, "event", TextMap[Int]())
+    Unit
+}
+"#
+        }
+    };
+    assert!(
+        compile(invalid).is_err(),
+        "structured semantic mutation must fail:\n{invalid}"
+    );
+}
+
 fn bounded(input: &[u8], start: usize) -> i64 {
     let mut bytes = [0_u8; 8];
     for (index, slot) in bytes.iter_mut().enumerate() {
         *slot = input.get(start + index).copied().unwrap_or_default();
     }
     i64::from_le_bytes(bytes).rem_euclid(1001)
-}
-
-fn compile(source: &str) -> Result<loom_mir::Program, String> {
-    let parsed = parse_with_file(FileId(0), source);
-    if !parsed.diagnostics().is_empty() {
-        return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
-    }
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
-    if !lowered.diagnostics.is_empty() {
-        return Err(format!("HIR diagnostics: {:#?}", lowered.diagnostics));
-    }
-    let analysis = analyze(&lowered.program);
-    if !analysis.diagnostics.is_empty() {
-        return Err(format!(
-            "semantic diagnostics: {:#?}",
-            analysis.diagnostics
-        ));
-    }
-    let program = lower_to_mir(&lowered.program, &analysis)
-        .map_err(|failure| format!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))?;
-    program
-        .validate()
-        .map_err(|errors| format!("MIR validation diagnostics: {errors:#?}"))?;
-    Ok(program)
 }

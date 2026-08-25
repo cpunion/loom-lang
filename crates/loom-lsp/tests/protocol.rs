@@ -91,6 +91,105 @@ fn read_until_id(reader: &mut impl BufRead, id: i64) -> (Value, Vec<Value>) {
     }
 }
 
+fn source_position(source: &str, needle: &str) -> Value {
+    let byte = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing {needle}"));
+    let prefix = &source[..byte];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
+    let character = prefix
+        .rsplit_once('\n')
+        .map_or(prefix, |(_, line)| line)
+        .encode_utf16()
+        .count();
+    json!({"line": line, "character": character})
+}
+
+#[test]
+fn structured_standard_values_are_discoverable_through_completion_and_hover() {
+    let source = r#"module editor.standard
+
+import standard.json.parse_json
+import standard.log.write
+
+fn inspect(problem IoError, value Json) Unit {
+    let fields = TextMap[Text]().insert("key", "value")
+    let parsed = parse_json("null")
+    write(LogLevel.Info, problem.message(), fields)
+    Unit
+}
+"#;
+    let project = TestProject::new(source);
+    let root_uri = loom_lsp::path_to_file_uri(&project.0);
+    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
+    let messages = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "TextMap")}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_json")}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "insert")}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "IoError")}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Unit\n}")}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ];
+    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
+    let mut output = Vec::new();
+    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
+    let responses = decode_frames(&output);
+
+    for (id, signature) in [
+        (2, "TextMap[V]"),
+        (3, "fn parse_json(text Text) Result[Json, JsonError]"),
+        (
+            4,
+            "method insert[V](self TextMap[V], key Text, value V) TextMap[V]",
+        ),
+        (5, "record IoError"),
+    ] {
+        let hover = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing hover response {id}"));
+        let markdown = hover
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .expect("hover markdown");
+        assert!(markdown.contains(signature), "{markdown}");
+    }
+
+    let labels = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(6)))
+        .and_then(|message| message.pointer("/result/items"))
+        .and_then(Value::as_array)
+        .expect("completion items")
+        .iter()
+        .filter_map(|item| item.get("label").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    for expected in [
+        "TextMap",
+        "Json",
+        "JsonError",
+        "IoError",
+        "IoErrorKind",
+        "LogLevel",
+        "parse_json",
+        "format_json",
+        "write",
+        "insert",
+        "remove",
+        "kind",
+        "message",
+        "try_open_read_path",
+        "try_connect",
+        "try_read_text",
+    ] {
+        assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {

@@ -445,7 +445,18 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
             return self.respond(id, Value::Null);
         };
-        let Some(symbol) = snapshot.definition_at(file, byte) else {
+        if let Some(symbol) = snapshot.definition_at(file, byte) {
+            return self.respond(
+                id,
+                json!({
+                    "contents": {
+                        "kind": "markdown",
+                        "value": format!("`{} {}`  \nmodule `{}`", symbol.kind, symbol.name, symbol.module)
+                    }
+                }),
+            );
+        }
+        let Some(symbol) = standard_symbol_at(&snapshot, file, byte) else {
             return self.respond(id, Value::Null);
         };
         self.respond(
@@ -453,7 +464,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
             json!({
                 "contents": {
                     "kind": "markdown",
-                    "value": format!("`{} {}`  \nmodule `{}`", symbol.kind, symbol.name, symbol.module)
+                    "value": format!("```loom\n{}\n```\nmodule `{}`", symbol.signature, symbol.module)
                 }
             }),
         )
@@ -521,6 +532,16 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 })
             })
             .collect::<Vec<_>>();
+        items.extend(STANDARD_SYMBOLS.iter().map(|symbol| {
+            json!({
+                "label": symbol.name,
+                "kind": completion_kind(symbol.kind),
+                "detail": format!("{} · {}", symbol.kind, symbol.module),
+                "documentation": {"kind": "markdown", "value": format!("```loom\n{}\n```", symbol.signature)},
+                "insertText": symbol.name,
+                "sortText": format!("0-standard-{}-{}", symbol.name, symbol.module)
+            })
+        }));
         items.extend(COMPLETION_KEYWORDS.iter().map(|keyword| {
             json!({
                 "label": keyword,
@@ -998,6 +1019,205 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "var",
     "where",
 ];
+
+struct StandardSymbol {
+    name: &'static str,
+    kind: &'static str,
+    module: &'static str,
+    signature: &'static str,
+}
+
+const STANDARD_SYMBOLS: &[StandardSymbol] = &[
+    StandardSymbol {
+        name: "TextMap",
+        kind: "record",
+        module: "standard.prelude",
+        signature: "TextMap[V]",
+    },
+    StandardSymbol {
+        name: "Json",
+        kind: "enum",
+        module: "standard.prelude",
+        signature: "enum Json",
+    },
+    StandardSymbol {
+        name: "JsonError",
+        kind: "enum",
+        module: "standard.prelude",
+        signature: "enum JsonError",
+    },
+    StandardSymbol {
+        name: "IoError",
+        kind: "record",
+        module: "standard.prelude",
+        signature: "record IoError",
+    },
+    StandardSymbol {
+        name: "IoErrorKind",
+        kind: "enum",
+        module: "standard.prelude",
+        signature: "enum IoErrorKind",
+    },
+    StandardSymbol {
+        name: "LogLevel",
+        kind: "enum",
+        module: "standard.prelude",
+        signature: "enum LogLevel",
+    },
+    StandardSymbol {
+        name: "parse_json",
+        kind: "function",
+        module: "standard.json",
+        signature: "fn parse_json(text Text) Result[Json, JsonError]",
+    },
+    StandardSymbol {
+        name: "format_json",
+        kind: "function",
+        module: "standard.json",
+        signature: "fn format_json(value Json) Result[Text, JsonError]",
+    },
+    StandardSymbol {
+        name: "debug",
+        kind: "function",
+        module: "standard.log",
+        signature: "fn debug(message Text) Unit",
+    },
+    StandardSymbol {
+        name: "info",
+        kind: "function",
+        module: "standard.log",
+        signature: "fn info(message Text) Unit",
+    },
+    StandardSymbol {
+        name: "warn",
+        kind: "function",
+        module: "standard.log",
+        signature: "fn warn(message Text) Unit",
+    },
+    StandardSymbol {
+        name: "error",
+        kind: "function",
+        module: "standard.log",
+        signature: "fn error(message Text) Unit",
+    },
+    StandardSymbol {
+        name: "write",
+        kind: "function",
+        module: "standard.log",
+        signature: "fn write(level LogLevel, message Text, fields TextMap[Text]) Unit",
+    },
+    StandardSymbol {
+        name: "try_open_read",
+        kind: "function",
+        module: "standard.file",
+        signature: "fn try_open_read(path Text) Task[Result[File, IoError]]",
+    },
+    StandardSymbol {
+        name: "try_create",
+        kind: "function",
+        module: "standard.file",
+        signature: "fn try_create(path Text) Task[Result[File, IoError]]",
+    },
+    StandardSymbol {
+        name: "try_open_read_path",
+        kind: "function",
+        module: "standard.file",
+        signature: "fn try_open_read_path(path Path) Task[Result[File, IoError]]",
+    },
+    StandardSymbol {
+        name: "try_create_path",
+        kind: "function",
+        module: "standard.file",
+        signature: "fn try_create_path(path Path) Task[Result[File, IoError]]",
+    },
+    StandardSymbol {
+        name: "try_connect",
+        kind: "function",
+        module: "standard.net",
+        signature: "fn try_connect(host Text, port Int) Task[Result[Socket, IoError]]",
+    },
+    StandardSymbol {
+        name: "length",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method length[V](self TextMap[V]) Int",
+    },
+    StandardSymbol {
+        name: "contains",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method contains[V](self TextMap[V], key Text) Bool",
+    },
+    StandardSymbol {
+        name: "get",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method get[V](self TextMap[V], key Text) Option[V]",
+    },
+    StandardSymbol {
+        name: "insert",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method insert[V](self TextMap[V], key Text, value V) TextMap[V]",
+    },
+    StandardSymbol {
+        name: "remove",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method remove[V](self TextMap[V], key Text) TextMap[V]",
+    },
+    StandardSymbol {
+        name: "kind",
+        kind: "method",
+        module: "standard.prelude.IoError",
+        signature: "method kind(self IoError) IoErrorKind",
+    },
+    StandardSymbol {
+        name: "message",
+        kind: "method",
+        module: "standard.prelude.IoError",
+        signature: "method message(self IoError) Text",
+    },
+    StandardSymbol {
+        name: "try_read_text",
+        kind: "method",
+        module: "standard.file",
+        signature: "method try_read_text(mut self File) Task[Result[Text, IoError]]",
+    },
+    StandardSymbol {
+        name: "try_write_text",
+        kind: "method",
+        module: "standard.file",
+        signature: "method try_write_text(mut self File, text Text) Task[Result[Unit, IoError]]",
+    },
+];
+
+fn standard_symbol_at(
+    snapshot: &AnalysisSnapshot,
+    file: FileId,
+    byte: u32,
+) -> Option<&'static StandardSymbol> {
+    let source = snapshot.sources().document(file)?.text()?;
+    let byte = usize::try_from(byte).ok()?;
+    if byte > source.len() || !source.is_char_boundary(byte) {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut start = byte;
+    while start > 0 && is_standard_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = byte;
+    while end < bytes.len() && is_standard_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    let name = source.get(start..end)?;
+    STANDARD_SYMBOLS.iter().find(|symbol| symbol.name == name)
+}
+
+const fn is_standard_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
 
 fn symbol_kind(kind: &str) -> u8 {
     match kind {

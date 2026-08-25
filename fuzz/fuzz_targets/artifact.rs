@@ -1,14 +1,16 @@
 #![no_main]
 
-use std::collections::BTreeMap;
 use std::sync::OnceLock;
+
+mod support;
 
 use libfuzzer_sys::fuzz_target;
 use loom_mir::{
-    Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Type,
     decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_executable_artifact,
 };
+
+use support::{STRUCTURED_STANDARD_SOURCE, compile};
 
 fuzz_target!(|input: &[u8]| {
     // Raw bytes exercise envelope/nesting/header rejection. A mutation of a
@@ -30,31 +32,12 @@ fuzz_target!(|input: &[u8]| {
 fn valid_seed() -> &'static Vec<u8> {
     static SEED: OnceLock<Vec<u8>> = OnceLock::new();
     SEED.get_or_init(|| {
-        let mut program = Program::default();
-        program.functions.push(Function {
-            id: FunctionId(0),
-            name: "fuzz.main".into(),
-            span: Default::default(),
-            type_parameters: 0,
-            is_async: false,
-            suspension_points: Vec::new(),
-            params: Vec::new(),
-            witness_params: Vec::new(),
-            locals: Vec::new(),
-            return_ty: Type::Unit,
-            receiver: None,
-            body: Block {
-                statements: Vec::new(),
-                tail: Some(Box::new(Expr {
-                    kind: ExprKind::Constant(Constant::Unit),
-                    ty: Type::Unit,
-                    span: Default::default(),
-                })),
-                span: Default::default(),
-            },
-            call_plan: CallPlan::default(),
-        });
-        program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
+        let program = compile(STRUCTURED_STANDARD_SOURCE)
+            .unwrap_or_else(|error| panic!("structured fuzz seed must compile: {error}"));
+        assert!(program.prelude.text_map.is_some());
+        assert!(program.prelude.json.is_some());
+        assert!(program.prelude.io_error.is_some());
+        assert!(program.prelude.log_level.is_some());
         encode_interpreted_executable_artifact(&program, "main").expect("valid fuzz seed")
     })
 }
