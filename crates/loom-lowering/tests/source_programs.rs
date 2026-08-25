@@ -40,6 +40,28 @@ fn function_has_name(function: &loom_mir::Function, expected: &str) -> bool {
     function.name.rsplit('.').next() == Some(expected)
 }
 
+fn suspension_local_names(function: &loom_mir::Function, state: u32) -> Vec<String> {
+    let point = function
+        .suspension_points
+        .iter()
+        .find(|point| point.state == state)
+        .expect("suspension state");
+    point
+        .live_locals
+        .iter()
+        .map(|id| {
+            function
+                .params
+                .iter()
+                .chain(&function.locals)
+                .find(|local| local.id == *id)
+                .expect("live local declaration")
+                .name
+                .clone()
+        })
+        .collect()
+}
+
 fn contract_contains_binding(expression: &loom_mir::ContractExpr, expected: u32) -> bool {
     use loom_mir::ContractExprKind;
     match &expression.kind {
@@ -475,6 +497,115 @@ test async fn generic_async_contracts() {
     assert_eq!(measured.call_plan.requires.len(), 1);
     assert_eq!(measured.call_plan.ensures.len(), 1);
     assert_eq!(measured.suspension_points.len(), 1);
+}
+
+#[test]
+fn async_lowering_computes_path_and_cleanup_sensitive_suspension_liveness() {
+    let program = compile_and_validate(
+        r"
+module liveness
+
+enum Input {
+    First(Int)
+    Second(Int)
+}
+
+async fn valueTask(value Int) Int { value }
+
+async fn branches(flag Bool, left Int, right Int) Int {
+    let selected = if flag {
+        Task.sleep(0).await
+        left
+    } else {
+        Task.sleep(0).await
+        right
+    }
+    Task.sleep(0).await
+    selected
+}
+
+async fn matches(input Input, extra Int) Int {
+    match input {
+        First(value) => {
+            Task.sleep(0).await
+            value
+        }
+        Second(value) => {
+            Task.sleep(0).await
+            value + extra
+        }
+    }
+}
+
+async fn loops(limit Int, seed Int, after Int) Int {
+    var sum = seed
+    for index in 0..limit {
+        Task.sleep(0).await
+        sum = sum + index
+        Unit
+    }
+    sum + after
+}
+
+async fn cleaned(value Int, replacement Int) Int {
+    var held = value
+    defer {
+        held = held + 1
+    }
+    Task.sleep(0).await
+    held = replacement
+    held
+}
+
+async fn returns(flag Bool, first Int, second Int) Int {
+    if flag {
+        return valueTask(first).await
+    } else {
+        Unit
+    }
+    Task.sleep(0).await
+    second
+}
+",
+    );
+    let function = |name| {
+        program
+            .functions
+            .iter()
+            .find(|function| function_has_name(function, name))
+            .expect("async test function")
+    };
+
+    let branches = function("branches");
+    assert_eq!(suspension_local_names(branches, 1), ["left"]);
+    assert_eq!(suspension_local_names(branches, 2), ["right"]);
+    assert_eq!(suspension_local_names(branches, 3), ["selected"]);
+
+    let matches = function("matches");
+    assert_eq!(suspension_local_names(matches, 1), ["value"]);
+    assert_eq!(suspension_local_names(matches, 2), ["extra", "value"]);
+
+    let loops = function("loops");
+    assert_eq!(suspension_local_names(loops, 1), ["after", "sum", "index"]);
+
+    let cleaned = function("cleaned");
+    assert_eq!(suspension_local_names(cleaned, 1), ["replacement", "held"]);
+
+    let returns = function("returns");
+    assert!(suspension_local_names(returns, 1).is_empty());
+    assert_eq!(suspension_local_names(returns, 2), ["second"]);
+
+    for function in [branches, matches, loops, cleaned, returns] {
+        for point in &function.suspension_points {
+            assert!(
+                point.live_locals.windows(2).all(|pair| pair[0] < pair[1]),
+                "{} state #{} is not stable: {:?}",
+                function.name,
+                point.state,
+                point.live_locals
+            );
+        }
+    }
 }
 
 #[test]

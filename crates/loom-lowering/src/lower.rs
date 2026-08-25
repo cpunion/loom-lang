@@ -601,7 +601,7 @@ impl<'a> Compiler<'a> {
                 receiver_ty,
             )?;
             let mir_body = builder.lower_root()?;
-            let (params, locals, suspension_points) = builder.finish_locals();
+            let (params, locals, suspension_points) = builder.finish_locals(&mir_body)?;
             let type_parameters = builder.parameters.len();
             let receiver = match signature.receiver {
                 Some(ReceiverKind::ReadOnly) => Some(Receiver::Readonly),
@@ -1849,23 +1849,35 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         })
     }
 
-    fn finish_locals(&self) -> (Vec<LocalDecl>, Vec<LocalDecl>, Vec<SuspensionPoint>) {
-        let live_locals = self
-            .params
-            .iter()
-            .chain(&self.locals)
-            .map(|local| local.id)
-            .collect::<Vec<_>>();
+    fn finish_locals(
+        &self,
+        body: &Block,
+    ) -> LowerResult<(Vec<LocalDecl>, Vec<LocalDecl>, Vec<SuspensionPoint>)> {
+        let mut liveness = loom_mir::analyze_suspension_liveness(body);
         let suspension_points = self
             .suspension_spans
             .iter()
-            .map(|(state, span)| SuspensionPoint {
-                state: *state,
-                span: *span,
-                live_locals: live_locals.clone(),
+            .map(|(state, span)| {
+                let live_locals = liveness.remove(state).ok_or_else(|| {
+                    defect(
+                        format!("lowered await state #{state} is absent from MIR liveness"),
+                        *span,
+                    )
+                })?;
+                Ok(SuspensionPoint {
+                    state: *state,
+                    span: *span,
+                    live_locals,
+                })
             })
-            .collect();
-        (self.params.clone(), self.locals.clone(), suspension_points)
+            .collect::<LowerResult<Vec<_>>>()?;
+        if let Some((state, _)) = liveness.into_iter().next() {
+            return Err(defect(
+                format!("MIR liveness found unknown await state #{state}"),
+                body.span,
+            ));
+        }
+        Ok((self.params.clone(), self.locals.clone(), suspension_points))
     }
 
     fn lower_root(&mut self) -> LowerResult<Block> {

@@ -10,8 +10,8 @@ use crate::{
     ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr,
     ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, Program,
     Receiver, RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, Statement,
-    StatementKind, TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness,
-    WitnessParam, WitnessRef,
+    StatementKind, SuspensionPoint, TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId,
+    Witness, WitnessParam, WitnessRef,
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
@@ -33,6 +33,7 @@ pub enum MirValidationCode {
     TypeMismatch,
     ExpressionIdentity,
     ExpressionShape,
+    SuspensionShape,
     ObligationShape,
     CallArity,
     WitnessArity,
@@ -70,6 +71,7 @@ impl MirValidationCode {
             Self::TypeMismatch => "MirTypeMismatch",
             Self::ExpressionIdentity => "MirExpressionIdentity",
             Self::ExpressionShape => "MirExpressionShape",
+            Self::SuspensionShape => "MirSuspensionShape",
             Self::ObligationShape => "MirObligationShape",
             Self::CallArity => "MirCallArity",
             Self::WitnessArity => "MirWitnessArity",
@@ -2447,6 +2449,7 @@ impl<'program> Validator<'program> {
             }
         }
         self.validate_locals(function, path);
+        self.validate_suspension_points(function, path);
         self.validate_receiver(function, path);
 
         let explicit_parameters = if function.receiver.is_some() {
@@ -2784,6 +2787,144 @@ impl<'program> Validator<'program> {
                     format!("{path}.locals"),
                 );
             }
+        }
+    }
+
+    fn validate_suspension_points(&mut self, function: &Function, path: &str) {
+        if !function.is_async && !function.suspension_points.is_empty() {
+            self.push(
+                MirValidationCode::SuspensionShape,
+                "a synchronous function cannot declare suspension metadata",
+                function.span,
+                format!("{path}.suspension_points"),
+            );
+        }
+
+        let mut awaits = BTreeMap::<u32, Vec<Span>>::new();
+        for expression in function.exprs_preorder() {
+            if let ExprKind::Await { state, .. } = expression.kind {
+                awaits.entry(state).or_default().push(expression.span);
+            }
+        }
+        let expected_liveness = crate::analyze_suspension_liveness(&function.body);
+
+        for (index, point) in function.suspension_points.iter().enumerate() {
+            self.validate_suspension_point(
+                function,
+                path,
+                index,
+                point,
+                &awaits,
+                &expected_liveness,
+            );
+        }
+
+        for (state, occurrences) in awaits {
+            if !function
+                .suspension_points
+                .iter()
+                .any(|point| point.state == state)
+            {
+                self.push(
+                    MirValidationCode::SuspensionShape,
+                    format!("Await state #{state} has no suspension metadata"),
+                    occurrences.first().copied().unwrap_or(function.span),
+                    format!("{path}.suspension_points"),
+                );
+            }
+        }
+    }
+
+    fn validate_suspension_point(
+        &mut self,
+        function: &Function,
+        path: &str,
+        index: usize,
+        point: &SuspensionPoint,
+        awaits: &BTreeMap<u32, Vec<Span>>,
+        expected_liveness: &BTreeMap<u32, Vec<LocalId>>,
+    ) {
+        let point_path = format!("{path}.suspension_points[{index}]");
+        let expected_state = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(1));
+        if expected_state != Some(point.state) {
+            self.push(
+                MirValidationCode::SuspensionShape,
+                format!(
+                    "suspension metadata must use dense state order starting at one; found state #{} at position {index}",
+                    point.state
+                ),
+                point.span,
+                format!("{point_path}.state"),
+            );
+        }
+
+        if !point.live_locals.windows(2).all(|pair| pair[0] < pair[1]) {
+            self.push(
+                MirValidationCode::SuspensionShape,
+                "suspension live locals must be strictly sorted and unique",
+                point.span,
+                format!("{point_path}.live_locals"),
+            );
+        }
+        for (local_index, local) in point.live_locals.iter().enumerate() {
+            if Self::local_decl(function, *local).is_none() {
+                self.push(
+                    MirValidationCode::InvalidLocalReference,
+                    format!("suspension metadata references unknown local #{}", local.0),
+                    point.span,
+                    format!("{point_path}.live_locals[{local_index}]"),
+                );
+            }
+        }
+
+        match awaits.get(&point.state).map(Vec::as_slice) {
+            Some([await_span]) if *await_span == point.span => {}
+            Some([_]) => self.push(
+                MirValidationCode::SuspensionShape,
+                format!(
+                    "suspension state #{} span does not match its Await expression",
+                    point.state
+                ),
+                point.span,
+                format!("{point_path}.span"),
+            ),
+            Some(occurrences) => self.push(
+                MirValidationCode::SuspensionShape,
+                format!(
+                    "suspension state #{} is used by {} Await expressions",
+                    point.state,
+                    occurrences.len()
+                ),
+                point.span,
+                format!("{point_path}.state"),
+            ),
+            None => self.push(
+                MirValidationCode::SuspensionShape,
+                format!(
+                    "suspension metadata state #{} has no Await expression",
+                    point.state
+                ),
+                point.span,
+                format!("{point_path}.state"),
+            ),
+        }
+
+        let expected = expected_liveness
+            .get(&point.state)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if point.live_locals != expected {
+            self.push(
+                MirValidationCode::SuspensionShape,
+                format!(
+                    "suspension state #{} live locals must be {expected:?}, found {:?}",
+                    point.state, point.live_locals
+                ),
+                point.span,
+                format!("{point_path}.live_locals"),
+            );
         }
     }
 

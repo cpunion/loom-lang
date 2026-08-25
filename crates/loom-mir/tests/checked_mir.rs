@@ -8,8 +8,8 @@ use loom_mir::{
     ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
     INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place,
     PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    RequirementWitnessParam, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId,
-    VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
+    RequirementWitnessParam, Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind,
+    TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
     decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
 };
@@ -103,6 +103,21 @@ fn simple_program() -> Program {
 
 fn validation_errors(program: &Program) -> loom_mir::MirValidationErrors {
     validate_program(program).expect_err("program should be invalid")
+}
+
+fn sleep_await(state: u32) -> Expr {
+    expr(
+        ExprKind::Await {
+            state,
+            task: Box::new(expr(
+                ExprKind::Sleep {
+                    milliseconds: Box::new(constant(Constant::Int(0), Type::Int)),
+                },
+                Type::Task(Box::new(Type::Unit)),
+            )),
+        },
+        Type::Unit,
+    )
 }
 
 fn raw_handle_type(id: u32, name: &str) -> TypeDef {
@@ -4466,6 +4481,91 @@ fn checked_mir_rejects_an_unreachable_match_arm() {
     assert!(errors.as_slice().iter().any(|error| {
         error.code == MirValidationCode::PatternShape
             && error.message.contains("match arm is unreachable")
+    }));
+}
+
+fn suspension_function(live_locals: Vec<LocalId>) -> Function {
+    let mut function = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        vec![local(1, Type::Int, false)],
+        Type::Int,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(7), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(sleep_await(1)),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(copy(1, Type::Int))),
+            span: span(),
+        },
+    );
+    function.is_async = true;
+    function.suspension_points = vec![SuspensionPoint {
+        state: 1,
+        span: span(),
+        live_locals,
+    }];
+    function
+}
+
+#[test]
+fn checked_mir_accepts_exact_suspension_liveness() {
+    validate_program(&Program {
+        functions: vec![suspension_function(vec![LocalId(1)])],
+        ..Program::default()
+    })
+    .expect("exact suspension liveness validates");
+}
+
+#[test]
+fn checked_mir_rejects_stale_or_unstable_suspension_liveness() {
+    let stale = validation_errors(&Program {
+        functions: vec![suspension_function(vec![LocalId(0), LocalId(1)])],
+        ..Program::default()
+    });
+    assert!(stale.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::SuspensionShape
+            && error.message.contains("live locals must be")
+    }));
+
+    let unstable = validation_errors(&Program {
+        functions: vec![suspension_function(vec![LocalId(1), LocalId(1)])],
+        ..Program::default()
+    });
+    assert!(unstable.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::SuspensionShape
+            && error.message.contains("strictly sorted and unique")
+    }));
+}
+
+#[test]
+fn checked_mir_rejects_missing_or_non_dense_suspension_metadata() {
+    let mut missing = suspension_function(vec![LocalId(1)]);
+    missing.suspension_points.clear();
+    let missing = validation_errors(&Program {
+        functions: vec![missing],
+        ..Program::default()
+    });
+    assert!(missing.contains(MirValidationCode::SuspensionShape));
+
+    let mut non_dense = suspension_function(vec![LocalId(1)]);
+    non_dense.suspension_points[0].state = 2;
+    let non_dense = validation_errors(&Program {
+        functions: vec![non_dense],
+        ..Program::default()
+    });
+    assert!(non_dense.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::SuspensionShape
+            && error.message.contains("dense state order")
     }));
 }
 

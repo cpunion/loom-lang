@@ -1,6 +1,7 @@
 //! Typed executable IR with explicit contract and dispatch operations.
 
 mod artifact;
+mod liveness;
 mod validation;
 
 use std::collections::BTreeMap;
@@ -15,6 +16,7 @@ pub use artifact::{
     LOOM_LANGUAGE_VERSION, decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact,
 };
+pub use liveness::analyze_suspension_liveness;
 pub use validation::{
     CheckedProgram, MirValidationCode, MirValidationError, MirValidationErrors, check_program,
     validate_program,
@@ -373,8 +375,8 @@ pub struct SuspensionPoint {
     /// Resume states start at one; state zero is the coroutine entry.
     pub state: u32,
     pub span: Span,
-    /// C1 conservatively frame-promotes all locals live in the containing
-    /// async function. Later liveness shrinking does not change semantics.
+    /// Locals whose current values may be read after resume or by a cleanup
+    /// active at this suspension. Checked MIR requires this exact, sorted set.
     pub live_locals: Vec<LocalId>,
 }
 
