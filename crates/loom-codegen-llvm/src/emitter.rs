@@ -53,7 +53,8 @@ use crate::abi::{
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
 use crate::native_layout::{
-    NativeEffectAbi, NativeLayout, NativeScalar, NativeSignature, NativeSignatureShape,
+    NativeEffectAbi, NativeLayout, NativePodRecord, NativeScalar, NativeSignature,
+    NativeSignatureShape,
 };
 use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
 use crate::requirements::RuntimeRequirementGraph;
@@ -199,28 +200,14 @@ fn stack_record_candidates(program: &Program, function: &Function) -> BTreeMap<L
         .locals
         .iter()
         .filter_map(|local| {
-            let Type::Nominal(id, arguments) = &local.ty else {
+            let NativeLayout::PodRecord(record) = NativeLayout::classify(program, &local.ty)?
+            else {
                 return None;
             };
-            if !arguments.is_empty() {
+            if record.fields().len() > MAX_STACK_RECORD_FIELDS {
                 return None;
             }
-            let definition = program.type_def(*id)?;
-            if definition.type_parameters != 0 {
-                return None;
-            }
-            let TypeDefKind::Record { fields, invariant } = &definition.kind else {
-                return None;
-            };
-            if invariant.is_some()
-                || fields.len() > MAX_STACK_RECORD_FIELDS
-                || !fields.iter().all(|field| {
-                    matches!(field.ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
-                })
-            {
-                return None;
-            }
-            Some((local.id, (*id, fields.len())))
+            Some((local.id, record))
         })
         .collect::<BTreeMap<_, _>>();
     if eligible.is_empty() {
@@ -232,10 +219,11 @@ fn stack_record_candidates(program: &Program, function: &Function) -> BTreeMap<L
     let mut total_nodes = 0_usize;
     eligible
         .into_iter()
-        .filter_map(|(local, (_, fields))| {
+        .filter_map(|(local, record)| {
             if initialized.get(&local) != Some(&1) || forbidden.contains(&local) {
                 return None;
             }
+            let fields = record.fields().len();
             let next_total = total_nodes.checked_add(fields)?;
             if next_total > MAX_STACK_RECORD_NODES_PER_FUNCTION {
                 return None;
@@ -248,15 +236,15 @@ fn stack_record_candidates(program: &Program, function: &Function) -> BTreeMap<L
 
 fn scan_stack_record_block(
     block: &Block,
-    eligible: &BTreeMap<LocalId, (TypeId, usize)>,
+    eligible: &BTreeMap<LocalId, NativePodRecord>,
     initialized: &mut BTreeMap<LocalId, usize>,
     forbidden: &mut BTreeSet<LocalId>,
 ) {
     for statement in &block.statements {
         match &statement.kind {
             StatementKind::Let { local, value } => {
-                if let Some((expected, _)) = eligible.get(local) {
-                    if is_stack_record_initializer(value, *expected) {
+                if let Some(record) = eligible.get(local) {
+                    if is_stack_record_initializer(value, record.nominal()) {
                         *initialized.entry(*local).or_default() += 1;
                     } else {
                         forbidden.insert(*local);
@@ -307,7 +295,7 @@ fn scan_stack_record_block(
 #[allow(clippy::too_many_lines)]
 fn scan_stack_record_expr(
     expression: &Expr,
-    eligible: &BTreeMap<LocalId, (TypeId, usize)>,
+    eligible: &BTreeMap<LocalId, NativePodRecord>,
     initialized: &mut BTreeMap<LocalId, usize>,
     forbidden: &mut BTreeSet<LocalId>,
 ) {
@@ -917,9 +905,17 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .set_location(self.context, &self.builder, function, file, offset);
     }
 
-    fn native_value_type(&self, layout: NativeLayout) -> BasicTypeEnum<'ctx> {
+    fn native_value_type(
+        &self,
+        layout: &NativeLayout,
+    ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
         match layout {
-            NativeLayout::Scalar(NativeScalar::Int) => self.i64_type.into(),
+            NativeLayout::Scalar(NativeScalar::Int) => Ok(self.i64_type.into()),
+            NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool | NativeScalar::Float)
+            | NativeLayout::PodRecord(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "storage-only native layout was selected for the callable ABI",
+            )),
         }
     }
 
@@ -936,7 +932,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(self.context.struct_type(
             &[
                 self.context.i32_type().into(),
-                self.native_value_type(signature.shape().result()),
+                self.native_value_type(signature.shape().result())?,
             ],
             false,
         ))
@@ -950,12 +946,14 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .shape()
             .parameters()
             .iter()
-            .copied()
-            .map(|layout| BasicMetadataTypeEnum::from(self.native_value_type(layout)))
-            .collect::<Vec<_>>();
+            .map(|layout| {
+                self.native_value_type(layout)
+                    .map(BasicMetadataTypeEnum::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         match signature.effect() {
             NativeEffectAbi::PureNoFault => Ok(self
-                .native_value_type(signature.shape().result())
+                .native_value_type(signature.shape().result())?
                 .fn_type(&parameters, false)),
             NativeEffectAbi::RuntimeStatus => {
                 parameters.push(self.ptr_type.into());
@@ -11689,6 +11687,13 @@ fn call_native_status<'ctx>(
         .map_err(builder_error)?;
     let value = match signature.shape().result() {
         NativeLayout::Scalar(NativeScalar::Int) => value.into_int_value(),
+        NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool | NativeScalar::Float)
+        | NativeLayout::PodRecord(_) => {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "native status call used a storage-only result layout",
+            ));
+        }
     };
     Ok((status, value))
 }
