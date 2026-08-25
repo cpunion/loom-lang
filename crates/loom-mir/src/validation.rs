@@ -264,10 +264,9 @@ enum SlotState {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ViewLoan {
+struct PlaceLoan {
     owner: Place,
     mutable: bool,
-    token: u32,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -281,13 +280,16 @@ struct DataflowState {
     slots: Vec<SlotState>,
     /// Possible loans carried by each local. A branch join may retain more
     /// than one conservative possibility for the same carrier.
-    view_loans: Vec<Vec<ViewLoan>>,
-    temporary_loans: Vec<ViewLoan>,
+    view_loans: Vec<Vec<PlaceLoan>>,
+    /// Accesses established by arguments of every active call expression.
+    /// Each call restores its entry checkpoint only after every argument has
+    /// finished evaluating.
+    temporary_loans: Vec<PlaceLoan>,
 }
 
 struct ExprFlow {
     diverges: bool,
-    loans: Vec<ViewLoan>,
+    loans: Vec<PlaceLoan>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -7691,7 +7693,7 @@ impl<'program> Validator<'program> {
                 if Self::owner_has_mutable_loan(place, state) {
                     self.push(
                         MirValidationCode::BorrowShape,
-                        "argument cannot be read while mutable interface access is active",
+                        "place cannot be read while mutable call-scoped access is active",
                         expression.span,
                         path,
                     );
@@ -7938,16 +7940,24 @@ impl<'program> Validator<'program> {
                         }
                         CallArgument::InOut(place) => {
                             self.require_available(place.local, state, expression.span, path);
-                            let is_view = Self::local_decl(function, place.local)
-                                .is_some_and(|local| matches!(local.ty, Type::View { .. }));
-                            if !is_view {
-                                self.reject_owner_mutation_while_borrowed(
-                                    place,
-                                    state,
+                            if !target_is_synchronous {
+                                self.push(
+                                    MirValidationCode::BorrowShape,
+                                    "an inout place cannot enter a call whose target is not proven synchronous",
                                     expression.span,
-                                    path,
+                                    format!("{path}.arguments[{index}]"),
                                 );
                             }
+                            self.reject_owner_mutation_while_borrowed(
+                                place,
+                                state,
+                                expression.span,
+                                &format!("{path}.arguments[{index}]"),
+                            );
+                            state.temporary_loans.push(PlaceLoan {
+                                owner: place.clone(),
+                                mutable: true,
+                            });
                         }
                     }
                 }
@@ -8006,7 +8016,7 @@ impl<'program> Validator<'program> {
                 {
                     self.push(
                         MirValidationCode::BorrowShape,
-                        "interface access cannot remain active across Await",
+                        "call-scoped access cannot remain active across Await",
                         expression.span,
                         path,
                     );
@@ -8085,15 +8095,14 @@ impl<'program> Validator<'program> {
         }
         ExprFlow {
             diverges: expression.ty == Type::Never,
-            loans: vec![ViewLoan {
+            loans: vec![PlaceLoan {
                 owner: owner.clone(),
                 mutable,
-                token,
             }],
         }
     }
 
-    fn dataflow_store(index: usize, loans: Vec<ViewLoan>, state: &mut DataflowState) {
+    fn dataflow_store(index: usize, loans: Vec<PlaceLoan>, state: &mut DataflowState) {
         if let Some(slot) = state.slots.get_mut(index) {
             *slot = SlotState::Available;
         }
@@ -8119,7 +8128,7 @@ impl<'program> Validator<'program> {
     fn active_loans<'state>(
         owner: &'state Place,
         state: &'state DataflowState,
-    ) -> impl Iterator<Item = &'state ViewLoan> + 'state {
+    ) -> impl Iterator<Item = &'state PlaceLoan> + 'state {
         state
             .view_loans
             .iter()
@@ -8142,7 +8151,7 @@ impl<'program> Validator<'program> {
         if Self::active_loans(owner, state).next().is_some() {
             self.push(
                 MirValidationCode::BorrowShape,
-                "argument cannot be moved or mutated while interface access is active",
+                "place cannot be moved or mutated while call-scoped access is active",
                 span,
                 path,
             );
@@ -8368,7 +8377,7 @@ fn type_contains_view(ty: &Type) -> bool {
     false
 }
 
-fn union_loans(mut left: Vec<ViewLoan>, right: Vec<ViewLoan>) -> Vec<ViewLoan> {
+fn union_loans(mut left: Vec<PlaceLoan>, right: Vec<PlaceLoan>) -> Vec<PlaceLoan> {
     for loan in right {
         if !left.contains(&loan) {
             left.push(loan);

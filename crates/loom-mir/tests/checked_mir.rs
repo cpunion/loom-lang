@@ -1938,6 +1938,322 @@ fn call_arguments_validate_inout_place_shape() {
     assert!(validation_errors(&program).contains(MirValidationCode::ImmutablePlace));
 }
 
+#[test]
+#[allow(clippy::too_many_lines)]
+fn inout_access_is_exclusive_until_every_later_argument_finishes() {
+    let view = view_type(true);
+    let mut value_target = function(
+        0,
+        vec![local(0, Type::Int, true), local(1, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    value_target.receiver = Some(Receiver::Mutable);
+    let mut unit_target = function(
+        1,
+        vec![local(0, Type::Int, true), local(1, Type::Unit, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    unit_target.receiver = Some(Receiver::Mutable);
+    let mut view_target = function(
+        2,
+        vec![local(0, Type::Int, true), local(1, view, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    view_target.receiver = Some(Receiver::Mutable);
+    let call = |target, owner, value| {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Inherent(FunctionId(target)),
+                type_arguments: Vec::new(),
+                arguments: vec![
+                    CallArgument::InOut(Place::local(LocalId(owner))),
+                    CallArgument::Value(value),
+                ],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let caller = function(
+        3,
+        vec![
+            local(0, Type::Int, true),
+            local(1, Type::Int, true),
+            local(2, Type::Int, true),
+            local(3, Type::Int, true),
+        ],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(call(0, 0, copy(0, Type::Int))),
+                    span: span(),
+                },
+                Statement {
+                    // Reviewer counterexample: arg0 = InOut(c),
+                    // arg1 = Value(Move(c)).
+                    kind: StatementKind::Evaluate(call(
+                        0,
+                        1,
+                        expr(ExprKind::Move(Place::local(LocalId(1))), Type::Int),
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(call(
+                        1,
+                        2,
+                        expr(
+                            ExprKind::Block(Block {
+                                statements: vec![Statement {
+                                    kind: StatementKind::Assign {
+                                        place: Place::local(LocalId(2)),
+                                        value: constant(Constant::Int(7), Type::Int),
+                                    },
+                                    span: span(),
+                                }],
+                                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                span: span(),
+                            }),
+                            Type::Unit,
+                        ),
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(call(
+                        2,
+                        3,
+                        borrowed_view(Place::local(LocalId(3)), 0, 1, true),
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![value_target, unit_target, view_target, caller],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    });
+    for index in 0..4 {
+        assert!(errors.iter().any(|error| {
+            error.code == MirValidationCode::BorrowShape
+                && error.path.contains(&format!("statements[{index}]"))
+        }));
+    }
+}
+
+#[test]
+fn inout_access_ends_after_the_call_returns() {
+    let mut target = function(
+        0,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    target.receiver = Some(Receiver::Mutable);
+    let call = || {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Inherent(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let caller = function(
+        1,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(call()),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(call()),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        functions: vec![target, caller],
+        ..Program::default()
+    })
+    .expect("an inout loan is released when its call returns");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
+    let pair = Type::Nominal(TypeId(0), Vec::new());
+    let pair_def = TypeDef {
+        id: TypeId(0),
+        name: "Pair".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "left".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "right".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+            ],
+            invariant: None,
+        },
+    };
+    let mut outer = function(
+        0,
+        vec![local(0, Type::Int, true), local(1, Type::Unit, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    outer.receiver = Some(Receiver::Mutable);
+    let mut mutate_field = function(
+        1,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    mutate_field.receiver = Some(Receiver::Mutable);
+    let mut reset_pair = function(
+        2,
+        vec![local(0, pair.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    reset_pair.receiver = Some(Receiver::Mutable);
+    let field = |index| Place {
+        local: LocalId(0),
+        projection: vec![index],
+    };
+    let nested_call = |target, place| {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Inherent(FunctionId(target)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(place)],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let outer_call = |nested| {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Inherent(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(field(0)), CallArgument::Value(nested)],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let sibling = function(
+        3,
+        vec![local(0, pair.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(outer_call(nested_call(1, field(1))))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        types: vec![pair_def.clone()],
+        functions: vec![
+            outer.clone(),
+            mutate_field.clone(),
+            reset_pair.clone(),
+            sibling,
+        ],
+        ..Program::default()
+    })
+    .expect("a nested mutable call may exclusively access a sibling projection");
+
+    let parent_reset = function(
+        3,
+        vec![local(0, pair, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(outer_call(nested_call(
+                2,
+                Place::local(LocalId(0)),
+            )))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        types: vec![pair_def],
+        functions: vec![outer, mutate_field, reset_pair, parent_reset],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape
+            && error.path.contains("arguments[1]")
+            && error.path.contains("arguments[0]")
+    }));
+}
+
 #[allow(clippy::too_many_lines)]
 fn conditional_concept_program() -> Program {
     let boxed = Type::Nominal(TypeId(0), vec![Type::Parameter(0)]);
