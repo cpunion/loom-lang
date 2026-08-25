@@ -12,12 +12,15 @@ const REPORT_KIND: &str = "loom-cross-language-basic-benchmark";
 const REPORT_WARNING: &str = "Controlled microbenchmark evidence, not a general language ranking.";
 const DEFAULT_WARMUPS: usize = 3;
 const DEFAULT_RUNS: usize = 10;
+const THROUGHPUT_WARMUPS: usize = 2;
+const THROUGHPUT_RUNS: usize = 5;
 
 #[derive(Clone, Copy)]
 struct CaseSpec {
     name: &'static str,
     description: &'static str,
     standard_scale: i64,
+    throughput_scale: i64,
     quick_scale: i64,
     checksum: fn(i64) -> Result<i64, String>,
 }
@@ -27,6 +30,7 @@ const CASES: &[CaseSpec] = &[
         name: "int_lcg",
         description: "bounded Int arithmetic and a counted loop",
         standard_scale: 2_000_000,
+        throughput_scale: 100_000_000,
         quick_scale: 10_000,
         checksum: lcg_final_checksum,
     },
@@ -34,6 +38,7 @@ const CASES: &[CaseSpec] = &[
         name: "record_method",
         description: "mutable record method calls with a bounded periodic value",
         standard_scale: 500_000,
+        throughput_scale: 100_000_000,
         quick_scale: 10_000,
         checksum: list_checksum,
     },
@@ -41,6 +46,7 @@ const CASES: &[CaseSpec] = &[
         name: "list_build_scan",
         description: "grow an Int list and scan it by index",
         standard_scale: 10_000,
+        throughput_scale: 10_000_000,
         quick_scale: 1_000,
         checksum: list_checksum,
     },
@@ -48,14 +54,56 @@ const CASES: &[CaseSpec] = &[
         name: "fib_recursive",
         description: "non-tail recursive calls over Int",
         standard_scale: 32,
+        throughput_scale: 40,
         quick_scale: 20,
         checksum: fib_checksum,
     },
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BenchmarkProfile {
+    Standard,
+    Quick,
+    Throughput,
+}
+
+impl BenchmarkProfile {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Quick => "quick",
+            Self::Throughput => "throughput",
+        }
+    }
+
+    const fn scale(self, case: CaseSpec) -> i64 {
+        match self {
+            Self::Standard => case.standard_scale,
+            Self::Quick => case.quick_scale,
+            Self::Throughput => case.throughput_scale,
+        }
+    }
+
+    const fn default_warmups(self) -> usize {
+        match self {
+            Self::Standard => DEFAULT_WARMUPS,
+            Self::Quick => 1,
+            Self::Throughput => THROUGHPUT_WARMUPS,
+        }
+    }
+
+    const fn default_runs(self) -> usize {
+        match self {
+            Self::Standard => DEFAULT_RUNS,
+            Self::Quick => 3,
+            Self::Throughput => THROUGHPUT_RUNS,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Config {
-    quick: bool,
+    profile: BenchmarkProfile,
     allow_busy_host: bool,
     warmups: usize,
     runs: usize,
@@ -216,7 +264,7 @@ fn run() -> Result<(), String> {
     let cases = select_cases(&config)?;
     let languages = language_specs(&workspace)?;
     let host = host_report();
-    reject_busy_standard_run(&config, &host)?;
+    reject_busy_measured_run(&config, &host)?;
     let mut toolchains = Vec::with_capacity(languages.len());
 
     eprintln!("building {} benchmark executables", languages.len());
@@ -226,11 +274,7 @@ fn run() -> Result<(), String> {
 
     let mut case_reports = Vec::with_capacity(cases.len());
     for (case_index, case) in cases.iter().enumerate() {
-        let scale = if config.quick {
-            case.quick_scale
-        } else {
-            case.standard_scale
-        };
+        let scale = config.profile.scale(*case);
         let expected = (case.checksum)(scale)?;
         eprintln!(
             "measuring {} (scale {scale}, {} warmups + {} runs)",
@@ -260,7 +304,7 @@ fn run() -> Result<(), String> {
         generated_at_unix_ms,
         host,
         config: ConfigReport {
-            profile: if config.quick { "quick" } else { "standard" },
+            profile: config.profile.name(),
             busy_host_override: config.allow_busy_host,
             warmups: config.warmups,
             measured_runs: config.runs,
@@ -286,7 +330,7 @@ fn run() -> Result<(), String> {
 }
 
 fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config, String> {
-    let mut quick = false;
+    let mut profile = BenchmarkProfile::Standard;
     let mut allow_busy_host = false;
     let mut warmups = None;
     let mut runs = None;
@@ -295,7 +339,10 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
-            Some("--quick") => quick = true,
+            Some("--quick") => select_profile(&mut profile, BenchmarkProfile::Quick, "--quick")?,
+            Some("--throughput") => {
+                select_profile(&mut profile, BenchmarkProfile::Throughput, "--throughput")?;
+            }
             Some("--allow-busy-host") => allow_busy_host = true,
             Some("--warmups") => {
                 warmups = Some(parse_count("--warmups", arguments.next())?);
@@ -325,19 +372,34 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
             None => return Err("arguments must be valid UTF-8".to_owned()),
         }
     }
-    let warmups = warmups.unwrap_or(if quick { 1 } else { DEFAULT_WARMUPS });
-    let runs = runs.unwrap_or(if quick { 3 } else { DEFAULT_RUNS });
+    let warmups = warmups.unwrap_or(profile.default_warmups());
+    let runs = runs.unwrap_or(profile.default_runs());
     if runs == 0 {
         return Err("--runs must be greater than zero".to_owned());
     }
     Ok(Config {
-        quick,
+        profile,
         allow_busy_host,
         warmups,
         runs,
         output,
         selected_cases,
     })
+}
+
+fn select_profile(
+    selected: &mut BenchmarkProfile,
+    requested: BenchmarkProfile,
+    flag: &str,
+) -> Result<(), String> {
+    if *selected != BenchmarkProfile::Standard {
+        return Err(format!(
+            "benchmark profiles are mutually exclusive; cannot combine {flag} with --{}",
+            selected.name()
+        ));
+    }
+    *selected = requested;
+    Ok(())
 }
 
 fn parse_count(flag: &str, value: Option<OsString>) -> Result<usize, String> {
@@ -352,11 +414,13 @@ fn parse_count(flag: &str, value: Option<OsString>) -> Result<usize, String> {
 
 fn print_help() {
     println!(
-        "usage: loom-benchmark [--quick] [--allow-busy-host] [--warmups N] [--runs N]\n\
+        "usage: loom-benchmark [--quick | --throughput] [--allow-busy-host]\n\
+         \x20                      [--warmups N] [--runs N]\n\
          \x20                      [--case NAME] [--output FILE]\n\
          \n\
          Builds Loom, Go, Rust, C, and C++ fixtures once, validates every checksum,\n\
-         and emits one machine-readable JSON report. Repeat --case to select cases."
+         and emits one machine-readable JSON report. Repeat --case to select cases.\n\
+         --quick is a correctness smoke; --throughput uses amplified dynamic scales."
     );
 }
 
@@ -801,8 +865,8 @@ fn host_report() -> HostReport {
     }
 }
 
-fn reject_busy_standard_run(config: &Config, host: &HostReport) -> Result<(), String> {
-    if config.quick || config.allow_busy_host {
+fn reject_busy_measured_run(config: &Config, host: &HostReport) -> Result<(), String> {
+    if config.profile == BenchmarkProfile::Quick || config.allow_busy_host {
         return Ok(());
     }
     let Some(load) = host.load_average_1m_before_build else {
@@ -812,7 +876,7 @@ fn reject_busy_standard_run(config: &Config, host: &HostReport) -> Result<(), St
     let threshold = f64::from(logical_cpus).mul_add(0.75, 0.0).max(1.0);
     if load > threshold {
         return Err(format!(
-            "host is too busy for a standard measurement: 1-minute load average {load:.2} exceeds {threshold:.2}; wait for the machine to become idle or pass --allow-busy-host to record an explicitly noisy run"
+            "host is too busy for a controlled measurement: 1-minute load average {load:.2} exceeds {threshold:.2}; wait for the machine to become idle or pass --allow-busy-host to record an explicitly noisy run"
         ));
     }
     Ok(())
@@ -893,9 +957,11 @@ fn ns_to_ms(nanoseconds: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use super::{
-        fib_checksum, lcg_final_checksum, list_checksum, nearest_rank, parse_first_number,
-        summarize,
+        BenchmarkProfile, CASES, fib_checksum, lcg_final_checksum, list_checksum, nearest_rank,
+        parse_config, parse_first_number, summarize,
     };
 
     #[test]
@@ -904,6 +970,32 @@ mod tests {
         assert_eq!(list_checksum(500_000), Ok(255_644_016));
         assert_eq!(list_checksum(10_000), Ok(5_020_920));
         assert_eq!(fib_checksum(32), Ok(2_178_309));
+    }
+
+    #[test]
+    fn throughput_profile_uses_amplified_dynamic_scales() {
+        let config = parse_config([OsString::from("--throughput")]).expect("throughput config");
+        assert_eq!(config.profile, BenchmarkProfile::Throughput);
+        assert_eq!(config.warmups, 2);
+        assert_eq!(config.runs, 5);
+        assert_eq!(
+            CASES
+                .iter()
+                .map(|case| config.profile.scale(*case))
+                .collect::<Vec<_>>(),
+            [100_000_000, 100_000_000, 10_000_000, 40]
+        );
+        for case in CASES {
+            (case.checksum)(config.profile.scale(*case))
+                .expect("throughput checksum must fit Loom Int");
+        }
+    }
+
+    #[test]
+    fn benchmark_profiles_are_mutually_exclusive() {
+        let error = parse_config([OsString::from("--quick"), OsString::from("--throughput")])
+            .expect_err("profile combination must fail");
+        assert!(error.contains("mutually exclusive"), "{error}");
     }
 
     #[test]
