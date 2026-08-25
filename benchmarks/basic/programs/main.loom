@@ -1,0 +1,150 @@
+module benchmark.basic
+
+import standard.int.parse_int
+import standard.process.arguments
+
+record Counter {
+    total Int
+    calls Int
+}
+
+impl Counter {
+    method add(mut self, value Int) Unit {
+        self.total = self.total + value
+        self.calls = self.calls + 1
+        Unit
+    }
+}
+
+fn failText() Text {
+    assert false
+    ""
+}
+
+fn argument(values List[Text], index Int) Text {
+    match values.get(index) {
+        Some(value) => value
+        None => failText()
+    }
+}
+
+fn parseSize(text Text) Int {
+    match parse_int(text) {
+        Ok(value) => value
+        Err(ParseIntError.InvalidSyntax) => {
+            assert false
+            0
+        }
+        Err(ParseIntError.OutOfRange) => {
+            assert false
+            0
+        }
+    }
+}
+
+fn modularProduct(left Int, right Int) Int {
+    let modulus = 2147483647
+    let product = left * right
+    product - (product / modulus) * modulus
+}
+
+fn intLcg(size Int) Int {
+    var state = 1
+    for ignored in 0..size {
+        state = modularProduct(state, 48271)
+        Unit
+    }
+    state
+}
+
+fn periodicValue(index Int) Int {
+    index - (index / 1024) * 1024
+}
+
+fn recordMethod(size Int) Counter {
+    var counter = Counter { total = 0, calls = 0 }
+    for index in 0..size {
+        counter.add(periodicValue(index))
+        Unit
+    }
+    counter
+}
+
+fn listBuildScan(size Int) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(periodicValue(index))
+        Unit
+    }
+
+    var checksum = 0
+    for index in 0..size {
+        match values.get(index) {
+            Some(value) => {
+                checksum = checksum + value
+                Unit
+            }
+            None => {
+                assert false
+                Unit
+            }
+        }
+        Unit
+    }
+    let length = values.length()
+    assert length == size
+    checksum
+}
+
+fn fibonacci(value Int) Int {
+    if value < 2 {
+        value
+    } else {
+        fibonacci(value - 1) + fibonacci(value - 2)
+    }
+}
+
+fn run(benchmarkName Text, size Int, expected Int) Unit {
+    assert size >= 0
+    if benchmarkName == "int_lcg" {
+        assert size <= 100000000
+        let checksum = intLcg(size)
+        assert checksum == expected
+        Unit
+    } else {
+        if benchmarkName == "record_method" {
+            assert size <= 100000000
+            let counter = recordMethod(size)
+            assert counter.total == expected
+            assert counter.calls == size
+            Unit
+        } else {
+            if benchmarkName == "list_build_scan" {
+                assert size <= 10000000
+                let checksum = listBuildScan(size)
+                assert checksum == expected
+                Unit
+            } else {
+                if benchmarkName == "fib_recursive" {
+                    assert size <= 45
+                    let checksum = fibonacci(size)
+                    assert checksum == expected
+                    Unit
+                } else {
+                    assert false
+                    Unit
+                }
+            }
+        }
+    }
+}
+
+pub fn main() Unit {
+    let values = arguments()
+    let length = values.length()
+    assert length == 3
+    let benchmarkName = argument(values, 0)
+    let size = parseSize(argument(values, 1))
+    let expected = parseSize(argument(values, 2))
+    run(benchmarkName, size, expected)
+}

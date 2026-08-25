@@ -15,6 +15,7 @@ members = [
     "crates/loom-cli",
     "crates/loom-lsp",
     "crates/loom-quality",
+    "crates/loom-benchmark",
 ]
 
 [workspace.package]
