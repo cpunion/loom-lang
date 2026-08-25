@@ -2913,8 +2913,34 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.cleanup_depth = self.cleanup_depth.saturating_sub(1);
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
                 }
+                Statement::Discard(expression) => {
+                    let ty =
+                        self.check_suspendable_expr(*expression, None, ExpressionContext::Value);
+                    if self.analyzer.typed.types.data(ty) == &TyData::Never {
+                        diverges = true;
+                    } else if self.is_error(ty) {
+                        // The operand already owns its diagnostic.
+                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
+                        self.error_at(
+                            "MustScopeRequiresScoped",
+                            "a value with a MustScope obligation cannot be discarded",
+                            *expression,
+                        );
+                    } else if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+                        self.error_at(
+                            "UnawaitedAsyncCall",
+                            "a Task cannot be discarded; it must be awaited, joined, or returned",
+                            *expression,
+                        );
+                    } else if self.has_unknown_discard_obligation(ty, &mut BTreeSet::new(), 0) {
+                        self.error_at(
+                            "CannotDiscardUnknownType",
+                            "this type is not statically known to be free of Task or MustScope obligations",
+                            *expression,
+                        );
+                    }
+                }
                 Statement::Expr(expression) => {
-                    let unit = self.types().builtin(BuiltinType::Unit);
                     let ty = self.check_suspendable_expr(
                         *expression,
                         None,
@@ -2922,16 +2948,29 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     );
                     if self.analyzer.typed.types.data(ty) == &TyData::Never {
                         diverges = true;
+                    } else if self.is_error(ty)
+                        || self.analyzer.typed.types.data(ty) == &TyData::Builtin(BuiltinType::Unit)
+                    {
+                        // A failed expression already owns its diagnostic, and
+                        // Unit is the ordinary statement result.
+                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
+                        self.error_at(
+                            "MustScopeRequiresScoped",
+                            "discarding a MustScope value would lose its cleanup obligation",
+                            *expression,
+                        );
+                    } else if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+                        self.error_at(
+                            "UnawaitedAsyncCall",
+                            "a Task must be awaited, joined, returned, or explicitly stored for later consumption",
+                            *expression,
+                        );
                     } else {
-                        if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
-                            self.error_at(
-                                "MustScopeRequiresScoped",
-                                "discarding a MustScope value would lose its cleanup obligation",
-                                *expression,
-                            );
-                        }
-                        let coerced = self.coerce(*expression, ty, unit);
-                        self.semantics.expression_types.insert(*expression, coerced);
+                        self.error_at(
+                            "UnusedValue",
+                            "this value is unused; use it or write `discard` to ignore it explicitly",
+                            *expression,
+                        );
                     }
                 }
                 Statement::Assert(predicate) => {
@@ -3830,6 +3869,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return self.types().error();
         };
+        if self.reject_dyn_obligation(actual, expression) {
+            return self.types().error();
+        }
         let owner = self.semantics.expression_places.get(expression).cloned();
         let borrowed =
             self.dynamic_coercion_mode == DynamicCoercionMode::CallBorrow && owner.is_some();
@@ -3878,6 +3920,24 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .insert(expression, Coercion::ConcreteToDyn);
         }
         expected
+    }
+
+    fn reject_dyn_obligation(&mut self, concrete: TyId, expression: ExprId) -> bool {
+        let message = if self.has_marker_obligation(concrete, MUST_SCOPE_CONCEPT) {
+            Some("a value with a MustScope obligation cannot be erased to dyn")
+        } else if self.has_task_obligation(concrete, &mut BTreeSet::new(), 0) {
+            Some("a value containing an unconsumed Task cannot be erased to dyn")
+        } else if self.has_unknown_discard_obligation(concrete, &mut BTreeSet::new(), 0) {
+            Some("a type with unresolved generic obligations cannot be erased to dyn")
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.error_at("IllegalDynConversion", message, expression);
+            true
+        } else {
+            false
+        }
     }
 
     fn reborrow_interface_argument(&mut self, expression: ExprId, mutability: Mutability) {
@@ -7138,6 +7198,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.checking_view_source = true;
         let owner_ty = self.check_expr(source, None, ExpressionContext::Value);
         self.checking_view_source = previous_view_source;
+        let hidden_obligation = self.reject_dyn_obligation(owner_ty, source);
         let owner = self.semantics.expression_places.get(source).cloned();
         if owner.is_none() {
             self.error_at(
@@ -7176,7 +7237,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         } else {
             self.types().error()
         };
-        if let (Some(owner), Some(target_instance)) = (owner, target_instance)
+        if !hidden_obligation
+            && let (Some(owner), Some(target_instance)) = (owner, target_instance)
             && let Some(witness) = self.solve_witness(owner_ty, target_instance.clone(), expression)
         {
             let region = *self.regions.last().expect("body has a lexical region");
@@ -7416,6 +7478,179 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | TyData::Param(_)
             | TyData::SelfType(_)
             | TyData::Projection { .. }
+            | TyData::DynTarget(_)
+            | TyData::View { .. } => false,
+        }
+    }
+
+    fn has_task_obligation(&mut self, ty: TyId, active: &mut BTreeSet<TyId>, depth: u16) -> bool {
+        if depth >= 128 {
+            // Fail closed for a type shape beyond the checker nesting budget.
+            return true;
+        }
+        if matches!(self.types().data(ty), TyData::Task(_)) {
+            return true;
+        }
+        match self.types().data(ty).clone() {
+            TyData::Tuple(elements) => elements
+                .into_iter()
+                .any(|element| self.has_task_obligation(element, active, depth.saturating_add(1))),
+            TyData::List(element)
+            | TyData::TextMap(element)
+            | TyData::Option(element)
+            | TyData::TaskOutcome(element) => {
+                self.has_task_obligation(element, active, depth.saturating_add(1))
+            }
+            TyData::Result { ok, error } => {
+                self.has_task_obligation(ok, active, depth.saturating_add(1))
+                    || self.has_task_obligation(error, active, depth.saturating_add(1))
+            }
+            TyData::Nominal {
+                definition,
+                arguments,
+            } => {
+                if !active.insert(ty) {
+                    return false;
+                }
+                let parameters = self.analyzer.type_generic_params(definition);
+                let substitution = substitution_for(&parameters, &arguments);
+                let kind = self.analyzer.program.definitions[definition].kind.clone();
+                let contains = match kind {
+                    DefinitionKind::RefinedType(refined) => self
+                        .analyzer
+                        .typed
+                        .resolved_type_refs
+                        .get(refined.base)
+                        .copied()
+                        .is_some_and(|base| {
+                            let base = self.types().substitute(base, &substitution);
+                            self.has_task_obligation(base, active, depth.saturating_add(1))
+                        }),
+                    DefinitionKind::Record(record) => record.fields.into_iter().any(|field| {
+                        let Some(Signature::Field { ty, .. }) =
+                            self.analyzer.typed.signatures.get(field).cloned()
+                        else {
+                            return false;
+                        };
+                        let field = self.types().substitute(ty, &substitution);
+                        self.has_task_obligation(field, active, depth.saturating_add(1))
+                    }),
+                    DefinitionKind::Enum(enumeration) => {
+                        enumeration.variants.into_iter().any(|variant| {
+                            let Some(Signature::Variant { payload, .. }) =
+                                self.analyzer.typed.signatures.get(variant).cloned()
+                            else {
+                                return false;
+                            };
+                            payload.into_iter().any(|payload| {
+                                let payload = self.types().substitute(payload, &substitution);
+                                self.has_task_obligation(payload, active, depth.saturating_add(1))
+                            })
+                        })
+                    }
+                    _ => false,
+                };
+                active.remove(&ty);
+                contains
+            }
+            TyData::Error
+            | TyData::Never
+            | TyData::Builtin(_)
+            | TyData::Task(_)
+            | TyData::Param(_)
+            | TyData::SelfType(_)
+            | TyData::Projection { .. }
+            | TyData::DynTarget(_)
+            | TyData::View { .. } => false,
+        }
+    }
+
+    fn has_unknown_discard_obligation(
+        &mut self,
+        ty: TyId,
+        active: &mut BTreeSet<TyId>,
+        depth: u16,
+    ) -> bool {
+        if depth >= 128 {
+            // Without a negative capability bound, an over-budget shape is
+            // not statically known to be safe to discard.
+            return true;
+        }
+        match self.types().data(ty).clone() {
+            TyData::Param(_) | TyData::SelfType(_) | TyData::Projection { .. } => true,
+            TyData::Tuple(elements) => elements.into_iter().any(|element| {
+                self.has_unknown_discard_obligation(element, active, depth.saturating_add(1))
+            }),
+            TyData::List(element)
+            | TyData::TextMap(element)
+            | TyData::Option(element)
+            | TyData::TaskOutcome(element) => {
+                self.has_unknown_discard_obligation(element, active, depth.saturating_add(1))
+            }
+            TyData::Result { ok, error } => {
+                self.has_unknown_discard_obligation(ok, active, depth.saturating_add(1))
+                    || self.has_unknown_discard_obligation(error, active, depth.saturating_add(1))
+            }
+            TyData::Nominal {
+                definition,
+                arguments,
+            } => {
+                if !active.insert(ty) {
+                    return false;
+                }
+                let parameters = self.analyzer.type_generic_params(definition);
+                let substitution = substitution_for(&parameters, &arguments);
+                let kind = self.analyzer.program.definitions[definition].kind.clone();
+                let contains = match kind {
+                    DefinitionKind::RefinedType(refined) => self
+                        .analyzer
+                        .typed
+                        .resolved_type_refs
+                        .get(refined.base)
+                        .copied()
+                        .is_some_and(|base| {
+                            let base = self.types().substitute(base, &substitution);
+                            self.has_unknown_discard_obligation(
+                                base,
+                                active,
+                                depth.saturating_add(1),
+                            )
+                        }),
+                    DefinitionKind::Record(record) => record.fields.into_iter().any(|field| {
+                        let Some(Signature::Field { ty, .. }) =
+                            self.analyzer.typed.signatures.get(field).cloned()
+                        else {
+                            return false;
+                        };
+                        let field = self.types().substitute(ty, &substitution);
+                        self.has_unknown_discard_obligation(field, active, depth.saturating_add(1))
+                    }),
+                    DefinitionKind::Enum(enumeration) => {
+                        enumeration.variants.into_iter().any(|variant| {
+                            let Some(Signature::Variant { payload, .. }) =
+                                self.analyzer.typed.signatures.get(variant).cloned()
+                            else {
+                                return false;
+                            };
+                            payload.into_iter().any(|payload| {
+                                let payload = self.types().substitute(payload, &substitution);
+                                self.has_unknown_discard_obligation(
+                                    payload,
+                                    active,
+                                    depth.saturating_add(1),
+                                )
+                            })
+                        })
+                    }
+                    _ => false,
+                };
+                active.remove(&ty);
+                contains
+            }
+            TyData::Error
+            | TyData::Never
+            | TyData::Builtin(_)
+            | TyData::Task(_)
             | TyData::DynTarget(_)
             | TyData::View { .. } => false,
         }
