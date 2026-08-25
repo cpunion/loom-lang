@@ -4,13 +4,25 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 3;
+pub const RUNTIME_ABI_VERSION: u32 = 4;
 pub const COROUTINE_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 3;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str =
-    "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3";
+pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v4/shadow-stack-v1/int-list-v1/stdlib-v3";
+
+pub const GC_OK: i32 = 0;
+pub const GC_INVALID_ARGUMENT: i32 = 1;
+pub const GC_ABI_MISMATCH: i32 = 2;
+pub const GC_FRAME_ORDER: i32 = 3;
+pub const GC_ROOT_STACK_NOT_EMPTY: i32 = 4;
+
+/// Runtime-owned state bit in [`LoomGcRootFrame::flags`].
+///
+/// Compiler-generated code must initialize `flags` to zero and must not
+/// inspect or modify the field between a successful push and pop.
+pub const GC_ROOT_FRAME_LINKED: u32 = 1;
 
 /// Number of machine words in the universal `Value` envelope.
 ///
@@ -24,6 +36,45 @@ pub const VALUE_WORD_AUX: usize = 2;
 pub const VALUE_WORD_SCALAR: usize = 3;
 pub const VALUE_WORD_DATA: usize = 4;
 pub const VALUE_WORD_WITNESS: usize = 5;
+
+/// Description of the precise universal-value roots within one native stack
+/// frame.
+///
+/// `live_bitmaps` contains `state_count` rows of exactly `live_bitmap_words`
+/// words. Bit `n` identifies entry `n` in the frame's slot-pointer array. Bits
+/// beyond `slot_count` in the final word must be zero. Descriptors are
+/// compiler-private immutable globals and must outlive every frame which
+/// references them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcRootDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub slot_count: u64,
+    pub state_count: u64,
+    pub live_bitmap_words: u64,
+    pub live_bitmaps: *const u64,
+}
+
+/// Intrusive shadow-stack header embedded at the start of a generated native
+/// stack frame.
+///
+/// `slots` points to a caller-owned array of `slot_count` pointers to existing
+/// universal `Value` allocas. This keeps LLVM storage independent and lets
+/// SROA optimize the underlying allocas. Every entry must be non-null and the
+/// pointer array is immutable while linked. The compiler updates only `state`
+/// before a safepoint. `previous` and `flags` are maintained only by the
+/// runtime. Empty descriptors and frames are invalid and should be omitted.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcRootFrame {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub state: u64,
+    pub descriptor: *const LoomGcRootDescriptor,
+    pub slots: *const *mut core::ffi::c_void,
+    pub previous: *mut LoomGcRootFrame,
+}
 
 pub const VALUE_TAG_UNIT: u64 = 0;
 pub const VALUE_TAG_BOOL: u64 = 1;
@@ -110,19 +161,44 @@ pub const READY_ERROR: u32 = 1 << 5;
 
 #[cfg(test)]
 mod tests {
+    use std::mem::{align_of, offset_of, size_of};
+
     use super::{
-        LAYOUT_ABI_VERSION, NATIVE_RUNTIME_ABI_IDENTITY, RUNTIME_ABI_VERSION,
-        STANDARD_LIBRARY_ABI_VERSION,
+        LAYOUT_ABI_VERSION, LoomGcRootDescriptor, LoomGcRootFrame, NATIVE_RUNTIME_ABI_IDENTITY,
+        RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 3);
+        assert_eq!(RUNTIME_ABI_VERSION, 4);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
+        assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 3);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3",
+            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v4/shadow-stack-v1/int-list-v1/stdlib-v3",
         );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn shadow_stack_layout_is_pinned_for_the_native_64_bit_abi() {
+        assert_eq!(size_of::<LoomGcRootDescriptor>(), 40);
+        assert_eq!(align_of::<LoomGcRootDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, slot_count), 8);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, state_count), 16);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, live_bitmap_words), 24);
+        assert_eq!(offset_of!(LoomGcRootDescriptor, live_bitmaps), 32);
+
+        assert_eq!(size_of::<LoomGcRootFrame>(), 40);
+        assert_eq!(align_of::<LoomGcRootFrame>(), 8);
+        assert_eq!(offset_of!(LoomGcRootFrame, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcRootFrame, flags), 4);
+        assert_eq!(offset_of!(LoomGcRootFrame, state), 8);
+        assert_eq!(offset_of!(LoomGcRootFrame, descriptor), 16);
+        assert_eq!(offset_of!(LoomGcRootFrame, slots), 24);
+        assert_eq!(offset_of!(LoomGcRootFrame, previous), 32);
     }
 }

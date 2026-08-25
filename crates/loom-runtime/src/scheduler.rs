@@ -15,7 +15,7 @@ use loom_runtime_abi::{
     VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
-use crate::gc::{active_runtime_pointer, collect, enter_executor, leave_executor};
+use crate::gc::{active_runtime_pointer, enter_executor, leave_executor, poll};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
@@ -2960,7 +2960,7 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
             // SAFETY: the scheduler is the executor's unique driver.
             let executor_ref = unsafe { &mut *executor };
             reap_retired_tasks(executor_ref, root);
-            collect(executor_ref);
+            poll(executor_ref);
             move_task_frames(executor_ref);
             executor_ref.runnable.pop_front()
         };
@@ -3224,10 +3224,12 @@ mod resource_ownership_tests {
             crate::gc::leave_executor();
 
             let destination = task_slot(parent, 0).cast::<ValueSlot>();
+            crate::gc::enter_executor(executor);
             assert_eq!(
                 task_write_join_result(parent, destination.cast(), JOIN_RESULT_TUPLE),
                 WAIT_OK
             );
+            crate::gc::leave_executor();
             assert_eq!((*parent).owned_result_resources.len(), 2);
             assert!((*left).owned_result_resources.is_empty());
             assert!((*right).owned_result_resources.is_empty());

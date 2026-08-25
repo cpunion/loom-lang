@@ -3,9 +3,12 @@
 
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::AtomicU32;
 
-use crate::gc::LoomHeap;
-use crate::{WAIT_INVALID_ARGUMENT, WAIT_OK};
+use loom_runtime_abi::LoomGcRootFrame;
+
+use crate::gc::{LoomHeap, MIN_GC_THRESHOLD_BYTES};
+use crate::{GC_ROOT_STACK_NOT_EMPTY, WAIT_INVALID_ARGUMENT, WAIT_OK};
 
 /// Opaque owner of Loom's managed heap.
 ///
@@ -16,13 +19,22 @@ use crate::{WAIT_INVALID_ARGUMENT, WAIT_OK};
 pub struct LoomRuntime {
     pub(crate) heap: LoomHeap,
     attached_executor: *mut c_void,
+    pub(crate) active_depth: AtomicU32,
+    pub(crate) sync_root_top: *mut LoomGcRootFrame,
+    pub(crate) sync_root_depth: u64,
 }
 
 impl LoomRuntime {
     pub(crate) fn new() -> Self {
         Self {
-            heap: LoomHeap::default(),
+            heap: LoomHeap {
+                next_gc_threshold: MIN_GC_THRESHOLD_BYTES,
+                ..LoomHeap::default()
+            },
             attached_executor: ptr::null_mut(),
+            active_depth: AtomicU32::new(0),
+            sync_root_top: ptr::null_mut(),
+            sync_root_depth: 0,
         }
     }
 
@@ -50,6 +62,14 @@ impl LoomRuntime {
     fn has_attached_executor(&self) -> bool {
         !self.attached_executor.is_null()
     }
+
+    pub(crate) fn attached_executor_pointer(&self) -> *mut c_void {
+        self.attached_executor
+    }
+
+    pub(crate) fn has_sync_roots(&self) -> bool {
+        !self.sync_root_top.is_null() || self.sync_root_depth != 0
+    }
 }
 
 #[unsafe(export_name = "loom_runtime_create_v1")]
@@ -68,8 +88,11 @@ pub unsafe extern "C" fn runtime_destroy_v1(runtime: *mut LoomRuntime) -> i32 {
     }
     // SAFETY: the pointer is non-null and the ABI requires it to originate
     // from runtime_create_v1. We inspect it before taking back ownership.
-    if unsafe { (*runtime).has_attached_executor() } || crate::gc::runtime_is_active(runtime) {
+    if crate::gc::runtime_is_active(runtime) || unsafe { (*runtime).has_attached_executor() } {
         return WAIT_INVALID_ARGUMENT;
+    }
+    if unsafe { (*runtime).has_sync_roots() } {
+        return GC_ROOT_STACK_NOT_EMPTY;
     }
     // SAFETY: no executor is attached, so ownership can return to this call.
     drop(unsafe { Box::from_raw(runtime) });
@@ -156,6 +179,29 @@ mod tests {
             assert_eq!(crate::gc::deactivate_runtime_v1(second), WAIT_OK);
             assert_eq!(runtime_destroy_v1(first), WAIT_OK);
             assert_eq!(runtime_destroy_v1(second), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn active_runtime_cannot_be_entered_from_a_second_thread() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+        }
+        let address = runtime as usize;
+        let status = std::thread::spawn(move || {
+            let runtime = address as *mut LoomRuntime;
+            let status = unsafe { crate::gc::activate_runtime_v1(runtime) };
+            assert!(crate::gc::allocate_value().is_null());
+            status
+        })
+        .join()
+        .expect("competing activation thread exits normally");
+        assert_eq!(status, WAIT_INVALID_ARGUMENT);
+        unsafe {
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 }

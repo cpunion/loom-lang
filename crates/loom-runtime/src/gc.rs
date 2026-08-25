@@ -1,24 +1,29 @@
 //! Precise moving heap for compiler-generated Loom values.
 //!
-//! Collection only runs between coroutine resume calls. Generated code has no
-//! native stack roots at that point: every value live across `.await` is in a
-//! compiler-described Task slot, so the runtime can relocate objects without
+//! Collection runs only at compiler-known synchronous safepoints or between
+//! coroutine resume calls. Synchronous generated code publishes precise
+//! shadow-stack roots; every value live across `.await` is in a compiler-
+//! described Task slot. The runtime can therefore relocate objects without
 //! pinning or exposing addresses to source programs.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::Ordering;
 
 use loom_runtime_abi::{
-    TASK_COMPLETED, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST,
-    VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE,
-    VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
+    GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK, GC_ROOT_FRAME_LINKED,
+    GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame, SHADOW_STACK_ABI_VERSION,
+    TASK_COMPLETED, VALUE_SLOT_WORDS, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM,
+    VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT,
+    VALUE_TAG_TUPLE, VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
 };
 
 use crate::reactor::LoomExecutor;
 use crate::runtime::LoomRuntime;
-use crate::scheduler::{LoomTask, ValueNode, ValueSlot, trace_task_roots};
+use crate::scheduler::{LoomTask, LoomTraceVisitor, ValueNode, ValueSlot, trace_task_roots};
 use crate::text;
 
 pub(crate) struct ListNodeIndex {
@@ -27,12 +32,14 @@ pub(crate) struct ListNodeIndex {
     pub(crate) nodes: Option<Vec<*mut ValueNode>>,
 }
 
+pub(crate) const MIN_GC_THRESHOLD_BYTES: usize = 64 * 1024;
+
 /// Runtime-owned storage for managed Loom values.
 ///
 /// The heap is deliberately independent from the async reactor and scheduler:
 /// synchronous generated code needs managed allocation, but must not need an
-/// operating-system poller or worker-completion channel. Collection is still
-/// driven only by the scheduler safepoint between coroutine resume calls.
+/// operating-system poller or worker-completion channel. Collection is driven
+/// by thresholded compiler or scheduler safepoint polls, never by allocation.
 #[derive(Default)]
 pub(crate) struct LoomHeap {
     pub(crate) values: Vec<Box<ValueSlot>>,
@@ -48,6 +55,17 @@ pub(crate) struct LoomHeap {
     pub(crate) collections: u64,
     pub(crate) relocations: u64,
     pub(crate) reclaimed: u64,
+    /// Approximate bytes currently held by moving-heap allocations. It is
+    /// charged at allocation and reset to the exact live footprint after a
+    /// collection.
+    pub(crate) allocation_charge: usize,
+    /// A compiler safepoint is a cheap poll until `allocation_charge` reaches
+    /// this threshold. After collection it tracks max(minimum, 2 * live).
+    pub(crate) next_gc_threshold: usize,
+    /// Deterministic stress mode for runtime tests. Production safepoints are
+    /// always threshold-driven.
+    #[cfg(test)]
+    pub(crate) collect_on_every_poll: bool,
 }
 
 thread_local! {
@@ -55,33 +73,70 @@ thread_local! {
     static ACTIVE_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-fn enter_runtime(runtime: *mut LoomRuntime) {
-    ACTIVE_RUNTIME.with(|active| {
-        let current = active.get();
-        debug_assert!(current.is_null() || current == runtime);
-        if current.is_null() {
-            active.set(runtime);
-        }
-    });
-    ACTIVE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+fn enter_runtime(runtime: *mut LoomRuntime) -> bool {
+    if runtime.is_null() {
+        return false;
+    }
+    let current_runtime = ACTIVE_RUNTIME.with(Cell::get);
+    let current_depth = ACTIVE_DEPTH.with(Cell::get);
+    if (!current_runtime.is_null() && current_runtime != runtime) || current_depth == u32::MAX {
+        return false;
+    }
+    // SAFETY: active_depth is atomic and remains live for the complete Runtime
+    // lifetime. Do not touch any non-atomic Runtime field until this thread
+    // acquires the inactive runtime or proves it owns the nested activation.
+    let runtime_depth = unsafe { &(*runtime).active_depth };
+    if runtime_depth
+        .compare_exchange(
+            current_depth,
+            current_depth + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    if current_depth == 0 && unsafe { (*runtime).has_sync_roots() } {
+        let restored = runtime_depth.compare_exchange(1, 0, Ordering::Release, Ordering::Relaxed);
+        debug_assert!(restored.is_ok());
+        return false;
+    }
+    if current_depth == 0 {
+        ACTIVE_RUNTIME.with(|active| active.set(runtime));
+    }
+    ACTIVE_DEPTH.with(|depth| depth.set(current_depth + 1));
+    true
 }
 
-fn leave_runtime() {
-    ACTIVE_DEPTH.with(|depth| {
-        let current = depth.get();
-        debug_assert!(current > 0);
-        let remaining = current.saturating_sub(1);
-        depth.set(remaining);
-        if remaining == 0 {
-            ACTIVE_RUNTIME.with(|active| active.set(ptr::null_mut()));
-        }
-    });
+fn leave_runtime() -> i32 {
+    let runtime = ACTIVE_RUNTIME.with(Cell::get);
+    let depth = ACTIVE_DEPTH.with(Cell::get);
+    if runtime.is_null() || depth == 0 {
+        return GC_INVALID_ARGUMENT;
+    }
+    // SAFETY: ACTIVE_RUNTIME is installed only from a successful activation
+    // owned by this thread.
+    if unsafe { (*runtime).has_sync_roots() } {
+        return GC_ROOT_STACK_NOT_EMPTY;
+    }
+    let runtime_depth = unsafe { &(*runtime).active_depth };
+    if runtime_depth
+        .compare_exchange(depth, depth - 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return GC_INVALID_ARGUMENT;
+    }
+    let remaining = depth - 1;
+    ACTIVE_DEPTH.with(|active_depth| active_depth.set(remaining));
+    if remaining == 0 {
+        ACTIVE_RUNTIME.with(|active| active.set(ptr::null_mut()));
+    }
+    GC_OK
 }
 
 pub(crate) fn runtime_is_active(runtime: *mut LoomRuntime) -> bool {
-    !runtime.is_null()
-        && ACTIVE_RUNTIME.with(|active| active.get() == runtime)
-        && ACTIVE_DEPTH.with(|depth| depth.get() != 0)
+    !runtime.is_null() && unsafe { &(*runtime).active_depth }.load(Ordering::Acquire) != 0
 }
 
 /// Returns the runtime installed for the current generated-code interval.
@@ -101,28 +156,25 @@ pub(crate) fn enter_executor(executor: *mut LoomExecutor) {
     debug_assert!(!executor.is_null());
     // SAFETY: scheduler callers hold a live executor for the generated-code
     // interval, and its runtime attachment remains valid until executor Drop.
-    enter_runtime(unsafe { (*executor).runtime_pointer() });
+    if !enter_runtime(unsafe { (*executor).runtime_pointer() }) {
+        std::process::abort();
+    }
 }
 
 pub(crate) fn leave_executor() {
-    leave_runtime();
+    if leave_runtime() != GC_OK {
+        std::process::abort();
+    }
 }
 
 /// Activates a standalone runtime heap for synchronous generated code.
 #[unsafe(export_name = "loom_runtime_activate_v1")]
 pub unsafe extern "C" fn activate_runtime_v1(runtime: *mut LoomRuntime) -> i32 {
-    if runtime.is_null() {
-        return crate::WAIT_INVALID_ARGUMENT;
+    if enter_runtime(runtime) {
+        GC_OK
+    } else {
+        GC_INVALID_ARGUMENT
     }
-    let compatible = ACTIVE_RUNTIME.with(|active| {
-        let current = active.get();
-        current.is_null() || current == runtime
-    });
-    if !compatible {
-        return crate::WAIT_INVALID_ARGUMENT;
-    }
-    enter_runtime(runtime);
-    crate::WAIT_OK
 }
 
 #[unsafe(export_name = "loom_runtime_deactivate_v1")]
@@ -131,70 +183,289 @@ pub unsafe extern "C" fn deactivate_runtime_v1(runtime: *mut LoomRuntime) -> i32
         || !ACTIVE_RUNTIME.with(|active| active.get() == runtime)
         || ACTIVE_DEPTH.with(|depth| depth.get() == 0)
     {
-        return crate::WAIT_INVALID_ARGUMENT;
+        return GC_INVALID_ARGUMENT;
     }
-    leave_runtime();
-    crate::WAIT_OK
+    leave_runtime()
+}
+
+unsafe fn validate_root_descriptor(
+    descriptor: *const LoomGcRootDescriptor,
+    validate_every_state: bool,
+) -> i32 {
+    let Some(descriptor) = (unsafe { descriptor.as_ref() }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if descriptor.abi_version != SHADOW_STACK_ABI_VERSION {
+        return GC_ABI_MISMATCH;
+    }
+    if descriptor.flags != 0 {
+        return GC_INVALID_ARGUMENT;
+    }
+    let (Ok(slot_count), Ok(state_count), Ok(bitmap_words)) = (
+        usize::try_from(descriptor.slot_count),
+        usize::try_from(descriptor.state_count),
+        usize::try_from(descriptor.live_bitmap_words),
+    ) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if slot_count == 0
+        || state_count == 0
+        || bitmap_words != slot_count.div_ceil(64)
+        || descriptor.live_bitmaps.is_null()
+    {
+        return GC_INVALID_ARGUMENT;
+    }
+    debug_assert_eq!(size_of::<ValueSlot>(), VALUE_SLOT_WORDS * size_of::<u64>());
+    let Some(total_words) = state_count.checked_mul(bitmap_words) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if total_words > isize::MAX as usize / size_of::<u64>() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let tail_bits = slot_count % 64;
+    if validate_every_state && tail_bits != 0 {
+        let allowed = (1_u64 << tail_bits) - 1;
+        for state in 0..state_count {
+            let Some(index) = state
+                .checked_mul(bitmap_words)
+                .and_then(|row| row.checked_add(bitmap_words - 1))
+            else {
+                return GC_INVALID_ARGUMENT;
+            };
+            // SAFETY: the immutable descriptor contract provides the checked
+            // state_count * live_bitmap_words table for every linked frame.
+            if unsafe { *descriptor.live_bitmaps.add(index) } & !allowed != 0 {
+                return GC_INVALID_ARGUMENT;
+            }
+        }
+    }
+    GC_OK
+}
+
+unsafe fn validate_root_frame(frame: *const LoomGcRootFrame, linked: bool) -> i32 {
+    let Some(frame) = (unsafe { frame.as_ref() }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if frame.abi_version != SHADOW_STACK_ABI_VERSION {
+        return GC_ABI_MISMATCH;
+    }
+    let expected_flags = if linked { GC_ROOT_FRAME_LINKED } else { 0 };
+    if frame.flags != expected_flags || (!linked && !frame.previous.is_null()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    let status = unsafe { validate_root_descriptor(frame.descriptor, !linked) };
+    if status != GC_OK {
+        return status;
+    }
+    // SAFETY: descriptor validation established this immutable descriptor.
+    let descriptor = unsafe { &*frame.descriptor };
+    if frame.state >= descriptor.state_count || frame.slots.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let (Ok(slot_count), Ok(bitmap_words), Ok(state)) = (
+        usize::try_from(descriptor.slot_count),
+        usize::try_from(descriptor.live_bitmap_words),
+        usize::try_from(frame.state),
+    ) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let Some(bitmap_row) = state.checked_mul(bitmap_words) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let tail_bits = slot_count % 64;
+    if tail_bits != 0 {
+        let allowed = (1_u64 << tail_bits) - 1;
+        let tail = unsafe { *descriptor.live_bitmaps.add(bitmap_row + bitmap_words - 1) };
+        if tail & !allowed != 0 {
+            return GC_INVALID_ARGUMENT;
+        }
+    }
+    if !linked {
+        for index in 0..slot_count {
+            // The slot-pointer array is immutable while the frame is linked,
+            // so checking every entry once keeps safepoint polling O(depth).
+            if unsafe { (*frame.slots.add(index)).is_null() } {
+                return GC_INVALID_ARGUMENT;
+            }
+        }
+    }
+    GC_OK
+}
+
+unsafe fn visit_sync_roots(
+    mut frame: *mut LoomGcRootFrame,
+    depth: u64,
+    visitor: Option<LoomTraceVisitor>,
+    context: *mut c_void,
+) -> i32 {
+    if frame.is_null() != (depth == 0) {
+        return GC_FRAME_ORDER;
+    }
+    let Ok(depth) = usize::try_from(depth) else {
+        return GC_FRAME_ORDER;
+    };
+    for _ in 0..depth {
+        if frame.is_null() {
+            return GC_FRAME_ORDER;
+        }
+        let status = unsafe { validate_root_frame(frame, true) };
+        if status != GC_OK {
+            return status;
+        }
+        // SAFETY: validation established a live descriptor, bitmap row and
+        // slot-pointer array for this compiler-created frame.
+        let frame_ref = unsafe { &*frame };
+        let descriptor = unsafe { &*frame_ref.descriptor };
+        let slot_count = usize::try_from(descriptor.slot_count).unwrap_or_else(|_| unreachable!());
+        let bitmap_words =
+            usize::try_from(descriptor.live_bitmap_words).unwrap_or_else(|_| unreachable!());
+        let state = usize::try_from(frame_ref.state).unwrap_or_else(|_| unreachable!());
+        let bitmap_row = state
+            .checked_mul(bitmap_words)
+            .unwrap_or_else(|| unreachable!());
+        if let Some(visitor) = visitor {
+            for index in 0..slot_count {
+                let word = unsafe { *descriptor.live_bitmaps.add(bitmap_row + index / 64) };
+                if word & (1_u64 << (index % 64)) != 0 {
+                    let root = unsafe { *frame_ref.slots.add(index) };
+                    unsafe { visitor(root, context) };
+                }
+            }
+        }
+        // SAFETY: a linked frame's previous field is runtime-owned state.
+        frame = unsafe { (*frame).previous };
+    }
+    if frame.is_null() {
+        GC_OK
+    } else {
+        GC_FRAME_ORDER
+    }
+}
+
+/// Links one compiler-described native frame into the active Runtime's precise
+/// shadow stack. Push is allocation-free and collection is never triggered by
+/// this operation.
+#[unsafe(export_name = "loom_gc_root_push_v1")]
+pub unsafe extern "C" fn root_push_v1(frame: *mut LoomGcRootFrame) -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let status = unsafe { validate_root_frame(frame, false) };
+    if status != GC_OK {
+        return status;
+    }
+    // SAFETY: ACTIVE_RUNTIME gives exclusive generated-code access to its
+    // process-local root chain. The validated frame remains live until pop.
+    let runtime = unsafe { &mut *runtime };
+    let Some(depth) = runtime.sync_root_depth.checked_add(1) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    unsafe {
+        (*frame).previous = runtime.sync_root_top;
+        (*frame).flags = GC_ROOT_FRAME_LINKED;
+    }
+    runtime.sync_root_top = frame;
+    runtime.sync_root_depth = depth;
+    GC_OK
+}
+
+/// Pops exactly the active Runtime's most recently pushed native root frame.
+#[unsafe(export_name = "loom_gc_root_pop_v1")]
+pub unsafe extern "C" fn root_pop_v1(frame: *mut LoomGcRootFrame) -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() || frame.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    // SAFETY: ACTIVE_RUNTIME serializes root-chain mutation.
+    let runtime = unsafe { &mut *runtime };
+    if runtime.sync_root_top != frame || runtime.sync_root_depth == 0 {
+        return GC_FRAME_ORDER;
+    }
+    let status = unsafe { validate_root_frame(frame, true) };
+    if status != GC_OK {
+        return status;
+    }
+    // SAFETY: top identity and linked-frame validation established ownership
+    // of these runtime-maintained fields.
+    runtime.sync_root_top = unsafe { (*frame).previous };
+    runtime.sync_root_depth -= 1;
+    unsafe {
+        (*frame).previous = ptr::null_mut();
+        (*frame).flags = 0;
+    }
+    if runtime.sync_root_top.is_null() != (runtime.sync_root_depth == 0) {
+        std::process::abort();
+    }
+    GC_OK
 }
 
 #[unsafe(export_name = "loom_gc_alloc_value")]
 pub extern "C" fn allocate_value() -> *mut c_void {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return ptr::null_mut();
+    }
     let mut allocation = Box::new(ValueSlot::default());
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_RUNTIME.with(|active| {
-        let runtime = active.get();
-        if runtime.is_null() {
-            let _ = Box::into_raw(allocation);
-        } else {
-            // SAFETY: ACTIVE_RUNTIME is set only around a single-threaded
-            // generated-code interval and collection cannot run during it.
-            unsafe { (*runtime).heap.values.push(allocation) };
-        }
-    });
+    // SAFETY: ACTIVE_RUNTIME is set only around a single-threaded generated
+    // interval and allocation itself never invokes collection.
+    unsafe {
+        (*runtime).heap.values.push(allocation);
+        (*runtime).heap.allocation_charge = (*runtime)
+            .heap
+            .allocation_charge
+            .saturating_add(size_of::<ValueSlot>());
+    }
     pointer
 }
 
 #[unsafe(export_name = "loom_gc_alloc_value_node")]
 pub extern "C" fn allocate_value_node() -> *mut c_void {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return ptr::null_mut();
+    }
     let mut allocation = Box::new(ValueNode {
         value: ValueSlot::default(),
         next: ptr::null_mut(),
     });
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_RUNTIME.with(|active| {
-        let runtime = active.get();
-        if runtime.is_null() {
-            let _ = Box::into_raw(allocation);
-        } else {
-            // SAFETY: see allocate_value.
-            unsafe { (*runtime).heap.nodes.push(allocation) };
-        }
-    });
+    // SAFETY: see allocate_value.
+    unsafe {
+        (*runtime).heap.nodes.push(allocation);
+        (*runtime).heap.allocation_charge = (*runtime)
+            .heap
+            .allocation_charge
+            .saturating_add(size_of::<ValueNode>());
+    }
     pointer
 }
 
-fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> *mut c_void {
-    ACTIVE_RUNTIME.with(|active| {
-        let runtime = active.get();
-        if runtime.is_null() {
-            let _ = Box::into_raw(allocation);
-        } else {
-            // SAFETY: see allocate_value. Sequence objects are immutable after
-            // publication and collection runs only at generated safepoints.
-            unsafe { (*runtime).heap.sequences.push(allocation) };
-        }
-    });
-    object
+fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> Option<*mut c_void> {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return None;
+    }
+    // SAFETY: see allocate_value. Sequence objects are immutable after
+    // publication and collection runs only at generated safepoints.
+    let charge = allocation.len().saturating_mul(size_of::<u64>());
+    unsafe {
+        (*runtime).heap.sequences.push(allocation);
+        (*runtime).heap.allocation_charge =
+            (*runtime).heap.allocation_charge.saturating_add(charge);
+    }
+    Some(object)
 }
 
 pub(crate) fn retain_text(bytes: &[u8]) -> Option<*mut c_void> {
     let (allocation, object) = text::allocate_text_storage(bytes)?;
-    Some(retain_sequence(allocation, object.cast()))
+    retain_sequence(allocation, object.cast())
 }
 
 pub(crate) fn retain_byte_sequence(bytes: &[u8]) -> Option<*mut c_void> {
     let (allocation, object) = text::allocate_byte_storage(bytes)?;
-    Some(retain_sequence(allocation, object.cast()))
+    retain_sequence(allocation, object.cast())
 }
 
 pub(crate) fn text_value(bytes: &[u8]) -> Option<ValueSlot> {
@@ -477,17 +748,14 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
 /// address transiently; they never contain user heap values.
 #[unsafe(export_name = "loom_gc_alloc_witness_node")]
 pub extern "C" fn allocate_witness_node() -> *mut c_void {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return ptr::null_mut();
+    }
     let mut allocation = Box::new([0_usize; 2]);
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_RUNTIME.with(|active| {
-        let runtime = active.get();
-        if runtime.is_null() {
-            let _ = Box::into_raw(allocation);
-        } else {
-            // SAFETY: see allocate_value.
-            unsafe { (*runtime).heap.metadata_nodes.push(allocation) };
-        }
-    });
+    // SAFETY: see allocate_value.
+    unsafe { (*runtime).heap.metadata_nodes.push(allocation) };
     pointer
 }
 
@@ -671,22 +939,118 @@ unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
     );
 }
 
+#[cfg(test)]
 pub(crate) fn collect(executor: &mut LoomExecutor) {
+    collect_executor(executor, true);
+}
+
+pub(crate) fn poll(executor: &mut LoomExecutor) {
+    collect_executor(executor, false);
+}
+
+fn collect_executor(executor: &mut LoomExecutor, force: bool) {
     let runtime = executor.runtime_pointer();
+    // SAFETY: the attached runtime is a stable allocation distinct from the
+    // executor. Scheduler collection runs outside generated code, so a valid
+    // execution has no synchronous native frames at this boundary.
+    let runtime_ref = unsafe { &mut *runtime };
+    let root_top = runtime_ref.sync_root_top;
+    let root_depth = runtime_ref.sync_root_depth;
     // SAFETY: the attached runtime and executor are separate stable
     // allocations. The scheduler owns `&mut executor` at this safepoint, so
     // no generated code can access the heap while its task roots are traced.
-    unsafe { collect_heap(&mut (*runtime).heap, &mut executor.tasks) };
+    let status = unsafe {
+        collect_heap(
+            &mut runtime_ref.heap,
+            &mut executor.tasks,
+            root_top,
+            root_depth,
+            force,
+        )
+    };
+    if status != GC_OK {
+        std::process::abort();
+    }
 }
 
-fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
+/// Runs an explicit precise moving collection for the active Runtime.
+///
+/// Allocation never invokes this entry point implicitly. The compiler must
+/// publish every live native `Value` in a pushed root frame before calling the
+/// safepoint; attached coroutine Task roots are traced in the same collection.
+#[unsafe(export_name = "loom_gc_safepoint_v1")]
+pub unsafe extern "C" fn safepoint_v1() -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { collect_active_runtime(runtime, false) }
+}
+
+unsafe fn collect_active_runtime(runtime: *mut LoomRuntime, force: bool) -> i32 {
+    // SAFETY: the caller obtained this pointer from ACTIVE_RUNTIME and owns
+    // the only generated-code interval allowed to mutate its heap and roots.
+    let runtime_ref = unsafe { &mut *runtime };
+    let root_top = runtime_ref.sync_root_top;
+    let root_depth = runtime_ref.sync_root_depth;
+    let executor = runtime_ref
+        .attached_executor_pointer()
+        .cast::<LoomExecutor>();
+    if executor.is_null() {
+        let mut no_tasks: [Box<LoomTask>; 0] = [];
+        return unsafe {
+            collect_heap(
+                &mut runtime_ref.heap,
+                &mut no_tasks,
+                root_top,
+                root_depth,
+                force,
+            )
+        };
+    }
+    // SAFETY: a Runtime has at most one stable executor attachment. The
+    // active generated-code interval is single-threaded with its scheduler.
+    let executor_ref = unsafe { &mut *executor };
+    if executor_ref.runtime_pointer() != runtime {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe {
+        collect_heap(
+            &mut runtime_ref.heap,
+            &mut executor_ref.tasks,
+            root_top,
+            root_depth,
+            force,
+        )
+    }
+}
+
+unsafe fn collect_heap(
+    heap: &mut LoomHeap,
+    tasks: &mut [Box<LoomTask>],
+    root_top: *mut LoomGcRootFrame,
+    root_depth: u64,
+    force: bool,
+) -> i32 {
+    let root_status = unsafe { visit_sync_roots(root_top, root_depth, None, ptr::null_mut()) };
+    if root_status != GC_OK {
+        return root_status;
+    }
+    let should_collect = force || heap.allocation_charge >= heap.next_gc_threshold;
+    #[cfg(test)]
+    let should_collect = should_collect || heap.collect_on_every_poll;
+    if !should_collect {
+        return GC_OK;
+    }
     heap.collections = heap.collections.saturating_add(1);
     // List indexes are derived accelerators, not roots. Drop every raw node
     // pointer before filtering or relocating the heap; the next add/get lazily
     // rebuilds an index from the rewritten List head.
     heap.list_node_indexes.clear();
     if heap.values.is_empty() && heap.nodes.is_empty() && heap.sequences.is_empty() {
-        return;
+        heap.allocation_charge = 0;
+        heap.next_gc_threshold = MIN_GC_THRESHOLD_BYTES;
+        return GC_OK;
     }
     let index = HeapIndex::new(heap);
     let mut marks = Marks::default();
@@ -697,6 +1061,17 @@ fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
     for task in tasks.iter() {
         let task = (&raw const **task).cast_mut();
         unsafe { trace_task_roots(task, Some(trace_slot), (&raw mut trace_context).cast()) };
+    }
+    let root_status = unsafe {
+        visit_sync_roots(
+            root_top,
+            root_depth,
+            Some(trace_slot),
+            (&raw mut trace_context).cast(),
+        )
+    };
+    if root_status != GC_OK {
+        return root_status;
     }
 
     let before = heap
@@ -719,6 +1094,15 @@ fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
         .reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
 
+    unsafe { relocate_marked_heap(heap, tasks, root_top, root_depth) }
+}
+
+unsafe fn relocate_marked_heap(
+    heap: &mut LoomHeap,
+    tasks: &mut [Box<LoomTask>],
+    root_top: *mut LoomGcRootFrame,
+    root_depth: u64,
+) -> i32 {
     let mut value_moves = HashMap::with_capacity(heap.values.len());
     for value in &mut heap.values {
         let old = (&raw mut **value) as usize;
@@ -767,6 +1151,17 @@ fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
             );
         }
     }
+    let root_status = unsafe {
+        visit_sync_roots(
+            root_top,
+            root_depth,
+            Some(rewrite_slot),
+            (&raw mut rewrite_context).cast(),
+        )
+    };
+    if root_status != GC_OK {
+        return root_status;
+    }
     for value in &mut heap.values {
         rewrite_value(value, &value_moves, &node_moves, &sequence_moves);
     }
@@ -774,6 +1169,335 @@ fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
         rewrite_value(&mut node.value, &value_moves, &node_moves, &sequence_moves);
         if let Some(next) = node_moves.get(&(node.next as usize)) {
             node.next = *next;
+        }
+    }
+    let live_bytes = heap
+        .values
+        .len()
+        .saturating_mul(size_of::<ValueSlot>())
+        .saturating_add(heap.nodes.len().saturating_mul(size_of::<ValueNode>()))
+        .saturating_add(
+            heap.sequences
+                .iter()
+                .map(|sequence| sequence.len().saturating_mul(size_of::<u64>()))
+                .fold(0_usize, usize::saturating_add),
+        );
+    heap.allocation_charge = live_bytes;
+    heap.next_gc_threshold = live_bytes.saturating_mul(2).max(MIN_GC_THRESHOLD_BYTES);
+    GC_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+    use crate::scheduler::{task_slot, task_spawn};
+
+    struct TestRootFrame<const ROOTS: usize> {
+        roots: Box<[ValueSlot; ROOTS]>,
+        _slots: Box<[*mut c_void; ROOTS]>,
+        _live_bitmaps: Box<[u64]>,
+        descriptor: Box<LoomGcRootDescriptor>,
+        header: Box<LoomGcRootFrame>,
+    }
+
+    impl<const ROOTS: usize> TestRootFrame<ROOTS> {
+        fn new(state_count: usize, live_bitmaps: &[u64]) -> Self {
+            assert!(ROOTS > 0 && state_count > 0);
+            let bitmap_words = ROOTS.div_ceil(64);
+            assert_eq!(live_bitmaps.len(), state_count * bitmap_words);
+            let mut roots = Box::new([ValueSlot::default(); ROOTS]);
+            let slots = Box::new(std::array::from_fn(|index| {
+                (&raw mut roots[index]).cast::<c_void>()
+            }));
+            let live_bitmaps = live_bitmaps.to_vec().into_boxed_slice();
+            let descriptor = Box::new(LoomGcRootDescriptor {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: ROOTS as u64,
+                state_count: state_count as u64,
+                live_bitmap_words: bitmap_words as u64,
+                live_bitmaps: live_bitmaps.as_ptr(),
+            });
+            let header = Box::new(LoomGcRootFrame {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const *descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            });
+            Self {
+                roots,
+                _slots: slots,
+                _live_bitmaps: live_bitmaps,
+                descriptor,
+                header,
+            }
+        }
+
+        fn all_live() -> Self {
+            let bitmap_words = ROOTS.div_ceil(64);
+            let mut bitmaps = vec![u64::MAX; bitmap_words];
+            let tail = ROOTS % 64;
+            if tail != 0 {
+                bitmaps[bitmap_words - 1] = (1_u64 << tail) - 1;
+            }
+            Self::new(1, &bitmaps)
+        }
+
+        fn pointer(&mut self) -> *mut LoomGcRootFrame {
+            &raw mut *self.header
+        }
+    }
+
+    fn indirect(pointer: *mut ValueSlot) -> ValueSlot {
+        let mut value = ValueSlot::default();
+        value.words[VALUE_WORD_TAG] = VALUE_TAG_REFINED;
+        value.words[VALUE_WORD_DATA] = pointer as u64;
+        value
+    }
+
+    unsafe extern "C" fn completed_task(_task: *mut LoomTask, _executor: *mut LoomExecutor) -> i32 {
+        TASK_COMPLETED
+    }
+
+    unsafe fn force_next_safepoint(runtime: *mut LoomRuntime) {
+        unsafe { (*runtime).heap.next_gc_threshold = 0 };
+    }
+
+    #[test]
+    fn standalone_safepoint_moves_live_root_and_reclaims_dead_allocation() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let mut frame = TestRootFrame::<1>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let live = allocate_value().cast::<ValueSlot>();
+            let dead = allocate_value().cast::<ValueSlot>();
+            assert!(!live.is_null() && !dead.is_null());
+            frame.roots[0] = indirect(live);
+            assert_eq!((*runtime).heap.collections, 0);
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            let moved = frame.roots[0].words[VALUE_WORD_DATA] as *mut ValueSlot;
+            assert!(!moved.is_null());
+            assert_ne!(moved, live);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_eq!((*runtime).heap.reclaimed, 1);
+
+            frame.roots[0] = ValueSlot::default();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert!((*runtime).heap.values.is_empty());
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn nested_frames_are_traced_and_popped_in_strict_order() {
+        let runtime = runtime_create_v1();
+        let mut outer = TestRootFrame::<1>::all_live();
+        let mut inner = TestRootFrame::<1>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(outer.pointer()), GC_OK);
+            outer.roots[0] = indirect(allocate_value().cast());
+            assert_eq!(root_push_v1(inner.pointer()), GC_OK);
+            inner.roots[0] = indirect(allocate_value().cast());
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 2);
+            let outer_after_first = outer.roots[0].words[VALUE_WORD_DATA];
+            assert_eq!(root_pop_v1(inner.pointer()), GC_OK);
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_ne!(outer.roots[0].words[VALUE_WORD_DATA], outer_after_first);
+
+            assert_eq!(root_pop_v1(outer.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn bad_lifo_versions_and_unpopped_deactivation_are_rejected() {
+        let runtime = runtime_create_v1();
+        let mut outer = TestRootFrame::<1>::all_live();
+        let mut inner = TestRootFrame::<1>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(outer.pointer()), GC_OK);
+            assert_eq!(root_push_v1(inner.pointer()), GC_OK);
+            assert_eq!(root_pop_v1(outer.pointer()), GC_FRAME_ORDER);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_ROOT_STACK_NOT_EMPTY);
+            assert_eq!(runtime_destroy_v1(runtime), GC_INVALID_ARGUMENT);
+            assert_eq!(root_pop_v1(inner.pointer()), GC_OK);
+            assert_eq!(root_pop_v1(outer.pointer()), GC_OK);
+
+            let mut bad_descriptor_frame = TestRootFrame::<1>::all_live();
+            bad_descriptor_frame.descriptor.abi_version = SHADOW_STACK_ABI_VERSION + 1;
+            assert_eq!(
+                root_push_v1(bad_descriptor_frame.pointer()),
+                GC_ABI_MISMATCH,
+            );
+            let mut bad_frame = TestRootFrame::<1>::all_live();
+            bad_frame.header.abi_version = SHADOW_STACK_ABI_VERSION + 1;
+            assert_eq!(root_push_v1(bad_frame.pointer()), GC_ABI_MISMATCH);
+
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn active_safepoint_unifies_task_and_native_frame_roots() {
+        let runtime = runtime_create_v1();
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let task = unsafe { task_spawn(executor, Some(completed_task), 1, 0) };
+        assert!(!task.is_null());
+        let mut frame = TestRootFrame::<1>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let task_live = allocate_value().cast::<ValueSlot>();
+            let frame_live = allocate_value().cast::<ValueSlot>();
+            let dead = allocate_value().cast::<ValueSlot>();
+            assert!(!task_live.is_null() && !frame_live.is_null() && !dead.is_null());
+            *task_slot(task, 0).cast::<ValueSlot>() = indirect(task_live);
+            frame.roots[0] = indirect(frame_live);
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 2);
+            assert_ne!(
+                (*task_slot(task, 0).cast::<ValueSlot>()).words[VALUE_WORD_DATA],
+                task_live as u64,
+            );
+            assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], frame_live as u64);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn managed_allocators_fail_closed_without_an_active_runtime() {
+        assert!(active_runtime_pointer().is_null());
+        assert!(allocate_value().is_null());
+        assert!(allocate_value_node().is_null());
+        assert!(allocate_witness_node().is_null());
+        assert!(retain_text(b"not leaked").is_none());
+        assert!(retain_byte_sequence(b"not leaked").is_none());
+
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        assert!(allocate_value().is_null());
+        unsafe {
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn current_state_selects_only_compiler_proven_live_slots() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<2>::new(2, &[0b01, 0b10]);
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let first = allocate_value().cast::<ValueSlot>();
+            let initially_dead = allocate_value().cast::<ValueSlot>();
+            frame.roots[0] = indirect(first);
+            frame.roots[1] = indirect(initially_dead);
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], first as u64);
+            assert_eq!(frame.roots[1].words[VALUE_WORD_DATA], initially_dead as u64);
+
+            let second = allocate_value().cast::<ValueSlot>();
+            frame.roots[1] = indirect(second);
+            frame.header.state = 1;
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_ne!(frame.roots[1].words[VALUE_WORD_DATA], second as u64);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn invalid_empty_state_tail_bits_and_state_index_are_rejected() {
+        let runtime = runtime_create_v1();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+
+            let empty_descriptor = LoomGcRootDescriptor {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 0,
+                state_count: 0,
+                live_bitmap_words: 0,
+                live_bitmaps: ptr::null(),
+            };
+            let mut empty_frame = LoomGcRootFrame {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const empty_descriptor,
+                slots: ptr::null(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(root_push_v1(&raw mut empty_frame), GC_INVALID_ARGUMENT,);
+
+            let mut tail_bits = TestRootFrame::<1>::new(1, &[0b10]);
+            assert_eq!(root_push_v1(tail_bits.pointer()), GC_INVALID_ARGUMENT);
+            let mut bad_state = TestRootFrame::<1>::all_live();
+            bad_state.header.state = 1;
+            assert_eq!(root_push_v1(bad_state.pointer()), GC_INVALID_ARGUMENT);
+
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn safepoint_polls_threshold_and_resizes_to_twice_live_space() {
+        const ROOTS: usize = 1024;
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<ROOTS>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            for root in frame.roots.iter_mut() {
+                *root = indirect(allocate_value().cast());
+            }
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.collections, 0);
+
+            (*runtime).heap.next_gc_threshold = (*runtime).heap.allocation_charge;
+            assert_eq!(safepoint_v1(), GC_OK);
+            let live_bytes = ROOTS * size_of::<ValueSlot>();
+            assert_eq!((*runtime).heap.collections, 1);
+            assert_eq!((*runtime).heap.allocation_charge, live_bytes);
+            assert_eq!((*runtime).heap.next_gc_threshold, live_bytes * 2);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
         }
     }
 }

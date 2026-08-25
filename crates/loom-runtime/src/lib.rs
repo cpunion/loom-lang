@@ -28,7 +28,7 @@ mod standard;
 mod text;
 mod value;
 
-pub use gc::{activate_runtime_v1, deactivate_runtime_v1};
+pub use gc::{activate_runtime_v1, deactivate_runtime_v1, root_pop_v1, root_push_v1, safepoint_v1};
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
 
@@ -61,10 +61,12 @@ pub use standard::{
 
 pub use loom_runtime_abi::{
     COROUTINE_ABI_VERSION, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX,
-    FAULT_SCHEMA_VERSION, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER,
-    LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomLayoutDescriptor,
-    NATIVE_RUNTIME_ABI_IDENTITY, READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE,
-    READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TASK_CANCELLED,
+    FAULT_SCHEMA_VERSION, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK,
+    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
+    LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
+    LoomGcRootDescriptor, LoomGcRootFrame, LoomLayoutDescriptor, NATIVE_RUNTIME_ABI_IDENTITY,
+    READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE, READY_TIMER, READY_WRITABLE,
+    RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TASK_CANCELLED,
     TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
     TASK_PENDING, WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY,
     WAIT_OK, WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
@@ -336,6 +338,7 @@ mod tests {
         VALUE_RELOCATED.store(false, Ordering::SeqCst);
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
+        unsafe { (*runtime).heap.collect_on_every_poll = true };
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let task = unsafe { task_spawn(executor, Some(gc_fixture_resume), 1, 0) };
@@ -359,6 +362,7 @@ mod tests {
         VALUE_RELOCATED.store(false, Ordering::SeqCst);
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
+        unsafe { (*runtime).heap.collect_on_every_poll = true };
         let heap = unsafe { &raw mut (*runtime).heap };
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());

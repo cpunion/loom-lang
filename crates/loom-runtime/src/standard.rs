@@ -1148,6 +1148,33 @@ pub unsafe extern "C" fn log_write(
 mod tests {
     use super::*;
 
+    struct ActiveRuntime(*mut crate::runtime::LoomRuntime);
+
+    impl ActiveRuntime {
+        fn new() -> Self {
+            let runtime = crate::runtime::runtime_create_v1();
+            assert!(!runtime.is_null());
+            assert_eq!(
+                unsafe { crate::gc::activate_runtime_v1(runtime) },
+                crate::GC_OK
+            );
+            Self(runtime)
+        }
+    }
+
+    impl Drop for ActiveRuntime {
+        fn drop(&mut self) {
+            assert_eq!(
+                unsafe { crate::gc::deactivate_runtime_v1(self.0) },
+                crate::GC_OK,
+            );
+            assert_eq!(
+                unsafe { crate::runtime::runtime_destroy_v1(self.0) },
+                crate::GC_OK,
+            );
+        }
+    }
+
     fn text_parts(value: &ValueSlot) -> (&[u8], u64) {
         // SAFETY: test values remain live for the assertion.
         let bytes = unsafe { text::text_value_bytes(value) }.unwrap();
@@ -1156,6 +1183,7 @@ mod tests {
 
     #[test]
     fn managed_text_and_bytes_outputs_keep_descriptor_direction() {
+        let _runtime = ActiveRuntime::new();
         let mut concatenated = ValueSlot::default();
         let mut arbitrary = ValueSlot::default();
         let mut decoded = ValueSlot::default();
@@ -1203,6 +1231,7 @@ mod tests {
 
     #[test]
     fn unicode_bytes_and_portable_paths_are_distinct() {
+        let _runtime = ActiveRuntime::new();
         let text = "a界🙂";
         let mut scalar_count = 0;
         let mut scalar = ValueSlot::default();
@@ -1295,6 +1324,7 @@ mod tests {
 
     #[test]
     fn native_map_and_json_abi_preserve_shapes_and_depth_errors() {
+        let _runtime = ActiveRuntime::new();
         let empty = build_map(15, Vec::new());
         let key = text_value("key");
         let value = scalar_value(VALUE_TAG_INT, 42);
