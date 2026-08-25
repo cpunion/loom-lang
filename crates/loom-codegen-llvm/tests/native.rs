@@ -219,6 +219,113 @@ pub fn main() Unit {
 }
 
 #[test]
+fn loop_temporaries_are_entry_allocated_and_large_release_loops_do_not_grow_stack() {
+    let source = r"module stack_loop
+
+record Counter {
+    total Int
+    calls Int
+}
+
+impl Counter {
+    method add(mut self, value Int) Unit {
+        self.total = self.total + value
+        self.calls = self.calls + 1
+        Unit
+    }
+}
+
+fn modularProduct(left Int, right Int) Int {
+    let modulus = 2147483647
+    let product = left * right
+    product - (product / modulus) * modulus
+}
+
+fn spin(size Int) Int {
+    var state = 1
+    for ignored in 0..size {
+        state = modularProduct(state, 48271)
+        Unit
+    }
+    state
+}
+
+fn periodicValue(index Int) Int {
+    index - (index / 1024) * 1024
+}
+
+fn recordMethod(size Int) Counter {
+    var counter = Counter { total = 0, calls = 0 }
+    for index in 0..size {
+        counter.add(periodicValue(index))
+        Unit
+    }
+    counter
+}
+
+pub fn main() Unit {
+    let state = spin(100000)
+    assert state == 1405402365
+    let counter = recordMethod(100000)
+    assert counter.total == 51031728
+    assert counter.calls == 100000
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create loop stack project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write loop stack source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load loop stack project")
+        .snapshot()
+        .expect("analyze loop stack project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower loop stack MIR");
+
+    let development_ir = project.path().join("development.ll");
+    let development_object = project.path().join("development.o");
+    let mut development = EmitOptions::run("main");
+    development.emit_ir = Some(development_ir.clone());
+    emit_native_object(program, &development_object, &development)
+        .expect("emit development loop IR");
+    let llvm = std::fs::read_to_string(development_ir).expect("read development loop IR");
+    for function_name in ["stack_loop_spin", "stack_loop_recordMethod"] {
+        let signature = llvm
+            .lines()
+            .find(|line| line.starts_with("define ") && line.contains(function_name))
+            .unwrap_or_else(|| panic!("missing {function_name} in development IR"));
+        let start = llvm.find(signature).expect("locate function signature");
+        let body = &llvm[start..];
+        let end = body.find("\n}").expect("locate function end");
+        let mut block = "";
+        for line in body[..end].lines().skip(1) {
+            if !line.starts_with(char::is_whitespace)
+                && let Some((label, _)) = line.split_once(':')
+            {
+                block = label;
+            }
+            assert!(
+                !line.contains(" alloca ") || block == "entry",
+                "{function_name} contains a dynamic alloca in `{block}`: {line}"
+            );
+        }
+    }
+
+    let executable = project.path().join("release-program");
+    let release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    emit_native(program, &executable, &release).expect("emit release loop executable");
+    let output = Command::new(executable)
+        .output()
+        .expect("run release loop executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(output.stdout, b"Unit\n");
+}
+
+#[test]
 fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
     let source = r"module construction
 

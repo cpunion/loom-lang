@@ -5087,11 +5087,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let frame = self.alloc_coroutine_frame(state, result)?;
         let executor = self.executor;
         let source = self.alloc_completion_wait_source()?;
-        let registration = self
-            .backend
-            .builder
-            .build_alloca(self.backend.registration_type, "wait.registration")
-            .map_err(builder_error)?;
+        let registration = self.alloc_entry(self.backend.registration_type, "wait.registration")?;
         let register_status = call_int(
             &self.backend.builder,
             self.backend.native_executor_register(),
@@ -5144,11 +5140,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
         let frame = self.alloc_coroutine_frame(state, destination)?;
         let source = self.alloc_timer_wait_source(deadline)?;
-        let registration = self
-            .backend
-            .builder
-            .build_alloca(self.backend.registration_type, "wait.registration")
-            .map_err(builder_error)?;
+        let registration = self.alloc_entry(self.backend.registration_type, "wait.registration")?;
         let register_status = call_int(
             &self.backend.builder,
             self.backend.native_executor_register(),
@@ -5165,11 +5157,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let pending = self.append_block("coroutine.pending.timer");
         self.backend.branch(pending)?;
         self.backend.builder.position_at_end(pending);
-        let ready_count = self
-            .backend
-            .builder
-            .build_alloca(self.backend.context.i32_type(), "ready.count")
-            .map_err(builder_error)?;
+        let ready_count = self.alloc_entry(self.backend.context.i32_type(), "ready.count")?;
         let wait_status = call_int(
             &self.backend.builder,
             self.backend.native_executor_wait(),
@@ -5225,11 +5213,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?;
             let deadline = self.checked_timer_add(now, nanoseconds)?;
             let source = self.alloc_timer_wait_source(deadline)?;
-            let registration = self
-                .backend
-                .builder
-                .build_alloca(self.backend.registration_type, "sleep.join.registration")
-                .map_err(builder_error)?;
+            let registration =
+                self.alloc_entry(self.backend.registration_type, "sleep.join.registration")?;
             let status = call_int(
                 &self.backend.builder,
                 self.backend.native_executor_register(),
@@ -5248,11 +5233,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             let pending = self.append_block("coroutine.pending.timer.join");
             self.backend.branch(pending)?;
             self.backend.builder.position_at_end(pending);
-            let ready_count = self
-                .backend
-                .builder
-                .build_alloca(self.backend.context.i32_type(), "sleep.join.ready.count")
-                .map_err(builder_error)?;
+            let ready_count =
+                self.alloc_entry(self.backend.context.i32_type(), "sleep.join.ready.count")?;
             let status = call_int(
                 &self.backend.builder,
                 self.backend.native_executor_wait(),
@@ -5385,11 +5367,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             "wait.notify",
         )?;
         self.propagate_runtime_status(notify_status, wait.executor, "wait.notify")?;
-        let ready_count = self
-            .backend
-            .builder
-            .build_alloca(self.backend.context.i32_type(), "ready.count")
-            .map_err(builder_error)?;
+        let ready_count = self.alloc_entry(self.backend.context.i32_type(), "ready.count")?;
         let wait_status = call_int(
             &self.backend.builder,
             self.backend.native_executor_wait(),
@@ -5409,11 +5387,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         state: u32,
         result: PointerValue<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let frame = self
-            .backend
-            .builder
-            .build_alloca(self.backend.coroutine_frame_type, "coroutine.frame")
-            .map_err(builder_error)?;
+        let frame = self.alloc_entry(self.backend.coroutine_frame_type, "coroutine.frame")?;
         self.backend.store_i64_field(
             self.backend.coroutine_frame_type,
             frame,
@@ -5430,11 +5404,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn alloc_completion_wait_source(&self) -> Result<PointerValue<'ctx>, CodegenError> {
-        let source = self
-            .backend
-            .builder
-            .build_alloca(self.backend.wait_source_type, "wait.source")
-            .map_err(builder_error)?;
+        let source = self.alloc_entry(self.backend.wait_source_type, "wait.source")?;
         self.backend
             .builder
             .build_store(source, self.backend.wait_source_type.const_zero())
@@ -5488,11 +5458,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         deadline: IntValue<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let source = self
-            .backend
-            .builder
-            .build_alloca(self.backend.wait_source_type, "wait.source.timer")
-            .map_err(builder_error)?;
+        let source = self.alloc_entry(self.backend.wait_source_type, "wait.source.timer")?;
         self.backend
             .builder
             .build_store(source, self.backend.wait_source_type.const_zero())
@@ -5547,11 +5513,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         descriptor: IntValue<'ctx>,
         interests: u64,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let source = self
-            .backend
-            .builder
-            .build_alloca(self.backend.wait_source_type, "wait.source.fd")
-            .map_err(builder_error)?;
+        let source = self.alloc_entry(self.backend.wait_source_type, "wait.source.fd")?;
         self.backend
             .builder
             .build_store(source, self.backend.wait_source_type.const_zero())
@@ -5607,11 +5569,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         frame: PointerValue<'ctx>,
         expected_event: u64,
     ) -> Result<(), CodegenError> {
-        let notification = self
-            .backend
-            .builder
-            .build_alloca(self.backend.ready_notification_type, "ready.notification")
-            .map_err(builder_error)?;
+        let notification =
+            self.alloc_entry(self.backend.ready_notification_type, "ready.notification")?;
         let pop_status = call_int(
             &self.backend.builder,
             self.backend.native_executor_pop_ready(),
@@ -7082,11 +7041,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let mut head = self.backend.ptr_type.const_null();
         for argument in arguments.iter().rev() {
-            let node = self
-                .backend
-                .builder
-                .build_alloca(self.backend.arg_node_type, "argument.node")
-                .map_err(builder_error)?;
+            let node = self.alloc_entry(self.backend.arg_node_type, "argument.node")?;
             self.backend.store_pointer_field(
                 self.backend.arg_node_type,
                 node,
@@ -7111,11 +7066,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         for witness in witnesses.iter().rev() {
             let value = self.resolve_witness(witness)?;
-            let node = self
-                .backend
-                .builder
-                .build_alloca(self.backend.witness_node_type, "witness.node")
-                .map_err(builder_error)?;
+            let node = self.alloc_entry(self.backend.witness_node_type, "witness.node")?;
             self.backend.store_pointer_field(
                 self.backend.witness_node_type,
                 node,
@@ -7186,11 +7137,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                             format!("witness #{} was not emitted", witness.0),
                         )
                     })?;
-                let applied = self
-                    .backend
-                    .builder
-                    .build_alloca(self.backend.witness_type, "witness.application")
-                    .map_err(builder_error)?;
+                let applied = self.alloc_entry(self.backend.witness_type, "witness.application")?;
                 let value = self
                     .backend
                     .builder
@@ -8627,11 +8574,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let (data, length) = self.text_parts(value, "parse.float")?;
-        let parsed = self
-            .backend
-            .builder
-            .build_alloca(self.backend.context.f64_type(), "parse.output")
-            .map_err(builder_error)?;
+        let parsed = self.alloc_entry(self.backend.context.f64_type(), "parse.output")?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_parse_float(),
@@ -8709,11 +8652,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let (data, length) = self.text_parts(value, "parse.int")?;
-        let parsed = self
-            .backend
-            .builder
-            .build_alloca(self.backend.i64_type, "parse.int.output")
-            .map_err(builder_error)?;
+        let parsed = self.alloc_entry(self.backend.i64_type, "parse.int.output")?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_parse_int(),
@@ -8797,11 +8736,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let number = self.float_scalar(value)?;
-        let data_slot = self
-            .backend
-            .builder
-            .build_alloca(self.backend.ptr_type, "format.data")
-            .map_err(builder_error)?;
+        let data_slot = self.alloc_entry(self.backend.ptr_type, "format.data")?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_format_float(),
@@ -9499,26 +9434,29 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(())
     }
 
-    fn alloc_value(&self, name: &str) -> PointerValue<'ctx> {
-        if self.task.is_some() {
-            let builder = self.backend.context.create_builder();
-            let entry = self
-                .function
-                .get_first_basic_block()
-                .expect("checked coroutine has an entry block");
-            if let Some(instruction) = entry.get_first_instruction() {
-                builder.position_before(&instruction);
-            } else {
-                builder.position_at_end(entry);
-            }
-            return builder
-                .build_alloca(self.backend.value_type, &self.backend.unique(name))
-                .expect("coroutine entry accepts temporary allocation");
+    fn alloc_entry<T: BasicType<'ctx>>(
+        &self,
+        ty: T,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let builder = self.backend.context.create_builder();
+        let entry = self
+            .function
+            .get_first_basic_block()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "function has no entry block"))?;
+        if let Some(instruction) = entry.get_first_instruction() {
+            builder.position_before(&instruction);
+        } else {
+            builder.position_at_end(entry);
         }
-        self.backend
-            .builder
-            .build_alloca(self.backend.value_type, &self.backend.unique(name))
-            .expect("builder is positioned while compiling a checked function")
+        builder
+            .build_alloca(ty, &self.backend.unique(name))
+            .map_err(builder_error)
+    }
+
+    fn alloc_value(&self, name: &str) -> PointerValue<'ctx> {
+        self.alloc_entry(self.backend.value_type, name)
+            .expect("checked function entry accepts temporary allocation")
     }
 
     fn local(&self, local: LocalId) -> Result<PointerValue<'ctx>, CodegenError> {
