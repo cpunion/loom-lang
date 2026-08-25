@@ -5,6 +5,7 @@ use loom_mir::{
     Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
+use crate::native_layout::NativeSignatureShape;
 use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
@@ -182,18 +183,6 @@ impl RuntimeRequirementGraph {
     }
 }
 
-pub(crate) fn is_scalar_int_candidate(function: &Function) -> bool {
-    !function.is_async
-        && function.type_parameters == 0
-        && function.receiver.is_none()
-        && function.witness_params.is_empty()
-        && function.return_ty == Type::Int
-        && function
-            .params
-            .iter()
-            .all(|parameter| parameter.ty == Type::Int)
-}
-
 fn scan_block(
     program: &Program,
     reachable: &ReachableProgram,
@@ -349,7 +338,7 @@ fn scan_expr(
                         )
                     })?;
                     output.callees.insert(*callee);
-                    if !is_scalar_int_candidate(target) {
+                    if NativeSignatureShape::for_supported_function(target).is_none() {
                         // The first typed slice only proves the scalar Int ABI.
                         // Other calls retain the universal Value ABI boundary.
                         output
@@ -542,7 +531,7 @@ mod tests {
         FunctionId, LocalDecl, LocalId, Program, Type,
     };
 
-    use super::{RuntimeRequirementGraph, is_scalar_int_candidate};
+    use super::RuntimeRequirementGraph;
 
     fn int_function(id: u32, body: Expr) -> Function {
         Function {
@@ -637,7 +626,12 @@ mod tests {
             witness_methods: BTreeMap::new(),
         };
         let graph = RuntimeRequirementGraph::analyze(&program, &reachable).expect("requirements");
-        assert!(is_scalar_int_candidate(&program.functions[0]));
+        assert!(
+            crate::native_layout::NativeSignatureShape::for_supported_function(
+                &program.functions[0]
+            )
+            .is_some()
+        );
         assert!(
             graph
                 .function(FunctionId(0))

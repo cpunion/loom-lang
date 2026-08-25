@@ -52,8 +52,9 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
+use crate::native_layout::{NativeLayout, NativeScalar, NativeSignatureShape};
 use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
-use crate::requirements::{RuntimeRequirementGraph, is_scalar_int_candidate};
+use crate::requirements::RuntimeRequirementGraph;
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
 
@@ -940,7 +941,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 source.span.range.start,
             )?;
             self.functions.insert(*id, function);
-            if is_scalar_int_candidate(source) {
+            if let Some(signature) = NativeSignatureShape::for_supported_function(source) {
                 let requirements = self.requirements.function(*id)?.body;
                 let abi = if requirements.is_pure_no_fault() {
                     ScalarIntAbi::PureNoFault
@@ -949,12 +950,18 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 };
                 let extra_parameters = usize::from(abi == ScalarIntAbi::Fallible);
                 let mut parameters = Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(
-                    source.params.len() + extra_parameters,
+                    signature.parameters().len() + extra_parameters,
                 );
-                let scalar_parameter: BasicMetadataTypeEnum<'ctx> = self.i64_type.into();
-                parameters.extend(std::iter::repeat_n(scalar_parameter, source.params.len()));
+                parameters.extend(signature.parameters().iter().map(|layout| match layout {
+                    NativeLayout::Scalar(NativeScalar::Int) => {
+                        BasicMetadataTypeEnum::from(self.i64_type)
+                    }
+                }));
+                let result_type = match signature.result() {
+                    NativeLayout::Scalar(NativeScalar::Int) => self.i64_type,
+                };
                 let scalar_type = match abi {
-                    ScalarIntAbi::PureNoFault => self.i64_type.fn_type(&parameters, false),
+                    ScalarIntAbi::PureNoFault => result_type.fn_type(&parameters, false),
                     ScalarIntAbi::Fallible => {
                         parameters.push(self.ptr_type.into());
                         self.scalar_int_result_type.fn_type(&parameters, false)
@@ -4547,7 +4554,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 format!("function #{} does not exist", id.0),
             )
         })?;
-        if !is_scalar_int_candidate(source) {
+        if NativeSignatureShape::for_supported_function(source).is_none() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "non-integer function selected for the scalar integer ABI",
