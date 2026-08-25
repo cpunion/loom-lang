@@ -12,8 +12,10 @@ use sha2::{Digest, Sha256};
 use crate::emitter::native_runtime_bytes;
 use crate::{CodegenError, NATIVE_RUNTIME_ABI, NativeTargetIdentity, native_target_identity};
 
-pub const RUNTIME_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const RUNTIME_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const RUNTIME_BUNDLE_MANIFEST: &str = "loom-runtime-bundle.json";
+pub const RUNTIME_CPU: &str = "generic";
+pub const RUNTIME_CPU_FEATURES: &str = "";
 
 const RUNTIME_ARCHIVE_NAME: &str = "libloom_runtime.a";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -31,6 +33,8 @@ struct RuntimeBundleManifest {
     schema_version: u32,
     target_triple: String,
     data_layout: String,
+    runtime_cpu: String,
+    runtime_cpu_features: String,
     runtime_abi: String,
     archive: String,
     archive_sha256: String,
@@ -44,6 +48,8 @@ pub struct RuntimeBundle {
     archive: PathBuf,
     target_triple: String,
     data_layout: String,
+    runtime_cpu: String,
+    runtime_cpu_features: String,
     archive_sha256: String,
     link_args: Vec<String>,
     identity: String,
@@ -105,6 +111,8 @@ impl RuntimeBundle {
             archive,
             target_triple: manifest.target_triple,
             data_layout: manifest.data_layout,
+            runtime_cpu: manifest.runtime_cpu,
+            runtime_cpu_features: manifest.runtime_cpu_features,
             archive_sha256: actual_archive_sha256,
             link_args: manifest.link_args,
             identity,
@@ -132,6 +140,16 @@ impl RuntimeBundle {
     }
 
     #[must_use]
+    pub fn runtime_cpu(&self) -> &str {
+        &self.runtime_cpu
+    }
+
+    #[must_use]
+    pub fn runtime_cpu_features(&self) -> &str {
+        &self.runtime_cpu_features
+    }
+
+    #[must_use]
     pub fn archive_sha256(&self) -> &str {
         &self.archive_sha256
     }
@@ -155,6 +173,8 @@ pub struct RuntimeBundleExport {
     pub archive: PathBuf,
     pub target_triple: String,
     pub data_layout: String,
+    pub runtime_cpu: String,
+    pub runtime_cpu_features: String,
     pub runtime_abi: String,
     pub archive_sha256: String,
 }
@@ -207,6 +227,8 @@ pub fn export_native_runtime_bundle(
         schema_version: RUNTIME_BUNDLE_SCHEMA_VERSION,
         target_triple: target.triple.clone(),
         data_layout: target.data_layout.clone(),
+        runtime_cpu: RUNTIME_CPU.to_owned(),
+        runtime_cpu_features: RUNTIME_CPU_FEATURES.to_owned(),
         runtime_abi: NATIVE_RUNTIME_ABI.to_owned(),
         archive: RUNTIME_ARCHIVE_NAME.to_owned(),
         archive_sha256: archive_sha256.clone(),
@@ -250,6 +272,8 @@ pub fn export_native_runtime_bundle(
         archive: output.join(RUNTIME_ARCHIVE_NAME),
         target_triple: target.triple,
         data_layout: target.data_layout,
+        runtime_cpu: RUNTIME_CPU.to_owned(),
+        runtime_cpu_features: RUNTIME_CPU_FEATURES.to_owned(),
         runtime_abi: NATIVE_RUNTIME_ABI.to_owned(),
         archive_sha256,
     })
@@ -485,6 +509,13 @@ fn validate_manifest(
             "runtime bundle target triple/data layout does not match the emitted object",
         ));
     }
+    if manifest.runtime_cpu != RUNTIME_CPU || manifest.runtime_cpu_features != RUNTIME_CPU_FEATURES
+    {
+        return Err(CodegenError::new(
+            "RuntimeBundleTargetMismatch",
+            "runtime bundle must use the portable generic CPU policy without extra features",
+        ));
+    }
     if manifest.runtime_abi != NATIVE_RUNTIME_ABI {
         return Err(CodegenError::new(
             "RuntimeBundleAbiMismatch",
@@ -493,6 +524,8 @@ fn validate_manifest(
     }
     if manifest.target_triple.len() > 512
         || manifest.data_layout.len() > 8192
+        || manifest.runtime_cpu.len() > 512
+        || manifest.runtime_cpu_features.len() > 8192
         || manifest.runtime_abi.len() > 512
         || !valid_digest(&manifest.archive_sha256)
     {

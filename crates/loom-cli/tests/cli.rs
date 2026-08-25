@@ -79,6 +79,8 @@ fn write_fake_runtime_bundle(root: &std::path::Path, archive: &[u8]) {
             "schema_version": loom_codegen_llvm::RUNTIME_BUNDLE_SCHEMA_VERSION,
             "target_triple": target.triple,
             "data_layout": target.data_layout,
+            "runtime_cpu": loom_codegen_llvm::RUNTIME_CPU,
+            "runtime_cpu_features": loom_codegen_llvm::RUNTIME_CPU_FEATURES,
             "runtime_abi": loom_codegen_llvm::NATIVE_RUNTIME_ABI,
             "archive": "runtime.a",
             "archive_sha256": archive_sha256,
@@ -1633,6 +1635,14 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
             .and_then(serde_json::Value::as_str)
             .map(str::len),
         Some(64)
+    );
+    assert_eq!(
+        export_record.get("runtime_cpu"),
+        Some(&serde_json::json!(loom_codegen_llvm::RUNTIME_CPU))
+    );
+    assert_eq!(
+        export_record.get("runtime_cpu_features"),
+        Some(&serde_json::json!(loom_codegen_llvm::RUNTIME_CPU_FEATURES))
     );
 
     let executable = project.0.join("host-bundle-program");

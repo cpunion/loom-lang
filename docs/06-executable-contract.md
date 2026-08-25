@@ -463,7 +463,7 @@ summary 必须 deterministic，并且：
 
 ## 10. native artifact、ABI 与 host boundary
 
-默认 `loomc build` 必须产生宿主平台 native executable：checked MIR 先经过 root/witness reachability，再 lower 为 LLVM IR、验证、优化并输出 object，最后由平台 linker 链接。development 使用 O0 + global DCE，`--release` 使用 O2 + global DCE；两者均在优化前后验证。`--target-triple T --emit object` 产生 T 的 relocatable object；没有匹配 Loom runtime/linker 时禁止跨目标 executable link。`loomc test` 使用同一路径生成 native test harness；`loomc run PATH` 编译临时 native executable 后运行。
+默认 `loomc build` 必须产生宿主平台 native executable：checked MIR 先经过 root/witness reachability，再 lower 为 LLVM IR、验证、优化并输出 object，最后由平台 linker 链接。省略 triple 时 LLVM object 使用实际宿主 CPU/features；任何显式 `--target-triple T` 都使用 generic CPU 与空 feature policy。development 使用 O0 + global DCE，`--release` 使用 O2 + global DCE；两者均在优化前后验证。`--target-triple T --emit object` 产生 T 的 relocatable object；没有匹配 Loom runtime/linker 时禁止跨目标 executable link。`loomc test` 使用同一路径生成 native test harness；`loomc run PATH` 编译临时 native executable 后运行。
 
 前端、checked MIR、root graph 和缓存 identity 对相同输入必须 deterministic。最终 executable 不承诺逐字节 reproducible，因为系统 linker 可能加入平台 metadata；它仍不得让时间戳、绝对路径、文件遍历顺序或编辑器状态改变语言行为。
 

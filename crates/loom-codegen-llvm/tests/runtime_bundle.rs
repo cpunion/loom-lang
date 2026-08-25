@@ -1,8 +1,9 @@
 use std::fs;
 
 use loom_codegen_llvm::{
-    NATIVE_RUNTIME_ABI, RUNTIME_BUNDLE_MANIFEST, RuntimeBundle, export_native_runtime_bundle,
-    native_target_identity,
+    NATIVE_RUNTIME_ABI, RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU,
+    RUNTIME_CPU_FEATURES, RuntimeBundle, export_native_runtime_bundle, native_target_identity,
+    target_identity,
 };
 
 #[test]
@@ -15,6 +16,8 @@ fn exported_host_runtime_bundle_round_trips_with_exact_identity() {
 
     assert_eq!(loaded.target_triple(), target.triple);
     assert_eq!(loaded.data_layout(), target.data_layout);
+    assert_eq!(loaded.runtime_cpu(), RUNTIME_CPU);
+    assert_eq!(loaded.runtime_cpu_features(), RUNTIME_CPU_FEATURES);
     assert_eq!(
         loaded.archive(),
         fs::canonicalize(&exported.archive).expect("canonical exported archive")
@@ -22,6 +25,15 @@ fn exported_host_runtime_bundle_round_trips_with_exact_identity() {
     assert_eq!(loaded.archive_sha256(), exported.archive_sha256);
     assert!(loaded.identity().contains(loaded.archive_sha256()));
     assert_eq!(exported.runtime_abi, NATIVE_RUNTIME_ABI);
+    assert_eq!(exported.runtime_cpu, RUNTIME_CPU);
+    assert_eq!(exported.runtime_cpu_features, RUNTIME_CPU_FEATURES);
+    let portable_target = target_identity(
+        Some(&target.triple),
+        loom_codegen_llvm::OptimizationProfile::Development,
+    )
+    .expect("portable host target");
+    RuntimeBundle::load(&output, &portable_target)
+        .expect("generic runtime also links with a portable host object");
     assert_eq!(
         fs::read(&exported.manifest).expect("runtime manifest"),
         fs::read(output.join(RUNTIME_BUNDLE_MANIFEST)).expect("fixed manifest path")
@@ -162,17 +174,29 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
         "RuntimeBundleInvalid"
     );
 
+    let schema_field = format!("\"schema_version\": {RUNTIME_BUNDLE_SCHEMA_VERSION},");
+    let duplicate_field = format!("{schema_field}\n  {schema_field}");
     let duplicate = String::from_utf8(original.clone())
         .expect("UTF-8 manifest")
-        .replacen(
-            "\"schema_version\": 1,",
-            "\"schema_version\": 1,\n  \"schema_version\": 1,",
-            1,
-        );
+        .replacen(&schema_field, &duplicate_field, 1);
     fs::write(&manifest_path, duplicate).expect("write duplicate manifest field");
     assert_eq!(
         RuntimeBundle::load(&output, &target)
             .expect_err("duplicate manifest field")
+            .code(),
+        "RuntimeBundleInvalid"
+    );
+
+    let mut manifest = serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
+    manifest["schema_version"] = serde_json::json!(1);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&manifest).expect("encode legacy schema"),
+    )
+    .expect("write legacy schema");
+    assert_eq!(
+        RuntimeBundle::load(&output, &target)
+            .expect_err("legacy schema")
             .code(),
         "RuntimeBundleInvalid"
     );
@@ -190,6 +214,26 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
             .code(),
         "RuntimeBundleTargetMismatch"
     );
+
+    for (field, value) in [
+        ("runtime_cpu", serde_json::json!("native")),
+        ("runtime_cpu_features", serde_json::json!("+avx2")),
+    ] {
+        let mut manifest =
+            serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
+        manifest[field] = value;
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("encode runtime CPU mismatch"),
+        )
+        .expect("write runtime CPU mismatch");
+        assert_eq!(
+            RuntimeBundle::load(&output, &target)
+                .expect_err("runtime CPU mismatch")
+                .code(),
+            "RuntimeBundleTargetMismatch"
+        );
+    }
 
     let mut manifest = serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
     manifest["runtime_abi"] = serde_json::json!("wrong-abi");

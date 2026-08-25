@@ -121,7 +121,7 @@ cargo run -p loom-cli -- build --target utility --output target/utility.loomlib 
 
 跨函数 POD record concrete ABI 的首阶段已经闭合：eligible direct/inherent callable 可以用 first-class LLVM aggregate 返回无 invariant、单态、直接 primitive-field 的 record，并把同类 `mut self` 作为 call-scoped InOut pointer 传递。普通 by-value POD 参数、readonly receiver、带 invariant/requires/ensures 的 POD callable，以及 managed generic/container 的 layout-driven calling convention、统一 clone/trace/drop plan 和更完整的 coroutine/`dyn` layout specialization 仍未完成，不把首阶段误报为一般 aggregate ABI。
 
-LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；profile、规范化 target triple 与 data layout 都进入 object/cache identity。`loomc build --target-triple aarch64-unknown-linux-gnu --emit object ...` 会用对应 LLVM TargetMachine 产生真实 relocatable object。executable 交叉链接必须同时显式提供由目标平台 Loom 工具导出的 runtime bundle 和目标 linker；缺少它们仍以 `CrossLinkUnavailable` 拒绝，bundle 的 triple/data layout/runtime ABI 或 archive digest 不匹配也会在调用 linker 前失败，绝不误链宿主 runtime：
+LLVM 开发构建使用 O0 + global DCE，`--release` 切到 O2 + global DCE；省略 target triple 时使用实际宿主 CPU/features，任何显式 triple（即使规范化后等于宿主）都使用 generic/empty-feature portable policy。profile、规范化 target triple、data layout 与实际 CPU/features 都进入 object/cache identity。`loomc build --target-triple aarch64-unknown-linux-gnu --emit object ...` 会用对应 LLVM TargetMachine 产生真实 relocatable object。executable 交叉链接必须同时显式提供由目标平台 Loom 工具导出的 runtime bundle 和目标 linker；缺少它们仍以 `CrossLinkUnavailable` 拒绝，bundle 的 triple/data layout/runtime ABI 或 archive digest 不匹配也会在调用 linker 前失败，绝不误链宿主 runtime：
 
 ```sh
 # 在目标平台工具安装中导出；发布包也自带该宿主平台的 runtime/ 目录。
@@ -132,7 +132,7 @@ loomc --target-triple aarch64-unknown-linux-gnu \
   build --output target/app examples/core01
 ```
 
-runtime manifest、runtime archive、linker executable bytes 与 version identity 都进入 final-artifact cache key；bundle 目录只允许 manifest 声明的 bounded regular archive，不接受额外文件、symlink 或路径穿越。
+runtime archive 独立强制使用 generic CPU 且不附加 CPU feature；v2 manifest 明确记录并只接受该 portable runtime policy。manifest、runtime archive、linker executable bytes 与 version identity 都进入 final-artifact cache key；bundle 目录只允许 manifest 声明的 bounded regular archive，不接受额外文件、symlink 或路径穿越。
 
 LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直接携带 DWARF，macOS 生成并随 final artifact 缓存标准 dSYM。Ubuntu 24.04 + LLVM 19 CI 会执行 workspace fmt/check/clippy/test、LLVM 与 interpreter 双闭环、package target 和 DWARF 验证；回归还覆盖 48-module call graph、512 one-shot completions 与 12-writer CAS contention。长驻 `AnalysisHost` 已按 module interface/semantic-shape/body 指纹复用未改 module 的 typed-HIR body semantics；任一声明形状变化会安全退回整图检查。跨进程仍以 validated checked-MIR 整图缓存为边界，不声称序列化 typed-HIR body。live、AST 编辑、AOP-like 组合、所有权语法和 operator runtime 不进入当前实现。
 

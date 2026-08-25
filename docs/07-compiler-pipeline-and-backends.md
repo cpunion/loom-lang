@@ -117,7 +117,7 @@ InstanceKey = (
 - LLVM 19.1；
 - Rust 使用 `inkwell 0.10` 的 `llvm19-1-prefer-dynamic` feature；
 - 不直接编写 `llvm-sys` FFI 或项目内 unsafe binding；
-- module 设置规范化后的 host 或显式 `--target-triple` 及该 TargetMachine 的 LLVM data layout；
+- module 设置规范化后的 host 或显式 `--target-triple` 及该 TargetMachine 的 LLVM data layout；省略 triple 时使用实际 host CPU/features，任何显式 triple 都使用 generic/empty-feature policy；
 - LLVM verifier 在优化前后各执行一次；
 - development pipeline 是 `default<O0>` 加 global DCE；`--release` 切换为 `default<O2>` 加 global DCE；
 - compiler-generated terminal fault/status branch 带 unlikely metadata，`loom_context_raise_fault_v1` 标记为 cold/noinline；普通 `if`/`match`/业务 `Result` 分支不套用该提示；
@@ -233,7 +233,7 @@ loomc run PATH -- arg1 arg2
 loomc run --artifact target/loom/program -- arg1 arg2
 ```
 
-`build` 默认产生宿主平台 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。显式 target triple 闭环到真实 LLVM relocatable object。宿主 executable 默认使用编译器内嵌 Rust runtime 与宿主 linker；交叉 executable 必须成对提供 `--runtime-bundle DIR --linker PROGRAM`。bundle 必须与同一个规范化 triple/data layout/runtime ABI 精确匹配，archive SHA-256 每次链接前后复核；缺少 bundle/linker 稳定报告 `CrossLinkUnavailable`，不把宿主 archive 伪装成目标 runtime。portable `.loomlib` 不接受 release/target-triple/object 选项。当前 build metadata 不承诺 reproducible binary bytes，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
+`build` 默认产生按当前宿主 CPU/features 调优的 native executable；`run PATH` 在临时目录执行相同编译流程；`test` 生成 native test harness。任何显式 target triple（即使等于宿主）都以 generic CPU/empty features 闭环到真实 LLVM relocatable object。宿主 executable 默认使用编译器内嵌 Rust runtime 与宿主 linker；交叉 executable 必须成对提供 `--runtime-bundle DIR --linker PROGRAM`。runtime archive 的嵌套 Rust 构建清除继承 tuning 并固定 `target-cpu=generic`；v2 bundle manifest 必须与同一个规范化 triple/data layout/runtime ABI 精确匹配，并声明 `runtime_cpu = "generic"`、空 `runtime_cpu_features`。archive SHA-256 每次链接前后复核；缺少 bundle/linker 稳定报告 `CrossLinkUnavailable`，不把宿主 archive 伪装成目标 runtime。portable `.loomlib` 不接受 release/target-triple/object 选项。默认 native object 不承诺跨不同 CPU 可运行，当前 executable bytes 也不承诺 reproducible，因为系统 linker 可能加入平台 metadata；前端/MIR/cache identity 必须 deterministic。
 
 `loomc runtime export --output DIR` 把当前宿主的内嵌 runtime 导出为只含 manifest 与 `libloom_runtime.a` 的原子目录。目标 runtime bundle 应由运行在该目标平台的相同版本 Loom 工具导出，再与具备该目标能力的显式 linker 配对：
 

@@ -25,6 +25,11 @@ fn main() {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
+        // The embedded runtime is exported and reused across machines which share a target
+        // triple. Do not let the compiler build's local tuning leak into that portable archive.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env("CARGO_ENCODED_RUSTFLAGS", "-Ctarget-cpu=generic")
         .arg("build")
         .arg("--manifest-path")
         .arg(&manifest)

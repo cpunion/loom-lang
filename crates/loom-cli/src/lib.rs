@@ -682,6 +682,8 @@ fn run_runtime_export(
                 "archive": exported.archive,
                 "target_triple": exported.target_triple,
                 "data_layout": exported.data_layout,
+                "runtime_cpu": exported.runtime_cpu,
+                "runtime_cpu_features": exported.runtime_cpu_features,
                 "runtime_abi": exported.runtime_abi,
                 "archive_sha256": exported.archive_sha256,
             }),

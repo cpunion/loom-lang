@@ -5,8 +5,9 @@ Loom 0.1.0 的发布包同时包含 `loomc`、`loom-lsp` 与该平台的 `runtim
 清单）验证。当前 release workflow 生成 Linux x86-64 与 macOS arm64 两种包，不把某一
 宿主的 runtime archive 冒充为其他 target 的 runtime。
 
-`runtime/loom-runtime-bundle.json` 固定目标 triple、LLVM data layout、runtime ABI、archive
-SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从本机同版本工具重新
+v2 `runtime/loom-runtime-bundle.json` 固定目标 triple、LLVM data layout、generic CPU/empty-feature
+runtime policy、runtime ABI、archive SHA-256 与必要 system link args。内嵌 runtime 的独立 Rust
+构建会清除继承的 CPU tuning 并强制 `target-cpu=generic`。`loomc runtime export --output DIR` 可从本机同版本工具重新
 导出完全相同语义边界的宿主 bundle；目标目录必须不存在。交叉 executable 构建必须显式成对
 传入 `--runtime-bundle DIR --linker PROGRAM`。推荐直接使用对应目标发布包中的 `runtime/`，并
 使用真正支持该 target 的 linker；编译器会在链接前校验 bundle target/ABI/digest，并把 bundle
