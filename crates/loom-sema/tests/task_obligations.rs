@@ -432,6 +432,36 @@ async fn instantiatedAsyncResult() Unit {
 }
 
 #[test]
+fn concrete_conformance_may_explicitly_transfer_a_task_receiver() {
+    let diagnostics = analyze_source(
+        r"
+module task_concrete_receiver
+
+record TaskBox {
+    value Task[Int]
+}
+
+concept Forward {
+    method forward(self) Self
+}
+
+impl Forward for TaskBox {
+    method forward(self) TaskBox { self }
+}
+
+fn dot(value TaskBox) TaskBox {
+    value.forward()
+}
+
+fn qualified(value TaskBox) TaskBox {
+    <TaskBox as Forward>.forward(value)
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
 fn match_transfers_whole_carrier_and_checks_payloads() {
     let diagnostics = analyze_source(
         r"

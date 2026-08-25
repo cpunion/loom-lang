@@ -5800,6 +5800,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.consume_task_obligation(receiver);
     }
 
+    fn witness_declares_task_receiver(&mut self, witness: &WitnessSelection) -> bool {
+        let WitnessSource::Implementation(implementation) = witness.source else {
+            return false;
+        };
+        let Some(target) = self
+            .analyzer
+            .impl_index
+            .header(implementation)
+            .map(|header| header.target)
+        else {
+            return false;
+        };
+        self.has_task_obligation(target, &mut BTreeSet::new(), 0)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn check_method_call(
         &mut self,
@@ -5977,7 +5992,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             else {
                 return self.types().error();
             };
-            self.transfer_task_receiver(receiver, receiver_ty, false, signature.is_async);
+            let declared_task_carrier = self.witness_declares_task_receiver(&witness);
+            self.transfer_task_receiver(
+                receiver,
+                receiver_ty,
+                declared_task_carrier,
+                signature.is_async,
+            );
             if signature.receiver == Some(ReceiverKind::Mutable)
                 && self
                     .semantics
@@ -7085,7 +7106,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         if let Some(receiver) = receiver {
             self.reject_manual_scoped_dispose(requirement, receiver);
-            self.transfer_task_receiver(receiver, self_ty, false, signature.is_async);
+            let declared_task_carrier = self.witness_declares_task_receiver(&witness);
+            self.transfer_task_receiver(
+                receiver,
+                self_ty,
+                declared_task_carrier,
+                signature.is_async,
+            );
         }
         let explicit = self.resolve_call_type_arguments(type_arguments);
         let (return_ty, substitution) = self.check_callable_arguments(
