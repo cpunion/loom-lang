@@ -114,9 +114,10 @@ CI 用 nightly coverage instrumentation 各运行 20 秒。崩溃必须先最小
 ### P0：建立性能基线并关闭可信边界
 
 1. v1 Go/Rust/C/C++/Loom 基础 runner、等价源码、checksum oracle 和原始 JSON 已落地；下一步把 correctness smoke 接入 PR，并在固定机器建立可比较的定时趋势，再扩展 cold/warm/incremental build、peak RSS 与 profiler 报告。
-2. 以基准和 profiler 证据推进 typed lowering：优先从静态已知 scalar 与 `Text` 位置移除 uniform `Value` envelope 的 per-value tag，再补齐 generic/container/coroutine/`dyn` 的 layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
-3. 把用户定义 `MustScope` 的 canonical obligation identity 带入 versioned checked MIR，使 artifact/cache validator 能独立复核，不长期停留在只由 sema 保证的信任边界。
-4. 保持 Core 0.1–0.3 双后端、标准库、package/cache、LLVM verifier、fuzz 和 release bundle 门持续通过；性能变化不能靠关闭合同、检查或 cleanup 获得。
+2. 先消除 native List 的算法级退化：当前兼容表示是单链表，`add` 每次扫描尾部、`get(i)` 每次从头扫描，构建后按 index 遍历为 O(n²)。下一版应改为带 versioned layout descriptor 的 GC-managed indexed buffer，使 append 摊销 O(1)、checked get O(1)，并保持逻辑复制、值相等、移动 GC tracing/relocation 和解释器 oracle 一致。
+3. 再以基准和 profiler 证据推进 typed lowering：优先从静态已知 scalar 与 `Text` 位置移除 uniform `Value` envelope 的 per-value tag，再补齐 generic/container/coroutine/`dyn` 的 layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
+4. 把用户定义 `MustScope` 的 canonical obligation identity 带入 versioned checked MIR，使 artifact/cache validator 能独立复核，不长期停留在只由 sema 保证的信任边界。
+5. 保持 Core 0.1–0.3 双后端、标准库、package/cache、LLVM verifier、fuzz 和 release bundle 门持续通过；性能变化不能靠关闭合同、检查或 cleanup 获得。
 
 ### P1：优化 ABI、增量和开发体验
 
