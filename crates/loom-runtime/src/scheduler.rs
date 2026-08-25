@@ -268,6 +268,7 @@ pub struct LoomTask {
     blocking_result: Option<BlockingResult>,
     io_fallible: bool,
     owned_result_resources: Vec<OwnedFd>,
+    primary_fault_recorded: bool,
     fault_code: String,
     fault_message: String,
     fault_detail: String,
@@ -1199,10 +1200,9 @@ unsafe fn complete_io_error(task: *mut LoomTask, kind: u32, code: &str, message:
 
 unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
     if !task.is_null() {
+        // SAFETY: the caller supplied a live task owned by its executor.
         unsafe {
-            (*task).fault_code = code.into();
-            (*task).fault_message = message.into();
-            (*task).fault_detail.clear();
+            record_primary_task_fault(&mut *task, code.into(), message.into(), String::new());
         }
     }
     TASK_FAULTED
@@ -1294,6 +1294,7 @@ pub unsafe extern "C" fn task_spawn_descriptor(
         blocking_result: None,
         io_fallible: false,
         owned_result_resources: Vec::new(),
+        primary_fault_recorded: false,
         fault_code: "TaskFault".into(),
         fault_message: "task execution failed".into(),
         fault_detail: String::new(),
@@ -1989,12 +1990,24 @@ pub unsafe extern "C" fn task_is_cancelled(task: *const LoomTask) -> i32 {
     i32::from(!task.is_null() && unsafe { (*task).cancel_requested })
 }
 
+fn record_primary_task_fault(task: &mut LoomTask, code: String, message: String, detail: String) {
+    if task.primary_fault_recorded {
+        return;
+    }
+    task.primary_fault_recorded = true;
+    task.fault_code = code;
+    task.fault_message = message;
+    task.fault_detail = detail;
+}
+
 /// Stores the structured failure carried by a native task.
 ///
 /// Generated coroutine code calls this before returning `TASK_FAULTED`.  The
 /// scheduler deliberately does not print child failures: `Task.settled` and
 /// `Task.race` must be able to consume them as ordinary values without an
-/// observable side effect.
+/// observable side effect. The first recorded fault remains the task's primary
+/// failure while lexical cleanup continues; later faults return success but do
+/// not replace it. This ABI does not expose suppressed fault details.
 #[unsafe(export_name = "loom_task_set_fault")]
 pub unsafe extern "C" fn task_set_fault(
     task: *mut LoomTask,
@@ -2011,11 +2024,9 @@ pub unsafe extern "C" fn task_set_fault(
     }) else {
         return WAIT_INVALID_ARGUMENT;
     };
-    unsafe {
-        (*task).fault_code = code;
-        (*task).fault_message = message;
-        (*task).fault_detail.clear();
-    }
+    // SAFETY: null was rejected above; scheduler ownership keeps the task live
+    // throughout this call.
+    unsafe { record_primary_task_fault(&mut *task, code, message, String::new()) };
     WAIT_OK
 }
 
@@ -2063,24 +2074,16 @@ unsafe fn raise_fault_for_task_or_root(
     arguments: FaultArguments,
 ) -> i32 {
     if !active_task.is_null() {
-        let status = unsafe {
-            task_set_fault(
-                active_task,
-                arguments.code,
-                arguments.code_length,
-                arguments.message,
-                arguments.message_length,
-            )
-        };
-        if status != WAIT_OK {
-            return status;
-        }
-        let Some(detail) = (unsafe { copy_text(arguments.detail, arguments.detail_length) }) else {
+        let (Some(code), Some(message), Some(detail)) = (
+            unsafe { copy_text(arguments.code, arguments.code_length) },
+            unsafe { copy_text(arguments.message, arguments.message_length) },
+            unsafe { copy_text(arguments.detail, arguments.detail_length) },
+        ) else {
             return WAIT_INVALID_ARGUMENT;
         };
         // SAFETY: the non-null task is owned by the executor validated by the
         // active runtime and remains live throughout this call.
-        unsafe { (*active_task).fault_detail = detail };
+        unsafe { record_primary_task_fault(&mut *active_task, code, message, detail) };
         return WAIT_OK;
     }
 
@@ -2174,6 +2177,9 @@ mod fault_context_tests {
     const MESSAGE: &[u8] = b"example message";
     const DISPLAY: &[u8] = b"example display";
     const DETAIL: &[u8] = br#"{"channel":"runtime"}"#;
+    const CLEANUP_CODE: &[u8] = b"CleanupFault";
+    const CLEANUP_MESSAGE: &[u8] = b"cleanup failed";
+    const CLEANUP_DETAIL: &[u8] = br#"{"channel":"cleanup"}"#;
 
     unsafe extern "C" fn completed_fixture(
         _task: *mut LoomTask,
@@ -2182,18 +2188,39 @@ mod fault_context_tests {
         TASK_COMPLETED
     }
 
-    unsafe fn raise_context(context: *mut c_void) -> i32 {
+    unsafe fn raise_context_with(
+        context: *mut c_void,
+        code: &[u8],
+        message: &[u8],
+        detail: &[u8],
+    ) -> i32 {
         unsafe {
             context_raise_fault_v1(
                 context,
-                CODE.as_ptr(),
-                CODE.len() as u64,
-                MESSAGE.as_ptr(),
-                MESSAGE.len() as u64,
+                code.as_ptr(),
+                code.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
                 DISPLAY.as_ptr(),
                 DISPLAY.len() as u64,
-                DETAIL.as_ptr(),
-                DETAIL.len() as u64,
+                detail.as_ptr(),
+                detail.len() as u64,
+            )
+        }
+    }
+
+    unsafe fn raise_context(context: *mut c_void) -> i32 {
+        unsafe { raise_context_with(context, CODE, MESSAGE, DETAIL) }
+    }
+
+    unsafe fn set_task_fault_text(task: *mut LoomTask, code: &[u8], message: &[u8]) -> i32 {
+        unsafe {
+            task_set_fault(
+                task,
+                code.as_ptr(),
+                code.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
             )
         }
     }
@@ -2234,8 +2261,45 @@ mod fault_context_tests {
             assert_eq!((*task).fault_code, "ExampleFault");
             assert_eq!((*task).fault_message, "example message");
             assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
+
+            assert_eq!(
+                raise_context_with(
+                    executor.cast(),
+                    CLEANUP_CODE,
+                    CLEANUP_MESSAGE,
+                    CLEANUP_DETAIL,
+                ),
+                WAIT_OK,
+            );
+            assert_eq!((*task).fault_code, "ExampleFault");
+            assert_eq!((*task).fault_message, "example message");
+            assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
             leave_executor();
             (*executor).active_task = ptr::null_mut();
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn task_fault_record_keeps_the_first_primary_failure() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            let executor = executor_create_for_runtime_v1(runtime);
+            assert!(!executor.is_null());
+            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            assert!(!task.is_null());
+
+            assert_eq!(set_task_fault_text(task, CODE, MESSAGE), WAIT_OK);
+            assert_eq!(
+                set_task_fault_text(task, CLEANUP_CODE, CLEANUP_MESSAGE),
+                WAIT_OK,
+            );
+            assert_eq!((*task).fault_code, "ExampleFault");
+            assert_eq!((*task).fault_message, "example message");
+            assert_eq!((*task).fault_detail, "");
 
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
