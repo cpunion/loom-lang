@@ -37,6 +37,11 @@ pub enum DriverError {
         found: String,
         supported: &'static str,
     },
+    OfflineRegistryMiss {
+        path: PathBuf,
+        package: String,
+        version: Option<String>,
+    },
 }
 
 impl DriverError {
@@ -51,6 +56,7 @@ impl DriverError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::UnsupportedLanguageVersion { .. } => "UnsupportedLanguageVersion",
+            Self::OfflineRegistryMiss { .. } => "OfflineRegistryMiss",
             _ => "ProjectLoadFailed",
         }
     }
@@ -100,6 +106,19 @@ impl fmt::Display for DriverError {
                 formatter,
                 "{}: language version `{found}` is incompatible with supported version `{supported}`",
                 path.display()
+            ),
+            Self::OfflineRegistryMiss {
+                path,
+                package,
+                version,
+            } => write!(
+                formatter,
+                "{}: offline registry cache has no validated package `{}{}`",
+                path.display(),
+                package,
+                version
+                    .as_deref()
+                    .map_or_else(String::new, |version| format!("@{version}"))
             ),
         }
     }

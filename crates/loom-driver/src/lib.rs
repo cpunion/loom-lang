@@ -10,6 +10,7 @@ mod format;
 mod incremental;
 mod library;
 mod project;
+mod registry;
 mod report;
 mod source;
 mod symbols;
@@ -32,6 +33,7 @@ pub use project::{
     CURRENT_LANGUAGE_VERSION, LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package,
     PackageDependency, PackageId, ProjectGraph, ProjectOptions, Target, TargetKind,
 };
+pub use registry::{RegistryPublish, publish_registry_package};
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
 pub use source::{DriverError, SourceDocument, SourceMap, discover_loom_files};
 pub use symbols::{SymbolId, SymbolInfo, SymbolReference, is_valid_identifier};

@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 pub use loom_core::PackageId;
 
 use crate::DriverError;
+use crate::registry::{RegistryConfig, fetch_http_registry_package};
 use crate::source::{
     discover_loom_files, has_loom_extension, is_ignored_relative, normalize_absolute, relative_key,
 };
@@ -40,6 +41,7 @@ pub struct ProjectOptions {
     pub features: BTreeSet<String>,
     pub no_default_features: bool,
     pub lock_mode: LockMode,
+    pub offline: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -333,7 +335,7 @@ impl ProjectGraph {
         } else {
             read_lockfile(&lock_path)?
         };
-        let mut resolver = Resolver::new(previous_lock.clone(), options.lock_mode);
+        let mut resolver = Resolver::new(previous_lock.clone(), options.lock_mode, options.offline);
         let request = FeatureRequest {
             names: options.features.clone(),
             use_default: !options.no_default_features,
@@ -658,7 +660,7 @@ struct RawManifest {
     #[serde(default)]
     dependencies: BTreeMap<String, RawDependency>,
     #[serde(default)]
-    registries: BTreeMap<String, String>,
+    registries: BTreeMap<String, RegistryConfig>,
     #[serde(default)]
     features: BTreeMap<String, Vec<String>>,
     #[serde(default, rename = "target")]
@@ -747,16 +749,18 @@ struct Resolver {
     enabled_features: BTreeMap<PathBuf, BTreeSet<String>>,
     locked: Option<Lockfile>,
     lock_mode: LockMode,
+    offline: bool,
 }
 
 impl Resolver {
-    fn new(locked: Option<Lockfile>, lock_mode: LockMode) -> Self {
+    fn new(locked: Option<Lockfile>, lock_mode: LockMode, offline: bool) -> Self {
         Self {
             packages: BTreeMap::new(),
             by_manifest: BTreeMap::new(),
             enabled_features: BTreeMap::new(),
             locked,
             lock_mode,
+            offline,
         }
     }
 }
@@ -1142,25 +1146,42 @@ impl Resolver {
                         format!("registry dependency `{alias}` requires a version"),
                     )
                 })?;
-                let relative = manifest_relative_path(
-                    manifest,
-                    &format!("registry `{registry}` path"),
-                    configured,
-                    true,
-                )?;
-                let registry_root =
-                    fs::canonicalize(root.join(relative)).map_err(|source| DriverError::Io {
-                        path: root.join(configured),
-                        source,
-                    })?;
                 let locked = self.locked_registry_version(registry, package_name, requirement);
-                let (manifest, version) = registry_dependency_manifest(
-                    manifest,
-                    &registry_root,
-                    package_name,
-                    requirement,
-                    locked.as_ref(),
-                )?;
+                let (manifest, version) = match configured {
+                    RegistryConfig::Path(configured) => {
+                        let relative = manifest_relative_path(
+                            manifest,
+                            &format!("registry `{registry}` path"),
+                            configured,
+                            true,
+                        )?;
+                        let registry_root =
+                            fs::canonicalize(root.join(relative)).map_err(|source| {
+                                DriverError::Io {
+                                    path: root.join(configured),
+                                    source,
+                                }
+                            })?;
+                        registry_dependency_manifest(
+                            manifest,
+                            &registry_root,
+                            package_name,
+                            requirement,
+                            locked.as_ref(),
+                        )?
+                    }
+                    RegistryConfig::Http(configured) => fetch_http_registry_package(
+                        manifest,
+                        root,
+                        registry,
+                        configured,
+                        package_name,
+                        requirement,
+                        locked.as_ref(),
+                        self.lock_mode == LockMode::Refresh,
+                        self.offline,
+                    )?,
+                };
                 Ok((
                     manifest,
                     PackageOrigin::Registry {

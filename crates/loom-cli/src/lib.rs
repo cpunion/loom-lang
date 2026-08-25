@@ -9,12 +9,14 @@ use loom_driver::{
     AnalysisHost, AnalysisSnapshot, CacheContext, CacheKey, CacheLookup, DiagnosticRecord,
     EXIT_DEFECT, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, LockMode, PersistentCache, PipelineStage,
     ProjectGraph, ProjectOptions, SourceMap, StageUnavailable, TargetKind, format_source,
+    publish_registry_package,
 };
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--no-cache | --cache-dir DIR] <resolve|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] <resolve|publish|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
+    publish --registry NAME [PATH] publish a package to a configured registry\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
@@ -44,6 +46,9 @@ enum Backend {
 enum Command {
     Resolve {
         refresh: bool,
+    },
+    Publish {
+        registry: String,
     },
     Check,
     Build {
@@ -460,6 +465,7 @@ pub fn run(
 
     match &options.command {
         Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
+        Command::Publish { registry } => run_publish(&options, registry, stdout, stderr),
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
         Command::Cache { prune } => run_cache(&options, *prune, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
@@ -562,6 +568,49 @@ fn run_resolve(
             "resolved {} packages into {}",
             host.project().packages().count(),
             lockfile.display()
+        )?;
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+fn run_publish(
+    options: &Options,
+    registry: &str,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let published = match publish_registry_package(&options.path, registry) {
+        Ok(published) => published,
+        Err(error) => {
+            emit_tool_error(
+                options.json,
+                stdout,
+                stderr,
+                "RegistryPublishFailed",
+                &error.to_string(),
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if options.json {
+        write_json_line(
+            stdout,
+            &json!({
+                "schema_version": 1,
+                "category": "registry_publish",
+                "status": "ok",
+                "registry": published.registry,
+                "package": published.package,
+                "version": published.version,
+                "sha256": published.sha256,
+                "endpoint": published.endpoint,
+            }),
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "published {}@{} to {} ({})",
+            published.package, published.version, published.registry, published.sha256
         )?;
     }
     Ok(EXIT_SUCCESS)
@@ -1760,7 +1809,7 @@ fn cache_context(
                     "loom-codegen-llvm-{}",
                     loom_codegen_llvm::BACKEND_VERSION
                 ),
-                standard_library_version: "loom-core-inline-v1".to_owned(),
+                standard_library_version: "loom-core-inline-v2".to_owned(),
                 runtime_abi_version: loom_codegen_llvm::NATIVE_RUNTIME_ABI.to_owned(),
                 target_triple: target.triple,
                 data_layout: target.data_layout,
@@ -1773,7 +1822,7 @@ fn cache_context(
             language_version: language_version.to_owned(),
             compiler_version,
             backend_version: format!("loom-interpreter-{}", loom_interpreter::BACKEND_VERSION),
-            standard_library_version: "loom-core-inline-v1".to_owned(),
+            standard_library_version: "loom-core-inline-v2".to_owned(),
             runtime_abi_version: "loom-interpreter-value-v1".to_owned(),
             target_triple: "loom-portable-mir".to_owned(),
             data_layout: "loom-value-model-v1".to_owned(),
@@ -2312,6 +2361,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
     let features = parse_feature_list(take_option(&mut strings, "--features")?)?;
     let no_default_features = take_flag(&mut strings, "--no-default-features");
     let locked = take_flag(&mut strings, "--locked");
+    let offline = take_flag(&mut strings, "--offline");
     let target = take_option(&mut strings, "--target")?;
     let no_cache = take_flag(&mut strings, "--no-cache");
     let cache_dir = take_option(&mut strings, "--cache-dir")?.map(PathBuf::from);
@@ -2342,6 +2392,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
             } else {
                 LockMode::Use
             },
+            offline,
         },
         target_triple,
         optimization,
@@ -2359,6 +2410,10 @@ fn parse_command(
     let command = match command_name {
         "resolve" => Command::Resolve {
             refresh: take_flag(arguments, "--update"),
+        },
+        "publish" => Command::Publish {
+            registry: take_option(arguments, "--registry")?
+                .ok_or_else(|| "publish requires --registry NAME".to_owned())?,
         },
         "check" => Command::Check,
         "build" => {
@@ -2443,11 +2498,13 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     }
     let resolution_options_used = !options.project.features.is_empty()
         || options.project.no_default_features
-        || options.project.lock_mode == LockMode::Locked;
+        || options.project.lock_mode == LockMode::Locked
+        || options.project.offline;
     if resolution_options_used
         && matches!(
             command,
             Command::Format { .. }
+                | Command::Publish { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2463,11 +2520,15 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     {
         return Err("--locked and resolve --update are mutually exclusive".to_owned());
     }
+    if options.project.offline && matches!(command, Command::Resolve { refresh: true }) {
+        return Err("--offline and resolve --update are mutually exclusive".to_owned());
+    }
     if options.target.is_some()
         && matches!(
             &command,
             Command::Resolve { .. }
                 | Command::Format { .. }
+                | Command::Publish { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
@@ -2482,6 +2543,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             &command,
             Command::Resolve { .. }
                 | Command::Format { .. }
+                | Command::Publish { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2525,6 +2587,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             command,
             Command::Resolve { .. }
                 | Command::Format { .. }
+                | Command::Publish { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),

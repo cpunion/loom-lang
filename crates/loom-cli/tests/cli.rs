@@ -1,7 +1,12 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -53,6 +58,161 @@ impl Drop for TestProject {
 
 fn loomc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: std::collections::BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+struct RegistryFixture {
+    url: String,
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
+    handle: thread::JoinHandle<()>,
+}
+
+impl RegistryFixture {
+    fn spawn(expected_requests: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind registry fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking registry fixture");
+        let address = listener.local_addr().expect("registry fixture address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&requests);
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut bundle = None::<(Vec<u8>, String)>;
+            while observed.lock().expect("request log").len() < expected_requests {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "registry fixture timed out");
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept registry request: {error}"),
+                };
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking registry connection");
+                let request = read_http_request(&mut stream);
+                assert_eq!(
+                    request.headers.get("authorization").map(String::as_str),
+                    None,
+                    "{request:#?}"
+                );
+                let response = match (request.method.as_str(), request.path.as_str()) {
+                    ("PUT", "/registry/v1/packages/utility/versions/1.2.0") => {
+                        let sha256 = request
+                            .headers
+                            .get("x-loom-sha256")
+                            .expect("publish checksum")
+                            .clone();
+                        assert_eq!(sha256.len(), 64);
+                        bundle = Some((request.body.clone(), sha256));
+                        (201, Vec::new())
+                    }
+                    ("GET", "/registry/v1/packages/utility") => {
+                        let (_, sha256) = bundle.as_ref().expect("package was published first");
+                        (
+                            200,
+                            serde_json::to_vec(&serde_json::json!({
+                                "schema_version": 1,
+                                "versions": [{"version": "1.2.0", "sha256": sha256}]
+                            }))
+                            .expect("encode registry index"),
+                        )
+                    }
+                    ("GET", "/registry/v1/packages/utility/versions/1.2.0") => {
+                        (200, bundle.as_ref().expect("published bundle").0.clone())
+                    }
+                    _ => panic!("unexpected registry request: {request:#?}"),
+                };
+                observed.lock().expect("request log").push(request);
+                write_http_response(&mut stream, response.0, &response.1);
+            }
+        });
+        Self {
+            url: format!("http://{address}/registry"),
+            requests,
+            handle,
+        }
+    }
+
+    fn finish(self) -> Vec<HttpRequest> {
+        self.handle.join().expect("registry fixture thread");
+        Arc::try_unwrap(self.requests)
+            .expect("only test owns request log")
+            .into_inner()
+            .expect("request log")
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> HttpRequest {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("registry read timeout");
+    let mut bytes = Vec::new();
+    let mut scratch = [0_u8; 4096];
+    let (header_end, content_length) = loop {
+        let count = stream.read(&mut scratch).expect("read registry request");
+        assert_ne!(count, 0, "request ended before headers");
+        bytes.extend_from_slice(&scratch[..count]);
+        if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            let headers = std::str::from_utf8(&bytes[..header_end]).expect("UTF-8 request headers");
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            break (header_end, content_length);
+        }
+    };
+    let body_start = header_end + 4;
+    while bytes.len() < body_start + content_length {
+        let count = stream.read(&mut scratch).expect("read registry body");
+        assert_ne!(count, 0, "request ended before body");
+        bytes.extend_from_slice(&scratch[..count]);
+    }
+    let headers = std::str::from_utf8(&bytes[..header_end]).expect("UTF-8 request headers");
+    let mut lines = headers.lines();
+    let request_line = lines.next().expect("request line");
+    let mut fields = request_line.split_whitespace();
+    let method = fields.next().expect("request method").to_owned();
+    let path = fields.next().expect("request path").to_owned();
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
+    HttpRequest {
+        method,
+        path,
+        headers,
+        body: bytes[body_start..body_start + content_length].to_vec(),
+    }
+}
+
+fn write_http_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
+    let reason = match status {
+        200 => "OK",
+        201 => "Created",
+        _ => "Error",
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/vnd.loom.registry+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .expect("write registry response headers");
+    stream.write_all(body).expect("write registry response");
 }
 
 fn cache_status(output: &[u8], layer: &str) -> Option<String> {
@@ -602,6 +762,225 @@ fn library_targets_build_portable_validated_artifacts() {
         String::from_utf8_lossy(&native.stdout),
         String::from_utf8_lossy(&native.stderr)
     );
+}
+
+#[test]
+fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() {
+    let fixture = RegistryFixture::spawn(5);
+    let project = TestProject::empty();
+    project.write(
+        "plaintext-token/loom.toml",
+        &format!(
+            "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?}, token-env = \"LOOM_TEST_REGISTRY_TOKEN\" }}\n",
+            fixture.url
+        ),
+    );
+    project.write(
+        "plaintext-token/src/lib.loom",
+        "module utility\n\npub fn answer() Int { 42 }\n",
+    );
+    let plaintext_token = loomc()
+        .args(["--json", "publish", "--registry", "remote"])
+        .arg(project.0.join("plaintext-token"))
+        .env("LOOM_TEST_REGISTRY_TOKEN", "fixture-token")
+        .output()
+        .expect("reject a token over plaintext HTTP");
+    assert_eq!(plaintext_token.status.code(), Some(2));
+    let plaintext_output = String::from_utf8_lossy(&plaintext_token.stdout);
+    assert!(
+        plaintext_output.contains("tokens require HTTPS"),
+        "{plaintext_output}"
+    );
+    assert!(
+        !plaintext_output.contains("fixture-token"),
+        "{plaintext_output}"
+    );
+
+    project.write(
+        "producer/loom.toml",
+        &format!(
+            "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?} }}\n",
+            fixture.url
+        ),
+    );
+    project.write(
+        "producer/src/lib.loom",
+        "module utility\n\npub fn answer() Int { 42 }\n",
+    );
+    let published = loomc()
+        .args(["--json", "publish", "--registry", "remote"])
+        .arg(project.0.join("producer"))
+        .output()
+        .expect("publish registry package");
+    assert_eq!(
+        published.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&published.stdout),
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let publish_record =
+        json_record(&published.stdout, "registry_publish").expect("structured publish result");
+    assert_eq!(
+        publish_record.get("package"),
+        Some(&serde_json::json!("utility"))
+    );
+    assert_eq!(
+        publish_record
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len),
+        Some(64)
+    );
+    let published_sha256 = publish_record
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .expect("publish checksum")
+        .to_owned();
+    assert!(!String::from_utf8_lossy(&published.stdout).contains("fixture-token"));
+
+    let consumer_manifest = format!(
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        fixture.url
+    );
+    let consumer_source = "module consumer\n\nimport utility.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n";
+    project.write("consumer/loom.toml", &consumer_manifest);
+    project.write("consumer/src/main.loom", consumer_source);
+    let resolved = loomc()
+        .args(["--json", "resolve"])
+        .arg(project.0.join("consumer"))
+        .output()
+        .expect("resolve HTTP dependency");
+    assert_eq!(
+        resolved.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+
+    project.write("locked/loom.toml", &consumer_manifest);
+    project.write("locked/src/main.loom", consumer_source);
+    fs::copy(
+        project.0.join("consumer/loom.lock"),
+        project.0.join("locked/loom.lock"),
+    )
+    .expect("copy lock into cold project");
+    let locked = loomc()
+        .args(["--json", "--locked", "check"])
+        .arg(project.0.join("locked"))
+        .output()
+        .expect("locked cold cache may fetch pinned package");
+    assert_eq!(
+        locked.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&locked.stdout),
+        String::from_utf8_lossy(&locked.stderr)
+    );
+    let requests = fixture.finish();
+    assert_eq!(requests.len(), 5, "{requests:#?}");
+    assert_eq!(requests[0].method, "PUT");
+    assert_eq!(
+        requests[0].headers.get("x-loom-sha256").map(String::as_str),
+        Some(published_sha256.as_str())
+    );
+    let published_bundle =
+        serde_json::from_slice::<serde_json::Value>(&requests[0].body).expect("published bundle");
+    let published_paths = published_bundle
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .expect("published files")
+        .iter()
+        .map(|file| {
+            file.get("path")
+                .and_then(serde_json::Value::as_str)
+                .expect("published file path")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published_paths, ["loom.toml", "src/lib.loom"]);
+
+    let offline = loomc()
+        .args([
+            "--offline",
+            "--backend",
+            "interpreter",
+            "run",
+            "--target",
+            "app",
+        ])
+        .arg(project.0.join("consumer"))
+        .env_remove("LOOM_TEST_REGISTRY_TOKEN")
+        .output()
+        .expect("run from validated offline registry cache");
+    assert_eq!(
+        offline.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&offline.stdout),
+        String::from_utf8_lossy(&offline.stderr)
+    );
+
+    let registry_cache_root = project.0.join("consumer/target/loom/registry/http");
+    let cached_source = walk_regular_files(&registry_cache_root)
+        .into_iter()
+        .find(|path| path.ends_with("src/lib.loom"))
+        .expect("materialized cached source");
+    fs::write(&cached_source, "module utility\n").expect("tamper registry cache source");
+    let tampered = loomc()
+        .args(["--json", "--offline", "check"])
+        .arg(project.0.join("consumer"))
+        .output()
+        .expect("reject a cache whose materialized source was changed");
+    assert_eq!(tampered.status.code(), Some(2));
+    let tampered_output = String::from_utf8_lossy(&tampered.stdout);
+    assert!(
+        tampered_output.contains("materialized files do not match"),
+        "{tampered_output}"
+    );
+
+    project.write("cold/loom.toml", &consumer_manifest);
+    project.write("cold/src/main.loom", consumer_source);
+    let cold = loomc()
+        .args(["--json", "--offline", "check"])
+        .arg(project.0.join("cold"))
+        .env_remove("LOOM_TEST_REGISTRY_TOKEN")
+        .output()
+        .expect("reject offline cache miss");
+    assert_eq!(cold.status.code(), Some(2));
+    let cold_record = json_record(&cold.stdout, "tool_error").expect("offline miss record");
+    assert_eq!(
+        cold_record.get("code"),
+        Some(&serde_json::json!("OfflineRegistryMiss"))
+    );
+
+    let lock = fs::read(project.0.join("consumer/loom.lock")).expect("read network lock");
+    let registry_cache = fs::read_dir(&registry_cache_root)
+        .expect("registry cache exists")
+        .flat_map(|entry| {
+            let path = entry.expect("registry identity").path();
+            walk_regular_files(&path)
+        })
+        .flat_map(|path| fs::read(path).expect("read registry cache file"))
+        .collect::<Vec<_>>();
+    assert!(!String::from_utf8_lossy(&lock).contains("fixture-token"));
+    assert!(!String::from_utf8_lossy(&registry_cache).contains("fixture-token"));
+}
+
+fn walk_regular_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).expect("walk test tree") {
+            let entry = entry.expect("walk test entry");
+            if entry.file_type().expect("test entry type").is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
 }
 
 #[test]
