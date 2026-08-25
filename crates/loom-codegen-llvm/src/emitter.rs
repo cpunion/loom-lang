@@ -184,8 +184,7 @@ impl Emitter {
         output: &Path,
         options: &EmitOptions,
     ) -> Result<NativeObjectArtifact, CodegenError> {
-        let (triple, machine) =
-            create_target_machine(options.target_triple.as_deref(), options.optimization)?;
+        let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
 
         let context = Context::create();
         let int_ranges = NativeIntRangePlan::analyze(program, reachable, roots);
@@ -210,10 +209,10 @@ impl Emitter {
             int_ranges,
             stack_record_plans,
         );
-        backend.module.set_triple(&triple);
+        backend.module.set_triple(&target.triple);
         backend
             .module
-            .set_data_layout(&machine.get_target_data().get_data_layout());
+            .set_data_layout(&target.machine.get_target_data().get_data_layout());
         backend.compile()?;
         backend.finalize_debug();
         backend
@@ -224,7 +223,7 @@ impl Emitter {
             .module
             .run_passes(
                 options.optimization.pipeline(),
-                &machine,
+                &target.machine,
                 PassBuilderOptions::create(),
             )
             .map_err(|message| CodegenError::new("LlvmOptimizationFailed", message.to_string()))?;
@@ -249,7 +248,8 @@ impl Emitter {
                 )
             })?;
         }
-        machine
+        target
+            .machine
             .write_to_file(&backend.module, FileType::Object, output)
             .map_err(|message| CodegenError::new("LlvmObjectWriteFailed", message.to_string()))?;
 

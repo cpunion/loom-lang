@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 use crate::CodegenError;
 use crate::emitter::{native_linker_program, native_runtime_bytes};
 
-pub const CPU_POLICY: &str = "generic";
-pub const CPU_FEATURES: &str = "";
+// An implicit host target is tuned for the current machine. Supplying any target triple is the
+// explicit opt-in to a portable object, including when that triple happens to name the host.
+const PORTABLE_CPU: &str = "generic";
+const PORTABLE_CPU_FEATURES: &str = "";
 pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
 pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
@@ -63,6 +65,14 @@ pub struct NativeTargetIdentity {
     pub relocation: String,
 }
 
+/// The exact target-machine inputs selected for one object emission.
+pub(crate) struct NativeTargetMachine {
+    pub(crate) triple: TargetTriple,
+    pub(crate) machine: TargetMachine,
+    cpu: String,
+    features: String,
+}
+
 /// Returns the identity of the exact target-machine policy used for emission.
 ///
 /// # Errors
@@ -81,13 +91,13 @@ pub fn target_identity(
     triple: Option<&str>,
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetIdentity, CodegenError> {
-    let (triple, machine) = create_target_machine(triple, optimization)?;
-    let data_layout = machine.get_target_data().get_data_layout();
+    let target = create_target_machine(triple, optimization)?;
+    let data_layout = target.machine.get_target_data().get_data_layout();
     Ok(NativeTargetIdentity {
-        triple: triple.as_str().to_string_lossy().into_owned(),
+        triple: target.triple.as_str().to_string_lossy().into_owned(),
         data_layout: data_layout.as_str().to_string_lossy().into_owned(),
-        cpu_policy: CPU_POLICY.to_owned(),
-        cpu_features: CPU_FEATURES.to_owned(),
+        cpu_policy: target.cpu,
+        cpu_features: target.features,
         optimization: optimization.pipeline().to_owned(),
         relocation: RELOCATION_MODE.to_owned(),
     })
@@ -316,18 +326,27 @@ fn xml_escape(value: &str) -> String {
 pub(crate) fn create_target_machine(
     requested: Option<&str>,
     optimization: OptimizationProfile,
-) -> Result<(TargetTriple, TargetMachine), CodegenError> {
+) -> Result<NativeTargetMachine, CodegenError> {
     Target::initialize_all(&InitializationConfig::default());
+    let host_native = requested.is_none();
     let triple = requested.map_or_else(TargetMachine::get_default_triple, |triple| {
         TargetMachine::normalize_triple(&TargetTriple::create(triple))
     });
+    let (cpu, features) = if host_native {
+        (
+            TargetMachine::get_host_cpu_name().to_string(),
+            TargetMachine::get_host_cpu_features().to_string(),
+        )
+    } else {
+        (PORTABLE_CPU.to_owned(), PORTABLE_CPU_FEATURES.to_owned())
+    };
     let target = Target::from_triple(&triple)
         .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message.to_string()))?;
     let machine = target
         .create_target_machine(
             &triple,
-            CPU_POLICY,
-            CPU_FEATURES,
+            &cpu,
+            &features,
             optimization.llvm_level(),
             RelocMode::PIC,
             CodeModel::Default,
@@ -350,7 +369,12 @@ pub(crate) fn create_target_machine(
             ),
         ));
     }
-    Ok((triple, machine))
+    Ok(NativeTargetMachine {
+        triple,
+        machine,
+        cpu,
+        features,
+    })
 }
 
 /// Reports whether an explicit triple normalizes to the current host triple.

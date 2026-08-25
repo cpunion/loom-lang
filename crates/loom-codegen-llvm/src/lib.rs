@@ -27,8 +27,8 @@ pub use runtime_bundle::{
     RuntimeLinker, export_native_runtime_bundle, link_object_with_runtime_bundle,
 };
 pub use target::{
-    CPU_FEATURES, CPU_POLICY, DEVELOPMENT_OPTIMIZATION_PIPELINE, NATIVE_RUNTIME_ABI,
-    NativeTargetIdentity, OptimizationProfile, RELEASE_OPTIMIZATION_PIPELINE, RELOCATION_MODE,
+    DEVELOPMENT_OPTIMIZATION_PIPELINE, NATIVE_RUNTIME_ABI, NativeTargetIdentity,
+    OptimizationProfile, RELEASE_OPTIMIZATION_PIPELINE, RELOCATION_MODE,
     emit_native_debug_companion, is_native_target, materialize_native_debug_metadata,
     native_debug_companion_path, native_debug_tool_identity, native_linker_identity,
     native_runtime_identity, native_target_identity, target_identity,

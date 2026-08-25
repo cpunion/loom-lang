@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
+use inkwell::targets::TargetMachine;
 use loom_codegen_llvm::{
     EmitOptions, OptimizationProfile, emit_native, emit_native_object, target_identity,
     validate_native_link_target,
@@ -146,7 +147,24 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
     let release = target_identity(None, OptimizationProfile::Release).expect("release target");
     assert_eq!(development.triple, release.triple);
     assert_eq!(development.data_layout, release.data_layout);
+    assert_eq!(development.cpu_policy, release.cpu_policy);
+    assert_eq!(development.cpu_features, release.cpu_features);
+    assert_eq!(
+        development.cpu_policy,
+        TargetMachine::get_host_cpu_name().to_string()
+    );
+    assert_eq!(
+        development.cpu_features,
+        TargetMachine::get_host_cpu_features().to_string()
+    );
     assert_ne!(development.optimization, release.optimization);
+
+    let portable = target_identity(Some(&development.triple), OptimizationProfile::Development)
+        .expect("explicit host triple uses the portable CPU policy");
+    assert_eq!(portable.triple, development.triple);
+    assert_eq!(portable.data_layout, development.data_layout);
+    assert_eq!(portable.cpu_policy, "generic");
+    assert!(portable.cpu_features.is_empty());
 
     let program = unit_program();
     let directory = tempfile::tempdir().expect("create cross target directory");
