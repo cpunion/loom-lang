@@ -861,10 +861,7 @@ pub fn main() Unit {
 
     let allocate = llvm_function(&llvm, "shadow_root_shape_allocate");
     assert_balanced_gc_root_frame(allocate);
-    assert!(
-        allocate.contains("gc.range.backedge.safepoint"),
-        "{allocate}"
-    );
+    assert!(!allocate.contains("@loom_gc_safepoint_v1"), "{allocate}");
     assert!(
         llvm.contains("private unnamed_addr constant %loom.GcRootDescriptor"),
         "{llvm}"
@@ -881,7 +878,7 @@ pub fn main() Unit {
             > 1,
         "root states were not specialized: {descriptor:?}\n{allocate}"
     );
-    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+    assert_gc_state_published_before(allocate, "@loom_runtime_list_add");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -1096,7 +1093,8 @@ pub fn main() Unit {{
             "unused tail bits are live: {descriptor:?}\n{retain}"
         );
     }
-    assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
+    assert!(!retain.contains("@loom_gc_safepoint_v1"), "{retain}");
+    assert_gc_state_published_before(retain, "@loom_runtime_list_add");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -1147,7 +1145,7 @@ pub fn main() Unit {
     );
     assert!(!retain.contains("@loom_gc_clone_value_v1"), "{retain}");
     assert_gc_state_published_before(retain, "call i32 @loom.fn.");
-    assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
+    assert!(!retain.contains("@loom_gc_safepoint_v1"), "{retain}");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -1217,16 +1215,13 @@ pub fn main() Unit {
     assert_balanced_gc_root_frame(projected);
     assert_balanced_gc_root_frame(nested);
     assert_balanced_gc_root_frame(dynamic);
-    assert!(
-        allocate.contains("gc.range.backedge.safepoint"),
-        "{allocate}"
-    );
+    assert!(!allocate.contains("@loom_gc_safepoint_v1"), "{allocate}");
     assert!(projected.contains("inout.projected.proxy"), "{projected}");
     assert!(dynamic.contains("dyn.dispatch.proxy"), "{dynamic}");
     assert_gc_state_published_before(projected, "call i32 @loom.fn.");
     assert_gc_state_published_before(nested, "call i32 @loom.fn.");
     assert_gc_state_published_before(dynamic, "dyn.call");
-    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+    assert_gc_state_published_before(allocate, "@loom_runtime_list_add");
     let dynamic_descriptor = gc_root_descriptor(&llvm, dynamic);
     let projected_descriptor = gc_root_descriptor(&llvm, projected);
     let projected_call_state = gc_state_before_call(projected, "call i32 @loom.fn.", 0);
@@ -1358,16 +1353,12 @@ pub async fn main() Unit {
     let main = llvm_resume_function(&llvm, "moving_gc_async_main");
     assert_balanced_gc_root_frame(allocate);
     assert_balanced_gc_root_frame(main);
-    assert!(
-        allocate.matches("gc.range.backedge.safepoint").count() >= 2,
-        "{allocate}"
-    );
-    assert!(!allocate.contains("gc.return.safepoint"), "{allocate}");
+    assert!(!allocate.contains("@loom_gc_safepoint_v1"), "{allocate}");
     assert!(
         allocate.contains("i32 0"),
         "pending return is missing: {allocate}"
     );
-    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+    assert_gc_state_published_before(allocate, "@loom_runtime_list_add");
     let descriptor = gc_root_descriptor(&llvm, allocate);
     assert_eq!(
         descriptor.bitmaps.len(),
@@ -1463,7 +1454,7 @@ pub fn main() Unit {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn loop_temporaries_stay_in_one_shot_prologues_and_large_release_loops_do_not_grow_stack() {
-    let source = r"module stack_loop
+    let source = r#"module stack_loop
 
 record Counter {
     total Int
@@ -1506,6 +1497,22 @@ fn recordMethod(size Int) Counter {
     counter
 }
 
+fn scalarRecord() Int {
+    let counter = Counter { total = 20, calls = 22 }
+    counter.total + counter.calls
+}
+
+fn collectingField(value Text) Int {
+    var values = List[Text]()
+    values.add(value)
+    values.length()
+}
+
+fn recordWithCollectingField(value Text) Int {
+    let counter = Counter { total = collectingField(value), calls = 2 }
+    counter.total + counter.calls
+}
+
 fn nestedLoops(size Int) Int {
     var total = 0
     for outer in 0..size {
@@ -1524,6 +1531,10 @@ pub fn main() Unit {
     let counter = recordMethod(100000)
     assert counter.total == 51031728
     assert counter.calls == 100000
+    let scalarRecordValue = scalarRecord()
+    assert scalarRecordValue == 42
+    let collectingRecordValue = recordWithCollectingField("rooted")
+    assert collectingRecordValue == 3
     let nested = nestedLoops(100)
     assert nested == 10000
     var original = Counter { total = 0, calls = 0 }
@@ -1539,7 +1550,7 @@ pub fn main() Unit {
     assert copiedCalls == 1
     Unit
 }
-";
+"#;
     let project = tempfile::tempdir().expect("create loop stack project");
     std::fs::write(project.path().join("main.loom"), source).expect("write loop stack source");
     let snapshot = AnalysisHost::new(project.path())
@@ -1559,6 +1570,7 @@ pub fn main() Unit {
     for function_name in [
         "stack_loop_spin",
         "stack_loop_recordMethod",
+        "stack_loop_scalarRecord",
         "stack_loop_nestedLoops",
     ] {
         let signature = llvm
@@ -1607,6 +1619,22 @@ pub fn main() Unit {
     let record_method = llvm_function(&llvm, "stack_loop_recordMethod");
     assert!(record_method.contains("record.local"), "{record_method}");
     assert!(
+        !record_method.contains("gc.root.stack.record.value"),
+        "POD field slots cannot contain managed pointers: {record_method}"
+    );
+    assert!(
+        !gc_root_slot_is_registered(record_method, "record.local."),
+        "POD field storage entered the shadow-root frame: {record_method}"
+    );
+    assert!(
+        !gc_root_slot_is_registered(record_method, "local.1.counter"),
+        "the private POD header entered the shadow-root frame: {record_method}"
+    );
+    assert!(
+        !record_method.contains("@loom_gc_safepoint_v1"),
+        "record hot loops must collect only at their real result builder: {record_method}"
+    );
+    assert!(
         record_method.contains("record.copy.field"),
         "{record_method}"
     );
@@ -1635,6 +1663,23 @@ pub fn main() Unit {
         "both closed record recurrences must be proved before ABI selection: {record_add}"
     );
     assert!(!record_add.contains("with.overflow"), "{record_add}");
+    let scalar_record = llvm_native_function(&llvm, "stack_loop_scalarRecord");
+    assert!(!scalar_record.contains("gc.root.frame"), "{scalar_record}");
+    assert!(
+        !scalar_record.contains("@loom_gc_root_push_v1"),
+        "{scalar_record}"
+    );
+    assert!(
+        !scalar_record.contains("@loom_gc_safepoint_v1"),
+        "{scalar_record}"
+    );
+    let collecting_record = llvm_function(&llvm, "stack_loop_recordWithCollectingField");
+    assert_balanced_gc_root_frame(collecting_record);
+    assert!(
+        !gc_root_slot_is_registered(collecting_record, "record.local."),
+        "POD fields entered roots around a collecting field call: {collecting_record}"
+    );
+    assert_gc_state_published_before(collecting_record, "call i32 @loom.fn.");
     let main = llvm_native_function(&llvm, "stack_loop_main");
     assert!(
         main.contains("record.copy.field"),
@@ -2049,6 +2094,10 @@ pub fn faultMain() Unit {
     for ir in [&development_ir, &release_ir] {
         let llvm = std::fs::read_to_string(ir).expect("read native Int list LLVM IR");
         let scan = llvm_native_function(&llvm, "native_int_list_renamedSameShape");
+        assert!(!scan.contains("gc.root.frame"), "{scan}");
+        assert!(!scan.contains("@loom_gc_root_push_v1"), "{scan}");
+        assert!(!scan.contains("@loom_gc_root_pop_v1"), "{scan}");
+        assert!(!scan.contains("@loom_gc_safepoint_v1"), "{scan}");
         assert!(scan.contains("@loom_int_list_reserve_v1"), "{scan}");
         assert!(scan.contains("@loom_int_list_drop_v1"), "{scan}");
         assert_eq!(
@@ -2508,24 +2557,29 @@ fn assert_native_int_list_dropped_once_on_each_return(function: &str) {
         .collect::<Vec<_>>();
     assert!(!returns.is_empty(), "function has no return: {function}");
     for (label, block) in returns {
-        let predecessors = llvm_block_predecessors(block);
+        let cleanup = if block.contains("@loom_int_list_drop_v1") {
+            *block
+        } else {
+            let predecessors = llvm_block_predecessors(block);
+            assert_eq!(
+                predecessors.len(),
+                1,
+                "return `{label}` must have one cleanup predecessor: {block}"
+            );
+            blocks
+                .get(predecessors[0])
+                .unwrap_or_else(|| panic!("missing predecessor `{}`: {function}", predecessors[0]))
+        };
         assert_eq!(
-            predecessors.len(),
+            cleanup.matches("@loom_int_list_drop_v1").count(),
             1,
-            "return `{label}` must have one cleanup predecessor: {block}"
+            "return `{label}` must run exactly one List drop: {cleanup}"
         );
-        let predecessor = blocks
-            .get(predecessors[0])
-            .unwrap_or_else(|| panic!("missing predecessor `{}`: {function}", predecessors[0]));
+        let expected_root_pop = usize::from(function.contains("@loom_gc_root_push_v1"));
         assert_eq!(
-            predecessor.matches("@loom_int_list_drop_v1").count(),
-            1,
-            "return `{label}` must be immediately preceded by one List drop: {predecessor}"
-        );
-        assert_eq!(
-            predecessor.matches("@loom_gc_root_pop_v1").count(),
-            1,
-            "return `{label}` must be immediately preceded by root pop: {predecessor}"
+            cleanup.matches("@loom_gc_root_pop_v1").count(),
+            expected_root_pop,
+            "return `{label}` has an unexpected root-pop shape: {cleanup}"
         );
     }
 }
@@ -2694,6 +2748,15 @@ fn assert_gc_state_published_before(function: &str, needle: &str) {
 }
 
 fn gc_root_slot_index(function: &str, pointer: &str) -> usize {
+    find_gc_root_slot_index(function, pointer)
+        .unwrap_or_else(|| panic!("root slot for `{pointer}` is missing: {function}"))
+}
+
+fn gc_root_slot_is_registered(function: &str, pointer: &str) -> bool {
+    find_gc_root_slot_index(function, pointer).is_some()
+}
+
+fn find_gc_root_slot_index(function: &str, pointer: &str) -> Option<usize> {
     for store in function
         .lines()
         .filter(|line| line.contains("store ptr %") && line.contains(pointer))
@@ -2709,13 +2772,15 @@ fn gc_root_slot_index(function: &str, pointer: &str) -> usize {
         }) else {
             continue;
         };
-        return field
-            .rsplit_once("i32 ")
-            .and_then(|(_, index)| index.split(',').next())
-            .and_then(|index| index.trim().parse().ok())
-            .unwrap_or_else(|| panic!("malformed root slot field: {field}"));
+        return Some(
+            field
+                .rsplit_once("i32 ")
+                .and_then(|(_, index)| index.split(',').next())
+                .and_then(|index| index.trim().parse().ok())
+                .unwrap_or_else(|| panic!("malformed root slot field: {field}")),
+        );
     }
-    panic!("root slot for `{pointer}` is missing: {function}");
+    None
 }
 
 fn llvm_basic_blocks(function: &str) -> BTreeMap<&str, &str> {

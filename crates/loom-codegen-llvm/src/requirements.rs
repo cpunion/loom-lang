@@ -7,6 +7,7 @@ use loom_mir::{
 
 use crate::native_layout::NativeLayout;
 use crate::native_range::NativeIntRangePlan;
+use crate::native_storage::{NativeIntListPlan, NativeStackRecordPlan};
 use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
@@ -25,8 +26,8 @@ impl RuntimeRequirements {
     pub(crate) const NONE: Self = Self(0);
     pub(crate) const MAY_FAULT: Self = Self(Self::MAY_FAULT_BIT);
     /// The callable can enter a moving-GC collection boundary. This bit alone
-    /// controls shadow-root frames, root-state publication, and generated
-    /// loop/return polls; native allocations which cannot collect do not set it.
+    /// controls shadow-root frames and root-state publication; native
+    /// allocations which cannot collect do not set it.
     pub(crate) const MAY_COLLECT: Self = Self(Self::MAY_COLLECT_BIT);
     pub(crate) const NEEDS_EXECUTOR: Self = Self(Self::NEEDS_EXECUTOR_BIT);
     /// Task construction/resumption can clone captured Values and materialize
@@ -87,12 +88,23 @@ struct LocalRequirements {
     callees: BTreeSet<FunctionId>,
 }
 
+struct RequirementScanner<'a> {
+    program: &'a Program,
+    reachable: &'a ReachableProgram,
+    function: &'a Function,
+    int_ranges: &'a NativeIntRangePlan,
+    native_int_lists: NativeIntListPlan,
+    stack_records: &'a NativeStackRecordPlan,
+}
+
 impl RuntimeRequirementGraph {
     pub(crate) fn analyze(
         program: &Program,
         reachable: &ReachableProgram,
         int_ranges: &NativeIntRangePlan,
+        stack_record_plans: &BTreeMap<FunctionId, NativeStackRecordPlan>,
     ) -> Result<Self, CodegenError> {
+        let empty_stack_records = NativeStackRecordPlan::default();
         let mut local = BTreeMap::new();
         for id in &reachable.functions {
             let function = program.function(*id).ok_or_else(|| {
@@ -110,14 +122,16 @@ impl RuntimeRequirementGraph {
                     RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT),
                 );
             }
-            scan_block(
+            let stack_records = stack_record_plans.get(id).unwrap_or(&empty_stack_records);
+            RequirementScanner {
                 program,
                 reachable,
                 function,
-                &function.body,
-                &mut requirements,
                 int_ranges,
-            )?;
+                native_int_lists: NativeIntListPlan::analyze(program, function),
+                stack_records,
+            }
+            .scan_block(&function.body, &mut requirements)?;
             local.insert(*id, requirements);
         }
 
@@ -190,251 +204,296 @@ impl RuntimeRequirementGraph {
     }
 }
 
-fn scan_block(
-    program: &Program,
-    reachable: &ReachableProgram,
-    function: &Function,
-    block: &Block,
-    output: &mut LocalRequirements,
-    int_ranges: &NativeIntRangePlan,
-) -> Result<(), CodegenError> {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Let { value, .. }
-            | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => {
-                scan_expr(program, reachable, function, value, output, int_ranges)?;
-            }
-            StatementKind::LetTuple { value, .. } => {
-                output
-                    .requirements
-                    .include(RuntimeRequirements::MAY_COLLECT);
-                scan_expr(program, reachable, function, value, output, int_ranges)?;
-            }
-            StatementKind::ForRange {
-                start, end, body, ..
-            } => {
-                scan_expr(program, reachable, function, start, output, int_ranges)?;
-                scan_expr(program, reachable, function, end, output, int_ranges)?;
-                scan_block(program, reachable, function, body, output, int_ranges)?;
-            }
-            StatementKind::Assert { condition } => {
-                output.requirements.include(RuntimeRequirements::MAY_FAULT);
-                scan_expr(program, reachable, function, condition, output, int_ranges)?;
-            }
-            StatementKind::Defer(cleanup) => {
-                scan_block(program, reachable, function, cleanup, output, int_ranges)?;
-            }
-            StatementKind::Return(value) => {
-                if let Some(value) = value {
-                    scan_expr(program, reachable, function, value, output, int_ranges)?;
+impl RequirementScanner<'_> {
+    fn scan_block(
+        &self,
+        block: &Block,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        self.scan_block_statements(block, output)?;
+        if let Some(tail) = &block.tail {
+            self.scan_expr(tail, output)?;
+        }
+        Ok(())
+    }
+
+    fn scan_block_statements(
+        &self,
+        block: &Block,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Let { local, value } => {
+                    if is_native_int_list_initializer(&self.native_int_lists, *local, value) {
+                        continue;
+                    }
+                    if self.stack_records.is_initializer(*local, value) {
+                        self.scan_planned_stack_record_initializer(value, output)?;
+                    } else {
+                        self.scan_expr(value, output)?;
+                    }
+                }
+                StatementKind::Assign { value, .. } | StatementKind::Evaluate(value) => {
+                    self.scan_expr(value, output)?;
+                }
+                StatementKind::LetTuple { value, .. } => {
+                    output
+                        .requirements
+                        .include(RuntimeRequirements::MAY_COLLECT);
+                    self.scan_expr(value, output)?;
+                }
+                StatementKind::ForRange {
+                    start, end, body, ..
+                } => {
+                    self.scan_expr(start, output)?;
+                    self.scan_expr(end, output)?;
+                    self.scan_block(body, output)?;
+                }
+                StatementKind::Assert { condition } => {
+                    output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                    self.scan_expr(condition, output)?;
+                }
+                StatementKind::Defer(cleanup) => {
+                    self.scan_block(cleanup, output)?;
+                }
+                StatementKind::Return(value) => {
+                    if let Some(value) = value {
+                        self.scan_expr(value, output)?;
+                    }
                 }
             }
         }
+        Ok(())
     }
-    if let Some(tail) = &block.tail {
-        scan_expr(program, reachable, function, tail, output, int_ranges)?;
-    }
-    Ok(())
-}
 
-#[allow(clippy::too_many_lines)]
-fn scan_expr(
-    program: &Program,
-    reachable: &ReachableProgram,
-    function: &Function,
-    expression: &Expr,
-    output: &mut LocalRequirements,
-    int_ranges: &NativeIntRangePlan,
-) -> Result<(), CodegenError> {
-    match &expression.kind {
-        ExprKind::Constant(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
-        ExprKind::Copy(_) => {
-            // Text is immutable and its runtime clone is a slot copy. Emit it
-            // directly just like a native scalar; aggregate/refined/dyn copies
-            // still require the managed deep-clone helper.
-            if !matches!(expression.ty, Type::Text)
-                && !matches!(
-                    NativeLayout::classify(program, &expression.ty),
-                    Some(NativeLayout::Scalar(_))
-                )
-            {
+    fn scan_planned_stack_record_initializer(
+        &self,
+        expression: &Expr,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        match &expression.kind {
+            ExprKind::Record { fields, .. } => {
+                // Only the POD container is compiler-private. Field expressions
+                // keep their full fault/call/collection requirements.
+                for field in fields {
+                    self.scan_expr(field, output)?;
+                }
+                Ok(())
+            }
+            ExprKind::Block(block) => {
+                self.scan_block_statements(block, output)?;
+                let tail = block.tail.as_deref().ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "stack-record initializer block has no tail",
+                    )
+                })?;
+                self.scan_planned_stack_record_initializer(tail, output)
+            }
+            _ => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "stack-record requirement plan does not match its initializer",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn scan_expr(
+        &self,
+        expression: &Expr,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        match &expression.kind {
+            ExprKind::Constant(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
+            ExprKind::Copy(_) => {
+                // Text is immutable and its runtime clone is a slot copy. Emit it
+                // directly just like a native scalar; aggregate/refined/dyn copies
+                // still require the managed deep-clone helper.
+                if !matches!(expression.ty, Type::Text)
+                    && !matches!(
+                        NativeLayout::classify(self.program, &expression.ty),
+                        Some(NativeLayout::Scalar(_))
+                    )
+                {
+                    output
+                        .requirements
+                        .include(RuntimeRequirements::MAY_COLLECT);
+                }
+            }
+            ExprKind::Tuple(values) | ExprKind::List(values) => {
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_COLLECT);
+                for value in values {
+                    self.scan_expr(value, output)?;
+                }
             }
-        }
-        ExprKind::Tuple(values) | ExprKind::List(values) => {
-            output
-                .requirements
-                .include(RuntimeRequirements::MAY_COLLECT);
-            for value in values {
-                scan_expr(program, reachable, function, value, output, int_ranges)?;
+            ExprKind::Unary(operator, value) => {
+                self.scan_expr(value, output)?;
+                if *operator == UnaryOp::Negate
+                    && is_int_like(self.program, &value.ty)
+                    && !self.int_ranges.proves(self.function.id, expression)
+                {
+                    output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                }
             }
-        }
-        ExprKind::Unary(operator, value) => {
-            scan_expr(program, reachable, function, value, output, int_ranges)?;
-            if *operator == UnaryOp::Negate
-                && is_int_like(program, &value.ty)
-                && !int_ranges.proves(function.id, expression)
-            {
-                output.requirements.include(RuntimeRequirements::MAY_FAULT);
+            ExprKind::Binary(operator, left, right) => {
+                self.scan_expr(left, output)?;
+                self.scan_expr(right, output)?;
+                if matches!(
+                    operator,
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+                ) && is_int_like(self.program, &left.ty)
+                    && !self.int_ranges.proves(self.function.id, expression)
+                {
+                    output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                }
             }
-        }
-        ExprKind::Binary(operator, left, right) => {
-            scan_expr(program, reachable, function, left, output, int_ranges)?;
-            scan_expr(program, reachable, function, right, output, int_ranges)?;
-            if matches!(
-                operator,
-                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
-            ) && is_int_like(program, &left.ty)
-                && !int_ranges.proves(function.id, expression)
-            {
-                output.requirements.include(RuntimeRequirements::MAY_FAULT);
+            ExprKind::Block(block) => {
+                self.scan_block(block, output)?;
             }
-        }
-        ExprKind::Block(block) => {
-            scan_block(program, reachable, function, block, output, int_ranges)?;
-        }
-        ExprKind::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            scan_expr(program, reachable, function, condition, output, int_ranges)?;
-            scan_block(
-                program,
-                reachable,
-                function,
+            ExprKind::If {
+                condition,
                 then_branch,
-                output,
-                int_ranges,
-            )?;
-            scan_block(
-                program,
-                reachable,
-                function,
                 else_branch,
-                output,
-                int_ranges,
-            )?;
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            // Pattern bindings are logical copies in the universal Value ABI.
-            output
-                .requirements
-                .include(RuntimeRequirements::MAY_COLLECT);
-            scan_expr(program, reachable, function, scrutinee, output, int_ranges)?;
-            for arm in arms {
-                scan_expr(program, reachable, function, &arm.value, output, int_ranges)?;
+            } => {
+                self.scan_expr(condition, output)?;
+                self.scan_block(then_branch, output)?;
+                self.scan_block(else_branch, output)?;
             }
-        }
-        ExprKind::Record { fields, .. } => {
-            output
-                .requirements
-                .include(RuntimeRequirements::MAY_COLLECT);
-            for field in fields {
-                scan_expr(program, reachable, function, field, output, int_ranges)?;
+            ExprKind::Match { scrutinee, arms } => {
+                if let Some(matched) = self
+                    .native_int_lists
+                    .direct_get_match(None, scrutinee, arms)
+                {
+                    // This exact exhaustive Option[Int] match reads compiler-private
+                    // contiguous storage. It builds neither an Option aggregate nor
+                    // a copied binding in the universal Value representation.
+                    self.scan_expr(matched.index, output)?;
+                } else {
+                    // Pattern bindings are logical copies in the universal Value ABI.
+                    output
+                        .requirements
+                        .include(RuntimeRequirements::MAY_COLLECT);
+                    self.scan_expr(scrutinee, output)?;
+                }
+                for arm in arms {
+                    self.scan_expr(&arm.value, output)?;
+                }
             }
-        }
-        ExprKind::Variant { payload, .. } => {
-            output
-                .requirements
-                .include(RuntimeRequirements::MAY_COLLECT);
-            for value in payload {
-                scan_expr(program, reachable, function, value, output, int_ranges)?;
+            ExprKind::Record { fields, .. } => {
+                output
+                    .requirements
+                    .include(RuntimeRequirements::MAY_COLLECT);
+                for field in fields {
+                    self.scan_expr(field, output)?;
+                }
             }
-        }
-        ExprKind::Refine { value, .. }
-        | ExprKind::Unrefine(value)
-        | ExprKind::MakeView { value, .. } => {
-            output
-                .requirements
-                .include(RuntimeRequirements::MAY_COLLECT);
-            scan_expr(program, reachable, function, value, output, int_ranges)?;
-        }
-        ExprKind::Call {
-            target, arguments, ..
-        } => {
-            for (index, argument) in arguments.iter().enumerate() {
-                if let CallArgument::Value(value) = argument {
-                    if !matches!(target, CallTarget::Builtin(builtin)
+            ExprKind::Variant { payload, .. } => {
+                output
+                    .requirements
+                    .include(RuntimeRequirements::MAY_COLLECT);
+                for value in payload {
+                    self.scan_expr(value, output)?;
+                }
+            }
+            ExprKind::Refine { value, .. }
+            | ExprKind::Unrefine(value)
+            | ExprKind::MakeView { value, .. } => {
+                output
+                    .requirements
+                    .include(RuntimeRequirements::MAY_COLLECT);
+                self.scan_expr(value, output)?;
+            }
+            ExprKind::Call {
+                target, arguments, ..
+            } => {
+                for (index, argument) in arguments.iter().enumerate() {
+                    if let CallArgument::Value(value) = argument {
+                        if !matches!(target, CallTarget::Builtin(builtin)
                         if builtin_borrows_copy_argument(*builtin, index)
                             && matches!(value.kind, ExprKind::Copy(_)))
-                    {
-                        scan_expr(program, reachable, function, value, output, int_ranges)?;
+                        {
+                            self.scan_expr(value, output)?;
+                        }
+                    }
+                }
+                match target {
+                    CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
+                        self.program.function(*callee).ok_or_else(|| {
+                            CodegenError::new(
+                                "InvalidFunctionReference",
+                                format!("call target #{} does not exist", callee.0),
+                            )
+                        })?;
+                        output.callees.insert(*callee);
+                    }
+                    CallTarget::StaticConcept {
+                        requirement,
+                        witness,
+                        ..
+                    } => {
+                        if let Some(witness) = concrete_witness(witness) {
+                            let method = self
+                                .program
+                                .witness(witness)
+                                .and_then(|witness| witness.methods.get(requirement))
+                                .copied()
+                                .ok_or_else(|| {
+                                    CodegenError::new(
+                                        "InvalidWitnessTable",
+                                        format!(
+                                            "witness #{} has no requirement #{}",
+                                            witness.0, requirement.0
+                                        ),
+                                    )
+                                })?;
+                            output.callees.insert(method);
+                        } else {
+                            add_dynamic_callees(
+                                self.program,
+                                self.reachable,
+                                *requirement,
+                                output,
+                            )?;
+                        }
+                    }
+                    CallTarget::Dynamic { requirement } => {
+                        add_dynamic_callees(self.program, self.reachable, *requirement, output)?;
+                    }
+                    CallTarget::Builtin(builtin) => {
+                        if is_native_int_list_add(&self.native_int_lists, *builtin, arguments) {
+                            // The private append can reserve native bytes and fail,
+                            // but it never allocates a managed Value or collects.
+                            output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                        } else {
+                            output.requirements.include(builtin_requirements(*builtin));
+                        }
                     }
                 }
             }
-            match target {
-                CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
-                    program.function(*callee).ok_or_else(|| {
-                        CodegenError::new(
-                            "InvalidFunctionReference",
-                            format!("call target #{} does not exist", callee.0),
-                        )
-                    })?;
-                    output.callees.insert(*callee);
-                }
-                CallTarget::StaticConcept {
-                    requirement,
-                    witness,
-                    ..
-                } => {
-                    if let Some(witness) = concrete_witness(witness) {
-                        let method = program
-                            .witness(witness)
-                            .and_then(|witness| witness.methods.get(requirement))
-                            .copied()
-                            .ok_or_else(|| {
-                                CodegenError::new(
-                                    "InvalidWitnessTable",
-                                    format!(
-                                        "witness #{} has no requirement #{}",
-                                        witness.0, requirement.0
-                                    ),
-                                )
-                            })?;
-                        output.callees.insert(method);
-                    } else {
-                        add_dynamic_callees(program, reachable, *requirement, output)?;
-                    }
-                }
-                CallTarget::Dynamic { requirement } => {
-                    add_dynamic_callees(program, reachable, *requirement, output)?;
-                }
-                CallTarget::Builtin(builtin) => {
-                    output.requirements.include(builtin_requirements(*builtin));
+            ExprKind::Await { task, .. } => {
+                output.requirements.include(RuntimeRequirements::ASYNC);
+                self.scan_expr(task, output)?;
+            }
+            ExprKind::Sleep { milliseconds } => {
+                output.requirements.include(RuntimeRequirements::ASYNC);
+                self.scan_expr(milliseconds, output)?;
+            }
+            ExprKind::WaitFd { descriptor, .. } => {
+                output.requirements.include(RuntimeRequirements::ASYNC);
+                self.scan_expr(descriptor, output)?;
+            }
+            ExprKind::TaskJoin { arguments, .. } => {
+                output.requirements.include(RuntimeRequirements::ASYNC);
+                for argument in arguments {
+                    self.scan_expr(argument, output)?;
                 }
             }
         }
-        ExprKind::Await { task, .. } => {
-            output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(program, reachable, function, task, output, int_ranges)?;
-        }
-        ExprKind::Sleep { milliseconds } => {
-            output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(
-                program,
-                reachable,
-                function,
-                milliseconds,
-                output,
-                int_ranges,
-            )?;
-        }
-        ExprKind::WaitFd { descriptor, .. } => {
-            output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(program, reachable, function, descriptor, output, int_ranges)?;
-        }
-        ExprKind::TaskJoin { arguments, .. } => {
-            output.requirements.include(RuntimeRequirements::ASYNC);
-            for argument in arguments {
-                scan_expr(program, reachable, function, argument, output, int_ranges)?;
-            }
-        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn add_dynamic_callees(
@@ -483,6 +542,29 @@ fn is_int_like(program: &Program, ty: &Type) -> bool {
         }),
         _ => false,
     }
+}
+
+fn is_native_int_list_initializer(
+    plan: &NativeIntListPlan,
+    local: loom_mir::LocalId,
+    expression: &Expr,
+) -> bool {
+    plan.contains(local)
+        && expression.ty == Type::List(Box::new(Type::Int))
+        && matches!(&expression.kind, ExprKind::List(values) if values.is_empty())
+}
+
+fn is_native_int_list_add(
+    plan: &NativeIntListPlan,
+    builtin: Builtin,
+    arguments: &[CallArgument],
+) -> bool {
+    builtin == Builtin::ListAdd
+        && matches!(
+            arguments,
+            [CallArgument::InOut(receiver), CallArgument::Value(_)]
+                if receiver.projection.is_empty() && plan.contains(receiver.local)
+        )
 }
 
 /// Whether a synchronous builtin consumes a copied argument only for the
@@ -684,6 +766,7 @@ mod tests {
             &program,
             &reachable,
             &crate::native_range::NativeIntRangePlan::default(),
+            &BTreeMap::new(),
         )
         .expect("requirements");
         assert!(

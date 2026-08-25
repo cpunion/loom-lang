@@ -56,11 +56,12 @@ use crate::abi::{
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
 use crate::native_layout::{
-    NativeEffectAbi, NativeLayout, NativePodRecord, NativeScalar, NativeSignature,
-    NativeSignatureShape,
+    NativeEffectAbi, NativeLayout, NativeScalar, NativeSignature, NativeSignatureShape,
 };
 use crate::native_range::NativeIntRangePlan;
-use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
+use crate::native_storage::{
+    NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan, NativeStackRecordPlan,
+};
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
@@ -170,228 +171,9 @@ fn expression_contains_await(expression: &Expr) -> bool {
     }
 }
 
-const MAX_STACK_RECORD_FIELDS: usize = 16;
-const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
 const INT_LIST_FIELD_DATA: u32 = 0;
 const INT_LIST_FIELD_LENGTH: u32 = 1;
 const INT_LIST_FIELD_CAPACITY: u32 = 2;
-
-// Checked MIR gives InOut/view carriers call-scoped lifetimes. Stack-record headers and nodes are
-// stable compiler-owned storage, and every ValueNode.value field is published in the synchronous
-// shadow-root frame while a safepoint can observe it. Copies that outlive this frame go through
-// the GC-aware runtime clone ABI and receive managed nodes. Concurrent GC or FFI retention would
-// require a stronger boundary and therefore must not silently reuse this fast path.
-fn is_stack_record_initializer(expression: &Expr, expected: TypeId) -> bool {
-    match &expression.kind {
-        ExprKind::Record {
-            ty,
-            construction: ConstructionMode::Plain | ConstructionMode::Proven,
-            ..
-        } => *ty == expected,
-        ExprKind::Block(block) => block
-            .tail
-            .as_deref()
-            .is_some_and(|tail| is_stack_record_initializer(tail, expected)),
-        _ => false,
-    }
-}
-
-fn stack_record_candidates(program: &Program, function: &Function) -> BTreeMap<LocalId, usize> {
-    if function.is_async {
-        return BTreeMap::new();
-    }
-    let eligible = function
-        .locals
-        .iter()
-        .filter_map(|local| {
-            let NativeLayout::PodRecord(record) = NativeLayout::classify(program, &local.ty)?
-            else {
-                return None;
-            };
-            if record.fields().len() > MAX_STACK_RECORD_FIELDS {
-                return None;
-            }
-            Some((local.id, record))
-        })
-        .collect::<BTreeMap<_, _>>();
-    if eligible.is_empty() {
-        return BTreeMap::new();
-    }
-    let mut initialized = BTreeMap::<LocalId, usize>::new();
-    let mut forbidden = BTreeSet::new();
-    scan_stack_record_block(&function.body, &eligible, &mut initialized, &mut forbidden);
-    let mut total_nodes = 0_usize;
-    eligible
-        .into_iter()
-        .filter_map(|(local, record)| {
-            if initialized.get(&local) != Some(&1) || forbidden.contains(&local) {
-                return None;
-            }
-            let fields = record.fields().len();
-            let next_total = total_nodes.checked_add(fields)?;
-            if next_total > MAX_STACK_RECORD_NODES_PER_FUNCTION {
-                return None;
-            }
-            total_nodes = next_total;
-            Some((local, fields))
-        })
-        .collect()
-}
-
-fn scan_stack_record_block(
-    block: &Block,
-    eligible: &BTreeMap<LocalId, NativePodRecord>,
-    initialized: &mut BTreeMap<LocalId, usize>,
-    forbidden: &mut BTreeSet<LocalId>,
-) {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Let { local, value } => {
-                if let Some(record) = eligible.get(local) {
-                    if is_stack_record_initializer(value, record.nominal()) {
-                        *initialized.entry(*local).or_default() += 1;
-                    } else {
-                        forbidden.insert(*local);
-                    }
-                }
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::LetTuple { locals, value } => {
-                forbidden.extend(
-                    locals
-                        .iter()
-                        .copied()
-                        .filter(|local| eligible.contains_key(local)),
-                );
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::ForRange {
-                start, end, body, ..
-            } => {
-                scan_stack_record_expr(start, eligible, initialized, forbidden);
-                scan_stack_record_expr(end, eligible, initialized, forbidden);
-                scan_stack_record_block(body, eligible, initialized, forbidden);
-            }
-            StatementKind::Assign { place, value } => {
-                if place.projection.is_empty() && eligible.contains_key(&place.local) {
-                    forbidden.insert(place.local);
-                }
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
-                scan_stack_record_expr(condition, eligible, initialized, forbidden);
-            }
-            StatementKind::Defer(cleanup) => {
-                scan_stack_record_block(cleanup, eligible, initialized, forbidden);
-            }
-            StatementKind::Return(value) => {
-                if let Some(value) = value {
-                    scan_stack_record_expr(value, eligible, initialized, forbidden);
-                }
-            }
-        }
-    }
-    if let Some(tail) = &block.tail {
-        scan_stack_record_expr(tail, eligible, initialized, forbidden);
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn scan_stack_record_expr(
-    expression: &Expr,
-    eligible: &BTreeMap<LocalId, NativePodRecord>,
-    initialized: &mut BTreeMap<LocalId, usize>,
-    forbidden: &mut BTreeSet<LocalId>,
-) {
-    match &expression.kind {
-        ExprKind::Constant(_) | ExprKind::Copy(_) => {}
-        ExprKind::Move(place) => {
-            if eligible.contains_key(&place.local) {
-                forbidden.insert(place.local);
-            }
-        }
-        ExprKind::Tuple(values)
-        | ExprKind::List(values)
-        | ExprKind::TaskJoin {
-            arguments: values, ..
-        } => {
-            for value in values {
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-        }
-        ExprKind::Unary(_, value)
-        | ExprKind::Unrefine(value)
-        | ExprKind::Refine { value, .. }
-        | ExprKind::Await { task: value, .. }
-        | ExprKind::Sleep {
-            milliseconds: value,
-        } => scan_stack_record_expr(value, eligible, initialized, forbidden),
-        ExprKind::WaitFd { descriptor, .. } => {
-            scan_stack_record_expr(descriptor, eligible, initialized, forbidden);
-        }
-        ExprKind::Binary(_, left, right) => {
-            scan_stack_record_expr(left, eligible, initialized, forbidden);
-            scan_stack_record_expr(right, eligible, initialized, forbidden);
-        }
-        ExprKind::Block(block) => {
-            scan_stack_record_block(block, eligible, initialized, forbidden);
-        }
-        ExprKind::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            scan_stack_record_expr(condition, eligible, initialized, forbidden);
-            scan_stack_record_block(then_branch, eligible, initialized, forbidden);
-            scan_stack_record_block(else_branch, eligible, initialized, forbidden);
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            scan_stack_record_expr(scrutinee, eligible, initialized, forbidden);
-            for arm in arms {
-                scan_stack_record_expr(&arm.value, eligible, initialized, forbidden);
-            }
-        }
-        ExprKind::Record { fields, .. } => {
-            for field in fields {
-                scan_stack_record_expr(field, eligible, initialized, forbidden);
-            }
-        }
-        ExprKind::Variant { payload, .. } => {
-            for value in payload {
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-        }
-        ExprKind::Call { arguments, .. } => {
-            for argument in arguments {
-                match argument {
-                    CallArgument::Value(value) => {
-                        scan_stack_record_expr(value, eligible, initialized, forbidden);
-                    }
-                    CallArgument::InOut(_) => {
-                        // Checked MIR makes an InOut loan call-scoped. Callees can mutate the
-                        // value, but every observable escape is a deep value copy, so the
-                        // backing nodes cannot outlive this synchronous frame.
-                    }
-                }
-            }
-        }
-        ExprKind::MakeView {
-            value, writeback, ..
-        } => {
-            scan_stack_record_expr(value, eligible, initialized, forbidden);
-            if let Some(place) = writeback
-                && eligible.contains_key(&place.local)
-            {
-                forbidden.insert(place.local);
-            }
-        }
-        ExprKind::ReborrowView { owner, .. } => {
-            if eligible.contains_key(&owner.local) {
-                forbidden.insert(owner.local);
-            }
-        }
-    }
-}
 
 impl Emitter {
     pub(crate) fn emit_object(
@@ -406,7 +188,17 @@ impl Emitter {
 
         let context = Context::create();
         let int_ranges = NativeIntRangePlan::analyze(program, reachable, roots);
-        let requirements = RuntimeRequirementGraph::analyze(program, reachable, &int_ranges)?;
+        let stack_record_plans = reachable
+            .functions
+            .iter()
+            .filter_map(|id| {
+                program
+                    .function(*id)
+                    .map(|function| (*id, NativeStackRecordPlan::analyze(program, function)))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let requirements =
+            RuntimeRequirementGraph::analyze(program, reachable, &int_ranges, &stack_record_plans)?;
         let mut backend = Backend::new(
             &context,
             program,
@@ -415,6 +207,7 @@ impl Emitter {
             options,
             requirements,
             int_ranges,
+            stack_record_plans,
         );
         backend.module.set_triple(&triple);
         backend
@@ -564,6 +357,7 @@ struct Backend<'ctx, 'program> {
     options: &'program EmitOptions,
     requirements: RuntimeRequirementGraph,
     int_ranges: NativeIntRangePlan,
+    stack_record_plans: BTreeMap<FunctionId, NativeStackRecordPlan>,
     debug: DebugState<'ctx>,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -735,7 +529,7 @@ impl<'ctx> DebugState<'ctx> {
 }
 
 impl<'ctx, 'program> Backend<'ctx, 'program> {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn new(
         context: &'ctx Context,
         program: &'program Program,
@@ -744,6 +538,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         options: &'program EmitOptions,
         requirements: RuntimeRequirementGraph,
         int_ranges: NativeIntRangePlan,
+        stack_record_plans: BTreeMap<FunctionId, NativeStackRecordPlan>,
     ) -> Self {
         let module = context.create_module("loom.program");
         let builder = context.create_builder();
@@ -889,6 +684,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             options,
             requirements,
             int_ranges,
+            stack_record_plans,
             debug,
             module,
             builder,
@@ -2084,16 +1880,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .fn_type(&[self.ptr_type.into()], false);
                 self.module
                     .add_function("loom_gc_root_pop_v1", function_type, None)
-            })
-    }
-
-    fn native_gc_safepoint(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_gc_safepoint_v1")
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(&[], false);
-                self.module
-                    .add_function("loom_gc_safepoint_v1", function_type, None)
             })
     }
 
@@ -4363,7 +4149,6 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     invalid_state_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     cancellation_cleanups: RefCell<BTreeMap<u32, Vec<Block>>>,
     unwind_status: Cell<Option<u64>>,
-    gc_may_collect: bool,
     gc_root_frame: Option<PointerValue<'ctx>>,
     gc_root_setup: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     gc_body_start: Option<inkwell::basic_block::BasicBlock<'ctx>>,
@@ -4373,7 +4158,6 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     gc_live_local_roots: RefCell<BTreeSet<usize>>,
     gc_temporary_roots: RefCell<Vec<usize>>,
     gc_root_states: RefCell<Vec<Vec<usize>>>,
-    gc_output_root: Option<usize>,
 }
 
 struct PreparedCallArguments<'ctx> {
@@ -4405,6 +4189,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )
         })?;
         let function = backend.functions[&id];
+        let stack_record_plan = &backend.stack_record_plans[&id];
+        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
         let output = parameter_pointer(function, 0)?;
         let arguments = parameter_pointer(function, 1)?;
         let conformance_proofs = parameter_pointer(function, 2)?;
@@ -4440,13 +4226,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let mut gc_root_slots = Vec::new();
         let mut gc_permanent_roots = Vec::new();
         let mut gc_local_roots = BTreeMap::<LocalId, Vec<usize>>::new();
-        let gc_output_root = (needs_gc_roots
-            && type_may_hold_gc_reference(backend.program, &source.return_ty))
-        .then(|| {
+        if needs_gc_roots && type_may_hold_gc_reference(backend.program, &source.return_ty) {
             let index = register_gc_root_slot(&mut gc_root_slots, output);
             gc_permanent_roots.push(index);
-            index
-        });
+        }
         let mut argument_node = arguments;
         for parameter in &source.params {
             let pointer = backend.load_pointer_field(
@@ -4480,7 +4263,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .build_store(pointer, backend.value_type.const_zero())
                 .map_err(builder_error)?;
             locals.insert(local.id, pointer);
-            if needs_gc_roots && type_may_hold_gc_reference(backend.program, &local.ty) {
+            if needs_gc_roots
+                && !stack_record_plan.contains(local.id)
+                && !native_int_list_plan.contains(local.id)
+                && type_may_hold_gc_reference(backend.program, &local.ty)
+            {
                 let index = register_gc_root_slot(&mut gc_root_slots, pointer);
                 gc_local_roots.entry(local.id).or_default().push(index);
             }
@@ -4489,22 +4276,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .builder
             .build_store(output, backend.value_type.const_zero())
             .map_err(builder_error)?;
-        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
-        if needs_gc_roots {
-            for (local, nodes) in &stack_record_nodes {
-                for node in nodes.iter().copied() {
-                    let value = backend.struct_pointer(
-                        backend.value_node_type,
-                        node,
-                        VALUE_NODE_FIELD_VALUE,
-                        "gc.root.stack.record.value",
-                    )?;
-                    let index = register_gc_root_slot(&mut gc_root_slots, value);
-                    gc_local_roots.entry(*local).or_default().push(index);
-                }
-            }
-        }
-        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
+        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, stack_record_plan)?;
         let native_int_lists = Self::allocate_native_int_lists(backend, &native_int_list_plan)?;
         let mut old_parameters = BTreeMap::new();
         let mut pending_snapshots = Vec::new();
@@ -4586,7 +4358,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -4596,7 +4367,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             gc_live_local_roots: RefCell::new(BTreeSet::new()),
             gc_temporary_roots: RefCell::new(Vec::new()),
             gc_root_states: RefCell::new(gc_root_states),
-            gc_output_root,
         })
     }
 
@@ -4620,6 +4390,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let declaration = &backend.native_functions[&id];
         let function = declaration.function;
         let signature = &declaration.signature;
+        let stack_record_plan = &backend.stack_record_plans[&id];
+        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
         let runtime_context = if signature.effect() == NativeEffectAbi::RuntimeStatus {
             let context_index = u32::try_from(source.params.len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many native parameters"))?;
@@ -4666,13 +4438,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let mut gc_root_slots = Vec::new();
         let mut gc_permanent_roots = Vec::new();
         let mut gc_local_roots = BTreeMap::<LocalId, Vec<usize>>::new();
-        let gc_output_root = (needs_gc_roots
-            && type_may_hold_gc_reference(backend.program, &source.return_ty))
-        .then(|| {
+        if needs_gc_roots && type_may_hold_gc_reference(backend.program, &source.return_ty) {
             let index = register_gc_root_slot(&mut gc_root_slots, output);
             gc_permanent_roots.push(index);
-            index
-        });
+        }
         for (index, (parameter, layout)) in source
             .params
             .iter()
@@ -4712,27 +4481,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .build_store(pointer, backend.value_type.const_zero())
                 .map_err(builder_error)?;
             locals.insert(local.id, pointer);
-            if needs_gc_roots && type_may_hold_gc_reference(backend.program, &local.ty) {
+            if needs_gc_roots
+                && !stack_record_plan.contains(local.id)
+                && !native_int_list_plan.contains(local.id)
+                && type_may_hold_gc_reference(backend.program, &local.ty)
+            {
                 let index = register_gc_root_slot(&mut gc_root_slots, pointer);
                 gc_local_roots.entry(local.id).or_default().push(index);
             }
         }
-        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
-        if needs_gc_roots {
-            for (local, nodes) in &stack_record_nodes {
-                for node in nodes.iter().copied() {
-                    let value = backend.struct_pointer(
-                        backend.value_node_type,
-                        node,
-                        VALUE_NODE_FIELD_VALUE,
-                        "gc.root.stack.record.value",
-                    )?;
-                    let index = register_gc_root_slot(&mut gc_root_slots, value);
-                    gc_local_roots.entry(*local).or_default().push(index);
-                }
-            }
-        }
-        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
+        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, stack_record_plan)?;
         let native_int_lists = Self::allocate_native_int_lists(backend, &native_int_list_plan)?;
 
         let mut old_parameters = BTreeMap::new();
@@ -4790,7 +4548,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -4800,17 +4557,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             gc_live_local_roots: RefCell::new(BTreeSet::new()),
             gc_temporary_roots: RefCell::new(Vec::new()),
             gc_root_states: RefCell::new(gc_root_states),
-            gc_output_root,
         })
     }
 
     fn allocate_stack_record_nodes(
         backend: &'backend Backend<'ctx, 'program>,
-        source: &Function,
+        candidates: &NativeStackRecordPlan,
     ) -> Result<BTreeMap<LocalId, Vec<PointerValue<'ctx>>>, CodegenError> {
         let mut storage = BTreeMap::new();
-        let candidates = stack_record_candidates(backend.program, source);
-        for (local, field_count) in candidates {
+        for (local, field_count) in candidates.locals() {
             let mut nodes = Vec::with_capacity(field_count);
             for field in 0..field_count {
                 let node = backend
@@ -4936,13 +4691,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let mut locals = BTreeMap::new();
         let mut gc_root_slots = Vec::new();
         let mut gc_permanent_roots = Vec::new();
-        let gc_output_root = (needs_gc_roots
-            && type_may_hold_gc_reference(backend.program, &source.return_ty))
-        .then(|| {
+        if needs_gc_roots && type_may_hold_gc_reference(backend.program, &source.return_ty) {
             let index = register_gc_root_slot(&mut gc_root_slots, output);
             gc_permanent_roots.push(index);
-            index
-        });
+        }
         for local in source.params.iter().chain(&source.locals) {
             let slot = call_pointer(
                 &backend.builder,
@@ -5064,7 +4816,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: Some(invalid),
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -5074,7 +4825,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             gc_live_local_roots: RefCell::new(BTreeSet::new()),
             gc_temporary_roots: RefCell::new(Vec::new()),
             gc_root_states: RefCell::new(gc_root_states),
-            gc_output_root,
         })
     }
 
@@ -5334,11 +5084,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.publish_gc_root_state_for(&roots)
     }
 
-    fn publish_gc_exit_state(&self) -> Result<(), CodegenError> {
-        let roots = self.gc_output_root.into_iter().collect::<Vec<_>>();
-        self.publish_gc_root_state_for(&roots)
-    }
-
     fn publish_gc_root_state_for(&self, roots: &[usize]) -> Result<(), CodegenError> {
         let Some(frame) = self.gc_root_frame else {
             return Ok(());
@@ -5364,27 +5109,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_store(field, self.backend.i64_type.const_int(state, false))
             .map_err(builder_error)?;
         Ok(())
-    }
-
-    fn emit_gc_safepoint(&self, name: &str) -> Result<(), CodegenError> {
-        if !self.gc_may_collect {
-            return Ok(());
-        }
-        self.publish_gc_root_state()?;
-        self.emit_published_gc_safepoint(name)
-    }
-
-    fn emit_published_gc_safepoint(&self, name: &str) -> Result<(), CodegenError> {
-        if !self.gc_may_collect {
-            return Ok(());
-        }
-        let status = call_int(
-            &self.backend.builder,
-            self.backend.native_gc_safepoint(),
-            &[],
-            name,
-        )?;
-        self.trap_on_runtime_status(status, name)
     }
 
     fn emit_gc_root_pop(&self) -> Result<(), CodegenError> {
@@ -5463,10 +5187,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         status: IntValue<'ctx>,
         value: Option<BasicValueEnum<'ctx>>,
     ) -> Result<(), CodegenError> {
-        if self.task.is_none() {
-            self.publish_gc_exit_state()?;
-            self.emit_published_gc_safepoint("gc.return.safepoint")?;
-        }
         // Source defers and exit contracts have already run at every caller.
         // Native list storage is compiler-owned and therefore released last,
         // after the result/status has been fully materialized.
@@ -6068,7 +5788,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 VALUE_FIELD_SCALAR,
                 next,
             )?;
-            self.emit_gc_safepoint("gc.range.backedge.safepoint")?;
             self.backend.branch(header)?;
         }
         self.backend.builder.position_at_end(exit);
@@ -6310,7 +6029,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 VALUE_FIELD_SCALAR,
                 next,
             )?;
-            self.emit_gc_safepoint("gc.int.list.backedge.safepoint")?;
             let backedge = self.backend.builder.get_insert_block().ok_or_else(|| {
                 CodegenError::new("LlvmBuilderFailed", "append range has no backedge")
             })?;
@@ -10654,7 +10372,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 // Method receiver evaluation precedes the element expression,
                 // while the private header remains inaccessible to that
                 // expression by construction of the native-storage plan.
-                let element = self.alloc_value("int.list.add.value");
+                let element = self.alloc_typed_value(&value.ty, "int.list.add.value");
                 if !self.emit_expr(value, element)? {
                     return Ok(Some(false));
                 }
@@ -10788,7 +10506,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         matched: NativeIntListGetMatch<'_>,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let index_value = self.alloc_value("int.list.get.index.value");
+        let index_value = self.alloc_typed_value(&matched.index.ty, "int.list.get.index.value");
         if !self.emit_expr(matched.index, index_value)? {
             return Ok(false);
         }
