@@ -23,6 +23,7 @@ const C3_ANALYSIS_BUDGET: Duration = Duration::from_secs(15);
 const C3_NATIVE_BUILD_BUDGET: Duration = Duration::from_secs(90);
 const C3_REPOSITORY: &str = "examples/c3/application";
 const C3_TARGET: &str = "app";
+const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -153,6 +154,11 @@ fn main() {
         Ok(evidence) => report.repository = Some(evidence),
         Err(error) => report.failures.push(format!("c3-repository: {error}")),
     }
+    if let Err(error) = async_generic_contract_gate(&workspace, &mut report.gates) {
+        report
+            .failures
+            .push(format!("async-generic-contracts: {error}"));
+    }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
         report.failures.push(error);
     }
@@ -177,6 +183,78 @@ fn main() {
     if !passed {
         std::process::exit(1);
     }
+}
+
+fn async_generic_contract_gate(
+    workspace: &Path,
+    gates: &mut Vec<GateEvidence>,
+) -> Result<(), String> {
+    let snapshot = AnalysisHost::new(workspace.join(ASYNC_GENERIC_FIXTURE))
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+
+    let interpreter_started = Instant::now();
+    let interpreter_results = Interpreter::new(program).run_tests();
+    if interpreter_results.len() != 1
+        || interpreter_results
+            .iter()
+            .any(|result| result.status != TestStatus::Passed)
+    {
+        return Err(format!(
+            "interpreter tests did not pass exactly once: {interpreter_results:#?}"
+        ));
+    }
+    upper_gate(
+        gates,
+        "async-generic-contracts.interpreter-execution",
+        interpreter_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory.path().join("tests");
+    let native_build_started = Instant::now();
+    emit_native(
+        program,
+        &executable,
+        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+    )
+    .map_err(|error| format!("native test build failed: {error}"))?;
+    upper_gate(
+        gates,
+        "async-generic-contracts.native-build",
+        native_build_started.elapsed(),
+        NATIVE_BUILD_BUDGET,
+    );
+
+    let native_run_started = Instant::now();
+    let output = Command::new(&executable)
+        .current_dir(workspace.join(ASYNC_GENERIC_FIXTURE))
+        .output()
+        .map_err(|error| format!("execute native tests: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || stdout != "passed async_generic_contracts.generic_async_contracts_and_cancellation\n"
+    {
+        return Err(format!(
+            "native test mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    upper_gate(
+        gates,
+        "async-generic-contracts.native-execution",
+        native_run_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

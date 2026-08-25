@@ -18,6 +18,8 @@
 
 每项任务必须满足：全项目静态检查无错误；解释器全部 `test fn` 通过且 `main` 返回 `Unit`；release LLVM native test harness 全部通过且 native `main` 输出 `Unit`。报告同时记录源码 bytes/lines/tokens、完整 MIR function/test 数、run/test root 的实际可达函数数，以及 analysis、解释执行、native build 和 native execution 时间。
 
+另有一个不含 `main` 的异步回归门 [`fixtures/async-generic-contracts`](../fixtures/async-generic-contracts/main.loom)：它要求 conditional conformance proof 在首次 suspension 后仍由 Task frame 持有，并同时覆盖 async `requires`/`ensures` fault、`Task.settled` 与 `Task.any` sibling cancellation。`loom-quality` 会在解释器与 release LLVM native test harness 中各执行一次，避免只靠单 crate 测试或 development profile 证明该路径。
+
 ## 2. C3 repository workload
 
 [`examples/c3`](../examples/c3/README.md) 固定一个 checkout service 形状的多包工程：`foundation` 提供 constrained values、record、enum 和 dynamic concept；`catalog` 作为 direct path dependency 提供 conformance 与业务组合；`application` 显式声明它实际 import 的两个 direct dependencies，并提供 bin/test target。门禁要求：
@@ -41,6 +43,7 @@
 | Core 0.3 checked-MIR artifact decode + validate 32 次 | 15 s |
 | 64-module 单 body 修改 | 最多重查 1 module，至少复用 63 module，10 s |
 | C3 repository analysis/native build | 15 s / 90 s |
+| async generic contracts interpreter/native build/native run | 15 s / 60 s / 15 s |
 | 整套受控任务 | 300 s |
 
 门限故意高于正常机器的毫秒级结果，以吸收共享 CI 抖动；任何收紧都应先保留多次 runner 证据。结构门比 wall-clock 更强：单 body 修改若退化为全图检查，即使机器足够快也立即失败。
