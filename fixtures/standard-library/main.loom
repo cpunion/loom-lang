@@ -186,10 +186,21 @@ async fn escaped_file_read(path Text, reuse Text) Result[Text, IoError] {
         scoped input = try_open_read(path).await?
         input.try_read_text()
     }
-    {
-        scoped replacement = try_create(reuse).await?
-        replacement.try_write_text("reused descriptor").await?
-        Unit
+    match try_create(reuse).await {
+        Err(error) => {
+            discard pending.await
+            return Err(error)
+        }
+        Ok(replacement) => {
+            scoped replacement = replacement
+            match replacement.try_write_text("reused descriptor").await {
+                Err(error) => {
+                    discard pending.await
+                    return Err(error)
+                }
+                Ok(_) => Unit
+            }
+        }
     }
     pending.await
 }
