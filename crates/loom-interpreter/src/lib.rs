@@ -1438,14 +1438,35 @@ impl<'program> Interpreter<'program> {
         }
         let mut pending = root.into_iter().collect::<Vec<_>>();
         while let Some(task_id) = pending.pop() {
-            let Some(task) = self.tasks.get_mut(&task_id) else {
-                continue;
+            let frame = {
+                let Some(task) = self.tasks.get_mut(&task_id) else {
+                    continue;
+                };
+                if task.marked {
+                    continue;
+                }
+                task.marked = true;
+                pending.extend(task.children.iter().copied());
+                if let TaskStatus::Completed(value) = &task.status {
+                    referenced_task_ids(value, &mut pending);
+                }
+                if let Some(contracts) = &task.contract_state {
+                    if let Some(receiver) = &contracts.old_receiver {
+                        referenced_task_ids(receiver, &mut pending);
+                    }
+                    for argument in contracts.old_arguments.iter().flatten() {
+                        referenced_task_ids(argument, &mut pending);
+                    }
+                }
+                task.frame
             };
-            if task.marked {
-                continue;
+            if let Some(frame) = self.frames.get(&frame) {
+                for slot in &frame.slots {
+                    if let Slot::Value(value) = slot {
+                        referenced_task_ids(value, &mut pending);
+                    }
+                }
             }
-            task.marked = true;
-            pending.extend(task.children.iter().copied());
         }
         let unreachable = self
             .tasks
@@ -5399,6 +5420,44 @@ fn expect_bool(value: &Value, span: Span) -> Result<bool, ExecutionFailure> {
             span,
         }
         .into())
+    }
+}
+
+fn referenced_task_ids(value: &Value, referenced: &mut Vec<u64>) {
+    match value {
+        Value::Task { id } => referenced.push(*id),
+        Value::TaskJoin { tasks, .. } => referenced.extend(tasks),
+        Value::Tuple { elements } | Value::List { elements } => {
+            for element in elements {
+                referenced_task_ids(element, referenced);
+            }
+        }
+        Value::Record { fields, .. } => {
+            for field in fields {
+                referenced_task_ids(field, referenced);
+            }
+        }
+        Value::Enum { payload, .. } => {
+            for value in payload {
+                referenced_task_ids(value, referenced);
+            }
+        }
+        Value::Refined { value, .. } | Value::DynView { value, .. } => {
+            referenced_task_ids(value, referenced);
+        }
+        Value::TaskOutcome {
+            outcome: TaskOutcomeValue::Completed(value),
+        } => referenced_task_ids(value, referenced),
+        Value::Unit
+        | Value::Bool { .. }
+        | Value::Int { .. }
+        | Value::Float { .. }
+        | Value::Text { .. }
+        | Value::Bytes { .. }
+        | Value::ConstraintError { .. }
+        | Value::TaskOutcome {
+            outcome: TaskOutcomeValue::Faulted | TaskOutcomeValue::Cancelled,
+        } => {}
     }
 }
 
