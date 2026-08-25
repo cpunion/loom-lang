@@ -688,6 +688,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.emit_print_helper()
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_witness_helpers(&self) -> Result<(), CodegenError> {
         let function_type = self
             .ptr_type
@@ -699,21 +700,61 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         );
         let entry = self.context.append_basic_block(concatenate, "entry");
         let empty = self.context.append_basic_block(concatenate, "empty");
+        let loop_header = self.context.append_basic_block(concatenate, "loop");
         let copy = self.context.append_basic_block(concatenate, "copy");
+        let first = self.context.append_basic_block(concatenate, "first");
+        let append = self.context.append_basic_block(concatenate, "append");
+        let advance = self.context.append_basic_block(concatenate, "advance");
+        let finish = self.context.append_basic_block(concatenate, "finish");
         self.builder.position_at_end(entry);
         let prefix = parameter_pointer(concatenate, 0)?;
         let suffix = parameter_pointer(concatenate, 1)?;
+        let current_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "witness.current.slot")
+            .map_err(builder_error)?;
+        let head_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "witness.head.slot")
+            .map_err(builder_error)?;
+        let tail_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "witness.tail.slot")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(current_slot, prefix)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(head_slot, self.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(tail_slot, self.ptr_type.const_null())
+            .map_err(builder_error)?;
         let prefix_empty = self
             .builder
             .build_is_null(prefix, "prefix.empty")
             .map_err(builder_error)?;
         self.builder
-            .build_conditional_branch(prefix_empty, empty, copy)
+            .build_conditional_branch(prefix_empty, empty, loop_header)
             .map_err(builder_error)?;
 
         self.builder.position_at_end(empty);
         self.builder
             .build_return(Some(&suffix))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(loop_header);
+        let current = self
+            .builder
+            .build_load(self.ptr_type, current_slot, "witness.current")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let exhausted = self
+            .builder
+            .build_is_null(current, "witness.exhausted")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(exhausted, finish, copy)
             .map_err(builder_error)?;
 
         self.builder.position_at_end(copy);
@@ -725,7 +766,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         )?;
         let value = self.load_pointer_field(
             self.witness_node_type,
-            prefix,
+            current,
             WITNESS_NODE_FIELD_VALUE,
             "witness.concat.value",
         )?;
@@ -735,21 +776,80 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             WITNESS_NODE_FIELD_VALUE,
             value,
         )?;
+        self.store_pointer_field(
+            self.witness_node_type,
+            node,
+            WITNESS_NODE_FIELD_NEXT,
+            self.ptr_type.const_null(),
+        )?;
+        let head = self
+            .builder
+            .build_load(self.ptr_type, head_slot, "witness.head")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let head_empty = self
+            .builder
+            .build_is_null(head, "witness.head.empty")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(head_empty, first, append)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(first);
+        self.builder
+            .build_store(head_slot, node)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(advance)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(append);
+        let tail = self
+            .builder
+            .build_load(self.ptr_type, tail_slot, "witness.tail")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.store_pointer_field(self.witness_node_type, tail, WITNESS_NODE_FIELD_NEXT, node)?;
+        self.builder
+            .build_unconditional_branch(advance)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(advance);
+        self.builder
+            .build_store(tail_slot, node)
+            .map_err(builder_error)?;
         let next = self.load_pointer_field(
             self.witness_node_type,
-            prefix,
+            current,
             WITNESS_NODE_FIELD_NEXT,
             "witness.concat.next",
         )?;
-        let tail = call_pointer(
-            &self.builder,
-            concatenate,
-            &[next.into(), suffix.into()],
-            "witness.concat.tail",
-        )?;
-        self.store_pointer_field(self.witness_node_type, node, WITNESS_NODE_FIELD_NEXT, tail)?;
         self.builder
-            .build_return(Some(&node))
+            .build_store(current_slot, next)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(loop_header)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(finish);
+        let tail = self
+            .builder
+            .build_load(self.ptr_type, tail_slot, "witness.finished.tail")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.store_pointer_field(
+            self.witness_node_type,
+            tail,
+            WITNESS_NODE_FIELD_NEXT,
+            suffix,
+        )?;
+        let head = self
+            .builder
+            .build_load(self.ptr_type, head_slot, "witness.finished.head")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.builder
+            .build_return(Some(&head))
             .map_err(builder_error)?;
         Ok(())
     }
@@ -773,28 +873,72 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         );
 
         let entry = self.context.append_basic_block(clone_nodes, "entry");
-        let empty = self.context.append_basic_block(clone_nodes, "empty");
+        let loop_header = self.context.append_basic_block(clone_nodes, "loop");
         let copy = self.context.append_basic_block(clone_nodes, "copy");
+        let first = self.context.append_basic_block(clone_nodes, "first");
+        let append = self.context.append_basic_block(clone_nodes, "append");
+        let advance = self.context.append_basic_block(clone_nodes, "advance");
+        let finished = self.context.append_basic_block(clone_nodes, "done");
         self.builder.position_at_end(entry);
         let source = parameter_pointer(clone_nodes, 0)?;
         let count = parameter_int(clone_nodes, 1)?;
-        let done = self
+        let source_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "nodes.source.slot")
+            .map_err(builder_error)?;
+        let remaining_slot = self
+            .builder
+            .build_alloca(self.i64_type, "nodes.remaining.slot")
+            .map_err(builder_error)?;
+        let head_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "nodes.head.slot")
+            .map_err(builder_error)?;
+        let tail_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "nodes.tail.slot")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(source_slot, source)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(remaining_slot, count)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(head_slot, self.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(tail_slot, self.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(loop_header)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(loop_header);
+        let remaining = self
+            .builder
+            .build_load(self.i64_type, remaining_slot, "nodes.remaining")
+            .map_err(builder_error)?
+            .into_int_value();
+        let exhausted = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
-                count,
+                remaining,
                 self.i64_type.const_zero(),
                 "nodes.done",
             )
             .map_err(builder_error)?;
         self.builder
-            .build_conditional_branch(done, empty, copy)
+            .build_conditional_branch(exhausted, finished, copy)
             .map_err(builder_error)?;
-        self.builder.position_at_end(empty);
-        self.builder
-            .build_return(Some(&self.ptr_type.const_null()))
-            .map_err(builder_error)?;
+
         self.builder.position_at_end(copy);
+        let source = self
+            .builder
+            .build_load(self.ptr_type, source_slot, "nodes.source")
+            .map_err(builder_error)?
+            .into_pointer_value();
         let target = call_pointer(
             &self.builder,
             self.native_gc_alloc_value_node(),
@@ -820,25 +964,80 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "clone.value",
             )
             .map_err(builder_error)?;
+        self.store_pointer_field(
+            self.value_node_type,
+            target,
+            VALUE_NODE_FIELD_NEXT,
+            self.ptr_type.const_null(),
+        )?;
+        let head = self
+            .builder
+            .build_load(self.ptr_type, head_slot, "nodes.head")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let head_empty = self
+            .builder
+            .build_is_null(head, "nodes.head.empty")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(head_empty, first, append)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(first);
+        self.builder
+            .build_store(head_slot, target)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(advance)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(append);
+        let tail = self
+            .builder
+            .build_load(self.ptr_type, tail_slot, "nodes.tail")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.store_pointer_field(self.value_node_type, tail, VALUE_NODE_FIELD_NEXT, target)?;
+        self.builder
+            .build_unconditional_branch(advance)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(advance);
+        self.builder
+            .build_store(tail_slot, target)
+            .map_err(builder_error)?;
         let source_next = self.load_pointer_field(
             self.value_node_type,
             source,
             VALUE_NODE_FIELD_NEXT,
             "source.next",
         )?;
+        self.builder
+            .build_store(source_slot, source_next)
+            .map_err(builder_error)?;
         let remaining = self
             .builder
-            .build_int_sub(count, self.i64_type.const_int(1, false), "remaining")
+            .build_int_sub(
+                remaining,
+                self.i64_type.const_int(1, false),
+                "nodes.next.remaining",
+            )
             .map_err(builder_error)?;
-        let next = call_pointer(
-            &self.builder,
-            clone_nodes,
-            &[source_next.into(), remaining.into()],
-            "clone.next",
-        )?;
-        self.store_pointer_field(self.value_node_type, target, VALUE_NODE_FIELD_NEXT, next)?;
         self.builder
-            .build_return(Some(&target))
+            .build_store(remaining_slot, remaining)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(loop_header)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(finished);
+        let head = self
+            .builder
+            .build_load(self.ptr_type, head_slot, "nodes.finished.head")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.builder
+            .build_return(Some(&head))
             .map_err(builder_error)?;
 
         let entry = self.context.append_basic_block(clone, "entry");
@@ -1074,25 +1273,58 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.emit_equal_value(equal, equal_nodes)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_equal_nodes(
         &self,
         equal: FunctionValue<'ctx>,
         equal_nodes: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(equal_nodes, "entry");
+        let loop_header = self.context.append_basic_block(equal_nodes, "loop");
         let yes = self.context.append_basic_block(equal_nodes, "yes");
         let compare = self.context.append_basic_block(equal_nodes, "compare");
-        let recurse = self.context.append_basic_block(equal_nodes, "recurse");
+        let advance = self.context.append_basic_block(equal_nodes, "advance");
         let no = self.context.append_basic_block(equal_nodes, "no");
         self.builder.position_at_end(entry);
         let left = parameter_pointer(equal_nodes, 0)?;
         let right = parameter_pointer(equal_nodes, 1)?;
         let count = parameter_int(equal_nodes, 2)?;
+        let left_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "equal.left.slot")
+            .map_err(builder_error)?;
+        let right_slot = self
+            .builder
+            .build_alloca(self.ptr_type, "equal.right.slot")
+            .map_err(builder_error)?;
+        let remaining_slot = self
+            .builder
+            .build_alloca(self.i64_type, "equal.remaining.slot")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(left_slot, left)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(right_slot, right)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(remaining_slot, count)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(loop_header)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(loop_header);
+        let remaining = self
+            .builder
+            .build_load(self.i64_type, remaining_slot, "equal.remaining")
+            .map_err(builder_error)?
+            .into_int_value();
         let done = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
-                count,
+                remaining,
                 self.i64_type.const_zero(),
                 "equal.done",
             )
@@ -1101,6 +1333,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_conditional_branch(done, yes, compare)
             .map_err(builder_error)?;
         self.builder.position_at_end(compare);
+        let left = self
+            .builder
+            .build_load(self.ptr_type, left_slot, "equal.left")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let right = self
+            .builder
+            .build_load(self.ptr_type, right_slot, "equal.right")
+            .map_err(builder_error)?
+            .into_pointer_value();
         let left_value = self.struct_pointer(
             self.value_node_type,
             left,
@@ -1120,9 +1362,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             "item.equal",
         )?;
         self.builder
-            .build_conditional_branch(item_equal, recurse, no)
+            .build_conditional_branch(item_equal, advance, no)
             .map_err(builder_error)?;
-        self.builder.position_at_end(recurse);
+
+        self.builder.position_at_end(advance);
         let left_next = self.load_pointer_field(
             self.value_node_type,
             left,
@@ -1137,16 +1380,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         )?;
         let remaining = self
             .builder
-            .build_int_sub(count, self.i64_type.const_int(1, false), "remaining")
+            .build_int_sub(
+                remaining,
+                self.i64_type.const_int(1, false),
+                "equal.next.remaining",
+            )
             .map_err(builder_error)?;
-        let rest = call_int(
-            &self.builder,
-            equal_nodes,
-            &[left_next.into(), right_next.into(), remaining.into()],
-            "rest.equal",
-        )?;
         self.builder
-            .build_return(Some(&rest))
+            .build_store(left_slot, left_next)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(right_slot, right_next)
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(remaining_slot, remaining)
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(loop_header)
             .map_err(builder_error)?;
         self.builder.position_at_end(yes);
         self.builder
@@ -1899,7 +2149,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 let function_type = self
                     .context
                     .i32_type()
-                    .fn_type(&[self.ptr_type.into()], false);
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
                 self.module
                     .add_function("loom_runtime_process_arguments", function_type, None)
             })
@@ -2000,7 +2250,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 let function_type = self
                     .context
                     .i32_type()
-                    .fn_type(&[self.ptr_type.into()], false);
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
                 self.module
                     .add_function("loom_io_close", function_type, None)
             })
@@ -8207,7 +8457,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_io_close(),
-                    &[(*resource).into()],
+                    &[self.executor.into(), (*resource).into()],
                     "io.close",
                 )?;
                 let invalid = self
