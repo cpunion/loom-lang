@@ -61,7 +61,7 @@ use crate::native_layout::{
 };
 use crate::native_range::NativeIntRangePlan;
 use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
-use crate::requirements::RuntimeRequirementGraph;
+use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
 
@@ -4363,7 +4363,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     invalid_state_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     cancellation_cleanups: RefCell<BTreeMap<u32, Vec<Block>>>,
     unwind_status: Cell<Option<u64>>,
-    gc_may_safepoint: bool,
+    gc_may_collect: bool,
     gc_root_frame: Option<PointerValue<'ctx>>,
     gc_root_setup: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     gc_body_start: Option<inkwell::basic_block::BasicBlock<'ctx>>,
@@ -4412,9 +4412,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let runtime_context = parameter_pointer(function, 4)?;
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
-        let gc_may_safepoint = backend.requirements.function(id)?.body.may_allocate();
-        let needs_gc_roots =
-            gc_may_safepoint && function_may_need_gc_roots(backend.program, source);
+        let gc_may_collect = backend.requirements.function(id)?.body.may_collect();
+        let needs_gc_roots = gc_may_collect && function_may_need_gc_roots(backend.program, source);
         let gc_root_setup = needs_gc_roots.then(|| {
             backend
                 .context
@@ -4587,7 +4586,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_safepoint,
+            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -4630,9 +4629,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
-        let gc_may_safepoint = backend.requirements.function(id)?.body.may_allocate();
-        let needs_gc_roots =
-            gc_may_safepoint && function_may_need_gc_roots(backend.program, source);
+        let gc_may_collect = backend.requirements.function(id)?.body.may_collect();
+        let needs_gc_roots = gc_may_collect && function_may_need_gc_roots(backend.program, source);
         let gc_root_setup = needs_gc_roots.then(|| {
             backend
                 .context
@@ -4792,7 +4790,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_safepoint,
+            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -4883,9 +4881,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let task = parameter_pointer(function, 0)?;
         let executor = parameter_pointer(function, 1)?;
         let entry = backend.context.append_basic_block(function, "entry");
-        let gc_may_safepoint = backend.requirements.function(id)?.body.may_allocate();
-        let needs_gc_roots =
-            gc_may_safepoint && function_may_need_gc_roots(backend.program, source);
+        let gc_may_collect = backend.requirements.function(id)?.body.may_collect();
+        let needs_gc_roots = gc_may_collect && function_may_need_gc_roots(backend.program, source);
         let gc_root_setup = needs_gc_roots.then(|| {
             backend
                 .context
@@ -5067,7 +5064,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invalid_state_block: Some(invalid),
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
-            gc_may_safepoint,
+            gc_may_collect,
             gc_root_frame,
             gc_root_setup,
             gc_body_start,
@@ -5370,7 +5367,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn emit_gc_safepoint(&self, name: &str) -> Result<(), CodegenError> {
-        if !self.gc_may_safepoint {
+        if !self.gc_may_collect {
             return Ok(());
         }
         self.publish_gc_root_state()?;
@@ -5378,7 +5375,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn emit_published_gc_safepoint(&self, name: &str) -> Result<(), CodegenError> {
-        if !self.gc_may_safepoint {
+        if !self.gc_may_collect {
             return Ok(());
         }
         let status = call_int(
@@ -6370,7 +6367,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     return Ok(true);
                 }
                 let source = self.place(place)?;
-                if let Some(layout @ NativeLayout::Scalar(_)) =
+                if matches!(expression.ty, Type::Text) {
+                    // Text values are immutable handles. Their runtime clone
+                    // branch is exactly a slot copy, so keep this typed path
+                    // context-free and incapable of triggering moving GC.
+                    self.shallow_copy_named(destination, source, "copy.text")?;
+                } else if let Some(layout @ NativeLayout::Scalar(_)) =
                     NativeLayout::classify(self.backend.program, &expression.ty)
                 {
                     let value = self
@@ -8996,7 +8998,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .requirements
                 .function(method)?
                 .invocation
-                .may_allocate()
+                .may_collect()
             {
                 return Ok(true);
             }
@@ -9066,7 +9068,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         .requirements
                         .function(*function)?
                         .invocation
-                        .may_allocate(),
+                        .may_collect(),
                 )
             }
             CallTarget::StaticConcept {
@@ -9118,7 +9120,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         .requirements
                         .function(method_id)?
                         .invocation
-                        .may_allocate();
+                        .may_collect();
                     (
                         Some(function),
                         None,
@@ -9274,7 +9276,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .requirements
             .function(function)?
             .invocation
-            .may_allocate()
+            .may_collect()
         {
             self.publish_gc_root_state()?;
         }
@@ -9618,7 +9620,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         ) {
             return self.emit_list_builtin(builtin, arguments, destination);
         }
-        let Some(prepared) = self.emit_call_arguments(arguments)? else {
+        let Some(prepared) = self.emit_builtin_call_arguments(builtin, arguments)? else {
             return Ok(false);
         };
         if matches!(
@@ -9779,6 +9781,42 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(continues)
     }
 
+    fn emit_builtin_call_arguments(
+        &self,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+    ) -> Result<Option<PreparedCallArguments<'ctx>>, CodegenError> {
+        let mut evaluated = Vec::with_capacity(arguments.len());
+        for (index, argument) in arguments.iter().enumerate() {
+            match argument {
+                CallArgument::Value(expression)
+                    if builtin_borrows_copy_argument(builtin, index)
+                        && matches!(expression.kind, ExprKind::Copy(_)) =>
+                {
+                    let ExprKind::Copy(place) = &expression.kind else {
+                        unreachable!("shape checked above")
+                    };
+                    // These builtins synchronously inspect but neither retain
+                    // nor mutate the argument. A rooted shallow snapshot keeps
+                    // source evaluation order without a managed deep clone.
+                    let value = self.alloc_value("builtin.borrowed.argument");
+                    self.shallow_copy_named(value, self.place(place)?, "builtin.borrow")?;
+                    evaluated.push(Some(value));
+                }
+                CallArgument::Value(expression) => {
+                    let value = self.alloc_value("argument.value");
+                    if !self.emit_expr(expression, value)? {
+                        return Ok(None);
+                    }
+                    evaluated.push(Some(value));
+                }
+                CallArgument::InOut(_) => evaluated.push(None),
+            }
+        }
+        self.materialize_call_arguments(arguments, evaluated)
+            .map(Some)
+    }
+
     fn emit_task_fault_builtin(
         &self,
         builtin: Builtin,
@@ -9806,7 +9844,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_NODE_FIELD_VALUE,
             "task.fault.field",
         )?;
-        self.clone_value(destination, field)?;
+        // TaskFault code and message fields are statically Text GC leaves.
+        self.shallow_copy_named(destination, field, "task.fault.field.copy")?;
         Ok(true)
     }
 
@@ -10078,7 +10117,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::PathAsText, [path]) => {
                 let path = self.opaque_record_field(*path, "path.as_text.payload")?;
-                self.clone_value(destination, path)?;
+                // Path stores one immutable Text leaf.
+                self.shallow_copy_named(destination, path, "path.as_text.copy")?;
                 Ok(true)
             }
             (Builtin::PathJoin, [base, child]) => {
@@ -10202,7 +10242,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::TextMapContains | Builtin::TextMapGet, [map, key]) => {
                 let (key_data, key_length) = self.text_parts(*key, "text.map.key")?;
                 let value = self.alloc_value("text.map.value");
-                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_map_get(),
@@ -10352,7 +10391,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     VALUE_NODE_FIELD_VALUE,
                     "io.error.field",
                 )?;
-                self.clone_value(destination, field)?;
+                // IoError stores a payload-free IoErrorKind and an immutable
+                // Text message; both are GC leaves.
+                self.shallow_copy_named(destination, field, "io.error.field.copy")?;
                 Ok(true)
             }
             (
@@ -11112,7 +11153,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::DurationAsMilliseconds, [duration]) => {
                 let value = self.opaque_record_field(*duration, "duration.value")?;
-                self.clone_value(destination, value)?;
+                self.shallow_copy_named(destination, value, "duration.value.copy")?;
                 Ok(true)
             }
             (

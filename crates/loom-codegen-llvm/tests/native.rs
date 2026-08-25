@@ -8,7 +8,9 @@ use loom_codegen_llvm::{
     validate_native_link_target,
 };
 use loom_driver::AnalysisHost;
-use loom_mir::{Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Type};
+use loom_mir::{
+    Block, CallArgument, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Type,
+};
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -356,7 +358,6 @@ pub fn main() Unit {
         "@loom_runtime_format_float",
         "@loom_runtime_text_get",
         "@loom_runtime_list_get",
-        "@loom_runtime_text_map_get",
         "@loom_runtime_process_environment",
     ] {
         assert!(main.contains(symbol), "missing {symbol}: {main}");
@@ -375,6 +376,14 @@ pub fn main() Unit {
         }),
         "TextMap.get did not use map/key/length/stable-output status ABI: {main}"
     );
+    let map_lookup = main
+        .find("call i32 @loom_runtime_text_map_get")
+        .expect("TextMap.get lookup call");
+    assert!(
+        main[map_lookup..].contains("call i32 @loom_gc_clone_value_v1"),
+        "TextMap.get must deep-clone the selected value after its non-collecting lookup: {main}"
+    );
+    assert_gc_state_published_before(main, "@loom_gc_clone_value_v1");
     assert!(
         main.lines().any(|line| {
             line.contains("call i32 @loom_runtime_process_environment")
@@ -696,6 +705,111 @@ pub fn main() Int {
 }
 
 #[test]
+fn typed_text_copy_and_length_run_without_an_active_runtime() {
+    let source = r#"module pure_text_leaf
+
+fn copiedLiteralLength() Int {
+    let original = "loom"
+    let copied = original
+    copied.length()
+}
+
+pub fn main() Int { copiedLiteralLength() }
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+    let copied = llvm_native_function(&llvm, "pure_text_leaf_copiedLiteralLength");
+    let main = llvm_native_function(&llvm, "pure_text_leaf_main");
+
+    assert!(!copied.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(!main.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(!copied.contains("@loom_gc_clone_value_v1"), "{copied}");
+    assert!(!copied.contains("@loom_gc_root_push_v1"), "{copied}");
+    assert!(!copied.contains("@loom_gc_root_pop_v1"), "{copied}");
+    assert!(!copied.contains("@loom_gc_safepoint_v1"), "{copied}");
+    assert!(!llvm.contains("@loom_runtime_create_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_runtime_activate_v1"), "{llvm}");
+    assert!(!llvm.contains("@loom_runtime_destroy_v1"), "{llvm}");
+
+    let output = Command::new(project.path().join("program"))
+        .output()
+        .expect("run context-free Text leaf executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"4\n");
+}
+
+#[test]
+fn universal_calls_collect_only_when_argument_evaluation_deep_copies() {
+    let source = r"module universal_call_requirements
+
+record Pair { value Int }
+
+fn read(value Pair) Int { value.value }
+
+fn moveCall(value Pair) Int { read(value) }
+
+fn copyCall(value Pair) Int { read(value) }
+
+pub fn main() Int {
+    let moved = moveCall(Pair { value = 41 })
+    let copied = copyCall(Pair { value = 42 })
+    moved + copied
+}
+";
+    let project = tempfile::tempdir().expect("create universal call project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write universal call source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load universal call project")
+        .snapshot()
+        .expect("analyze universal call project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let mut program = snapshot
+        .executable()
+        .expect("lower universal call MIR")
+        .clone();
+
+    let move_call = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("moveCall"))
+        .expect("find moveCall MIR");
+    let call = move_call.body.tail.as_mut().expect("moveCall tail");
+    let ExprKind::Call { arguments, .. } = &mut call.kind else {
+        panic!("moveCall tail is not a call: {call:?}");
+    };
+    let [CallArgument::Value(argument)] = arguments.as_mut_slice() else {
+        panic!("moveCall has unexpected call arguments: {arguments:?}");
+    };
+    let ExprKind::Copy(place) = &argument.kind else {
+        panic!("moveCall argument is not a copy: {argument:?}");
+    };
+    argument.kind = ExprKind::Move(place.clone());
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(&program, &executable, &options).expect("emit universal call executable");
+    let llvm = std::fs::read_to_string(ir).expect("read universal call LLVM IR");
+
+    let moved = llvm_function(&llvm, "universal_call_requirements_moveCall");
+    assert!(moved.contains("call i32 @loom.fn."), "{moved}");
+    assert!(!moved.contains("@loom_gc_clone_value_v1"), "{moved}");
+    assert!(!moved.contains("@loom_gc_root_push_v1"), "{moved}");
+    assert!(!moved.contains("@loom_gc_safepoint_v1"), "{moved}");
+
+    let copied = llvm_function(&llvm, "universal_call_requirements_copyCall");
+    assert_balanced_gc_root_frame(copied);
+    assert!(copied.contains("@loom_gc_clone_value_v1"), "{copied}");
+    assert_gc_state_published_before(copied, "@loom_gc_clone_value_v1");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run universal call executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"83\n");
+}
+
+#[test]
 fn allocating_functions_emit_balanced_shadow_roots_while_pure_scalars_do_not() {
     let source = r#"module shadow_root_shape
 
@@ -741,8 +855,8 @@ pub fn main() Unit {
     );
     assert!(!scalar_equal.contains("gc.root.frame"), "{scalar_equal}");
     assert!(
-        scalar_equal.contains("@loom_gc_safepoint_v1"),
-        "scalar-only effectful functions must poll without publishing an empty frame: {scalar_equal}"
+        !scalar_equal.contains("@loom_gc_safepoint_v1"),
+        "scalar equality cannot collect and must not poll: {scalar_equal}"
     );
 
     let allocate = llvm_function(&llvm, "shadow_root_shape_allocate");
@@ -768,6 +882,132 @@ pub fn main() Unit {
         "root states were not specialized: {descriptor:?}\n{allocate}"
     );
     assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn text_leaf_copies_and_read_only_builtins_do_not_create_gc_boundaries() {
+    let source = r#"module text_leaf_requirements
+
+fn inspect(value Text) Int {
+    let copied = value
+    let count = copied.length()
+    if copied.contains("loom") { count } else { 0 }
+}
+
+fn concatenate(value Text) Text {
+    value.concat("!")
+}
+
+pub fn main() Unit {
+    let count = inspect("loom")
+    assert count == 4
+    let joined = concatenate("loom")
+    assert joined == "loom!"
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let inspect = llvm_function(&llvm, "text_leaf_requirements_inspect");
+    assert!(inspect.contains("@loom_runtime_text_contains"), "{inspect}");
+    assert!(!inspect.contains("@loom_gc_clone_value_v1"), "{inspect}");
+    assert!(
+        !inspect.contains("@loom_gc_build_value_nodes_v1"),
+        "{inspect}"
+    );
+    assert!(!inspect.contains("@loom_gc_root_push_v1"), "{inspect}");
+    assert!(!inspect.contains("@loom_gc_root_pop_v1"), "{inspect}");
+    assert!(!inspect.contains("@loom_gc_safepoint_v1"), "{inspect}");
+    assert!(!inspect.contains("gc.root.frame"), "{inspect}");
+
+    let concatenate = llvm_function(&llvm, "text_leaf_requirements_concatenate");
+    assert_balanced_gc_root_frame(concatenate);
+    assert!(
+        concatenate.contains("@loom_runtime_text_concat"),
+        "{concatenate}"
+    );
+    assert_gc_state_published_before(concatenate, "@loom_runtime_text_concat");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn read_only_aggregate_builtins_borrow_copies_without_collecting() {
+    let source = r#"module readonly_builtin_requirements
+
+import standard.log.debug
+
+fn byteCount(value Bytes) Int { value.length() }
+
+fn mapFacts(value TextMap[Text]) Int {
+    let count = value.length()
+    if value.contains("key") { count } else { 0 }
+}
+
+fn emptyMapCount() Int {
+    let value = TextMap[Text]()
+    value.length()
+}
+
+fn pathText(value Path) Text { value.as_text() }
+
+fn logText(value Text) Unit { debug(value) }
+
+pub fn main() Unit {
+    let bytes = "abc".encode_utf8()
+    let byteCountValue = byteCount(bytes)
+    assert byteCountValue == 3
+    let emptyCount = emptyMapCount()
+    assert emptyCount == 0
+    let fields = TextMap[Text]().insert("key", "value")
+    let facts = mapFacts(fields)
+    assert facts == 1
+    match Path.from_text("relative") {
+        Ok(path) => {
+            let text = pathText(path)
+            assert text == "relative"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    logText("readonly")
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    for name in ["byteCount", "mapFacts", "pathText", "logText"] {
+        let function = llvm_function(&llvm, &format!("readonly_builtin_requirements_{name}"));
+        assert!(!function.contains("@loom_gc_clone_value_v1"), "{function}");
+        assert!(
+            !function.contains("@loom_gc_build_value_nodes_v1"),
+            "{function}"
+        );
+        assert!(!function.contains("@loom_gc_root_push_v1"), "{function}");
+        assert!(!function.contains("@loom_gc_root_pop_v1"), "{function}");
+        assert!(!function.contains("@loom_gc_safepoint_v1"), "{function}");
+        assert!(!function.contains("gc.root.frame"), "{function}");
+    }
+    let empty_map = llvm_native_function(&llvm, "readonly_builtin_requirements_emptyMapCount");
+    assert!(!empty_map.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(
+        !empty_map.contains("@loom_gc_clone_value_v1"),
+        "{empty_map}"
+    );
+    assert!(!empty_map.contains("@loom_gc_root_push_v1"), "{empty_map}");
+    assert!(!empty_map.contains("@loom_gc_safepoint_v1"), "{empty_map}");
+    let map_facts = llvm_function(&llvm, "readonly_builtin_requirements_mapFacts");
+    assert!(
+        map_facts.contains("@loom_runtime_text_map_get"),
+        "{map_facts}"
+    );
+    let log = llvm_function(&llvm, "readonly_builtin_requirements_logText");
+    assert!(log.contains("@loom_runtime_log"), "{log}");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -899,24 +1139,14 @@ pub fn main() Unit {
         descriptor.state_count * descriptor.bitmap_words,
         "{descriptor:?}\n{retain}"
     );
-    let clone_state = gc_state_before_call(retain, "@loom_gc_clone_value_v1", 0);
-    let source_proxy = gc_root_slot_index(retain, "clone.source.proxy");
-    let output_proxy = gc_root_slot_index(retain, "clone.output.proxy");
-    assert!(
-        descriptor.is_live(clone_state, source_proxy),
-        "clone source proxy is not rooted in its helper state: {descriptor:?}\n{retain}"
-    );
-    assert!(
-        descriptor.is_live(clone_state, output_proxy),
-        "clone output proxy is not rooted in its helper state: {descriptor:?}\n{retain}"
-    );
     let source_call_state = gc_state_before_call(retain, "call i32 @loom.fn.", 0);
+    let copied = gc_root_slot_index(retain, "local.2.copied");
     assert!(
-        !descriptor.is_live(source_call_state, source_proxy),
-        "dead clone source proxy leaked into a later source-call state: {descriptor:?}\n{retain}"
+        descriptor.is_live(source_call_state, copied),
+        "Text leaf retained across a collecting call is not rooted: {descriptor:?}\n{retain}"
     );
+    assert!(!retain.contains("@loom_gc_clone_value_v1"), "{retain}");
     assert_gc_state_published_before(retain, "call i32 @loom.fn.");
-    assert_gc_state_published_before(retain, "@loom_gc_clone_value_v1");
     assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
 
     assert_emitted_main_succeeds(&project);

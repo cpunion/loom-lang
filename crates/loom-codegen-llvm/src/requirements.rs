@@ -5,7 +5,7 @@ use loom_mir::{
     Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
-use crate::native_layout::{NativeLayout, NativeSignatureShape};
+use crate::native_layout::NativeLayout;
 use crate::native_range::NativeIntRangePlan;
 use crate::{CodegenError, ReachableProgram};
 
@@ -19,16 +19,21 @@ pub(crate) struct RuntimeRequirements(u8);
 
 impl RuntimeRequirements {
     const MAY_FAULT_BIT: u8 = 1;
-    const MAY_ALLOCATE_BIT: u8 = 1 << 1;
+    const MAY_COLLECT_BIT: u8 = 1 << 1;
     const NEEDS_EXECUTOR_BIT: u8 = 1 << 2;
 
     pub(crate) const NONE: Self = Self(0);
     pub(crate) const MAY_FAULT: Self = Self(Self::MAY_FAULT_BIT);
-    pub(crate) const MAY_ALLOCATE: Self = Self(Self::MAY_ALLOCATE_BIT);
+    /// The callable can enter a moving-GC collection boundary. This bit alone
+    /// controls shadow-root frames, root-state publication, and generated
+    /// loop/return polls; native allocations which cannot collect do not set it.
+    pub(crate) const MAY_COLLECT: Self = Self(Self::MAY_COLLECT_BIT);
     pub(crate) const NEEDS_EXECUTOR: Self = Self(Self::NEEDS_EXECUTOR_BIT);
-    /// The current Task constructor/resume ABI requires all three facilities.
+    /// Task construction/resumption can clone captured Values and materialize
+    /// managed completion/outcome aggregates, so it remains a collection
+    /// boundary in addition to needing an executor and fault propagation.
     pub(crate) const ASYNC: Self = Self::MAY_FAULT
-        .union(Self::MAY_ALLOCATE)
+        .union(Self::MAY_COLLECT)
         .union(Self::NEEDS_EXECUTOR);
 
     #[must_use]
@@ -52,8 +57,8 @@ impl RuntimeRequirements {
     }
 
     #[must_use]
-    pub(crate) const fn may_allocate(self) -> bool {
-        self.0 & Self::MAY_ALLOCATE_BIT != 0
+    pub(crate) const fn may_collect(self) -> bool {
+        self.0 & Self::MAY_COLLECT_BIT != 0
     }
 
     #[must_use]
@@ -102,7 +107,7 @@ impl RuntimeRequirementGraph {
                 || !function.call_plan.ensures.is_empty()
             {
                 requirements.requirements.include(
-                    RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_ALLOCATE),
+                    RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT),
                 );
             }
             scan_block(
@@ -203,7 +208,7 @@ fn scan_block(
             StatementKind::LetTuple { value, .. } => {
                 output
                     .requirements
-                    .include(RuntimeRequirements::MAY_ALLOCATE);
+                    .include(RuntimeRequirements::MAY_COLLECT);
                 scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
             StatementKind::ForRange {
@@ -245,19 +250,24 @@ fn scan_expr(
     match &expression.kind {
         ExprKind::Constant(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
         ExprKind::Copy(_) => {
-            if !matches!(
-                NativeLayout::classify(program, &expression.ty),
-                Some(NativeLayout::Scalar(_))
-            ) {
+            // Text is immutable and its runtime clone is a slot copy. Emit it
+            // directly just like a native scalar; aggregate/refined/dyn copies
+            // still require the managed deep-clone helper.
+            if !matches!(expression.ty, Type::Text)
+                && !matches!(
+                    NativeLayout::classify(program, &expression.ty),
+                    Some(NativeLayout::Scalar(_))
+                )
+            {
                 output
                     .requirements
-                    .include(RuntimeRequirements::MAY_ALLOCATE);
+                    .include(RuntimeRequirements::MAY_COLLECT);
             }
         }
         ExprKind::Tuple(values) | ExprKind::List(values) => {
             output
                 .requirements
-                .include(RuntimeRequirements::MAY_ALLOCATE);
+                .include(RuntimeRequirements::MAY_COLLECT);
             for value in values {
                 scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
@@ -281,11 +291,6 @@ fn scan_expr(
                 && !int_ranges.proves(function.id, expression)
             {
                 output.requirements.include(RuntimeRequirements::MAY_FAULT);
-            } else if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual) {
-                // Equality still goes through the universal Value helper.
-                output
-                    .requirements
-                    .include(RuntimeRequirements::MAY_ALLOCATE);
             }
         }
         ExprKind::Block(block) => {
@@ -318,7 +323,7 @@ fn scan_expr(
             // Pattern bindings are logical copies in the universal Value ABI.
             output
                 .requirements
-                .include(RuntimeRequirements::MAY_ALLOCATE);
+                .include(RuntimeRequirements::MAY_COLLECT);
             scan_expr(program, reachable, function, scrutinee, output, int_ranges)?;
             for arm in arms {
                 scan_expr(program, reachable, function, &arm.value, output, int_ranges)?;
@@ -327,7 +332,7 @@ fn scan_expr(
         ExprKind::Record { fields, .. } => {
             output
                 .requirements
-                .include(RuntimeRequirements::MAY_ALLOCATE);
+                .include(RuntimeRequirements::MAY_COLLECT);
             for field in fields {
                 scan_expr(program, reachable, function, field, output, int_ranges)?;
             }
@@ -335,7 +340,7 @@ fn scan_expr(
         ExprKind::Variant { payload, .. } => {
             output
                 .requirements
-                .include(RuntimeRequirements::MAY_ALLOCATE);
+                .include(RuntimeRequirements::MAY_COLLECT);
             for value in payload {
                 scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
@@ -345,42 +350,37 @@ fn scan_expr(
         | ExprKind::MakeView { value, .. } => {
             output
                 .requirements
-                .include(RuntimeRequirements::MAY_ALLOCATE);
+                .include(RuntimeRequirements::MAY_COLLECT);
             scan_expr(program, reachable, function, value, output, int_ranges)?;
         }
         ExprKind::Call {
             target, arguments, ..
         } => {
-            for argument in arguments {
+            for (index, argument) in arguments.iter().enumerate() {
                 if let CallArgument::Value(value) = argument {
-                    scan_expr(program, reachable, function, value, output, int_ranges)?;
+                    if !matches!(target, CallTarget::Builtin(builtin)
+                        if builtin_borrows_copy_argument(*builtin, index)
+                            && matches!(value.kind, ExprKind::Copy(_)))
+                    {
+                        scan_expr(program, reachable, function, value, output, int_ranges)?;
+                    }
                 }
             }
             match target {
                 CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
-                    let target = program.function(*callee).ok_or_else(|| {
+                    program.function(*callee).ok_or_else(|| {
                         CodegenError::new(
                             "InvalidFunctionReference",
                             format!("call target #{} does not exist", callee.0),
                         )
                     })?;
                     output.callees.insert(*callee);
-                    if NativeSignatureShape::for_supported_function(target).is_none() {
-                        // Aggregate and managed calls retain the universal Value ABI boundary
-                        // until their complete layout/materialization plan exists.
-                        output
-                            .requirements
-                            .include(RuntimeRequirements::MAY_ALLOCATE);
-                    }
                 }
                 CallTarget::StaticConcept {
                     requirement,
                     witness,
                     ..
                 } => {
-                    output
-                        .requirements
-                        .include(RuntimeRequirements::MAY_ALLOCATE);
                     if let Some(witness) = concrete_witness(witness) {
                         let method = program
                             .witness(witness)
@@ -401,9 +401,6 @@ fn scan_expr(
                     }
                 }
                 CallTarget::Dynamic { requirement } => {
-                    output
-                        .requirements
-                        .include(RuntimeRequirements::MAY_ALLOCATE);
                     add_dynamic_callees(program, reachable, *requirement, output)?;
                 }
                 CallTarget::Builtin(builtin) => {
@@ -488,20 +485,55 @@ fn is_int_like(program: &Program, ty: &Type) -> bool {
     }
 }
 
+/// Whether a synchronous builtin consumes a copied argument only for the
+/// duration of the call. The emitter mirrors this table by taking a rooted
+/// shallow snapshot instead of materializing a deep source-language copy.
+/// Any non-`Copy` argument expression is still evaluated normally.
+pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize) -> bool {
+    match builtin {
+        Builtin::TextLength
+        | Builtin::BytesLength
+        | Builtin::PathAsText
+        | Builtin::ListLength
+        | Builtin::TaskFaultCode
+        | Builtin::TaskFaultMessage
+        | Builtin::DurationAsMilliseconds
+        | Builtin::TextMapLength
+        | Builtin::IoErrorKind
+        | Builtin::IoErrorMessage
+        | Builtin::LogDebug
+        | Builtin::LogInfo
+        | Builtin::LogWarn
+        | Builtin::LogError => index == 0,
+        Builtin::TextContains | Builtin::TextMapContains => index < 2,
+        Builtin::LogWrite => index < 3,
+        _ => false,
+    }
+}
+
 const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
     match builtin {
-        Builtin::IsFinite => RuntimeRequirements::NONE,
+        Builtin::IsFinite
+        | Builtin::TextLength
+        | Builtin::BytesLength
+        | Builtin::PathAsText
+        | Builtin::ListLength
+        | Builtin::TaskFaultCode
+        | Builtin::TaskFaultMessage
+        | Builtin::DurationAsMilliseconds
+        | Builtin::TextMapNew
+        | Builtin::TextMapLength
+        | Builtin::IoErrorKind
+        | Builtin::IoErrorMessage => RuntimeRequirements::NONE,
         Builtin::FileOpenRead
         | Builtin::FileCreate
         | Builtin::FileOpenReadPath
         | Builtin::FileCreatePath
         | Builtin::FileReadText
         | Builtin::FileWriteText
-        | Builtin::FileClose
         | Builtin::SocketConnect
         | Builtin::SocketReadText
         | Builtin::SocketWriteText
-        | Builtin::SocketClose
         | Builtin::FileTryOpenRead
         | Builtin::FileTryCreate
         | Builtin::FileTryOpenReadPath
@@ -511,46 +543,38 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::SocketTryConnect
         | Builtin::SocketTryReadText
         | Builtin::SocketTryWriteText => RuntimeRequirements::ASYNC,
-        Builtin::ParseFloat
-        | Builtin::FormatFloat
-        | Builtin::TextLength
-        | Builtin::TextGet
-        | Builtin::TextConcat
-        | Builtin::TextContains
-        | Builtin::TextEncodeUtf8
-        | Builtin::BytesLength
-        | Builtin::BytesGet
-        | Builtin::BytesAppend
-        | Builtin::BytesDecodeUtf8
-        | Builtin::PathFromText
-        | Builtin::PathAsText
-        | Builtin::PathJoin
-        | Builtin::ListAdd
-        | Builtin::ListLength
-        | Builtin::ListGet
-        | Builtin::ProcessArguments
-        | Builtin::ProcessEnvironment
-        | Builtin::ParseInt
-        | Builtin::TaskFaultCode
-        | Builtin::TaskFaultMessage
-        | Builtin::DurationMilliseconds
-        | Builtin::DurationAsMilliseconds
-        | Builtin::TextMapNew
-        | Builtin::TextMapLength
+        Builtin::FileClose | Builtin::SocketClose => {
+            RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::NEEDS_EXECUTOR)
+        }
+        Builtin::TextContains
         | Builtin::TextMapContains
-        | Builtin::TextMapGet
-        | Builtin::TextMapInsert
-        | Builtin::TextMapRemove
-        | Builtin::JsonParse
-        | Builtin::JsonFormat
-        | Builtin::IoErrorKind
-        | Builtin::IoErrorMessage
         | Builtin::LogDebug
         | Builtin::LogInfo
         | Builtin::LogWarn
         | Builtin::LogError
-        | Builtin::LogWrite => {
-            RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_ALLOCATE)
+        | Builtin::LogWrite => RuntimeRequirements::MAY_FAULT,
+        Builtin::ParseFloat | Builtin::ParseInt | Builtin::TextEncodeUtf8 => {
+            RuntimeRequirements::MAY_COLLECT
+        }
+        Builtin::FormatFloat
+        | Builtin::TextGet
+        | Builtin::TextConcat
+        | Builtin::BytesGet
+        | Builtin::BytesAppend
+        | Builtin::BytesDecodeUtf8
+        | Builtin::PathFromText
+        | Builtin::PathJoin
+        | Builtin::ListAdd
+        | Builtin::ListGet
+        | Builtin::ProcessArguments
+        | Builtin::ProcessEnvironment
+        | Builtin::DurationMilliseconds
+        | Builtin::TextMapGet
+        | Builtin::TextMapInsert
+        | Builtin::TextMapRemove
+        | Builtin::JsonParse
+        | Builtin::JsonFormat => {
+            RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT)
         }
     }
 }
@@ -565,7 +589,7 @@ mod tests {
         FunctionId, LocalDecl, LocalId, Program, Type,
     };
 
-    use super::RuntimeRequirementGraph;
+    use super::{RuntimeRequirementGraph, builtin_requirements};
 
     fn int_function(id: u32, body: Expr) -> Function {
         Function {
@@ -684,7 +708,70 @@ mod tests {
         );
         assert!(graph.function(FunctionId(2)).unwrap().body.may_fault());
         assert!(graph.function(FunctionId(3)).unwrap().body.may_fault());
-        assert!(!graph.function(FunctionId(3)).unwrap().body.may_allocate());
+        assert!(!graph.function(FunctionId(3)).unwrap().body.may_collect());
         assert!(!graph.function(FunctionId(3)).unwrap().body.needs_executor());
+    }
+
+    #[test]
+    fn builtins_distinguish_collection_fault_and_executor_requirements() {
+        use loom_mir::Builtin;
+
+        for builtin in [
+            Builtin::TextLength,
+            Builtin::TextContains,
+            Builtin::BytesLength,
+            Builtin::PathAsText,
+            Builtin::ListLength,
+            Builtin::TaskFaultCode,
+            Builtin::TaskFaultMessage,
+            Builtin::DurationAsMilliseconds,
+            Builtin::TextMapNew,
+            Builtin::TextMapLength,
+            Builtin::TextMapContains,
+            Builtin::IoErrorKind,
+            Builtin::IoErrorMessage,
+            Builtin::LogDebug,
+            Builtin::LogInfo,
+            Builtin::LogWarn,
+            Builtin::LogError,
+            Builtin::LogWrite,
+            Builtin::FileClose,
+            Builtin::SocketClose,
+        ] {
+            assert!(
+                !builtin_requirements(builtin).may_collect(),
+                "{builtin:?} unexpectedly enters moving GC"
+            );
+        }
+        for builtin in [
+            Builtin::TextGet,
+            Builtin::FormatFloat,
+            Builtin::ListGet,
+            Builtin::TextMapGet,
+            Builtin::JsonParse,
+        ] {
+            assert!(
+                builtin_requirements(builtin).may_collect(),
+                "{builtin:?} lost its managed builder boundary"
+            );
+        }
+
+        let contains = builtin_requirements(Builtin::TextMapContains);
+        assert!(contains.may_fault());
+        assert!(!contains.needs_executor());
+        let get = builtin_requirements(Builtin::TextMapGet);
+        assert!(get.may_fault());
+        assert!(get.may_collect());
+
+        for builtin in [Builtin::FileClose, Builtin::SocketClose] {
+            let requirements = builtin_requirements(builtin);
+            assert!(requirements.may_fault());
+            assert!(requirements.needs_executor());
+            assert!(!requirements.may_collect());
+        }
+        let async_constructor = builtin_requirements(Builtin::FileOpenRead);
+        assert!(async_constructor.may_fault());
+        assert!(async_constructor.needs_executor());
+        assert!(async_constructor.may_collect());
     }
 }
