@@ -589,6 +589,19 @@ parser recovery 的 declaration start set 必须识别 `async fn`、`pub async f
 
 当前 checker 只发布已验证的 async 形状；不支持的 async method/concept requirement、contract/interface-cross-await 形状必须给出 source diagnostic。线性表达式中的后缀 await 会在 MIR lowering 时按求值顺序提取成隐藏 suspension binding，因此 `task.await.decode()`、`task.await + 1` 与 `task.await?` 可恢复执行；if/match/block 内的 await 保留自己的 numbered state，并由同一 resume dispatch 恢复。`?` 仅接受 `Result[T, E]`，要求当前 callable 返回错误类型完全相同的 `Result[_, E]`，并降低为显式 `Ok/Err` 分支；`Err` 复用普通 return 路径，因此执行全部词法 cleanup。`Task.sleep(milliseconds)`、`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)` 都构造可存储 Task；descriptor 仅在 registration 生命周期内被借用，runtime 不负责关闭。固定异构 Task 参数产生 tuple，单个同构 task list 产生 list；`all/settled/any/race` 共享真实 JoinState、取消与 drain。LLVM safepoint 上的精确 moving collector 会重写跨 await frame roots。
 
+checker 还必须维护 compiler-private affine `TaskCarrier` flow。该名字不进入 lexer/type grammar，也不表示源码具有 move/borrow/ownership；它只是对静态类型直接或递归含 `Task` 的 obligation 分类。完整 local/parameter/receiver owner 的状态为 `Live | Consumed | Conditional`，并随 `if`、`match`、loop 与提前出口合流。
+
+消费规则固定如下：
+
+- `.await`、四种 Task join、向同步 callable 的静态显式 TaskCarrier 参数/receiver 做完整转移、从同步 callable 做完整返回/tail 转移，以及结构化 binding/match payload 转移，才会消费 source obligation；
+- binding/match 转移会在携带 Task 的 destination binding 上建立新的 `Live` obligation；普通读取不改变状态；
+- 对 `Consumed` owner 再次消费报告 `TaskAlreadyConsumed`；合流得到 `Conditional` 后再次消费报告 `TaskConditionallyConsumed`；
+- wildcard 丢弃 Task payload 报 `TaskPatternDiscard`；每个正常 block exit 和提前 `return` 都必须证明当前 scope 没有 `Live` 或 `Conditional` obligation，否则报告 `UnawaitedAsyncCall`；
+- 第一版不允许对 TaskCarrier place 做 assignment/overwrite，报告 `TaskAssignmentUnsupported`；无法精确转移 whole owner 的 field/projection 报 `TaskPartialExtractionUnsupported`；`List.get` 与 Task-carrying `TextMap` 的 `get/insert/remove` 报 `TaskContainerExtractionUnsupported`；
+- TaskCarrier 实参经未约束泛型参数传递报告 `TaskGenericTransferUnsupported`。这些边界必须静态拒绝，不得退化为运行时 best effort。
+
+当前 Task ABI 没有 reparent 操作，因此 TaskCarrier 实参/receiver 传入 async callable 报 `TaskAsyncTransferUnsupported`，async callable 的逻辑返回类型直接或递归包含 Task 报 `TaskAsyncResultUnsupported`。同步 callable 只有在声明参数/receiver 静态显式携带 Task 时才能承接该转移；未约束泛型不是隐式 escape hatch。实现不得把物理 pointer copy 当作结构化 parent 转移，也不得宣称存在源码 `Task.cancel`；现有取消只来自 parent unwind、join loser、fault 或 executor teardown。Task/MustScope/未知泛型 obligation 也不得经 `dyn` 擦除；适配点使用 `IllegalDynConversion` fail closed。
+
 ## 13. 实现关门
 
 本文的实现关门结果：

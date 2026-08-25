@@ -215,7 +215,44 @@ let a, b = combined.await
 
 compiler-known 外部等待构造器包括 `Task.sleep(milliseconds)`、`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)`，都返回可存储的 `Task[Unit]`。sleep 参数为非负 `Int`；解释器按 deadline 挂起，LLVM 把相对毫秒安全换算为绝对 monotonic nanoseconds 并登记 TIMER `WaitSource`。fd 参数必须适配平台 descriptor 范围；裸 readiness Task 只借用它直到 readiness/cancel，不取得所有权或负责关闭。固定或动态 join 会先建立全部 Task 再暂停 parent，不把等待串行相加。非法 descriptor、负数、换算/deadline 溢出进入 `RuntimeFault`。`Duration` 是 compiler-known millisecond value；typed file/socket API 及其 handle snapshot、错误与 cleanup 规则见[标准库规范](11-standard-library.md)。
 
-### 4.2 coroutine ABI
+### 4.2 compiler-private affine `TaskCarrier`
+
+`TaskCarrier` 是 checker 对“静态类型直接或递归包含 `Task`”的 compiler-private 分类与 flow state，不是源码类型、concept、attribute、owner 或 move token。它递归穿透 tuple、List、TextMap、Option、Result、TaskOutcome、record、enum 与 refined wrapper；源码仍只有普通值、`Task[T]`、binding、调用、返回、match 和 await，不增加 ownership、borrow、lifetime 或通用 move 语法。Task/MustScope/未知泛型 obligation 不得经 `dyn` 擦除，适配必须在 concrete source 处 fail closed。
+
+checker 以完整 binding/parameter/receiver 为 owner，内部记录 `Live`、`Consumed` 或 `Conditional`：
+
+- `Live` 表示该 owner 仍携带必须结构化处理的 Task obligation；
+- `Consumed` 表示 obligation 已经转移或终结，原 owner 不能再次消费；
+- `Conditional` 表示不同可达控制流出口的消费状态不一致，不能继续当作 live 或 consumed 使用，也不能离开 scope。
+
+真正的消费/转移点只有：
+
+1. `.await` 终结单个 Task obligation；
+2. `Task.all/settled/any/race` 消费其固定 tuple 参数或整个动态 task list，并由组合 Task 接管；
+3. 向同步 callable 的静态显式 TaskCarrier 参数或 receiver 传递完整 carrier，把 caller obligation 转移为 callee parameter/receiver 的 live obligation；
+4. 从同步 callable 返回完整 TaskCarrier，把 callee obligation 转移给 caller；
+5. `let`/`var`、tuple binding 和穷尽 `match`/payload binding 等结构化绑定，消费 source owner 并在实际携带 Task 的新 binding 上重建 live obligation。
+
+`List.add` 可以把完整 element obligation 转入 list，使该 list 成为 TaskCarrier；这仍是 whole-value 转移，不开放任意容器 extraction。普通读取、检查名字可见性或取得不转移 obligation 的信息不算消费。物理 Task pointer 即使可由 compiler-private ABI 读取，也不能据此复制 obligation。对同一 owner 重复 await/join/转移是静态错误；只在部分 `if`/`match`/loop 路径消费会形成 `Conditional` 并静态拒绝。wildcard 不得丢掉 Task payload。
+
+第一版不建立 partial-place ownership，因此以下形状 fail closed：
+
+- 对任何 TaskCarrier place 做 assignment/overwrite；这条第一版限制同时覆盖会丢失旧 `Live`/`Conditional` obligation 的情形；
+- 从 TaskCarrier record/tuple 的单独 field 转移 Task，同时保留其余 owner；
+- 通过 `List.get` 或 Task-carrying `TextMap` 的 `get/insert/remove` 做尚无精确 container transfer 的操作；
+- 把 TaskCarrier 传给未约束泛型参数，因为 callee declaration 没有静态承诺接管 obligation；
+- checker 无法精确证明“整个 carrier 恰好转移一次”的 partial aggregate mutation、循环或 projection。
+
+整个词法 scope 的每个正常出口都必须只剩 `Consumed` obligation；显式/隐式 block exit 与提前 `return` 都执行同一审计，任何 `Live` 或 `Conditional` owner 均静态拒绝。同步返回表达式自身可以成为一个转移点，但不能顺带遗留其他 live Task。
+
+当前 coroutine runtime 只会在 async call construction 时建立 caller-parent/child 关系，尚未实现跨 frame 的 Task reparent。因此当前 ABI 额外拒绝：
+
+- 把 TaskCarrier 实参或 receiver 传入 async callable；
+- async callable 的逻辑返回类型直接或递归包含 Task。
+
+这两个限制以后只能在 runtime 真正实现原子 reparent、取消传播与失败回滚后放宽。Core 当前也没有用户可调用的 `Task.cancel`；取消是 parent unwind、join loser、fault 或 executor teardown 触发的结构化 runtime 行为。
+
+### 4.3 coroutine ABI
 
 源码不暴露通用 coroutine trait、C++ `coroutine_handle`/`promise_type` 或 Rust `Future`/`Poll`/`Pin`。编译器与运行时之间使用封闭 ABI：
 
@@ -237,7 +274,7 @@ CoroutineObject                 // managed single-pointer object
 
 未来 generator、stream 或 actor 可以复用 frame/descriptor ABI，但使用各自高层类型。复用 ABI 不代表 Task 是 consumer pull-based generator。
 
-### 4.3 调度
+### 4.4 调度
 
 第一版是单线程 cooperative executor，语义固定为“通知 push、执行 pull”：
 
@@ -284,7 +321,7 @@ ReadyNotification {
 - `cancel(registration)` 与 notification 都校验 `{key, generation}`，迟到、重复或已取消通知不能再次 enqueue；
 - 第一平台层在 macOS 使用 kqueue，在 Linux 使用 epoll；timer 使用同一 reactor wait 的 monotonic deadline timeout。平台 errno 只作为 runtime fault 细节，不成为业务 `Result`。
 
-### 4.4 结构化并发与取消
+### 4.5 结构化并发与取消
 
 - parent 拥有 child task；Core 不提供 detached task；
 - parent 正常完成前，所有 child 必须终结或被显式 join；
@@ -421,7 +458,7 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 截至 2026-08-25，Core 0.3 C1 native 门已关闭：
 
 - lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、可穷尽匹配的 `TaskOutcome[T]`/`TaskFault`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
-- `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、未消费 Task 和 interface access across await 均由静态检查器执行；
+- `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、compiler-private affine TaskCarrier、未消费/重复/条件 Task 转移和 interface access across await 均由静态检查器执行；
 - lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复；取消 state 保存挂起时已注册的 cleanup；
 - interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；
 - Task 是单个 runtime pointer；单 Task、组合 Task 与 `Task.sleep/waitReadable/waitWritable` 都可先存储再等待。静态异构参数返回 tuple，动态同构 list 返回 list，`all/settled/any/race` 共享真实 composite Task/JoinState；

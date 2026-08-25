@@ -167,6 +167,8 @@ source → parser → HIR → sema → checked MIR
 - MIR suspension state、live-local frame promotion 和 cancellation state；
 - ready queue、wait registration，以及“通知 push、执行 pull”；
 - parent/child structured concurrency，无 detached task；
+- compiler-private affine TaskCarrier flow，覆盖 await/join、同步显式 carrier 参数/返回转移、结构化 binding/match、分支合流与 scope-exit 审计；源码不增加 move/borrow/ownership；
+- 未约束泛型不能承接 TaskCarrier，Task/MustScope obligation 也不能经 `dyn` 擦除；当前无 reparent ABI，TaskCarrier 传入 async callable 与 async 逻辑返回递归包含 Task 必须 fail closed；
 - active inout/interface loan 与 `NoSuspend` 跨 await 拒绝；
 - compiler-private single-pointer Task/coroutine descriptor ABI；
 - interpreter 与 LLVM native 闭环。
