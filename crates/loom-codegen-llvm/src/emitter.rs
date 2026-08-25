@@ -4380,6 +4380,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     runtime_context: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
     loop_depth: Cell<u32>,
+    active_range_local: Cell<Option<LocalId>>,
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     locals: BTreeMap<LocalId, PointerValue<'ctx>>,
     stack_record_nodes: BTreeMap<LocalId, Vec<PointerValue<'ctx>>>,
@@ -4502,6 +4503,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             runtime_context,
             task: None,
             loop_depth: Cell::new(0),
+            active_range_local: Cell::new(None),
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
@@ -4635,6 +4637,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             runtime_context,
             task: None,
             loop_depth: Cell::new(0),
+            active_range_local: Cell::new(None),
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
@@ -4873,6 +4876,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             runtime_context: executor,
             task: Some(task),
             loop_depth: Cell::new(0),
+            active_range_local: Cell::new(None),
             resume_blocks,
             locals,
             stack_record_nodes: BTreeMap::new(),
@@ -5427,8 +5431,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             CodegenError::new("ProgramTooLarge", "loop nesting exceeds the compiler limit")
         })?;
         self.loop_depth.set(iteration_loop_depth);
+        let outer_range_local = self.active_range_local.replace(Some(local));
         let ignored = self.alloc_value("range.body");
         let body_result = self.emit_block(body, ignored);
+        self.active_range_local.set(outer_range_local);
         self.loop_depth.set(outer_loop_depth);
         if body_result? {
             let current_scalar = self.int_scalar(current)?;
@@ -5513,7 +5519,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 else_branch,
             } => self.emit_if(condition, then_branch, else_branch, destination),
             ExprKind::Match { scrutinee, arms } => {
-                if let Some(matched) = self.native_int_list_plan.direct_get_match(scrutinee, arms) {
+                if let Some(matched) = self.native_int_list_plan.direct_get_match(
+                    self.active_range_local.get(),
+                    scrutinee,
+                    arms,
+                ) {
                     self.emit_native_int_list_get_match(matched, destination)
                 } else {
                     self.emit_match(scrutinee, arms, destination)
@@ -9539,6 +9549,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         let index = self.int_scalar(index_value)?;
         let storage = self.native_int_lists[&matched.local];
+        if matched.index_proven_in_bounds {
+            // The closed-world native-storage plan proved that this is the
+            // induction variable of a zero-based scan whose immutable end is
+            // exactly the completed append-loop length. The `None` arm is
+            // therefore unreachable on every path which reaches this load.
+            return self.emit_native_int_list_some_arm(&matched, storage, index, destination);
+        }
         let length = self.backend.load_i64_field(
             self.backend.int_list_type,
             storage,
@@ -9574,32 +9591,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
 
         self.backend.builder.position_at_end(some);
-        let data = self.backend.load_pointer_field(
-            self.backend.int_list_type,
-            storage,
-            INT_LIST_FIELD_DATA,
-            "int.list.get.data",
-        )?;
-        // This block is reachable only for `0 <= index < length`, and the
-        // runtime ABI guarantees `length <= capacity` for this storage.
-        let slot = self.native_int_list_element_pointer(data, index, "int.list.get.slot")?;
-        let scalar = self
-            .backend
-            .builder
-            .build_load(self.backend.i64_type, slot, "int.list.get.value")
-            .map_err(builder_error)?
-            .into_int_value();
-        if let Some(binding) = matched.some_binding {
-            let binding = self.local(binding)?;
-            self.initialize(binding, VALUE_TAG_INT)?;
-            self.backend.store_i64_field(
-                self.backend.value_type,
-                binding,
-                VALUE_FIELD_SCALAR,
-                scalar,
-            )?;
-        }
-        let some_continues = self.emit_expr(&matched.some.value, destination)?;
+        let some_continues =
+            self.emit_native_int_list_some_arm(&matched, storage, index, destination)?;
         if some_continues {
             self.backend.branch(merge)?;
         }
@@ -9620,6 +9613,42 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .map_err(builder_error)?;
             Ok(false)
         }
+    }
+
+    fn emit_native_int_list_some_arm(
+        &self,
+        matched: &NativeIntListGetMatch<'_>,
+        storage: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let data = self.backend.load_pointer_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_DATA,
+            "int.list.get.data",
+        )?;
+        // The checked predecessor or the exact-range plan establishes
+        // `0 <= index < length`; the private runtime ABI additionally
+        // guarantees `length <= capacity` for this storage.
+        let slot = self.native_int_list_element_pointer(data, index, "int.list.get.slot")?;
+        let scalar = self
+            .backend
+            .builder
+            .build_load(self.backend.i64_type, slot, "int.list.get.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        if let Some(binding) = matched.some_binding {
+            let binding = self.local(binding)?;
+            self.initialize(binding, VALUE_TAG_INT)?;
+            self.backend.store_i64_field(
+                self.backend.value_type,
+                binding,
+                VALUE_FIELD_SCALAR,
+                scalar,
+            )?;
+        }
+        self.emit_expr(&matched.some.value, destination)
     }
 
     fn native_int_list_element_pointer(

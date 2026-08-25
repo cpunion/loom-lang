@@ -922,15 +922,63 @@ fn cleanupOnFaultPath(accepted Bool) Int {
     }
 }
 
+fn interveningAppendKeepsCheck(size Int) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(index)
+        Unit
+    }
+    values.add(99)
+    var checksum = 0
+    for index in 0..size {
+        match values.get(index) {
+            Some(value) => {
+                checksum = checksum + value
+                Unit
+            }
+            None => {
+                assert false
+                Unit
+            }
+        }
+        Unit
+    }
+    checksum
+}
+
+fn noneSideEffectFallsBack(buildSize Int, scanSize Int) Int {
+    var values = List[Int]()
+    for index in 0..buildSize {
+        values.add(index)
+        Unit
+    }
+    var noneCount = 0
+    for index in 0..scanSize {
+        match values.get(index) {
+            Some(_) => Unit
+            None => {
+                noneCount = noneCount + 1
+                Unit
+            }
+        }
+        Unit
+    }
+    noneCount
+}
+
 pub fn main() Unit {
     let scan = renamedSameShape(40)
     let empty = renamedSameShape(0)
     let edges = edgeReads()
     let cleanup = cleanupOnFaultPath(true)
+    let intervening = interveningAppendKeepsCheck(40)
+    let noneEffects = noneSideEffectFallsBack(2, 3)
     assert scan == 2300
     assert empty == 0
     assert edges == 56
     assert cleanup == 42
+    assert intervening == 780
+    assert noneEffects == 1
     Unit
 }
 ";
@@ -983,8 +1031,28 @@ pub fn main() Unit {
         assert!(!scan.contains("@loom_gc_alloc_value_node"), "{scan}");
         assert!(!scan.contains("list.get.owned"), "{scan}");
         assert!(!scan.contains("@loom.runtime.clone"), "{scan}");
+        assert!(
+            !scan.contains("int.list.get.past.end"),
+            "exact completed append range must omit per-element upper-bound checks: {scan}"
+        );
+        assert!(
+            !scan.contains("int.list.get.none"),
+            "a statically exhaustive get must not emit the unreachable None arm: {scan}"
+        );
+        assert!(
+            scan.contains("llvm.sadd.with.overflow.i64"),
+            "bounds proof must not remove the independent checked checksum: {scan}"
+        );
 
         if ir == &development_ir {
+            for fallback in [
+                "native_int_list_interveningAppendKeepsCheck",
+                "native_int_list_noneSideEffectFallsBack",
+            ] {
+                let body = llvm_integer_function(&llvm, fallback);
+                assert!(body.contains("int.list.get.past.end"), "{body}");
+                assert!(body.contains("int.list.get.none"), "{body}");
+            }
             let cleanup = llvm_function(&llvm, "native_int_list_cleanupOnFaultPath");
             assert!(cleanup.contains("@loom_int_list_drop_v1"), "{cleanup}");
             for block in cleanup
