@@ -8,6 +8,7 @@ mod abi;
 mod codegen;
 mod emitter;
 mod error;
+mod native_storage;
 mod reachability;
 mod requirements;
 mod runtime_bundle;

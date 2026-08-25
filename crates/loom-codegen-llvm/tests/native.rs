@@ -766,6 +766,263 @@ pub async fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn synchronous_local_int_lists_use_contiguous_native_storage_by_shape() {
+    let source = r"module native_int_list
+
+fn renamedSameShape(size Int) Int {
+    var items = List[Int]()
+    for index in 0..size {
+        items.add(index * 3 - 1)
+        Unit
+    }
+    var checksum = 0
+    for index in 0..size {
+        match items.get(index) {
+            Some(value) => {
+                checksum = checksum + value
+                Unit
+            }
+            None => {
+                assert false
+                Unit
+            }
+        }
+        Unit
+    }
+    let count = items.length()
+    assert count == size
+    checksum
+}
+
+fn edgeReads() Int {
+    var numbers = List[Int]()
+    let empty = match numbers.get(0) {
+        Some(_) => -100
+        None => 1
+    }
+    for value in 0..40 {
+        numbers.add(value + 10)
+        Unit
+    }
+    let negative = match numbers.get(-1) {
+        Some(_) => -100
+        None => 2
+    }
+    let pastEnd = match numbers.get(40) {
+        Some(_) => -100
+        None => 4
+    }
+    let last = match numbers.get(39) {
+        Some(value) => value
+        None => -100
+    }
+    empty + negative + pastEnd + last
+}
+
+fn cleanupOnFaultPath(accepted Bool) Int {
+    var values = List[Int]()
+    values.add(41)
+    assert accepted
+    match values.get(0) {
+        Some(value) => value + 1
+        None => -1
+    }
+}
+
+pub fn main() Unit {
+    let scan = renamedSameShape(40)
+    let empty = renamedSameShape(0)
+    let edges = edgeReads()
+    let cleanup = cleanupOnFaultPath(true)
+    assert scan == 2300
+    assert empty == 0
+    assert edges == 56
+    assert cleanup == 42
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create native Int list project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write native Int list source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load native Int list project")
+        .snapshot()
+        .expect("analyze native Int list project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower native Int list MIR");
+
+    let development_ir = project.path().join("development.ll");
+    let development_object = project.path().join("development.o");
+    let mut development = EmitOptions::run("main");
+    development.emit_ir = Some(development_ir.clone());
+    emit_native_object(program, &development_object, &development)
+        .expect("emit development native Int list IR");
+
+    let release_ir = project.path().join("release.ll");
+    let executable = project.path().join("program");
+    let mut release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    release.emit_ir = Some(release_ir.clone());
+    emit_native(program, &executable, &release).expect("emit release native Int list executable");
+
+    for ir in [&development_ir, &release_ir] {
+        let llvm = std::fs::read_to_string(ir).expect("read native Int list LLVM IR");
+        let scan = llvm_integer_function(&llvm, "native_int_list_renamedSameShape");
+        assert!(scan.contains("@loom_int_list_reserve_v1"), "{scan}");
+        assert!(scan.contains("@loom_int_list_drop_v1"), "{scan}");
+        assert_eq!(
+            scan.matches("call i32 @loom_int_list_reserve_v1").count(),
+            1,
+            "append must have one guarded growth call site: {scan}"
+        );
+        let reserve = scan
+            .find("call i32 @loom_int_list_reserve_v1")
+            .expect("native append has a reserve call");
+        let reserve_block = scan[..reserve]
+            .lines()
+            .rev()
+            .find(|line| !line.starts_with(char::is_whitespace) && line.contains(':'))
+            .expect("reserve call is inside a basic block");
+        assert!(
+            reserve_block.contains("int.list.add.grow"),
+            "reserve escaped the capacity-growth block `{reserve_block}`: {scan}"
+        );
+        assert!(!scan.contains("@loom_runtime_list_add"), "{scan}");
+        assert!(!scan.contains("@loom_runtime_list_get"), "{scan}");
+        assert!(!scan.contains("@loom_gc_alloc_value_node"), "{scan}");
+        assert!(!scan.contains("list.get.owned"), "{scan}");
+        assert!(!scan.contains("@loom.runtime.clone"), "{scan}");
+
+        if ir == &development_ir {
+            let cleanup = llvm_function(&llvm, "native_int_list_cleanupOnFaultPath");
+            assert!(cleanup.contains("@loom_int_list_drop_v1"), "{cleanup}");
+            for block in cleanup
+                .split("\n\n")
+                .filter(|block| block.contains("ret i32"))
+            {
+                assert!(
+                    block.contains("@loom_int_list_drop_v1"),
+                    "status return omitted native list cleanup: {block}"
+                );
+                assert_eq!(
+                    block.matches("@loom_int_list_drop_v1").count(),
+                    1,
+                    "status return cleaned native list more than once: {block}"
+                );
+            }
+        }
+    }
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run native Int list executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(output.stdout, b"Unit\n");
+}
+
+#[test]
+fn native_int_list_storage_falls_back_for_escaping_text_async_and_hazards() {
+    let source = r#"module native_int_list_fallback
+
+fn consume(values List[Int]) Int {
+    values.length()
+}
+
+fn escaping() Int {
+    var values = List[Int]()
+    values.add(7)
+    consume(values)
+}
+
+fn textList() Int {
+    var values = List[Text]()
+    values.add("seven")
+    values.length()
+}
+
+fn receiverObservationHazard() Int {
+    var values = List[Int]()
+    values.add(1)
+    match values.get(if values.length() == 1 { 0 } else { 0 }) {
+        Some(value) => value
+        None => -1
+    }
+}
+
+async fn asynchronous() Int {
+    var values = List[Int]()
+    values.add(9)
+    Task.sleep(1).await
+    values.length()
+}
+
+pub async fn main() Unit {
+    let escaped = escaping()
+    let text = textList()
+    let observed = receiverObservationHazard()
+    let waited = asynchronous().await
+    assert escaped == 1
+    assert text == 1
+    assert observed == 1
+    assert waited == 1
+    Unit
+}
+"#;
+    let project = tempfile::tempdir().expect("create native Int list fallback project");
+    std::fs::write(project.path().join("main.loom"), source)
+        .expect("write native Int list fallback source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load native Int list fallback project")
+        .snapshot()
+        .expect("analyze native Int list fallback project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower fallback MIR"),
+        &executable,
+        &options,
+    )
+    .expect("emit native Int list fallback executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read fallback LLVM IR");
+    for function in [
+        "native_int_list_fallback_escaping",
+        "native_int_list_fallback_textList",
+        "native_int_list_fallback_receiverObservationHazard",
+    ] {
+        let body = llvm_integer_function(&llvm, function);
+        assert!(body.contains("@loom_runtime_list_add"), "{body}");
+        assert!(!body.contains("@loom_int_list_reserve_v1"), "{body}");
+    }
+    let asynchronous = llvm_resume_function(&llvm, "native_int_list_fallback_asynchronous");
+    assert!(
+        asynchronous.contains("@loom_runtime_list_add"),
+        "{asynchronous}"
+    );
+    assert!(
+        !asynchronous.contains("@loom_int_list_reserve_v1"),
+        "{asynchronous}"
+    );
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run native Int list fallback executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
     let source = r"module construction
 
@@ -867,6 +1124,23 @@ fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'so
                 .is_some_and(|line| line.contains("@loom.int.fn.") && line.contains(symbol_suffix))
         })
         .unwrap_or_else(|| panic!("missing scalar Int LLVM function containing `{symbol_suffix}`"));
+    let rest = &ir[start + marker.len()..];
+    let end = rest.find("\ndefine ").unwrap_or(rest.len());
+    &ir[start..start + marker.len() + end]
+}
+
+fn llvm_resume_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
+    let marker = "define internal i32 @loom.resume.";
+    let start = ir
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .find(|index| {
+            ir[*index..]
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(symbol_suffix))
+        })
+        .unwrap_or_else(|| panic!("missing LLVM resume function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]

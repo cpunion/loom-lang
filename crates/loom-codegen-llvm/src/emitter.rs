@@ -50,6 +50,7 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
+use crate::native_storage::{NativeIntListGetMatch, NativeIntListPlan};
 use crate::requirements::{RuntimeRequirementGraph, is_scalar_int_candidate};
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
@@ -152,6 +153,9 @@ fn expression_contains_await(expression: &Expr) -> bool {
 
 const MAX_STACK_RECORD_FIELDS: usize = 16;
 const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
+const INT_LIST_FIELD_DATA: u32 = 0;
+const INT_LIST_FIELD_LENGTH: u32 = 1;
+const INT_LIST_FIELD_CAPACITY: u32 = 2;
 
 // Safety depends on the current runtime boundary: synchronous generated code has no GC
 // safepoint, and checked MIR gives InOut/view carriers call-scoped lifetimes. Copies that can
@@ -532,6 +536,7 @@ struct Backend<'ctx, 'program> {
     value_type: StructType<'ctx>,
     value_node_type: StructType<'ctx>,
     arg_node_type: StructType<'ctx>,
+    int_list_type: StructType<'ctx>,
     scalar_int_result_type: StructType<'ctx>,
     witness_node_type: StructType<'ctx>,
     witness_type: StructType<'ctx>,
@@ -746,6 +751,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         value_node_type.set_body(&[value_type.into(), ptr_type.into()], false);
         let arg_node_type = context.opaque_struct_type("loom.ArgNode");
         arg_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
+        let int_list_type = context.opaque_struct_type("loom.IntListStorage");
+        int_list_type.set_body(&[ptr_type.into(), i64_type.into(), i64_type.into()], false);
         let scalar_int_result_type =
             context.struct_type(&[i32_type.into(), i64_type.into()], false);
         let witness_node_type = context.opaque_struct_type("loom.WitnessNode");
@@ -828,6 +835,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             value_type,
             value_node_type,
             arg_node_type,
+            int_list_type,
             scalar_int_result_type,
             witness_node_type,
             witness_type,
@@ -2282,6 +2290,32 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
                 self.module
                     .add_function("loom_runtime_list_get", function_type, None)
+            })
+    }
+
+    fn native_int_list_reserve(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_int_list_reserve_v1")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function("loom_int_list_reserve_v1", function_type, None)
+            })
+    }
+
+    fn native_int_list_drop(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_int_list_drop_v1")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_int_list_drop_v1", function_type, None)
             })
     }
 
@@ -4205,6 +4239,8 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     locals: BTreeMap<LocalId, PointerValue<'ctx>>,
     stack_record_nodes: BTreeMap<LocalId, Vec<PointerValue<'ctx>>>,
+    native_int_list_plan: NativeIntListPlan,
+    native_int_lists: BTreeMap<LocalId, PointerValue<'ctx>>,
     old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
     body_done: inkwell::basic_block::BasicBlock<'ctx>,
     cleanups: RefCell<Vec<Block>>,
@@ -4270,6 +4306,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_store(output, backend.value_type.const_zero())
             .map_err(builder_error)?;
         let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
+        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
+        let native_int_lists = Self::allocate_native_int_lists(backend, &native_int_list_plan)?;
         let mut old_parameters = BTreeMap::new();
         if needs_parameter_snapshots(source) {
             let clone = backend
@@ -4323,6 +4361,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
+            native_int_list_plan,
+            native_int_lists,
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4415,6 +4455,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             locals.insert(local.id, pointer);
         }
         let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
+        let native_int_list_plan = NativeIntListPlan::analyze(backend.program, source);
+        let native_int_lists = Self::allocate_native_int_lists(backend, &native_int_list_plan)?;
 
         let mut old_parameters = BTreeMap::new();
         if needs_parameter_snapshots(source) {
@@ -4452,6 +4494,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
+            native_int_list_plan,
+            native_int_lists,
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4498,6 +4542,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             storage.insert(local, nodes);
         }
         Ok(storage)
+    }
+
+    fn allocate_native_int_lists(
+        backend: &'backend Backend<'ctx, 'program>,
+        plan: &NativeIntListPlan,
+    ) -> Result<BTreeMap<LocalId, PointerValue<'ctx>>, CodegenError> {
+        plan.locals()
+            .map(|local| {
+                let storage = backend
+                    .builder
+                    .build_alloca(
+                        backend.int_list_type,
+                        &format!("int.list.local.{}", local.0),
+                    )
+                    .map_err(builder_error)?;
+                backend
+                    .builder
+                    .build_store(storage, backend.int_list_type.const_zero())
+                    .map_err(builder_error)?;
+                Ok((local, storage))
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4666,6 +4732,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks,
             locals,
             stack_record_nodes: BTreeMap::new(),
+            native_int_list_plan: NativeIntListPlan::default(),
+            native_int_lists: BTreeMap::new(),
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4707,6 +4775,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         status: IntValue<'ctx>,
         scalar: Option<IntValue<'ctx>>,
     ) -> Result<(), CodegenError> {
+        // Source defers and exit contracts have already run at every caller.
+        // Native list storage is compiler-owned and therefore released last,
+        // after the result/status has been fully materialized.
+        for storage in self.native_int_lists.values().copied() {
+            self.backend
+                .builder
+                .build_call(
+                    self.backend.native_int_list_drop(),
+                    &[storage.into()],
+                    "int.list.drop",
+                )
+                .map_err(builder_error)?;
+        }
         match self.scalar_int_abi {
             Some(ScalarIntAbi::PureNoFault) => {
                 self.backend
@@ -5030,7 +5111,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         match &statement.kind {
             StatementKind::Let { local, value } => {
                 let destination = self.local(*local)?;
-                if let Some(nodes) = self.stack_record_nodes.get(local) {
+                if self.native_int_lists.contains_key(local) {
+                    if !matches!(&value.kind, ExprKind::List(elements) if elements.is_empty()) {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            "native Int list candidate does not have an empty initializer",
+                        ));
+                    }
+                    Ok(true)
+                } else if let Some(nodes) = self.stack_record_nodes.get(local) {
                     self.emit_stack_record_initializer(value, destination, nodes)
                 } else {
                     self.emit_expr(value, destination)
@@ -5274,7 +5363,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 then_branch,
                 else_branch,
             } => self.emit_if(condition, then_branch, else_branch, destination),
-            ExprKind::Match { scrutinee, arms } => self.emit_match(scrutinee, arms, destination),
+            ExprKind::Match { scrutinee, arms } => {
+                if let Some(matched) = self.native_int_list_plan.direct_get_match(scrutinee, arms) {
+                    self.emit_native_int_list_get_match(matched, destination)
+                } else {
+                    self.emit_match(scrutinee, arms, destination)
+                }
+            }
             ExprKind::Record {
                 ty,
                 fields,
@@ -9028,6 +9123,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         arguments: &[CallArgument],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
+        if let Some(result) = self.emit_native_int_list_builtin(builtin, arguments, destination)? {
+            return Ok(result);
+        }
         let values = if matches!(builtin, Builtin::ListLength | Builtin::ListGet)
             && let Some((CallArgument::Value(receiver), remaining)) = arguments.split_first()
             && let ExprKind::Copy(place) = &receiver.kind
@@ -9062,6 +9160,276 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             values
         };
         self.emit_list_builtin_values(builtin, &values, destination)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_native_int_list_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[CallArgument],
+        destination: PointerValue<'ctx>,
+    ) -> Result<Option<bool>, CodegenError> {
+        match (builtin, arguments) {
+            (Builtin::ListAdd, [CallArgument::InOut(receiver), CallArgument::Value(value)])
+                if receiver.projection.is_empty()
+                    && self.native_int_lists.contains_key(&receiver.local) =>
+            {
+                let storage = self.native_int_lists[&receiver.local];
+                // Method receiver evaluation precedes the element expression,
+                // while the private header remains inaccessible to that
+                // expression by construction of the native-storage plan.
+                let element = self.alloc_value("int.list.add.value");
+                if !self.emit_expr(value, element)? {
+                    return Ok(Some(false));
+                }
+                let scalar = self.int_scalar(element)?;
+                let length = self.backend.load_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_LENGTH,
+                    "int.list.add.length",
+                )?;
+                let capacity = self.backend.load_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_CAPACITY,
+                    "int.list.add.capacity",
+                )?;
+                let full = self
+                    .backend
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, length, capacity, "int.list.add.full")
+                    .map_err(builder_error)?;
+                let grow = self.append_block("int.list.add.grow");
+                let ready = self.append_block("int.list.add.ready");
+                self.backend
+                    .builder
+                    .build_conditional_branch(full, grow, ready)
+                    .map_err(builder_error)?;
+
+                self.backend.builder.position_at_end(grow);
+                let minimum = self
+                    .backend
+                    .builder
+                    .build_int_add(
+                        length,
+                        self.backend.i64_type.const_int(1, false),
+                        "int.list.add.minimum",
+                    )
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_int_list_reserve(),
+                    &[storage.into(), minimum.into()],
+                    "int.list.reserve",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "int.list.reserve.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ListRuntimeFault")?;
+                self.backend.branch(ready)?;
+
+                self.backend.builder.position_at_end(ready);
+                let data = self.backend.load_pointer_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_DATA,
+                    "int.list.add.data",
+                )?;
+                let length = self.backend.load_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_LENGTH,
+                    "int.list.add.index",
+                )?;
+                // The backend supports only 64-bit targets. Integer-addressed
+                // indexing avoids introducing unsafe Rust into the compiler;
+                // the private header invariant proves the resulting address
+                // lies within the runtime-owned allocation.
+                let slot =
+                    self.native_int_list_element_pointer(data, length, "int.list.add.slot")?;
+                self.backend
+                    .builder
+                    .build_store(slot, scalar)
+                    .map_err(builder_error)?;
+                let next = self
+                    .backend
+                    .builder
+                    .build_int_add(
+                        length,
+                        self.backend.i64_type.const_int(1, false),
+                        "int.list.add.next.length",
+                    )
+                    .map_err(builder_error)?;
+                self.backend.store_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_LENGTH,
+                    next,
+                )?;
+                self.emit_constant(&Constant::Unit, destination)?;
+                Ok(Some(true))
+            }
+            (Builtin::ListLength, [CallArgument::Value(receiver)])
+                if matches!(
+                    &receiver.kind,
+                    ExprKind::Copy(place)
+                        if place.projection.is_empty()
+                            && self.native_int_lists.contains_key(&place.local)
+                ) =>
+            {
+                let ExprKind::Copy(place) = &receiver.kind else {
+                    unreachable!("shape checked above")
+                };
+                let length = self.backend.load_i64_field(
+                    self.backend.int_list_type,
+                    self.native_int_lists[&place.local],
+                    INT_LIST_FIELD_LENGTH,
+                    "int.list.length",
+                )?;
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    length,
+                )?;
+                Ok(Some(true))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn emit_native_int_list_get_match(
+        &self,
+        matched: NativeIntListGetMatch<'_>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let index_value = self.alloc_value("int.list.get.index.value");
+        if !self.emit_expr(matched.index, index_value)? {
+            return Ok(false);
+        }
+        let index = self.int_scalar(index_value)?;
+        let storage = self.native_int_lists[&matched.local];
+        let length = self.backend.load_i64_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_LENGTH,
+            "int.list.get.length",
+        )?;
+        let negative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                index,
+                self.backend.i64_type.const_zero(),
+                "int.list.get.negative",
+            )
+            .map_err(builder_error)?;
+        let past_end = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::SGE, index, length, "int.list.get.past.end")
+            .map_err(builder_error)?;
+        let out_of_bounds = self
+            .backend
+            .builder
+            .build_or(negative, past_end, "int.list.get.out.of.bounds")
+            .map_err(builder_error)?;
+        let some = self.append_block("int.list.get.some");
+        let none = self.append_block("int.list.get.none");
+        let merge = self.append_block("int.list.get.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(out_of_bounds, none, some)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(some);
+        let data = self.backend.load_pointer_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_DATA,
+            "int.list.get.data",
+        )?;
+        // This block is reachable only for `0 <= index < length`, and the
+        // runtime ABI guarantees `length <= capacity` for this storage.
+        let slot = self.native_int_list_element_pointer(data, index, "int.list.get.slot")?;
+        let scalar = self
+            .backend
+            .builder
+            .build_load(self.backend.i64_type, slot, "int.list.get.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        if let Some(binding) = matched.some_binding {
+            let binding = self.local(binding)?;
+            self.initialize(binding, VALUE_TAG_INT)?;
+            self.backend.store_i64_field(
+                self.backend.value_type,
+                binding,
+                VALUE_FIELD_SCALAR,
+                scalar,
+            )?;
+        }
+        let some_continues = self.emit_expr(&matched.some.value, destination)?;
+        if some_continues {
+            self.backend.branch(merge)?;
+        }
+
+        self.backend.builder.position_at_end(none);
+        let none_continues = self.emit_expr(&matched.none.value, destination)?;
+        if none_continues {
+            self.backend.branch(merge)?;
+        }
+
+        self.backend.builder.position_at_end(merge);
+        if some_continues || none_continues {
+            Ok(true)
+        } else {
+            self.backend
+                .builder
+                .build_unreachable()
+                .map_err(builder_error)?;
+            Ok(false)
+        }
+    }
+
+    fn native_int_list_element_pointer(
+        &self,
+        data: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let base = self
+            .backend
+            .builder
+            .build_ptr_to_int(data, self.backend.i64_type, &format!("{name}.base"))
+            .map_err(builder_error)?;
+        let offset = self
+            .backend
+            .builder
+            .build_int_mul(
+                index,
+                self.backend.i64_type.const_int(8, false),
+                &format!("{name}.offset"),
+            )
+            .map_err(builder_error)?;
+        let address = self
+            .backend
+            .builder
+            .build_int_add(base, offset, &format!("{name}.address"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_int_to_ptr(address, self.backend.ptr_type, name)
+            .map_err(builder_error)
     }
 
     fn emit_list_builtin_values(
