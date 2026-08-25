@@ -2449,7 +2449,6 @@ impl<'program> Validator<'program> {
             }
         }
         self.validate_locals(function, path);
-        self.validate_suspension_points(function, path);
         self.validate_receiver(function, path);
 
         let explicit_parameters = if function.receiver.is_some() {
@@ -2514,6 +2513,7 @@ impl<'program> Validator<'program> {
             0,
         );
         if !self.nesting_failed {
+            self.validate_suspension_points(function, path);
             self.validate_function_dataflow(function, path);
         }
     }
