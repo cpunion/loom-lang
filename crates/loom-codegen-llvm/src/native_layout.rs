@@ -103,10 +103,36 @@ impl NativeLayout {
     }
 }
 
+/// How one source parameter crosses the compiler-private native ABI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativePassMode {
+    Value,
+    InOut,
+}
+
+/// Physical layout and passing mode for one compiler-private parameter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeParameterLayout {
+    layout: NativeLayout,
+    mode: NativePassMode,
+}
+
+impl NativeParameterLayout {
+    #[must_use]
+    pub(crate) const fn layout(&self) -> &NativeLayout {
+        &self.layout
+    }
+
+    #[must_use]
+    pub(crate) const fn mode(&self) -> NativePassMode {
+        self.mode
+    }
+}
+
 /// Parameter and result layouts for a function supported by the private native ABI.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NativeSignatureShape {
-    parameters: Vec<NativeLayout>,
+    parameters: Vec<NativeParameterLayout>,
     result: NativeLayout,
 }
 
@@ -126,35 +152,71 @@ pub(crate) struct NativeSignature {
 
 impl NativeSignatureShape {
     /// Selects only functions which the production LLVM emitter fully lowers through a private
-    /// native ABI. Aggregate layouts remain catalog-only until their calling convention and
-    /// value-boundary materialization are fully implemented.
+    /// native ABI. POD records are deliberately restricted to a mutable receiver and/or result:
+    /// every other aggregate boundary keeps using the universal `Value` ABI.
     #[must_use]
-    pub(crate) fn for_supported_function(function: &Function) -> Option<Self> {
-        if function.is_async
-            || function.type_parameters != 0
-            || function.receiver.is_some()
-            || !function.witness_params.is_empty()
+    pub(crate) fn for_supported_function(program: &Program, function: &Function) -> Option<Self> {
+        if function.is_async || function.type_parameters != 0 || !function.witness_params.is_empty()
         {
             return None;
         }
 
-        let parameters = function
-            .params
-            .iter()
-            .map(|parameter| NativeScalar::for_type(&parameter.ty).map(NativeLayout::Scalar))
-            .collect::<Option<Vec<_>>>()?;
-        let result = NativeLayout::Scalar(NativeScalar::for_type(&function.return_ty)?);
+        let mut parameters = Vec::with_capacity(function.params.len());
+        for (index, parameter) in function.params.iter().enumerate() {
+            let (layout, mode) =
+                if index == 0 && function.receiver == Some(loom_mir::Receiver::Mutable) {
+                    let layout = NativeLayout::classify(program, &parameter.ty)?;
+                    if !matches!(layout, NativeLayout::PodRecord(_)) {
+                        return None;
+                    }
+                    (layout, NativePassMode::InOut)
+                } else {
+                    (
+                        NativeLayout::Scalar(NativeScalar::for_type(&parameter.ty)?),
+                        NativePassMode::Value,
+                    )
+                };
+            parameters.push(NativeParameterLayout { layout, mode });
+        }
+        if function.receiver == Some(loom_mir::Receiver::Readonly)
+            || (function.receiver.is_some()
+                && !matches!(parameters.first(), Some(parameter) if parameter.mode == NativePassMode::InOut))
+        {
+            return None;
+        }
+
+        let result = NativeLayout::classify(program, &function.return_ty)?;
+        let uses_pod = matches!(result, NativeLayout::PodRecord(_))
+            || parameters
+                .iter()
+                .any(|parameter| matches!(parameter.layout, NativeLayout::PodRecord(_)));
+        if uses_pod
+            && (function.call_plan.receiver_invariant.is_some()
+                || !function.call_plan.requires.is_empty()
+                || !function.call_plan.ensures.is_empty())
+        {
+            return None;
+        }
         Some(Self { parameters, result })
     }
 
     #[must_use]
-    pub(crate) fn parameters(&self) -> &[NativeLayout] {
+    pub(crate) fn parameters(&self) -> &[NativeParameterLayout] {
         &self.parameters
     }
 
     #[must_use]
     pub(crate) const fn result(&self) -> &NativeLayout {
         &self.result
+    }
+
+    #[must_use]
+    pub(crate) fn uses_pod(&self) -> bool {
+        matches!(self.result, NativeLayout::PodRecord(_))
+            || self
+                .parameters
+                .iter()
+                .any(|parameter| matches!(parameter.layout, NativeLayout::PodRecord(_)))
     }
 
     #[must_use]
@@ -189,7 +251,9 @@ mod tests {
         TypeId, WitnessParam,
     };
 
-    use super::{NativeEffectAbi, NativeLayout, NativeScalar, NativeSignatureShape};
+    use super::{
+        NativeEffectAbi, NativeLayout, NativePassMode, NativeScalar, NativeSignatureShape,
+    };
 
     fn scalar_int_function() -> Function {
         Function {
@@ -334,10 +398,12 @@ mod tests {
 
     #[test]
     fn selects_production_primitive_scalar_shapes() {
-        let shape = NativeSignatureShape::for_supported_function(&scalar_int_function())
+        let program = Program::default();
+        let shape = NativeSignatureShape::for_supported_function(&program, &scalar_int_function())
             .expect("scalar Int function should have a private native shape");
         let int = NativeLayout::Scalar(NativeScalar::Int);
-        assert_eq!(shape.parameters(), std::slice::from_ref(&int));
+        assert_eq!(shape.parameters()[0].layout(), &int);
+        assert_eq!(shape.parameters()[0].mode(), NativePassMode::Value);
         assert_eq!(shape.result(), &int);
 
         let signature = shape.clone().with_effect(NativeEffectAbi::PureNoFault);
@@ -352,11 +418,65 @@ mod tests {
             let mut function = scalar_int_function();
             function.params[0].ty = scalar.clone();
             function.return_ty = scalar.clone();
-            let shape = NativeSignatureShape::for_supported_function(&function)
+            let shape = NativeSignatureShape::for_supported_function(&program, &function)
                 .unwrap_or_else(|| panic!("{scalar:?} should have a native scalar shape"));
             assert_eq!(shape.parameters().len(), 1);
-            assert_eq!(shape.parameters(), std::slice::from_ref(shape.result()));
+            assert_eq!(shape.parameters()[0].layout(), shape.result());
         }
+    }
+
+    #[test]
+    fn selects_only_representation_safe_pod_receiver_and_result_boundaries() {
+        let mut program = Program {
+            types: vec![record_type(0, 0, vec![Type::Int, Type::Bool], None)],
+            ..Program::default()
+        };
+        let record = Type::Nominal(TypeId(0), Vec::new());
+
+        let mut method = scalar_int_function();
+        method.name = "update".into();
+        method.receiver = Some(Receiver::Mutable);
+        method.params[0].name = "self".into();
+        method.params[0].ty = record.clone();
+        method.params.push(LocalDecl {
+            id: LocalId(1),
+            name: "value".into(),
+            ty: Type::Int,
+            mutable: false,
+            span: Default::default(),
+        });
+        method.return_ty = Type::Unit;
+        let shape = NativeSignatureShape::for_supported_function(&program, &method)
+            .expect("mutable POD receiver should have a private inout ABI");
+        assert!(shape.uses_pod());
+        assert_eq!(shape.parameters()[0].mode(), NativePassMode::InOut);
+        assert!(matches!(
+            shape.parameters()[0].layout(),
+            NativeLayout::PodRecord(_)
+        ));
+        assert_eq!(shape.parameters()[1].mode(), NativePassMode::Value);
+
+        let mut producer = scalar_int_function();
+        producer.params.clear();
+        producer.return_ty = record.clone();
+        let shape = NativeSignatureShape::for_supported_function(&program, &producer)
+            .expect("POD return should have a private result ABI");
+        assert!(matches!(shape.result(), NativeLayout::PodRecord(_)));
+
+        method.receiver = Some(Receiver::Readonly);
+        assert!(NativeSignatureShape::for_supported_function(&program, &method).is_none());
+        method.receiver = Some(Receiver::Mutable);
+        method.call_plan.requires.push(true_contract());
+        assert!(NativeSignatureShape::for_supported_function(&program, &method).is_none());
+
+        let mut ordinary_parameter = scalar_int_function();
+        ordinary_parameter.params[0].ty = record;
+        assert!(
+            NativeSignatureShape::for_supported_function(&program, &ordinary_parameter).is_none()
+        );
+
+        program.types[0] = record_type(0, 0, vec![Type::Int], Some(true_contract()));
+        assert!(NativeSignatureShape::for_supported_function(&program, &producer).is_none());
     }
 
     #[test]
@@ -381,7 +501,8 @@ mod tests {
 
         for function in [asynchronous, generic, receiver, witnessed, record_parameter] {
             assert!(
-                NativeSignatureShape::for_supported_function(&function).is_none(),
+                NativeSignatureShape::for_supported_function(&Program::default(), &function)
+                    .is_none(),
                 "unsupported function shape was selected: {}",
                 function.name
             );

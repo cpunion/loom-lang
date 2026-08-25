@@ -5,7 +5,7 @@ use loom_mir::{
     Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
-use crate::native_layout::NativeLayout;
+use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
 use crate::native_range::NativeIntRangePlan;
 use crate::native_storage::{NativeIntListPlan, NativeStackRecordPlan};
 use crate::{CodegenError, ReachableProgram};
@@ -73,8 +73,12 @@ pub(crate) struct FunctionRequirements {
     /// Requirements observed when source code invokes this function. For an
     /// async function this is the constructor, not the deferred resume body.
     pub(crate) invocation: RuntimeRequirements,
-    /// Requirements of the synchronous body or generated async resume body.
+    /// Requirements of the universal-`Value` synchronous body or generated async resume body.
     pub(crate) body: RuntimeRequirements,
+    /// Requirements of the compiler-private native body. This is kept separate because a POD
+    /// return can avoid managed materialization while the universal fallback must still root its
+    /// moving-GC allocation boundary.
+    pub(crate) native_body: RuntimeRequirements,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,7 +89,21 @@ pub(crate) struct RuntimeRequirementGraph {
 #[derive(Clone, Debug, Default)]
 struct LocalRequirements {
     requirements: RuntimeRequirements,
-    callees: BTreeSet<FunctionId>,
+    callees: BTreeSet<RequirementCallee>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RequirementCallee {
+    Universal(FunctionId),
+    Native(FunctionId),
+}
+
+#[derive(Clone, Debug, Default)]
+struct LocalFunctionRequirements {
+    universal: LocalRequirements,
+    native: LocalRequirements,
+    has_native_abi: bool,
+    native_uses_pod: bool,
 }
 
 struct RequirementScanner<'a> {
@@ -95,6 +113,7 @@ struct RequirementScanner<'a> {
     int_ranges: &'a NativeIntRangePlan,
     native_int_lists: NativeIntListPlan,
     stack_records: &'a NativeStackRecordPlan,
+    native_result: bool,
 }
 
 impl RuntimeRequirementGraph {
@@ -104,86 +123,24 @@ impl RuntimeRequirementGraph {
         int_ranges: &NativeIntRangePlan,
         stack_record_plans: &BTreeMap<FunctionId, NativeStackRecordPlan>,
     ) -> Result<Self, CodegenError> {
-        let empty_stack_records = NativeStackRecordPlan::default();
         let mut local = BTreeMap::new();
         for id in &reachable.functions {
-            let function = program.function(*id).ok_or_else(|| {
-                CodegenError::new(
-                    "InvalidFunctionReference",
-                    format!("reachable function #{} does not exist", id.0),
-                )
-            })?;
-            let mut requirements = LocalRequirements::default();
-            if function.call_plan.receiver_invariant.is_some()
-                || !function.call_plan.requires.is_empty()
-                || !function.call_plan.ensures.is_empty()
-            {
-                requirements.requirements.include(
-                    RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT),
-                );
-            }
-            let stack_records = stack_record_plans.get(id).unwrap_or(&empty_stack_records);
-            RequirementScanner {
-                program,
-                reachable,
-                function,
-                int_ranges,
-                native_int_lists: NativeIntListPlan::analyze(program, function),
-                stack_records,
-            }
-            .scan_block(&function.body, &mut requirements)?;
-            local.insert(*id, requirements);
+            local.insert(
+                *id,
+                analyze_local_function(program, reachable, int_ranges, stack_record_plans, *id)?,
+            );
         }
 
         let mut functions = local
             .iter()
-            .map(|(id, local)| {
-                let asynchronous = program
-                    .function(*id)
-                    .is_some_and(|function| function.is_async);
-                let body = if asynchronous {
-                    local.requirements.union(RuntimeRequirements::ASYNC)
-                } else {
-                    local.requirements
-                };
-                let invocation = if asynchronous {
-                    RuntimeRequirements::ASYNC
-                } else {
-                    body
-                };
-                (*id, FunctionRequirements { invocation, body })
-            })
+            .map(|(id, local)| (*id, initial_function_requirements(program, *id, local)))
             .collect::<BTreeMap<_, _>>();
 
         loop {
             let previous = functions.clone();
             let mut changed = false;
             for (id, local) in &local {
-                let asynchronous = program
-                    .function(*id)
-                    .is_some_and(|function| function.is_async);
-                let mut body = local.requirements;
-                if asynchronous {
-                    body.include(RuntimeRequirements::ASYNC);
-                }
-                for callee in &local.callees {
-                    let callee = previous.get(callee).ok_or_else(|| {
-                        CodegenError::new(
-                            "ReachabilityDefect",
-                            format!(
-                                "runtime-requirement edge to function #{} is not live",
-                                callee.0
-                            ),
-                        )
-                    })?;
-                    body.include(callee.invocation);
-                }
-                let invocation = if asynchronous {
-                    RuntimeRequirements::ASYNC
-                } else {
-                    body
-                };
-                let next = FunctionRequirements { invocation, body };
+                let next = resolve_function_requirements(program, *id, local, &previous)?;
                 changed |= functions.insert(*id, next) != Some(next);
             }
             if !changed {
@@ -204,7 +161,160 @@ impl RuntimeRequirementGraph {
     }
 }
 
+fn analyze_local_function(
+    program: &Program,
+    reachable: &ReachableProgram,
+    int_ranges: &NativeIntRangePlan,
+    stack_record_plans: &BTreeMap<FunctionId, NativeStackRecordPlan>,
+    id: FunctionId,
+) -> Result<LocalFunctionRequirements, CodegenError> {
+    let function = program.function(id).ok_or_else(|| {
+        CodegenError::new(
+            "InvalidFunctionReference",
+            format!("reachable function #{} does not exist", id.0),
+        )
+    })?;
+    let empty_stack_records = NativeStackRecordPlan::default();
+    let stack_records = stack_record_plans.get(&id).unwrap_or(&empty_stack_records);
+    let native_shape = NativeSignatureShape::for_supported_function(program, function);
+    let scan = |native_result| -> Result<LocalRequirements, CodegenError> {
+        let mut requirements = LocalRequirements::default();
+        if function.call_plan.receiver_invariant.is_some()
+            || !function.call_plan.requires.is_empty()
+            || !function.call_plan.ensures.is_empty()
+        {
+            requirements
+                .requirements
+                .include(RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT));
+        }
+        RequirementScanner {
+            program,
+            reachable,
+            function,
+            int_ranges,
+            native_int_lists: NativeIntListPlan::analyze(program, function),
+            stack_records,
+            native_result,
+        }
+        .scan_function_body(&function.body, &mut requirements)?;
+        Ok(requirements)
+    };
+    let universal = scan(false)?;
+    let native = if native_shape.is_some() {
+        scan(true)?
+    } else {
+        universal.clone()
+    };
+    Ok(LocalFunctionRequirements {
+        universal,
+        native,
+        has_native_abi: native_shape.is_some(),
+        native_uses_pod: native_shape
+            .as_ref()
+            .is_some_and(NativeSignatureShape::uses_pod),
+    })
+}
+
+fn initial_function_requirements(
+    program: &Program,
+    id: FunctionId,
+    local: &LocalFunctionRequirements,
+) -> FunctionRequirements {
+    compose_function_requirements(
+        program,
+        id,
+        local,
+        local.universal.requirements,
+        local.native.requirements,
+    )
+}
+
+fn resolve_function_requirements(
+    program: &Program,
+    id: FunctionId,
+    local: &LocalFunctionRequirements,
+    previous: &BTreeMap<FunctionId, FunctionRequirements>,
+) -> Result<FunctionRequirements, CodegenError> {
+    let body = resolve_callees(&local.universal, previous)?;
+    let native_body = resolve_callees(&local.native, previous)?;
+    Ok(compose_function_requirements(
+        program,
+        id,
+        local,
+        body,
+        native_body,
+    ))
+}
+
+fn resolve_callees(
+    local: &LocalRequirements,
+    previous: &BTreeMap<FunctionId, FunctionRequirements>,
+) -> Result<RuntimeRequirements, CodegenError> {
+    let mut resolved = local.requirements;
+    for edge in &local.callees {
+        let (callee_id, native) = match edge {
+            RequirementCallee::Universal(callee) => (*callee, false),
+            RequirementCallee::Native(callee) => (*callee, true),
+        };
+        let callee = previous.get(&callee_id).ok_or_else(|| {
+            CodegenError::new(
+                "ReachabilityDefect",
+                format!(
+                    "runtime-requirement edge to function #{} is not live",
+                    callee_id.0
+                ),
+            )
+        })?;
+        resolved.include(if native {
+            callee.native_body
+        } else {
+            callee.invocation
+        });
+    }
+    Ok(resolved)
+}
+
+fn compose_function_requirements(
+    program: &Program,
+    id: FunctionId,
+    local: &LocalFunctionRequirements,
+    mut body: RuntimeRequirements,
+    mut native_body: RuntimeRequirements,
+) -> FunctionRequirements {
+    let asynchronous = program
+        .function(id)
+        .is_some_and(|function| function.is_async);
+    if asynchronous {
+        body.include(RuntimeRequirements::ASYNC);
+        native_body.include(RuntimeRequirements::ASYNC);
+    }
+    let invocation = if asynchronous {
+        RuntimeRequirements::ASYNC
+    } else if local.has_native_abi && !local.native_uses_pod {
+        native_body
+    } else {
+        body
+    };
+    FunctionRequirements {
+        invocation,
+        body,
+        native_body,
+    }
+}
+
 impl RequirementScanner<'_> {
+    fn scan_function_body(
+        &self,
+        block: &Block,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        self.scan_block_statements(block, output)?;
+        if let Some(tail) = &block.tail {
+            self.scan_result_expr(tail, output)?;
+        }
+        Ok(())
+    }
+
     fn scan_block(
         &self,
         block: &Block,
@@ -259,7 +369,7 @@ impl RequirementScanner<'_> {
                 }
                 StatementKind::Return(value) => {
                     if let Some(value) = value {
-                        self.scan_expr(value, output)?;
+                        self.scan_result_expr(value, output)?;
                     }
                 }
             }
@@ -291,11 +401,160 @@ impl RequirementScanner<'_> {
                 })?;
                 self.scan_planned_stack_record_initializer(tail, output)
             }
+            ExprKind::Call {
+                target,
+                type_arguments,
+                arguments,
+                witnesses,
+            } if type_arguments.is_empty()
+                && witnesses.is_empty()
+                && self.native_call_compatible(target, arguments, true) =>
+            {
+                self.scan_call(target, arguments, output, true)
+            }
             _ => Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "stack-record requirement plan does not match its initializer",
             )),
         }
+    }
+
+    fn scan_result_expr(
+        &self,
+        expression: &Expr,
+        output: &mut LocalRequirements,
+    ) -> Result<(), CodegenError> {
+        if !self.native_result
+            || !matches!(
+                NativeLayout::classify(self.program, &self.function.return_ty),
+                Some(NativeLayout::PodRecord(_))
+            )
+        {
+            return self.scan_expr(expression, output);
+        }
+        match &expression.kind {
+            ExprKind::Copy(place)
+                if place.projection.is_empty() && self.private_record_local(place.local) =>
+            {
+                Ok(())
+            }
+            ExprKind::Record {
+                fields,
+                construction: loom_mir::ConstructionMode::Plain | loom_mir::ConstructionMode::Proven,
+                ..
+            } => {
+                for field in fields {
+                    self.scan_expr(field, output)?;
+                }
+                Ok(())
+            }
+            ExprKind::Block(block) => {
+                self.scan_block_statements(block, output)?;
+                let tail = block.tail.as_deref().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "native POD result block has no tail")
+                })?;
+                self.scan_result_expr(tail, output)
+            }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.scan_expr(condition, output)?;
+                self.scan_function_body(then_branch, output)?;
+                self.scan_function_body(else_branch, output)
+            }
+            ExprKind::Call {
+                target,
+                type_arguments,
+                arguments,
+                witnesses,
+            } if type_arguments.is_empty()
+                && witnesses.is_empty()
+                && self.native_call_compatible(target, arguments, true) =>
+            {
+                self.scan_call(target, arguments, output, true)
+            }
+            _ => self.scan_expr(expression, output),
+        }
+    }
+
+    fn private_record_local(&self, local: loom_mir::LocalId) -> bool {
+        self.stack_records.contains(local)
+            || (self.native_result
+                && self.function.receiver == Some(loom_mir::Receiver::Mutable)
+                && self
+                    .function
+                    .params
+                    .first()
+                    .is_some_and(|parameter| parameter.id == local))
+    }
+
+    fn native_call_compatible(
+        &self,
+        target: &CallTarget,
+        arguments: &[CallArgument],
+        private_result: bool,
+    ) -> bool {
+        let (CallTarget::Direct(function) | CallTarget::Inherent(function)) = target else {
+            return false;
+        };
+        let Some(function) = self.program.function(*function) else {
+            return false;
+        };
+        let Some(shape) = NativeSignatureShape::for_supported_function(self.program, function)
+        else {
+            return false;
+        };
+        if arguments.len() != shape.parameters().len()
+            || matches!(shape.result(), NativeLayout::PodRecord(_)) != private_result
+        {
+            return false;
+        }
+        arguments
+            .iter()
+            .zip(shape.parameters())
+            .all(
+                |(argument, parameter)| match (argument, parameter.layout(), parameter.mode()) {
+                    (CallArgument::Value(_), NativeLayout::Scalar(_), NativePassMode::Value) => {
+                        true
+                    }
+                    (
+                        CallArgument::InOut(place),
+                        NativeLayout::PodRecord(_),
+                        NativePassMode::InOut,
+                    ) => place.projection.is_empty() && self.private_record_local(place.local),
+                    _ => false,
+                },
+            )
+    }
+
+    fn scan_call(
+        &self,
+        target: &CallTarget,
+        arguments: &[CallArgument],
+        output: &mut LocalRequirements,
+        private_result: bool,
+    ) -> Result<(), CodegenError> {
+        for argument in arguments {
+            if let CallArgument::Value(value) = argument {
+                self.scan_expr(value, output)?;
+            }
+        }
+        let (CallTarget::Direct(callee) | CallTarget::Inherent(callee)) = target else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "private native call scanner received a dynamic target",
+            ));
+        };
+        if !self.native_call_compatible(target, arguments, private_result) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "private native call scanner disagrees with ABI selection",
+            ));
+        }
+        output.callees.insert(RequirementCallee::Native(*callee));
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -409,6 +668,9 @@ impl RequirementScanner<'_> {
             ExprKind::Call {
                 target, arguments, ..
             } => {
+                if self.native_call_compatible(target, arguments, false) {
+                    return self.scan_call(target, arguments, output, false);
+                }
                 for (index, argument) in arguments.iter().enumerate() {
                     if let CallArgument::Value(value) = argument {
                         if !matches!(target, CallTarget::Builtin(builtin)
@@ -427,7 +689,7 @@ impl RequirementScanner<'_> {
                                 format!("call target #{} does not exist", callee.0),
                             )
                         })?;
-                        output.callees.insert(*callee);
+                        output.callees.insert(RequirementCallee::Universal(*callee));
                     }
                     CallTarget::StaticConcept {
                         requirement,
@@ -449,7 +711,7 @@ impl RequirementScanner<'_> {
                                         ),
                                     )
                                 })?;
-                            output.callees.insert(method);
+                            output.callees.insert(RequirementCallee::Universal(method));
                         } else {
                             add_dynamic_callees(
                                 self.program,
@@ -519,7 +781,7 @@ fn add_dynamic_callees(
                     ),
                 )
             })?;
-        output.callees.insert(method);
+        output.callees.insert(RequirementCallee::Universal(method));
     }
     Ok(())
 }
@@ -771,6 +1033,7 @@ mod tests {
         .expect("requirements");
         assert!(
             crate::native_layout::NativeSignatureShape::for_supported_function(
+                &program,
                 &program.functions[0]
             )
             .is_some()

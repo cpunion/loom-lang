@@ -11,7 +11,7 @@ use loom_mir::{
     LocalId, MatchArm, Pattern, Place, Program, StatementKind, Type, TypeId,
 };
 
-use crate::native_layout::{NativeLayout, NativePodRecord};
+use crate::native_layout::{NativeLayout, NativePodRecord, NativeSignatureShape};
 
 const MAX_STACK_RECORD_FIELDS: usize = 16;
 const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
@@ -24,6 +24,7 @@ const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NativeStackRecordPlan {
     candidates: BTreeMap<LocalId, StackRecordCandidate>,
+    native_pod_initializers: BTreeMap<loom_mir::FunctionId, TypeId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,9 +56,26 @@ impl NativeStackRecordPlan {
         if eligible.is_empty() {
             return Self::default();
         }
+        let native_pod_initializers = program
+            .functions
+            .iter()
+            .filter_map(|function| {
+                let shape = NativeSignatureShape::for_supported_function(program, function)?;
+                let NativeLayout::PodRecord(result) = shape.result() else {
+                    return None;
+                };
+                Some((function.id, result.nominal()))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut initialized = BTreeMap::<LocalId, usize>::new();
         let mut forbidden = BTreeSet::new();
-        scan_stack_record_block(&function.body, &eligible, &mut initialized, &mut forbidden);
+        scan_stack_record_block(
+            &function.body,
+            &eligible,
+            &native_pod_initializers,
+            &mut initialized,
+            &mut forbidden,
+        );
         let mut total_nodes = 0_usize;
         let candidates = eligible
             .into_iter()
@@ -80,7 +98,10 @@ impl NativeStackRecordPlan {
                 ))
             })
             .collect();
-        Self { candidates }
+        Self {
+            candidates,
+            native_pod_initializers,
+        }
     }
 
     #[must_use]
@@ -96,23 +117,40 @@ impl NativeStackRecordPlan {
 
     #[must_use]
     pub(crate) fn is_initializer(&self, local: LocalId, expression: &Expr) -> bool {
-        self.candidates
-            .get(&local)
-            .is_some_and(|candidate| is_stack_record_initializer(expression, candidate.nominal))
+        self.candidates.get(&local).is_some_and(|candidate| {
+            is_stack_record_initializer(
+                expression,
+                candidate.nominal,
+                &self.native_pod_initializers,
+            )
+        })
     }
 }
 
-fn is_stack_record_initializer(expression: &Expr, expected: TypeId) -> bool {
+fn is_stack_record_initializer(
+    expression: &Expr,
+    expected: TypeId,
+    native_pod_initializers: &BTreeMap<loom_mir::FunctionId, TypeId>,
+) -> bool {
     match &expression.kind {
         ExprKind::Record {
             ty,
             construction: ConstructionMode::Plain | ConstructionMode::Proven,
             ..
         } => *ty == expected,
-        ExprKind::Block(block) => block
-            .tail
-            .as_deref()
-            .is_some_and(|tail| is_stack_record_initializer(tail, expected)),
+        ExprKind::Block(block) => block.tail.as_deref().is_some_and(|tail| {
+            is_stack_record_initializer(tail, expected, native_pod_initializers)
+        }),
+        ExprKind::Call {
+            target: CallTarget::Direct(function),
+            type_arguments,
+            witnesses,
+            ..
+        } => {
+            type_arguments.is_empty()
+                && witnesses.is_empty()
+                && native_pod_initializers.get(function) == Some(&expected)
+        }
         _ => false,
     }
 }
@@ -120,58 +158,102 @@ fn is_stack_record_initializer(expression: &Expr, expected: TypeId) -> bool {
 fn scan_stack_record_block(
     block: &Block,
     eligible: &BTreeMap<LocalId, NativePodRecord>,
+    native_pod_initializers: &BTreeMap<loom_mir::FunctionId, TypeId>,
     initialized: &mut BTreeMap<LocalId, usize>,
     forbidden: &mut BTreeSet<LocalId>,
 ) {
     for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Let { local, value } => {
-                if let Some(record) = eligible.get(local) {
-                    if is_stack_record_initializer(value, record.nominal()) {
-                        *initialized.entry(*local).or_default() += 1;
-                    } else {
-                        forbidden.insert(*local);
-                    }
-                }
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::LetTuple { locals, value } => {
-                forbidden.extend(
-                    locals
-                        .iter()
-                        .copied()
-                        .filter(|local| eligible.contains_key(local)),
-                );
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::ForRange {
-                start, end, body, ..
-            } => {
-                scan_stack_record_expr(start, eligible, initialized, forbidden);
-                scan_stack_record_expr(end, eligible, initialized, forbidden);
-                scan_stack_record_block(body, eligible, initialized, forbidden);
-            }
-            StatementKind::Assign { place, value } => {
-                if place.projection.is_empty() && eligible.contains_key(&place.local) {
-                    forbidden.insert(place.local);
-                }
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
-            }
-            StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
-                scan_stack_record_expr(condition, eligible, initialized, forbidden);
-            }
-            StatementKind::Defer(cleanup) => {
-                scan_stack_record_block(cleanup, eligible, initialized, forbidden);
-            }
-            StatementKind::Return(value) => {
-                if let Some(value) = value {
-                    scan_stack_record_expr(value, eligible, initialized, forbidden);
-                }
-            }
-        }
+        scan_stack_record_statement(
+            &statement.kind,
+            eligible,
+            native_pod_initializers,
+            initialized,
+            forbidden,
+        );
     }
     if let Some(tail) = &block.tail {
-        scan_stack_record_expr(tail, eligible, initialized, forbidden);
+        scan_stack_record_expr(
+            tail,
+            eligible,
+            native_pod_initializers,
+            initialized,
+            forbidden,
+        );
+    }
+}
+
+fn scan_stack_record_statement(
+    statement: &StatementKind,
+    eligible: &BTreeMap<LocalId, NativePodRecord>,
+    native_pod_initializers: &BTreeMap<loom_mir::FunctionId, TypeId>,
+    initialized: &mut BTreeMap<LocalId, usize>,
+    forbidden: &mut BTreeSet<LocalId>,
+) {
+    macro_rules! scan_expr {
+        ($value:expr) => {
+            scan_stack_record_expr(
+                $value,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            )
+        };
+    }
+    match statement {
+        StatementKind::Let { local, value } => {
+            if let Some(record) = eligible.get(local) {
+                if is_stack_record_initializer(value, record.nominal(), native_pod_initializers) {
+                    *initialized.entry(*local).or_default() += 1;
+                } else {
+                    forbidden.insert(*local);
+                }
+            }
+            scan_expr!(value);
+        }
+        StatementKind::LetTuple { locals, value } => {
+            forbidden.extend(
+                locals
+                    .iter()
+                    .copied()
+                    .filter(|local| eligible.contains_key(local)),
+            );
+            scan_expr!(value);
+        }
+        StatementKind::ForRange {
+            start, end, body, ..
+        } => {
+            scan_expr!(start);
+            scan_expr!(end);
+            scan_stack_record_block(
+                body,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
+        }
+        StatementKind::Assign { place, value } => {
+            if place.projection.is_empty() && eligible.contains_key(&place.local) {
+                forbidden.insert(place.local);
+            }
+            scan_expr!(value);
+        }
+        StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
+            scan_expr!(condition);
+        }
+        StatementKind::Defer(cleanup) => scan_stack_record_block(
+            cleanup,
+            eligible,
+            native_pod_initializers,
+            initialized,
+            forbidden,
+        ),
+        StatementKind::Return(value) => {
+            if let Some(value) = value {
+                scan_expr!(value);
+            }
+        }
     }
 }
 
@@ -179,6 +261,7 @@ fn scan_stack_record_block(
 fn scan_stack_record_expr(
     expression: &Expr,
     eligible: &BTreeMap<LocalId, NativePodRecord>,
+    native_pod_initializers: &BTreeMap<loom_mir::FunctionId, TypeId>,
     initialized: &mut BTreeMap<LocalId, usize>,
     forbidden: &mut BTreeSet<LocalId>,
 ) {
@@ -195,7 +278,13 @@ fn scan_stack_record_expr(
             arguments: values, ..
         } => {
             for value in values {
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
+                scan_stack_record_expr(
+                    value,
+                    eligible,
+                    native_pod_initializers,
+                    initialized,
+                    forbidden,
+                );
             }
         }
         ExprKind::Unary(_, value)
@@ -204,47 +293,125 @@ fn scan_stack_record_expr(
         | ExprKind::Await { task: value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        } => scan_stack_record_expr(value, eligible, initialized, forbidden),
+        } => scan_stack_record_expr(
+            value,
+            eligible,
+            native_pod_initializers,
+            initialized,
+            forbidden,
+        ),
         ExprKind::WaitFd { descriptor, .. } => {
-            scan_stack_record_expr(descriptor, eligible, initialized, forbidden);
+            scan_stack_record_expr(
+                descriptor,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
         }
         ExprKind::Binary(_, left, right) => {
-            scan_stack_record_expr(left, eligible, initialized, forbidden);
-            scan_stack_record_expr(right, eligible, initialized, forbidden);
+            scan_stack_record_expr(
+                left,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
+            scan_stack_record_expr(
+                right,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
         }
         ExprKind::Block(block) => {
-            scan_stack_record_block(block, eligible, initialized, forbidden);
+            scan_stack_record_block(
+                block,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
         }
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            scan_stack_record_expr(condition, eligible, initialized, forbidden);
-            scan_stack_record_block(then_branch, eligible, initialized, forbidden);
-            scan_stack_record_block(else_branch, eligible, initialized, forbidden);
+            scan_stack_record_expr(
+                condition,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
+            scan_stack_record_block(
+                then_branch,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
+            scan_stack_record_block(
+                else_branch,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
         }
         ExprKind::Match { scrutinee, arms } => {
-            scan_stack_record_expr(scrutinee, eligible, initialized, forbidden);
+            scan_stack_record_expr(
+                scrutinee,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
             for arm in arms {
-                scan_stack_record_expr(&arm.value, eligible, initialized, forbidden);
+                scan_stack_record_expr(
+                    &arm.value,
+                    eligible,
+                    native_pod_initializers,
+                    initialized,
+                    forbidden,
+                );
             }
         }
         ExprKind::Record { fields, .. } => {
             for field in fields {
-                scan_stack_record_expr(field, eligible, initialized, forbidden);
+                scan_stack_record_expr(
+                    field,
+                    eligible,
+                    native_pod_initializers,
+                    initialized,
+                    forbidden,
+                );
             }
         }
         ExprKind::Variant { payload, .. } => {
             for value in payload {
-                scan_stack_record_expr(value, eligible, initialized, forbidden);
+                scan_stack_record_expr(
+                    value,
+                    eligible,
+                    native_pod_initializers,
+                    initialized,
+                    forbidden,
+                );
             }
         }
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
                 match argument {
                     CallArgument::Value(value) => {
-                        scan_stack_record_expr(value, eligible, initialized, forbidden);
+                        scan_stack_record_expr(
+                            value,
+                            eligible,
+                            native_pod_initializers,
+                            initialized,
+                            forbidden,
+                        );
                     }
                     CallArgument::InOut(_) => {
                         // Checked MIR makes an InOut loan call-scoped. Callees
@@ -258,7 +425,13 @@ fn scan_stack_record_expr(
         ExprKind::MakeView {
             value, writeback, ..
         } => {
-            scan_stack_record_expr(value, eligible, initialized, forbidden);
+            scan_stack_record_expr(
+                value,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
             if let Some(place) = writeback
                 && eligible.contains_key(&place.local)
             {

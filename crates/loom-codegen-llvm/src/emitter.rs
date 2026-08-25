@@ -56,7 +56,8 @@ use crate::abi::{
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
 use crate::native_layout::{
-    NativeEffectAbi, NativeLayout, NativeScalar, NativeSignature, NativeSignatureShape,
+    NativeEffectAbi, NativeLayout, NativePassMode, NativePodRecord, NativeScalar, NativeSignature,
+    NativeSignatureShape,
 };
 use crate::native_range::NativeIntRangePlan;
 use crate::native_storage::{
@@ -732,7 +733,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.emit_async_resume(*function)?;
             } else if self.native_functions.contains_key(function) {
                 self.emit_native_function(*function)?;
-                self.emit_native_wrapper(*function)?;
+                if self.native_functions[function].signature.shape().uses_pod() {
+                    self.emit_function(*function)?;
+                } else {
+                    self.emit_native_wrapper(*function)?;
+                }
             } else {
                 self.emit_function(*function)?;
             }
@@ -750,39 +755,38 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .set_location(self.context, &self.builder, function, file, offset);
     }
 
-    fn native_value_type(
-        &self,
-        layout: &NativeLayout,
-    ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+    fn native_value_type(&self, layout: &NativeLayout) -> BasicTypeEnum<'ctx> {
         match layout {
             NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool) => {
-                Ok(self.context.bool_type().into())
+                self.context.bool_type().into()
             }
-            NativeLayout::Scalar(NativeScalar::Int) => Ok(self.i64_type.into()),
-            NativeLayout::Scalar(NativeScalar::Float) => Ok(self.context.f64_type().into()),
-            NativeLayout::PodRecord(_) => Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "storage-only native layout was selected for the callable ABI",
-            )),
+            NativeLayout::Scalar(NativeScalar::Int) => self.i64_type.into(),
+            NativeLayout::Scalar(NativeScalar::Float) => self.context.f64_type().into(),
+            NativeLayout::PodRecord(record) => self.native_pod_type(record).into(),
         }
     }
 
-    fn native_zero_value(
-        &self,
-        layout: &NativeLayout,
-    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn native_pod_type(&self, record: &NativePodRecord) -> StructType<'ctx> {
+        self.context.struct_type(
+            &record
+                .fields()
+                .iter()
+                .map(|field| self.native_value_type(&NativeLayout::Scalar(*field)))
+                .collect::<Vec<_>>(),
+            false,
+        )
+    }
+
+    fn native_zero_value(&self, layout: &NativeLayout) -> BasicValueEnum<'ctx> {
         match layout {
             NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool) => {
-                Ok(self.context.bool_type().const_zero().into())
+                self.context.bool_type().const_zero().into()
             }
-            NativeLayout::Scalar(NativeScalar::Int) => Ok(self.i64_type.const_zero().into()),
+            NativeLayout::Scalar(NativeScalar::Int) => self.i64_type.const_zero().into(),
             NativeLayout::Scalar(NativeScalar::Float) => {
-                Ok(self.context.f64_type().const_zero().into())
+                self.context.f64_type().const_zero().into()
             }
-            NativeLayout::PodRecord(_) => Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "storage-only native layout has no callable zero value",
-            )),
+            NativeLayout::PodRecord(record) => self.native_pod_type(record).const_zero().into(),
         }
     }
 
@@ -826,7 +830,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             }
             NativeLayout::PodRecord(_) => Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "storage-only native layout was loaded at a callable boundary",
+                "a POD record requires representation-aware native loading",
             )),
         }
     }
@@ -863,7 +867,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             NativeLayout::PodRecord(_) => {
                 return Err(CodegenError::new(
                     "LlvmAbiDefect",
-                    "storage-only native layout was stored at a callable boundary",
+                    "a POD record requires representation-aware native storage",
                 ));
             }
         };
@@ -887,7 +891,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(self.context.struct_type(
             &[
                 self.context.i32_type().into(),
-                self.native_value_type(signature.shape().result())?,
+                self.native_value_type(signature.shape().result()),
             ],
             false,
         ))
@@ -901,14 +905,17 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .shape()
             .parameters()
             .iter()
-            .map(|layout| {
-                self.native_value_type(layout)
-                    .map(BasicMetadataTypeEnum::from)
+            .map(|parameter| {
+                if parameter.mode() == NativePassMode::InOut {
+                    self.ptr_type.into()
+                } else {
+                    BasicMetadataTypeEnum::from(self.native_value_type(parameter.layout()))
+                }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
         match signature.effect() {
             NativeEffectAbi::PureNoFault => Ok(self
-                .native_value_type(signature.shape().result())?
+                .native_value_type(signature.shape().result())
                 .fn_type(&parameters, false)),
             NativeEffectAbi::RuntimeStatus => {
                 parameters.push(self.ptr_type.into());
@@ -938,8 +945,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 source.span.range.start,
             )?;
             self.functions.insert(*id, function);
-            if let Some(shape) = NativeSignatureShape::for_supported_function(source) {
-                let requirements = self.requirements.function(*id)?.body;
+            if let Some(shape) = NativeSignatureShape::for_supported_function(self.program, source)
+            {
+                let requirements = self.requirements.function(*id)?.native_body;
                 let effect = if requirements.is_pure_no_fault() {
                     NativeEffectAbi::PureNoFault
                 } else {
@@ -2975,7 +2983,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
             source.params.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
-        for layout in signature.shape().parameters() {
+        for parameter in signature.shape().parameters() {
             let argument = self.load_pointer_field(
                 self.arg_node_type,
                 argument_node,
@@ -2983,7 +2991,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "argument",
             )?;
             call_arguments.push(
-                self.load_native_value(layout, argument, "argument.native")?
+                self.load_native_value(parameter.layout(), argument, "argument.native")?
                     .into(),
             );
             argument_node = self.load_pointer_field(
@@ -4140,6 +4148,8 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     locals: BTreeMap<LocalId, PointerValue<'ctx>>,
     stack_record_nodes: BTreeMap<LocalId, Vec<PointerValue<'ctx>>>,
+    native_record_output: Option<(NativePodRecord, Vec<PointerValue<'ctx>>)>,
+    native_inout_records: Vec<NativeInOutRecord<'ctx>>,
     native_int_list_plan: NativeIntListPlan,
     native_int_lists: BTreeMap<LocalId, PointerValue<'ctx>>,
     old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
@@ -4158,6 +4168,23 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     gc_live_local_roots: RefCell<BTreeSet<usize>>,
     gc_temporary_roots: RefCell<Vec<usize>>,
     gc_root_states: RefCell<Vec<Vec<usize>>>,
+}
+
+struct NativeInOutRecord<'ctx> {
+    local: LocalId,
+    abi_pointer: PointerValue<'ctx>,
+    layout: NativePodRecord,
+}
+
+struct NativeCallInOutRecord<'ctx> {
+    local: LocalId,
+    abi_pointer: PointerValue<'ctx>,
+    layout: NativePodRecord,
+}
+
+struct PreparedNativeCall<'ctx> {
+    arguments: Vec<BasicMetadataValueEnum<'ctx>>,
+    inout_records: Vec<NativeCallInOutRecord<'ctx>>,
 }
 
 struct PreparedCallArguments<'ctx> {
@@ -4349,6 +4376,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
+            native_record_output: None,
+            native_inout_records: Vec::new(),
             native_int_list_plan,
             native_int_lists,
             old_parameters,
@@ -4381,7 +4410,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 format!("function #{} does not exist", id.0),
             )
         })?;
-        if NativeSignatureShape::for_supported_function(source).is_none() {
+        if NativeSignatureShape::for_supported_function(backend.program, source).is_none() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "unsupported function selected for the native ABI",
@@ -4401,7 +4430,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
-        let gc_may_collect = backend.requirements.function(id)?.body.may_collect();
+        let gc_may_collect = backend.requirements.function(id)?.native_body.may_collect();
         let needs_gc_roots = gc_may_collect && function_may_need_gc_roots(backend.program, source);
         let gc_root_setup = needs_gc_roots.then(|| {
             backend
@@ -4435,14 +4464,31 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
 
         let mut locals = BTreeMap::new();
+        let mut stack_record_nodes = Self::allocate_stack_record_nodes(backend, stack_record_plan)?;
+        let mut native_inout_records = Vec::new();
         let mut gc_root_slots = Vec::new();
         let mut gc_permanent_roots = Vec::new();
         let mut gc_local_roots = BTreeMap::<LocalId, Vec<usize>>::new();
-        if needs_gc_roots && type_may_hold_gc_reference(backend.program, &source.return_ty) {
+        let native_record_output =
+            if let NativeLayout::PodRecord(layout) = signature.shape().result() {
+                let nodes = Self::allocate_private_record_nodes(
+                    backend,
+                    "native.output.record",
+                    layout.fields().len(),
+                )?;
+                Self::initialize_private_record_header(backend, output, layout, &nodes)?;
+                Some((layout.clone(), nodes))
+            } else {
+                None
+            };
+        if needs_gc_roots
+            && native_record_output.is_none()
+            && type_may_hold_gc_reference(backend.program, &source.return_ty)
+        {
             let index = register_gc_root_slot(&mut gc_root_slots, output);
             gc_permanent_roots.push(index);
         }
-        for (index, (parameter, layout)) in source
+        for (index, (parameter, native_parameter)) in source
             .params
             .iter()
             .zip(signature.shape().parameters())
@@ -4457,13 +4503,48 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .map_err(builder_error)?;
             let parameter_index = u32::try_from(index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many native parameters"))?;
-            backend.store_native_value(
-                layout,
-                pointer,
-                parameter_value(function, parameter_index)?,
-            )?;
+            match (native_parameter.layout(), native_parameter.mode()) {
+                (NativeLayout::Scalar(_), NativePassMode::Value) => backend.store_native_value(
+                    native_parameter.layout(),
+                    pointer,
+                    parameter_value(function, parameter_index)?,
+                )?,
+                (NativeLayout::PodRecord(layout), NativePassMode::InOut) => {
+                    let abi_pointer = parameter_pointer(function, parameter_index)?;
+                    let aggregate = backend
+                        .builder
+                        .build_load(
+                            backend.native_pod_type(layout),
+                            abi_pointer,
+                            "native.receiver",
+                        )
+                        .map_err(builder_error)?;
+                    let nodes = Self::allocate_private_record_nodes(
+                        backend,
+                        &format!("native.parameter.{}.record", parameter.id.0),
+                        layout.fields().len(),
+                    )?;
+                    Self::initialize_private_record_header(backend, pointer, layout, &nodes)?;
+                    Self::unpack_native_record_value(backend, layout, aggregate, &nodes)?;
+                    stack_record_nodes.insert(parameter.id, nodes);
+                    native_inout_records.push(NativeInOutRecord {
+                        local: parameter.id,
+                        abi_pointer,
+                        layout: layout.clone(),
+                    });
+                }
+                _ => {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "unsupported native parameter representation reached emission",
+                    ));
+                }
+            }
             locals.insert(parameter.id, pointer);
-            if needs_gc_roots && type_may_hold_gc_reference(backend.program, &parameter.ty) {
+            if needs_gc_roots
+                && matches!(native_parameter.layout(), NativeLayout::Scalar(_))
+                && type_may_hold_gc_reference(backend.program, &parameter.ty)
+            {
                 let index = register_gc_root_slot(&mut gc_root_slots, pointer);
                 gc_permanent_roots.push(index);
             }
@@ -4490,7 +4571,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 gc_local_roots.entry(local.id).or_default().push(index);
             }
         }
-        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, stack_record_plan)?;
         let native_int_lists = Self::allocate_native_int_lists(backend, &native_int_list_plan)?;
 
         let mut old_parameters = BTreeMap::new();
@@ -4539,6 +4619,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
+            native_record_output,
+            native_inout_records,
             native_int_list_plan,
             native_int_lists,
             old_parameters,
@@ -4566,36 +4648,179 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<BTreeMap<LocalId, Vec<PointerValue<'ctx>>>, CodegenError> {
         let mut storage = BTreeMap::new();
         for (local, field_count) in candidates.locals() {
-            let mut nodes = Vec::with_capacity(field_count);
-            for field in 0..field_count {
-                let node = backend
-                    .builder
-                    .build_alloca(
-                        backend.value_node_type,
-                        &format!("record.local.{}.field.{field}", local.0),
-                    )
-                    .map_err(builder_error)?;
-                backend
-                    .builder
-                    .build_store(node, backend.value_node_type.const_zero())
-                    .map_err(builder_error)?;
-                nodes.push(node);
-            }
-            for (index, node) in nodes.iter().copied().enumerate() {
-                let next = nodes
-                    .get(index + 1)
-                    .copied()
-                    .unwrap_or_else(|| backend.ptr_type.const_null());
-                backend.store_pointer_field(
-                    backend.value_node_type,
-                    node,
-                    VALUE_NODE_FIELD_NEXT,
-                    next,
-                )?;
-            }
+            let nodes = Self::allocate_private_record_nodes(
+                backend,
+                &format!("record.local.{}", local.0),
+                field_count,
+            )?;
             storage.insert(local, nodes);
         }
         Ok(storage)
+    }
+
+    fn allocate_private_record_nodes(
+        backend: &'backend Backend<'ctx, 'program>,
+        name: &str,
+        field_count: usize,
+    ) -> Result<Vec<PointerValue<'ctx>>, CodegenError> {
+        let mut nodes = Vec::with_capacity(field_count);
+        for field in 0..field_count {
+            let node = backend
+                .builder
+                .build_alloca(backend.value_node_type, &format!("{name}.field.{field}"))
+                .map_err(builder_error)?;
+            backend
+                .builder
+                .build_store(node, backend.value_node_type.const_zero())
+                .map_err(builder_error)?;
+            nodes.push(node);
+        }
+        for (index, node) in nodes.iter().copied().enumerate() {
+            let next = nodes
+                .get(index + 1)
+                .copied()
+                .unwrap_or_else(|| backend.ptr_type.const_null());
+            backend.store_pointer_field(
+                backend.value_node_type,
+                node,
+                VALUE_NODE_FIELD_NEXT,
+                next,
+            )?;
+        }
+        Ok(nodes)
+    }
+
+    fn initialize_private_record_header(
+        backend: &'backend Backend<'ctx, 'program>,
+        header: PointerValue<'ctx>,
+        layout: &NativePodRecord,
+        nodes: &[PointerValue<'ctx>],
+    ) -> Result<(), CodegenError> {
+        backend
+            .builder
+            .build_store(header, backend.value_type.const_zero())
+            .map_err(builder_error)?;
+        backend.store_i64_field(
+            backend.value_type,
+            header,
+            VALUE_FIELD_TAG,
+            backend.tag(VALUE_TAG_RECORD),
+        )?;
+        backend.store_i64_field(
+            backend.value_type,
+            header,
+            VALUE_FIELD_NOMINAL,
+            backend.tag(u64::from(layout.nominal().0)),
+        )?;
+        backend.store_i64_field(
+            backend.value_type,
+            header,
+            VALUE_FIELD_AUX,
+            backend.tag(nodes.len() as u64),
+        )?;
+        backend.store_pointer_field(
+            backend.value_type,
+            header,
+            VALUE_FIELD_DATA,
+            nodes
+                .first()
+                .copied()
+                .unwrap_or_else(|| backend.ptr_type.const_null()),
+        )
+    }
+
+    fn unpack_native_record_value(
+        backend: &'backend Backend<'ctx, 'program>,
+        layout: &NativePodRecord,
+        value: BasicValueEnum<'ctx>,
+        nodes: &[PointerValue<'ctx>],
+    ) -> Result<(), CodegenError> {
+        let value = value.into_struct_value();
+        if layout.fields().len() != nodes.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "native POD value does not match its private field storage",
+            ));
+        }
+        for (index, (field, node)) in layout.fields().iter().zip(nodes).enumerate() {
+            let field_value = backend
+                .builder
+                .build_extract_value(
+                    value,
+                    u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "POD record has too many fields")
+                    })?,
+                    "native.record.field",
+                )
+                .map_err(builder_error)?;
+            let destination = backend.struct_pointer(
+                backend.value_node_type,
+                *node,
+                VALUE_NODE_FIELD_VALUE,
+                "native.record.field.value",
+            )?;
+            backend.store_native_value(&NativeLayout::Scalar(*field), destination, field_value)?;
+        }
+        Ok(())
+    }
+
+    fn pack_native_record_value(
+        &self,
+        layout: &NativePodRecord,
+        nodes: &[PointerValue<'ctx>],
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if layout.fields().len() != nodes.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "private POD field storage does not match its native layout",
+            ));
+        }
+        let mut aggregate = self.backend.native_pod_type(layout).get_undef();
+        for (index, (field, node)) in layout.fields().iter().zip(nodes).enumerate() {
+            let source = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                *node,
+                VALUE_NODE_FIELD_VALUE,
+                &format!("{name}.field.value"),
+            )?;
+            let value = self.backend.load_native_value(
+                &NativeLayout::Scalar(*field),
+                source,
+                &format!("{name}.field.native"),
+            )?;
+            aggregate = self
+                .backend
+                .builder
+                .build_insert_value(
+                    aggregate,
+                    value,
+                    u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "POD record has too many fields")
+                    })?,
+                    name,
+                )
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        Ok(aggregate.into())
+    }
+
+    fn writeback_native_inout_records(&self) -> Result<(), CodegenError> {
+        for record in &self.native_inout_records {
+            let nodes = self.stack_record_nodes.get(&record.local).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "native inout record lost its private field storage",
+                )
+            })?;
+            let value = self.pack_native_record_value(&record.layout, nodes, "native.writeback")?;
+            self.backend
+                .builder
+                .build_store(record.abi_pointer, value)
+                .map_err(builder_error)?;
+        }
+        Ok(())
     }
 
     fn allocate_native_int_lists(
@@ -4807,6 +5032,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             resume_blocks,
             locals,
             stack_record_nodes: BTreeMap::new(),
+            native_record_output: None,
+            native_inout_records: Vec::new(),
             native_int_list_plan: NativeIntListPlan::default(),
             native_int_lists: BTreeMap::new(),
             old_parameters,
@@ -4839,12 +5066,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if !self.current_block_terminated() {
             let value = self
                 .native_signature
-                .map(|signature| {
-                    self.backend.load_native_value(
+                .map(|signature| match signature.shape().result() {
+                    NativeLayout::PodRecord(layout) => {
+                        let (_, nodes) = self.native_record_output.as_ref().ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "native POD result has no private destination",
+                            )
+                        })?;
+                        self.pack_native_record_value(layout, nodes, "native.result")
+                    }
+                    NativeLayout::Scalar(_) => self.backend.load_native_value(
                         signature.shape().result(),
                         self.output,
                         "native.result",
-                    )
+                    ),
                 })
                 .transpose()?;
             self.emit_status_return(self.backend.context.i32_type().const_zero(), value)?;
@@ -5190,6 +5426,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         // Source defers and exit contracts have already run at every caller.
         // Native list storage is compiler-owned and therefore released last,
         // after the result/status has been fully materialized.
+        self.writeback_native_inout_records()?;
         for storage in self.native_int_lists.values().copied() {
             self.backend
                 .builder
@@ -5234,7 +5471,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         .build_insert_value(
                             aggregate,
                             value.unwrap_or(
-                                self.backend.native_zero_value(signature.shape().result())?,
+                                self.backend.native_zero_value(signature.shape().result()),
                             ),
                             1,
                             "native.value",
@@ -7849,6 +8086,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         construction: ConstructionMode,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
+        if destination == self.output
+            && let Some((layout, nodes)) = &self.native_record_output
+            && layout.nominal() == ty
+        {
+            return self.emit_record_with_nodes(ty, fields, construction, destination, Some(nodes));
+        }
         self.emit_record_with_nodes(ty, fields, construction, destination, None)
     }
 
@@ -7881,6 +8124,32 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "stack record copy source has no private nodes",
             )
         })?;
+        if destination == self.output
+            && let Some((layout, output_nodes)) = &self.native_record_output
+        {
+            if layout.nominal() != ty || nodes.len() != output_nodes.len() {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "native POD result destination does not match its source record",
+                ));
+            }
+            for (source, output) in nodes.iter().zip(output_nodes) {
+                let source = self.backend.struct_pointer(
+                    self.backend.value_node_type,
+                    *source,
+                    VALUE_NODE_FIELD_VALUE,
+                    "record.copy.private.source",
+                )?;
+                let output = self.backend.struct_pointer(
+                    self.backend.value_node_type,
+                    *output,
+                    VALUE_NODE_FIELD_VALUE,
+                    "record.copy.private.destination",
+                )?;
+                self.shallow_copy_named(output, source, "record.copy.private")?;
+            }
+            return Ok(());
+        }
         let values = nodes
             .iter()
             .copied()
@@ -7938,9 +8207,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 ..
             } => self.emit_record_with_nodes(*ty, fields, *construction, destination, Some(nodes)),
             ExprKind::Block(block) => self.emit_block_with_record_nodes(block, destination, nodes),
+            ExprKind::Call {
+                target: CallTarget::Direct(function),
+                arguments,
+                witnesses,
+                ..
+            } if self.native_call_is_private_compatible(*function, arguments, Some(nodes)) => {
+                self.emit_native_call(*function, arguments, witnesses, destination, Some(nodes))
+            }
             _ => Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "stack record candidate does not have a record initializer",
+                "stack record candidate does not have a private record initializer",
             )),
         }
     }
@@ -8735,10 +9012,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let CallTarget::Builtin(builtin) = target {
             return self.emit_builtin(*builtin, arguments, destination);
         }
-        if let CallTarget::Direct(function) = target
-            && self.backend.native_functions.contains_key(function)
+        if let CallTarget::Direct(function) | CallTarget::Inherent(function) = target
+            && self.native_call_is_private_compatible(*function, arguments, None)
         {
-            return self.emit_native_call(*function, arguments, witnesses, destination);
+            return self.emit_native_call(*function, arguments, witnesses, destination, None);
         }
 
         let Some(mut prepared) = self.emit_call_arguments(arguments)? else {
@@ -8961,6 +9238,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         arguments: &[CallArgument],
         witnesses: &[WitnessRef],
         destination: PointerValue<'ctx>,
+        native_record_destination: Option<&[PointerValue<'ctx>]>,
     ) -> Result<bool, CodegenError> {
         if !witnesses.is_empty() {
             return Err(CodegenError::new(
@@ -8968,32 +9246,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "native ABI call unexpectedly carries witnesses",
             ));
         }
-        let Some(prepared) = self.emit_call_arguments(arguments)? else {
-            return Ok(false);
-        };
         let declaration = &self.backend.native_functions[&function];
         let signature = &declaration.signature;
-        let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
-            prepared.values.len()
-                + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
-        );
-        for (value, layout) in prepared
-            .values
-            .iter()
-            .copied()
-            .zip(signature.shape().parameters())
-        {
-            call_arguments.push(
-                self.backend
-                    .load_native_value(layout, value, "argument.native")?
-                    .into(),
-            );
-        }
+        let Some(mut prepared) = self.emit_native_call_arguments(arguments, signature)? else {
+            return Ok(false);
+        };
         if self
             .backend
             .requirements
             .function(function)?
-            .invocation
+            .native_body
             .may_collect()
         {
             self.publish_gc_root_state()?;
@@ -9002,28 +9264,172 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             call_basic_value(
                 &self.backend.builder,
                 declaration.function,
-                &call_arguments,
+                &prepared.arguments,
                 "native.call",
             )?
         } else {
-            call_arguments.push(self.runtime_context.into());
+            prepared.arguments.push(self.runtime_context.into());
             let (status, value) = call_native_status(
                 &self.backend.builder,
                 declaration.function,
                 signature,
-                &call_arguments,
+                &prepared.arguments,
                 "native.call",
             )?;
-            self.emit_call_writebacks(&prepared.writebacks)?;
+            self.unpack_native_call_inout_records(&prepared.inout_records)?;
             self.propagate_status(status)?;
             value
         };
         if signature.effect() == NativeEffectAbi::PureNoFault {
-            self.emit_call_writebacks(&prepared.writebacks)?;
+            self.unpack_native_call_inout_records(&prepared.inout_records)?;
         }
-        self.backend
-            .store_native_value(signature.shape().result(), destination, value)?;
+        match signature.shape().result() {
+            NativeLayout::Scalar(_) => {
+                self.backend
+                    .store_native_value(signature.shape().result(), destination, value)?;
+            }
+            NativeLayout::PodRecord(layout) => {
+                let nodes = native_record_destination.ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "native POD result call has no private destination",
+                    )
+                })?;
+                Self::initialize_private_record_header(self.backend, destination, layout, nodes)?;
+                Self::unpack_native_record_value(self.backend, layout, value, nodes)?;
+            }
+        }
         Ok(true)
+    }
+
+    fn emit_native_call_arguments(
+        &self,
+        arguments: &[CallArgument],
+        signature: &NativeSignature,
+    ) -> Result<Option<PreparedNativeCall<'ctx>>, CodegenError> {
+        let mut native = Vec::with_capacity(
+            arguments.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
+        );
+        let mut inout = Vec::new();
+        for (argument, parameter) in arguments.iter().zip(signature.shape().parameters()) {
+            match (argument, parameter.layout(), parameter.mode()) {
+                (
+                    CallArgument::Value(expression),
+                    NativeLayout::Scalar(_),
+                    NativePassMode::Value,
+                ) => {
+                    let value = self.alloc_value("argument.value");
+                    if !self.emit_expr(expression, value)? {
+                        return Ok(None);
+                    }
+                    native.push(
+                        self.backend
+                            .load_native_value(parameter.layout(), value, "argument.native")?
+                            .into(),
+                    );
+                }
+                (
+                    CallArgument::InOut(place),
+                    NativeLayout::PodRecord(layout),
+                    NativePassMode::InOut,
+                ) if place.projection.is_empty() => {
+                    let nodes = self.stack_record_nodes.get(&place.local).ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "private native inout call has no POD receiver storage",
+                        )
+                    })?;
+                    let abi_pointer = self.alloc_entry(
+                        self.backend.native_pod_type(layout),
+                        "native.call.inout.record",
+                    )?;
+                    let value =
+                        self.pack_native_record_value(layout, nodes, "native.call.receiver")?;
+                    self.backend
+                        .builder
+                        .build_store(abi_pointer, value)
+                        .map_err(builder_error)?;
+                    native.push(abi_pointer.into());
+                    inout.push(NativeCallInOutRecord {
+                        local: place.local,
+                        abi_pointer,
+                        layout: layout.clone(),
+                    });
+                }
+                _ => {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "private native call arguments do not match the selected ABI",
+                    ));
+                }
+            }
+        }
+        Ok(Some(PreparedNativeCall {
+            arguments: native,
+            inout_records: inout,
+        }))
+    }
+
+    fn native_call_is_private_compatible(
+        &self,
+        function: FunctionId,
+        arguments: &[CallArgument],
+        native_record_destination: Option<&[PointerValue<'ctx>]>,
+    ) -> bool {
+        let Some(declaration) = self.backend.native_functions.get(&function) else {
+            return false;
+        };
+        let signature = &declaration.signature;
+        if arguments.len() != signature.shape().parameters().len()
+            || (matches!(signature.shape().result(), NativeLayout::PodRecord(_))
+                && native_record_destination.is_none())
+        {
+            return false;
+        }
+        arguments
+            .iter()
+            .zip(signature.shape().parameters())
+            .all(
+                |(argument, parameter)| match (argument, parameter.layout(), parameter.mode()) {
+                    (CallArgument::Value(_), NativeLayout::Scalar(_), NativePassMode::Value) => {
+                        true
+                    }
+                    (
+                        CallArgument::InOut(place),
+                        NativeLayout::PodRecord(_),
+                        NativePassMode::InOut,
+                    ) => {
+                        place.projection.is_empty()
+                            && self.stack_record_nodes.contains_key(&place.local)
+                    }
+                    _ => false,
+                },
+            )
+    }
+
+    fn unpack_native_call_inout_records(
+        &self,
+        records: &[NativeCallInOutRecord<'ctx>],
+    ) -> Result<(), CodegenError> {
+        for record in records {
+            let nodes = self.stack_record_nodes.get(&record.local).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "native call receiver lost its private POD storage",
+                )
+            })?;
+            let value = self
+                .backend
+                .builder
+                .build_load(
+                    self.backend.native_pod_type(&record.layout),
+                    record.abi_pointer,
+                    "native.call.inout.result",
+                )
+                .map_err(builder_error)?;
+            Self::unpack_native_record_value(self.backend, &record.layout, value, nodes)?;
+        }
+        Ok(())
     }
 
     fn emit_call_arguments(

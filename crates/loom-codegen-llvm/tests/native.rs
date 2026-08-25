@@ -1497,6 +1497,10 @@ fn recordMethod(size Int) Counter {
     counter
 }
 
+fn consumeCounter(counter Counter) Int {
+    counter.total + counter.calls
+}
+
 fn scalarRecord() Int {
     let counter = Counter { total = 20, calls = 22 }
     counter.total + counter.calls
@@ -1531,6 +1535,8 @@ pub fn main() Unit {
     let counter = recordMethod(100000)
     assert counter.total == 51031728
     assert counter.calls == 100000
+    let fallbackValue = consumeCounter(recordMethod(1))
+    assert fallbackValue == 1
     let scalarRecordValue = scalarRecord()
     assert scalarRecordValue == 42
     let collectingRecordValue = recordWithCollectingField("rooted")
@@ -1593,10 +1599,14 @@ pub fn main() Unit {
             );
         }
     }
-    let add = llvm_function(&llvm, "stack_loop_add");
+    let add = llvm_native_function(&llvm, "stack_loop_add");
     assert!(add.contains("copy.scalar"), "{add}");
     assert!(add.contains("assign.scalar"), "{add}");
     assert!(!add.contains("move = load %loom.Value"), "{add}");
+    assert!(!add.contains("@loom_gc_build_value_nodes_v1"), "{add}");
+    assert!(!add.contains("@loom_gc_clone_value_v1"), "{add}");
+    assert!(!add.contains("@loom_gc_root_"), "{add}");
+    assert!(!add.contains("@loom_gc_safepoint_v1"), "{add}");
     let modular_product = llvm_native_function(&llvm, "stack_loop_modularProduct");
     assert!(
         modular_product
@@ -1616,7 +1626,13 @@ pub fn main() Unit {
         spin.contains("call i64 @loom.native.fn.1.stack_loop_modularProduct"),
         "{spin}"
     );
-    let record_method = llvm_function(&llvm, "stack_loop_recordMethod");
+    let record_method = llvm_native_function(&llvm, "stack_loop_recordMethod");
+    assert!(
+        record_method.lines().next().is_some_and(|line| line
+            .contains("define internal { i64, i64 }")
+            && !line.contains("ptr")),
+        "{record_method}"
+    );
     assert!(record_method.contains("record.local"), "{record_method}");
     assert!(
         !record_method.contains("gc.root.stack.record.value"),
@@ -1632,31 +1648,33 @@ pub fn main() Unit {
     );
     assert!(
         !record_method.contains("@loom_gc_safepoint_v1"),
-        "record hot loops must collect only at their real result builder: {record_method}"
+        "private record hot loops have no synthetic safepoint: {record_method}"
     );
     assert!(
-        record_method.contains("record.copy.field"),
+        record_method.contains("record.copy.private"),
         "{record_method}"
     );
     assert!(
         !record_method.contains("@loom_gc_clone_value_v1"),
         "{record_method}"
     );
+    assert!(!record_method.contains("@loom_gc_build_value_nodes_v1"));
+    assert!(!record_method.contains("@loom_gc_root_"));
+    assert!(!record_method.contains("node.next"), "{record_method}");
+    let universal_record_method = llvm_function(&llvm, "stack_loop_recordMethod");
+    assert_balanced_gc_root_frame(universal_record_method);
     assert_eq!(
-        record_method
+        universal_record_method
             .matches("call i32 @loom_gc_build_value_nodes_v1")
             .count(),
         1,
-        "the two managed result fields are built by one bounded runtime call: {record_method}"
+        "the universal Value result must retain its moving-GC materialization: {universal_record_method}"
     );
-    let loop_exit = record_method
-        .find("range.exit")
-        .expect("record method has a loop exit");
-    let first_materialization = record_method
-        .find("call i32 @loom_gc_build_value_nodes_v1")
-        .expect("record result is materialized");
-    assert!(loop_exit < first_materialization, "{record_method}");
-    let record_add = llvm_function(&llvm, "stack_loop_add");
+    assert_gc_state_published_before(
+        universal_record_method,
+        "call i32 @loom_gc_build_value_nodes_v1",
+    );
+    let record_add = llvm_native_function(&llvm, "stack_loop_add");
     assert_eq!(
         record_add.matches("add nsw i64").count(),
         2,
@@ -1712,6 +1730,169 @@ pub fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert_eq!(output.stdout, b"Unit\n");
+}
+
+#[test]
+fn private_pod_inout_writes_back_before_fault_status_propagates() {
+    let source = r"module pod_fault_writeback
+
+record Counter { value Int }
+
+impl Counter {
+    method setThenAssert(mut self, accepted Bool) Unit {
+        self.value = 9
+        assert accepted
+        Unit
+    }
+}
+
+fn exercise() Unit {
+    var counter = Counter { value = 1 }
+    counter.setThenAssert(true)
+    let observed = counter.value
+    assert observed == 9
+    Unit
+}
+
+pub fn main() Unit {
+    exercise()
+}
+";
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let method = llvm_native_function(&llvm, "pod_fault_writeback_setThenAssert");
+    assert!(method.contains("define internal { i32, i1 }"), "{method}");
+    assert!(
+        !method.contains("@loom_gc_build_value_nodes_v1"),
+        "{method}"
+    );
+    assert!(!method.contains("@loom_gc_clone_value_v1"), "{method}");
+    assert!(!method.contains("@loom_gc_root_"), "{method}");
+    assert!(!method.contains("@loom_gc_safepoint_v1"), "{method}");
+    let failure = method.find("assert.fail").expect("assertion failure block");
+    let writeback = method[failure..]
+        .find("native.writeback")
+        .map(|offset| failure + offset)
+        .expect("receiver writeback on the failure edge");
+    let returned = method[writeback..]
+        .find("ret { i32, i1 }")
+        .map(|offset| writeback + offset)
+        .expect("native status return after receiver writeback");
+    assert!(failure < writeback && writeback < returned, "{method}");
+
+    let caller = llvm_native_function(&llvm, "pod_fault_writeback_exercise");
+    let call = caller
+        .find("pod_fault_writeback_setThenAssert")
+        .expect("private POD method call");
+    let unpack = caller[call..]
+        .find("native.call.inout.result")
+        .map(|offset| call + offset)
+        .expect("caller receiver writeback");
+    let status = caller[unpack..]
+        .find("call.ok")
+        .map(|offset| unpack + offset)
+        .expect("status propagation after receiver writeback");
+    assert!(call < unpack && unpack < status, "{caller}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn private_pod_release_hot_path_has_no_universal_value_or_gc_operations() {
+    let source = r"module private_pod_release
+
+record Counter {
+    total Int
+    calls Int
+}
+
+impl Counter {
+    method add(mut self, value Int) Unit {
+        self.total = self.total + value
+        self.calls = self.calls + 1
+        Unit
+    }
+}
+
+fn periodicValue(index Int) Int {
+    index - (index / 1024) * 1024
+}
+
+fn recordMethod(size Int) Counter {
+    var counter = Counter { total = 0, calls = 0 }
+    for index in 0..size {
+        counter.add(periodicValue(index))
+        Unit
+    }
+    counter
+}
+
+pub fn main() Unit {
+    let counter = recordMethod(100000)
+    assert counter.total == 51031728
+    assert counter.calls == 100000
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create private POD release project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write private POD source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load private POD project")
+        .snapshot()
+        .expect("analyze private POD project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let executable = project.path().join("program");
+    let ir = project.path().join("release.ll");
+    let mut options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    options.emit_ir = Some(ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower private POD MIR"),
+        &executable,
+        &options,
+    )
+    .expect("emit private POD release executable");
+    let llvm = std::fs::read_to_string(ir).expect("read private POD release IR");
+
+    let mut hot_functions =
+        vec![llvm_any_function(&llvm, "i32 @main(").expect("release C entry point")];
+    for suffix in [
+        "private_pod_release_main",
+        "private_pod_release_recordMethod",
+        "private_pod_release_add",
+    ] {
+        if let Some(function) = llvm_any_function(&llvm, suffix) {
+            hot_functions.push(function);
+        }
+    }
+    for function in hot_functions {
+        for forbidden in [
+            "%loom.ValueNode",
+            "node.next",
+            "@loom_gc_build_value_nodes_v1",
+            "@loom_gc_clone_value_v1",
+            "@loom_gc_root_",
+            "@loom_gc_safepoint_v1",
+        ] {
+            assert!(
+                !function.contains(forbidden),
+                "release private POD hot path contains `{forbidden}`: {function}"
+            );
+        }
+    }
+    assert!(
+        !llvm.lines().any(|line| {
+            line.starts_with("define internal i32 @loom.fn.")
+                && (line.contains("private_pod_release_recordMethod")
+                    || line.contains("private_pod_release_add"))
+        }),
+        "unreferenced universal POD fallbacks must be eliminated in release IR: {llvm}"
+    );
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run private POD release executable");
+    assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"Unit\n");
 }
 
