@@ -714,7 +714,7 @@ impl Program {
 
         let module = self.modules.alloc(Module {
             package,
-            name: name.clone(),
+            name,
             files: vec![file],
             imports: Vec::new(),
             items: Vec::new(),

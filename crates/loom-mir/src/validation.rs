@@ -4589,6 +4589,7 @@ impl<'program> Validator<'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_builtin(
         &mut self,
         function: &Function,
@@ -5386,60 +5387,7 @@ impl<'program> Validator<'program> {
                 arm.value.span,
                 depth,
             );
-            if bindings.len() != arm.bindings.len() {
-                self.push(
-                    MirValidationCode::PatternShape,
-                    format!(
-                        "pattern binds {} value(s), but arm lists {} binding local(s)",
-                        bindings.len(),
-                        arm.bindings.len()
-                    ),
-                    arm.value.span,
-                    format!("{arm_path}.bindings"),
-                );
-            }
-            let mut seen = BTreeSet::new();
-            for (binding_index, local_id) in arm.bindings.iter().copied().enumerate() {
-                if !seen.insert(local_id) {
-                    self.push(
-                        MirValidationCode::DuplicateLocal,
-                        format!("match arm binds local #{} more than once", local_id.0),
-                        arm.value.span,
-                        format!("{arm_path}.bindings[{binding_index}]"),
-                    );
-                }
-                let Some(local) = Self::local_decl(function, local_id) else {
-                    self.invalid_local(
-                        local_id,
-                        arm.value.span,
-                        format!("{arm_path}.bindings[{binding_index}]"),
-                    );
-                    continue;
-                };
-                if !function
-                    .locals
-                    .iter()
-                    .any(|candidate| candidate.id == local_id)
-                {
-                    self.push(
-                        MirValidationCode::InvalidLocalReference,
-                        "match bindings must target declared non-parameter locals",
-                        local.span,
-                        format!("{arm_path}.bindings[{binding_index}]"),
-                    );
-                }
-                if bindings
-                    .get(binding_index)
-                    .is_some_and(|ty| !types_compatible(&local.ty, ty))
-                {
-                    self.type_mismatch(
-                        &local.ty,
-                        &bindings[binding_index],
-                        local.span,
-                        &format!("{arm_path}.bindings[{binding_index}]"),
-                    );
-                }
-            }
+            self.validate_match_bindings(function, arm, &bindings, &arm_path);
             let value_ty =
                 self.validate_expr(function, &arm.value, &format!("{arm_path}.value"), depth);
             if !types_compatible(expected, &value_ty) {
@@ -5469,6 +5417,66 @@ impl<'program> Validator<'program> {
             joined
         } else {
             joined
+        }
+    }
+
+    fn validate_match_bindings(
+        &mut self,
+        function: &Function,
+        arm: &MatchArm,
+        bindings: &[Type],
+        arm_path: &str,
+    ) {
+        if bindings.len() != arm.bindings.len() {
+            self.push(
+                MirValidationCode::PatternShape,
+                format!(
+                    "pattern binds {} value(s), but arm lists {} binding local(s)",
+                    bindings.len(),
+                    arm.bindings.len()
+                ),
+                arm.value.span,
+                format!("{arm_path}.bindings"),
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for (binding_index, local_id) in arm.bindings.iter().copied().enumerate() {
+            let binding_path = format!("{arm_path}.bindings[{binding_index}]");
+            if !seen.insert(local_id) {
+                self.push(
+                    MirValidationCode::DuplicateLocal,
+                    format!("match arm binds local #{} more than once", local_id.0),
+                    arm.value.span,
+                    &binding_path,
+                );
+            }
+            let Some(local) = Self::local_decl(function, local_id) else {
+                self.invalid_local(local_id, arm.value.span, binding_path);
+                continue;
+            };
+            if !function
+                .locals
+                .iter()
+                .any(|candidate| candidate.id == local_id)
+            {
+                self.push(
+                    MirValidationCode::InvalidLocalReference,
+                    "match bindings must target declared non-parameter locals",
+                    local.span,
+                    &binding_path,
+                );
+            }
+            if bindings
+                .get(binding_index)
+                .is_some_and(|ty| !types_compatible(&local.ty, ty))
+            {
+                self.type_mismatch(
+                    &local.ty,
+                    &bindings[binding_index],
+                    local.span,
+                    &binding_path,
+                );
+            }
         }
     }
 
@@ -5808,65 +5816,9 @@ impl<'program> Validator<'program> {
         let tail = &expected[1..];
         let candidate_tail = &candidate[1..];
         match &candidate[0] {
-            Pattern::Wildcard | Pattern::Binding => match &expected[0] {
-                Type::Bool => [false, true].into_iter().any(|value| {
-                    let specialized = specialize_constant_rows(rows, &Constant::Bool(value));
-                    self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
-                }),
-                Type::Unit => {
-                    let specialized = specialize_constant_rows(rows, &Constant::Unit);
-                    self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
-                }
-                Type::Nominal(type_id, arguments) => {
-                    let Some(TypeDef {
-                        kind: TypeDefKind::Enum { variants },
-                        ..
-                    }) = self.program.type_def(*type_id)
-                    else {
-                        let default = default_pattern_rows(rows);
-                        return self.pattern_vector_useful(
-                            tail,
-                            &default,
-                            candidate_tail,
-                            depth + 1,
-                        );
-                    };
-                    variants.iter().any(|variant| {
-                        let mut specialized_types = variant
-                            .payload
-                            .iter()
-                            .map(|ty| substitute_type(ty, arguments))
-                            .collect::<Vec<_>>();
-                        let payload_arity = specialized_types.len();
-                        specialized_types.extend_from_slice(tail);
-                        let specialized =
-                            specialize_variant_rows(rows, *type_id, variant.id, payload_arity);
-                        let mut specialized_candidate = vec![Pattern::Wildcard; payload_arity];
-                        specialized_candidate.extend_from_slice(candidate_tail);
-                        self.pattern_vector_useful(
-                            &specialized_types,
-                            &specialized,
-                            &specialized_candidate,
-                            depth + 1,
-                        )
-                    })
-                }
-                Type::Never => false,
-                Type::Int
-                | Type::Float
-                | Type::Text
-                | Type::Tuple(_)
-                | Type::List(_)
-                | Type::Task(_)
-                | Type::TaskOutcome(_)
-                | Type::Parameter(_)
-                | Type::AssociatedProjection { .. }
-                | Type::View { .. }
-                | Type::Error => {
-                    let default = default_pattern_rows(rows);
-                    self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1)
-                }
-            },
+            Pattern::Wildcard | Pattern::Binding => {
+                self.wildcard_pattern_useful(expected, rows, candidate_tail, depth)
+            }
             Pattern::Constant(constant) => {
                 let specialized = specialize_constant_rows(rows, constant);
                 self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
@@ -5901,6 +5853,70 @@ impl<'program> Validator<'program> {
                     &specialized_candidate,
                     depth + 1,
                 )
+            }
+        }
+    }
+
+    fn wildcard_pattern_useful(
+        &self,
+        expected: &[Type],
+        rows: &[Vec<Pattern>],
+        candidate_tail: &[Pattern],
+        depth: u16,
+    ) -> bool {
+        let tail = &expected[1..];
+        match &expected[0] {
+            Type::Bool => [false, true].into_iter().any(|value| {
+                let specialized = specialize_constant_rows(rows, &Constant::Bool(value));
+                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+            }),
+            Type::Unit => {
+                let specialized = specialize_constant_rows(rows, &Constant::Unit);
+                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+            }
+            Type::Nominal(type_id, arguments) => {
+                let Some(TypeDef {
+                    kind: TypeDefKind::Enum { variants },
+                    ..
+                }) = self.program.type_def(*type_id)
+                else {
+                    let default = default_pattern_rows(rows);
+                    return self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1);
+                };
+                variants.iter().any(|variant| {
+                    let mut specialized_types = variant
+                        .payload
+                        .iter()
+                        .map(|ty| substitute_type(ty, arguments))
+                        .collect::<Vec<_>>();
+                    let payload_arity = specialized_types.len();
+                    specialized_types.extend_from_slice(tail);
+                    let specialized =
+                        specialize_variant_rows(rows, *type_id, variant.id, payload_arity);
+                    let mut specialized_candidate = vec![Pattern::Wildcard; payload_arity];
+                    specialized_candidate.extend_from_slice(candidate_tail);
+                    self.pattern_vector_useful(
+                        &specialized_types,
+                        &specialized,
+                        &specialized_candidate,
+                        depth + 1,
+                    )
+                })
+            }
+            Type::Never => false,
+            Type::Int
+            | Type::Float
+            | Type::Text
+            | Type::Tuple(_)
+            | Type::List(_)
+            | Type::Task(_)
+            | Type::TaskOutcome(_)
+            | Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::View { .. }
+            | Type::Error => {
+                let default = default_pattern_rows(rows);
+                self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1)
             }
         }
     }
