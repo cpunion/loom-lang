@@ -55,14 +55,8 @@ fn relative(root: &Path, path: &Path) -> String {
 fn portable_cache_context() -> CacheContext {
     CacheContext {
         language_version: "0.3".to_owned(),
-        compiler_version: "test-compiler-v1".to_owned(),
-        backend_version: "test-backend-v1".to_owned(),
-        standard_library_version: "test-stdlib-v1".to_owned(),
-        runtime_abi_version: "test-runtime-v1".to_owned(),
-        target_triple: "portable-test".to_owned(),
-        data_layout: "value-v1".to_owned(),
-        cpu_policy: "portable".to_owned(),
-        optimization: "none".to_owned(),
+        frontend_identity: "test-frontend-v1".to_owned(),
+        standard_library_identity: "test-stdlib-v1".to_owned(),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -627,6 +621,82 @@ fn language_version_changes_compilation_cache_identity() {
 }
 
 #[test]
+fn frontend_standard_library_and_contract_change_compilation_identity() {
+    let project = TestProject::new();
+    project.write("main.loom", "module sample\n");
+    let host = AnalysisHost::new(&project.root).expect("open cache project");
+    let sources = host.load_sources().expect("load cache sources");
+    let current = portable_cache_context();
+    let current_key = PersistentCache::compilation_key(host.project(), &sources, &current);
+
+    let mut changed_frontend = current.clone();
+    changed_frontend.frontend_identity = "test-frontend-v2".to_owned();
+    assert_ne!(
+        current_key,
+        PersistentCache::compilation_key(host.project(), &sources, &changed_frontend)
+    );
+
+    let mut changed_standard_library = current.clone();
+    changed_standard_library.standard_library_identity = "test-stdlib-v2".to_owned();
+    assert_ne!(
+        current_key,
+        PersistentCache::compilation_key(host.project(), &sources, &changed_standard_library)
+    );
+
+    let mut changed_contract_mode = current.clone();
+    changed_contract_mode.contract_mode = "unchecked".to_owned();
+    assert_ne!(
+        current_key,
+        PersistentCache::compilation_key(host.project(), &sources, &changed_contract_mode)
+    );
+}
+
+#[test]
+fn manifest_target_declarations_do_not_change_compilation_identity() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"first\"\nkind = \"bin\"\nentry = \"sample.start\"\n",
+    );
+    project.write(
+        "src/main.loom",
+        "module sample\n\npub fn start() Unit {\n    Unit\n}\n\npub fn alternate() Unit {\n    Unit\n}\n",
+    );
+    let first_host = AnalysisHost::new(&project.root).expect("open first target graph");
+    let first_sources = first_host
+        .load_sources()
+        .expect("load first target sources");
+    let context = portable_cache_context();
+    let first_key =
+        PersistentCache::compilation_key(first_host.project(), &first_sources, &context);
+    assert_eq!(first_host.project().targets()[0].name(), "first");
+    assert_eq!(
+        first_host.project().targets()[0].entry(),
+        Some("sample.start")
+    );
+
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"renamed\"\nkind = \"bin\"\nentry = \"sample.alternate\"\n",
+    );
+    let second_host = AnalysisHost::new(&project.root).expect("open changed target graph");
+    let second_sources = second_host
+        .load_sources()
+        .expect("load changed target sources");
+    let second_key =
+        PersistentCache::compilation_key(second_host.project(), &second_sources, &context);
+    assert_eq!(second_host.project().targets()[0].name(), "renamed");
+    assert_eq!(
+        second_host.project().targets()[0].entry(),
+        Some("sample.alternate")
+    );
+    assert_eq!(
+        first_key, second_key,
+        "target selection belongs to the artifact layer, not checked MIR"
+    );
+}
+
+#[test]
 fn registry_features_and_lockfile_form_a_reproducible_graph() {
     let project = TestProject::new();
     let write_registry_version = |version: &str, value: i64| {
@@ -828,7 +898,7 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     let (first, first_stats) = host.snapshot_from_sources_with_parse_cache(
         host.load_sources().expect("load first source set"),
         &cache,
-        &context.compiler_version,
+        &context.frontend_identity,
     );
     assert!(!first.has_errors(), "{:?}", first.diagnostics());
     assert_eq!(first_stats.hits, 0);
@@ -837,7 +907,7 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     let (second, second_stats) = host.snapshot_from_sources_with_parse_cache(
         host.load_sources().expect("load second source set"),
         &cache,
-        &context.compiler_version,
+        &context.frontend_identity,
     );
     assert!(!second.has_errors(), "{:?}", second.diagnostics());
     assert!(second_stats.is_full_hit());

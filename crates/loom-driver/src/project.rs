@@ -582,7 +582,7 @@ impl ProjectGraph {
         }
     }
 
-    pub(crate) fn identity_fields(&self) -> Vec<String> {
+    pub(crate) fn semantic_identity_fields(&self) -> Vec<String> {
         match &self.kind {
             ProjectKind::Legacy { .. } => vec!["project:legacy".to_owned()],
             ProjectKind::Manifest { root_package } => {
@@ -613,14 +613,6 @@ impl ProjectGraph {
                             dependency.package
                         ));
                     }
-                }
-                for target in &self.targets {
-                    fields.push(format!(
-                        "target:{}:{}:{}",
-                        target.name,
-                        target.kind.as_str(),
-                        target.entry.as_deref().unwrap_or("")
-                    ));
                 }
                 fields
             }

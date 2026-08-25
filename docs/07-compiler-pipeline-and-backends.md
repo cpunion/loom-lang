@@ -334,7 +334,9 @@ feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖�
 
 CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，native artifact 只有在内容验证后才原子 materialize 并设置执行权限。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 target 可 materialize 到不同位置。
 
-整图 key 以 length-delimited fields 编码，包含 compiler source + Rust version fingerprint、debug/release profile、MIR/backend/stdlib/runtime ABI、canonical package/dependency/feature/target graph、registry checksum、稳定 source path 与 bytes、target triple/data layout、CPU/features、optimization/relocation 和 contract mode。编译器 fingerprint 只散列 workspace-relative compiler source path/content，不含 checkout 绝对路径。LLVM target identity 来自 emission 共用的同一个 TargetMachine policy，而不是另写一份猜测值；final native artifact 的派生 key 还包含内嵌 runtime identity，或外部 runtime manifest/archive SHA-256 与显式 linker path/executable/version identity，以及 macOS `dsymutil` identity。任一输入变化都会 miss；工具 identity 无法确认时停用 final-artifact cache 而不影响前端检查。
+整图 checked-MIR key 使用独立的 v3 语义域和 length-delimited fields，只包含 language version、frontend identity、standard-library identity、contract mode、canonical package/dependency/feature graph、registry checksum、稳定 source path 与 bytes。frontend identity 保留 workspace-relative 的完整 compiler production Rust source、workspace manifest/lock 与 Rust version fingerprint，不含 checkout 绝对路径或 Cargo debug/release profile；target declaration 的 name/kind/entry 只负责选择产物 root，不属于源码类型检查语义。backend/runtime ABI、target triple/data layout、CPU/features、Loom optimization/relocation 也不进入该层，因此 interpreter 与 LLVM、development 与 release、隐式 host-native 与显式 generic target 可以复用同一份重新验证过的 checked MIR；构造这个 key 不初始化 LLVM TargetMachine。
+
+LLVM object cache 使用独立的 v4 域，只组合完整 compiler-source fingerprint 与 native object fingerprint。后者由真实 emission policy 统一计算，包含 backend/MIR object format、所选 root、可达 function/witness/proof、全局类型 schema、debug-source policy，以及 target triple/data layout/CPU/features/optimization/relocation；它不重复加入编译 `loomc` 自身时使用的 Cargo debug/release profile。同一对象策略会命中，隐式 host-native、显式 generic target 和 Loom `--release` 则各自得到不同 key。final native artifact 的派生 key 继续包含内嵌 runtime identity，或外部 runtime manifest/archive SHA-256 与显式 linker path/executable/version identity，以及 macOS `dsymutil` identity。工具 identity 无法确认时停用 final-artifact cache，不影响前端检查或 object cache 的正确性。
 
 ### 增量层与当前边界
 
@@ -351,16 +353,13 @@ source hash
 
 这里把三种主张严格分开：长驻 `AnalysisHost` 的连续 snapshot 会同时比较 public interface、全声明 semantic shape 和 body fingerprint；声明形状不变时只重查 body 变化的 module，并复用其余 module 的 `BodySemantics`，形状变化则安全回退整图检查。跨进程仍从 validated whole-graph checked MIR 恢复，不序列化 typed-HIR body。不可达私有 body 修改还可复用同一 target object/final artifact，测试会在破坏 final ref 后证明只重新链接。当前 shared-generic ABI 没有独立 monomorphized machine instance；generic/witness proof 参数直接进入 reachable object fingerprint，将来增加单态化时再把 canonical type/proof arguments 拆成 instance CAS entry。
 
-cache 必须 content-addressed，不以 mtime、绝对路径、文件遍历顺序或编辑器状态作为语义输入。每个 entry 至少包含：
+cache 必须 content-addressed，不以 mtime、绝对路径、文件遍历顺序或编辑器状态作为语义输入。各层只携带能够改变该层结果的 identity：
 
-- schema/compiler/backend/stdlib version；
-- canonical module/package identity；
-- source/interface/body hashes；
-- dependency fingerprints；
-- target triple、CPU feature policy、optimization；
-- contract/runtime ABI version。
+- parse/interface/checked MIR：frontend、language、stdlib、contract、canonical module/package/dependency/feature 与 source/interface/body hashes；
+- target object：compiler source、可达 MIR/proof、backend object format、target triple、CPU feature policy 与 optimization；
+- final artifact：object key、runtime ABI/archive、linker/debug tool 与所选 entry/产物模式。
 
-cache miss 与冷构建必须得到同一 checked MIR、diagnostics ordering、reachability 和运行结果。当前 relocation/content/corruption、逐源 parse hit、interface body-insensitivity、DCE-aware object hit、dSYM relocation、12-writer contention 与 CLI hit 测试固定这一行为；cache corruption 只能造成安全 miss/重建，不能执行未验证 IR。
+cache miss 与冷构建必须得到同一 checked MIR、diagnostics ordering、reachability 和运行结果。当前 relocation/content/corruption、逐源 parse hit、interface body-insensitivity、跨 backend/profile/target 的 checked-MIR hit、target/optimization-separated object hit、DCE-aware object hit、dSYM relocation、12-writer contention 与 CLI hit 测试固定这一行为；cache corruption 只能造成安全 miss/重建，不能执行未验证 IR。
 
 ## 10. `any` 与 DCE 边界
 

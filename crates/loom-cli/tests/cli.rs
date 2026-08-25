@@ -510,6 +510,139 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 }
 
 #[test]
+fn backend_switch_reuses_the_same_checked_mir_identity() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let interpreter = loomc()
+        .args(["--json", "--backend", "interpreter", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check through interpreter frontend");
+    assert_eq!(interpreter.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&interpreter.stdout, "checked_mir").as_deref(),
+        Some("miss")
+    );
+
+    let llvm = loomc()
+        .args(["--json", "--backend", "llvm", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check through LLVM frontend");
+    assert_eq!(llvm.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&llvm.stdout, "checked_mir").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&interpreter.stdout, "checked_mir"),
+        cache_key(&llvm.stdout, "checked_mir")
+    );
+}
+
+#[test]
+fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let host_triple = loom_codegen_llvm::target_identity(
+        None,
+        loom_codegen_llvm::OptimizationProfile::Development,
+    )
+    .expect("host target identity")
+    .triple;
+    let build = |name: &str, target: Option<&str>, release: bool| {
+        let mut command = loomc();
+        command.arg("--json");
+        if release {
+            command.arg("--release");
+        }
+        if let Some(target) = target {
+            command.args(["--target-triple", target]);
+        }
+        command
+            .args(["build", "--emit", "object", "--output"])
+            .arg(project.0.join(name))
+            .arg(&project.0)
+            .output()
+            .expect("build cached native object")
+    };
+
+    let implicit_development = build("implicit-development.o", None, false);
+    assert_eq!(implicit_development.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&implicit_development.stdout, "checked_mir").as_deref(),
+        Some("miss")
+    );
+    assert_eq!(
+        cache_status(&implicit_development.stdout, "target_object").as_deref(),
+        Some("miss")
+    );
+
+    let explicit_development = build("explicit-development.o", Some(&host_triple), false);
+    assert_eq!(explicit_development.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&explicit_development.stdout, "checked_mir").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&implicit_development.stdout, "checked_mir"),
+        cache_key(&explicit_development.stdout, "checked_mir")
+    );
+    assert_eq!(
+        cache_status(&explicit_development.stdout, "target_object").as_deref(),
+        Some("miss")
+    );
+    assert_ne!(
+        cache_key(&implicit_development.stdout, "target_object"),
+        cache_key(&explicit_development.stdout, "target_object"),
+        "implicit host tuning and an explicit generic host target need distinct objects"
+    );
+
+    let repeated_development = build("explicit-development-copy.o", Some(&host_triple), false);
+    assert_eq!(repeated_development.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&repeated_development.stdout, "checked_mir").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_status(&repeated_development.stdout, "target_object").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&explicit_development.stdout, "target_object"),
+        cache_key(&repeated_development.stdout, "target_object")
+    );
+
+    let explicit_release = build("explicit-release.o", Some(&host_triple), true);
+    assert_eq!(explicit_release.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&explicit_release.stdout, "checked_mir").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&explicit_development.stdout, "checked_mir"),
+        cache_key(&explicit_release.stdout, "checked_mir")
+    );
+    assert_eq!(
+        cache_status(&explicit_release.stdout, "target_object").as_deref(),
+        Some("miss")
+    );
+    assert_ne!(
+        cache_key(&explicit_development.stdout, "target_object"),
+        cache_key(&explicit_release.stdout, "target_object")
+    );
+
+    let repeated_release = build("explicit-release-copy.o", Some(&host_triple), true);
+    assert_eq!(repeated_release.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&repeated_release.stdout, "target_object").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&explicit_release.stdout, "target_object"),
+        cache_key(&repeated_release.stdout, "target_object")
+    );
+}
+
+#[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
     let check = loomc()

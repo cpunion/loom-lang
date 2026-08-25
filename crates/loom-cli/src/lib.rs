@@ -32,7 +32,7 @@ const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v3";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v4";
 #[cfg(target_os = "macos")]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(target_os = "macos"))]
@@ -1818,13 +1818,7 @@ fn load_compilation(
         }));
     }
 
-    let context = match cache_context(options, host.project().language_version()) {
-        Ok(context) => context,
-        Err(error) => {
-            emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-            return Ok(None);
-        }
-    };
+    let context = cache_context(host.project().language_version());
     let key = PersistentCache::compilation_key(host.project(), &sources, &context);
     let cache = options.cache_dir.as_ref().map_or_else(
         || PersistentCache::for_project(host.project()),
@@ -1859,12 +1853,12 @@ fn load_compilation(
         Some(&key),
     )?;
     let (snapshot, parse_stats) =
-        host.snapshot_from_sources_with_parse_cache(sources, &cache, &context.compiler_version);
+        host.snapshot_from_sources_with_parse_cache(sources, &cache, &context.frontend_identity);
     emit_layer_cache_result(options.json, stdout, "source_parse", parse_stats)?;
     let interface_stats = sync_module_interfaces(
         &cache,
         &snapshot,
-        &context.compiler_version,
+        &context.frontend_identity,
         !snapshot.has_errors(),
     );
     emit_layer_cache_result(options.json, stdout, "module_interface", interface_stats)?;
@@ -1881,60 +1875,20 @@ fn load_compilation(
     }))
 }
 
-fn cache_context(
-    options: &Options,
-    language_version: &str,
-) -> Result<CacheContext, loom_codegen_llvm::CodegenError> {
-    let build_profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let compiler_version = format!(
-        "loomc-{}/source-{}/profile-{}/language-{}/{}-{}",
+fn cache_context(language_version: &str) -> CacheContext {
+    let frontend_identity = format!(
+        "loom-frontend-{}/source-{}/{}-{}",
         env!("CARGO_PKG_VERSION"),
         env!("LOOM_COMPILER_SOURCE_FINGERPRINT"),
-        build_profile,
-        language_version,
         loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         loom_mir::INTERPRETED_ARTIFACT_VERSION
     );
-    let context = match options.backend {
-        Backend::Llvm => {
-            let target = loom_codegen_llvm::target_identity(
-                options.target_triple.as_deref(),
-                options.optimization,
-            )?;
-            CacheContext {
-                language_version: language_version.to_owned(),
-                compiler_version,
-                backend_version: format!(
-                    "loom-codegen-llvm-{}",
-                    loom_codegen_llvm::BACKEND_VERSION
-                ),
-                standard_library_version: "loom-core-inline-v2".to_owned(),
-                runtime_abi_version: loom_codegen_llvm::NATIVE_RUNTIME_ABI.to_owned(),
-                target_triple: target.triple,
-                data_layout: target.data_layout,
-                cpu_policy: format!("{};features={}", target.cpu_policy, target.cpu_features),
-                optimization: format!("{};relocation={}", target.optimization, target.relocation),
-                contract_mode: "checked".to_owned(),
-            }
-        }
-        Backend::Interpreter => CacheContext {
-            language_version: language_version.to_owned(),
-            compiler_version,
-            backend_version: format!("loom-interpreter-{}", loom_interpreter::BACKEND_VERSION),
-            standard_library_version: "loom-core-inline-v2".to_owned(),
-            runtime_abi_version: "loom-interpreter-value-v1".to_owned(),
-            target_triple: "loom-portable-mir".to_owned(),
-            data_layout: "loom-value-model-v1".to_owned(),
-            cpu_policy: "portable".to_owned(),
-            optimization: "validated-mir".to_owned(),
-            contract_mode: "checked".to_owned(),
-        },
-    };
-    Ok(context)
+    CacheContext {
+        language_version: language_version.to_owned(),
+        frontend_identity,
+        standard_library_identity: "loom-core-inline-v2".to_owned(),
+        contract_mode: "checked".to_owned(),
+    }
 }
 
 fn final_artifact_key(
@@ -2009,16 +1963,10 @@ fn target_object_key(
     compilation.key()?;
     let emit_options = emit_options_with_debug(compilation, emit_options);
     let fingerprint = loom_codegen_llvm::native_object_fingerprint(program, &emit_options).ok()?;
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
     Some(PersistentCache::semantic_key(
         LLVM_OBJECT_CACHE_DOMAIN,
         &[
             ("compiler-source", env!("LOOM_COMPILER_SOURCE_FINGERPRINT")),
-            ("compiler-profile", profile),
             ("object-fingerprint", &fingerprint),
         ],
     ))
@@ -2859,7 +2807,7 @@ fn take_option(arguments: &mut Vec<String>, option: &str) -> Result<Option<Strin
 #[cfg(test)]
 mod tests {
     #[test]
-    fn managed_text_object_cache_domain_is_pinned() {
-        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v3");
+    fn llvm_object_cache_domain_is_pinned() {
+        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v4");
     }
 }

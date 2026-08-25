@@ -30,19 +30,14 @@ const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const DEBUG_COMPANION_NAMESPACE: &str = "debug-companion";
 const ARTIFACT_NAMESPACE: &str = "artifact";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v3";
 
-/// All toolchain and target facts which can change checked MIR or codegen.
+/// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheContext {
     pub language_version: String,
-    pub compiler_version: String,
-    pub backend_version: String,
-    pub standard_library_version: String,
-    pub runtime_abi_version: String,
-    pub target_triple: String,
-    pub data_layout: String,
-    pub cpu_policy: String,
-    pub optimization: String,
+    pub frontend_identity: String,
+    pub standard_library_identity: String,
     pub contract_mode: String,
 }
 
@@ -263,18 +258,15 @@ impl PersistentCache {
         sources: &SourceMap,
         context: &CacheContext,
     ) -> CacheKey {
-        let mut identity = Identity::new("loom-compilation-cache-v2");
+        let mut identity = Identity::new(COMPILATION_CACHE_DOMAIN);
         identity.field("language-version", &context.language_version);
-        identity.field("compiler-version", &context.compiler_version);
-        identity.field("backend-version", &context.backend_version);
-        identity.field("stdlib-version", &context.standard_library_version);
-        identity.field("runtime-abi", &context.runtime_abi_version);
-        identity.field("target-triple", &context.target_triple);
-        identity.field("data-layout", &context.data_layout);
-        identity.field("cpu-policy", &context.cpu_policy);
-        identity.field("optimization", &context.optimization);
+        identity.field("frontend-identity", &context.frontend_identity);
+        identity.field(
+            "standard-library-identity",
+            &context.standard_library_identity,
+        );
         identity.field("contract-mode", &context.contract_mode);
-        for field in project.identity_fields() {
+        for field in project.semantic_identity_fields() {
             identity.field("project", &field);
         }
         for source in sources.documents() {
