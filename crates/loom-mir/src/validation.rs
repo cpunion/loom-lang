@@ -2894,6 +2894,14 @@ impl<'program> Validator<'program> {
                 if !types_compatible(&Type::Int, &declared.ty) {
                     self.type_mismatch(&Type::Int, &declared.ty, statement.span, path);
                 }
+                if declared.mutable {
+                    self.push(
+                        MirValidationCode::ImmutablePlace,
+                        "ForRange induction binding must be immutable",
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                }
                 let start_ty = self.validate_expr(function, start, &format!("{path}.start"), depth);
                 let end_ty = self.validate_expr(function, end, &format!("{path}.end"), depth);
                 if !types_compatible(&Type::Int, &start_ty) {

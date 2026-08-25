@@ -1939,6 +1939,41 @@ fn call_arguments_validate_inout_place_shape() {
 }
 
 #[test]
+fn for_range_induction_binding_is_immutable_at_the_checked_boundary() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::ForRange {
+                    local: LocalId(0),
+                    start: Box::new(constant(Constant::Int(0), Type::Int)),
+                    end: Box::new(constant(Constant::Int(2), Type::Int)),
+                    body: Box::new(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ImmutablePlace
+            && error.message.contains("induction binding")
+    }));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn inout_reservation_allows_reads_but_rejects_aliasing_later_arguments() {
     let view = view_type(true);
