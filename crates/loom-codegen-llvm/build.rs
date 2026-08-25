@@ -5,18 +5,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../loom-runtime-abi/Cargo.toml");
-    println!("cargo:rerun-if-changed=../loom-runtime-abi/src/lib.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/Cargo.toml");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/lib.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/float.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/gc.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/int.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/process.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/reactor.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/scheduler.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/standard.rs");
-    println!("cargo:rerun-if-changed=../loom-runtime/src/value.rs");
+    for input in [
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "../loom-runtime-abi/Cargo.toml",
+        "../loom-runtime-abi/src",
+        "../loom-runtime/Cargo.toml",
+        "../loom-runtime/src",
+    ] {
+        emit_rerun_inputs(Path::new(input));
+    }
 
     let manifest = Path::new(&env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join("../loom-runtime/Cargo.toml");
@@ -61,4 +59,26 @@ fn main() {
         })
         .expect("find Loom runtime static library");
     fs::copy(archive, output.join("libloom_runtime.a")).expect("copy Loom runtime static library");
+}
+
+fn emit_rerun_inputs(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    if !path.is_dir() {
+        return;
+    }
+
+    let mut entries = fs::read_dir(path)
+        .unwrap_or_else(|error| panic!("read runtime input directory {}: {error}", path.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| {
+                    panic!("read runtime input below {}: {error}", path.display())
+                })
+                .path()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    for entry in entries {
+        emit_rerun_inputs(&entry);
+    }
 }
