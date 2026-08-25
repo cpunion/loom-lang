@@ -136,7 +136,7 @@ LLVM object 带稳定相对源码的函数/statement line table；Linux ELF 直�
 
 `cargo run --release -p loom-quality` 执行冻结的 Core 0.1–0.3 双后端 main/test oracle、release LLVM root/DCE 统计、1.8 MB parser、32 次 artifact decode/validate、64-module 单 body 增量复用与 wall-clock 上界，并输出可归档 JSON。独立 `fuzz/` workspace 为 lossless syntax/recovery 和 checked-MIR artifact decoder/validator 提供 libFuzzer target；两者都在 Linux CI 持续运行。
 
-基础跨语言性能基准另由 `loom-benchmark` 对照 Loom release LLVM、Go、Rust、C 与 C++。v1 在相同动态输入和 checksum 下记录一次优化构建（Loom 禁用项目缓存，其他工具保留各自标准工具链缓存策略）、native runtime 原始样本及 artifact size；warm/incremental build、peak RSS 和固定机器趋势属于下一层证据。它与 `loom-quality` 的回归上界分开，不把一次共享机器结果解释为语言排名；完整方法、运行命令、证据边界和 P0–P2 后续计划见[质量与受控证据](docs/09-quality-and-controlled-evidence.md#31-跨语言基础基准)。
+基础跨语言性能基准另由 `loom-benchmark` 对照 Loom release LLVM、Go、Rust、C 与 C++。v1 在相同动态输入和 checksum 下记录一次优化构建（Loom 禁用项目缓存，其他工具保留各自标准工具链缓存策略）、native runtime 原始样本及 artifact size。当前 native 已落地 concrete checked-`Int`/fib 私有 ABI、POD record scalar/SROA 快路，以及不再整表 clone、摊销 O(1) add/get 的兼容 List 路径；generic、`Text` direct ABI、typed container/coroutine/`dyn` layout 仍在后续阶段。warm/incremental build、peak RSS 和固定机器趋势属于下一层证据。它与 `loom-quality` 的回归上界分开，不把一次共享机器结果解释为语言排名；完整方法、运行命令、证据边界和 P0–P2 后续计划见[质量与受控证据](docs/09-quality-and-controlled-evidence.md#31-跨语言基础基准)。
 
 ```sh
 cargo +1.88.0 run --release -p loom-benchmark -- --help

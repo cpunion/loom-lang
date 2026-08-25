@@ -93,7 +93,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端使用 uniform compiler-private Value ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递，concrete call 仍可被 LLVM 内联和去虚化。这只是 reference lowering，不是最终表示目标。后续可以对 concrete value 去标签化，并让 shared generic body 每个调用、container 或 allocation 只携带一次 layout descriptor，而不是让每个值重复携带 kind tag。未来优化不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private uniform `Value` ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成 checked `i64` 私有 body，并保留 universal wrapper；递归调用直接返回 `{status, value}` 寄存器对。静态 record 字段投影和 primitive 字段赋值走 scalar path，安全的同步局部 POD record 还会把字段节点放入有预算的入口栈存储，由 LLVM SROA 消除热路径分配。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -134,19 +134,29 @@ InstanceKey = (
 
 ### 普通值
 
-当前 C1 lowering 把跨调用、aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。`Text` 已先完成兼容迁移：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的兼容 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection 与局部 POD SROA 已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留兼容表示。`Text` 已先完成兼容迁移：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
+
+`List` 当前仍以 canonical `ValueNode` 链保存值语义，但 native runtime 在每个 executor 的一个 safepoint epoch 内维护不拥有节点的派生索引：`add` 缓存 tail，首次 `get` 线性建立顺序指针表，后续 append/get 为摊销 O(1)。GC 在 mark/filter/relocate 前清空索引，因此缓存绝不成为 root，也不保存跨移动的裸指针。LLVM 对 place 形式的只读 `length/get` 只保存调用期 header 快照；若后续参数包含 `.await` 则回退到完整深复制，`get` 命中后始终只深复制被选中的元素。该兼容快路不改变 `ValueSlot`/`ValueNode` ABI；最终 contiguous typed `ListStorage` 仍需 element layout 与 GC trace descriptor。
 
 最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 
-内部函数使用统一调用形状：
+兼容 body 使用统一调用形状：
 
 ```text
 status fn(out_value, argument_nodes, witness_nodes)
 ```
 
 正常返回写入 `out_value` 并返回 0；ContractFault/RuntimeFault 走非零 status。业务 `Result.Err` 仍是普通返回值，绝不与 status 混淆。
+
+eligible concrete `Int` 函数另有私有调用形状：
+
+```text
+{status, i64} int_fn(i64 arguments..., executor)
+```
+
+universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱；checked overflow、合同 fault 与 executor 传播保持同一语义。其他类型在拥有完整 layout/clone/trace plan 前不得套用该 ABI。
 
 ### 接口
 
