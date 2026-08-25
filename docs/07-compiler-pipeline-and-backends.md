@@ -93,7 +93,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成私有 `i64` body 并保留 universal wrapper：closed-world summary 为 pure/no-fault 时，body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path，安全的同步局部 POD record 还会把字段节点放入有预算的入口栈存储，由 LLVM SROA 消除热路径分配。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成私有 `i64` body 并保留 universal wrapper：closed-world summary 为 pure/no-fault 时，body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path；安全的同步局部 POD record 把字段节点放入有预算的入口栈存储，release 由 SROA 把热循环字段提升为 SSA，只在 whole-value copy/call/return 边界物化独立 managed chain。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -120,6 +120,7 @@ InstanceKey = (
 - module 设置规范化后的 host 或显式 `--target-triple` 及该 TargetMachine 的 LLVM data layout；
 - LLVM verifier 在优化前后各执行一次；
 - development pipeline 是 `default<O0>` 加 global DCE；`--release` 切换为 `default<O2>` 加 global DCE；
+- compiler-generated terminal fault/status branch 带 unlikely metadata，`loom_context_raise_fault_v1` 标记为 cold/noinline；普通 `if`/`match`/业务 `Result` 分支不套用该提示；
 - TargetMachine 输出所选 triple 的 relocatable object；
 - object emission 与 final link 是独立 API/cache 边界；native object 由 `clang` 链接，可由 `LOOM_CC` 覆盖；
 - 用户函数和 statement/expr span 生成 DWARF line table；Linux ELF 直接保留 DWARF，macOS 在 object 尚存时用 `dsymutil` 生成标准 dSYM，并把 DWARF payload 与 executable 同 key 缓存；
@@ -134,11 +135,13 @@ InstanceKey = (
 
 ### 普通值
 
-当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。这里称为当前 universal `Value` lowering，而不是对旧布局兼容性的承诺。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection、局部 POD SROA 和局部 `List[Int]` 快路已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留 universal 表示。`Text` 的对象侧表示已经闭合：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。这里称为当前 universal `Value` lowering，而不是对旧布局兼容性的承诺。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection、局部 POD SROA 和局部 `List[Int]` 快路已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留 universal 表示。POD record 的私有栈节点不会直接逃逸：whole-value copy/call/return 必须从当前字段值建立一条独立 managed chain，因而既保存值复制隔离，又让原始字段地址继续满足 SROA。`Text` 的对象侧表示已经闭合：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
 
-`List` 有两条明确分开的 lowering。默认路径继续使用 current universal `Value`/managed `ValueNode` 表示，并保持既有逻辑复制、值相等和 GC tracing 语义。closed-world use scan 只有在 callable 同步、local 精确为 `List[Int]`、恰有一次空初始化，且所有使用都能证明不复制、不逃逸、不跨 `.await`/generic/witness/defer 边界时，才选择 compiler-private `{data, len, cap}` storage；当前允许的观察形状是局部 `add`、`length` 和直接穷尽匹配 `get` 的 `Option[Int]`。LLVM 内联 append/access，容量不足时调用几何扩容 helper，并在正常或 fault 退出上释放 storage，因此 add 为摊销 O(1)、get/length 为 O(1)。该 storage 只含 `i64` 元素、独立于 moving heap，不需要 GC root 或 Executor；任何未证明形状都完整回退到 universal lowering。它不是 public/generic List ABI，推广到含 managed element 的 layout-driven container 仍需 element clone/trace descriptor。
+`List` 有两条明确分开的 lowering。默认路径继续使用 current universal `Value`/managed `ValueNode` 表示，并保持既有逻辑复制、值相等和 GC tracing 语义。closed-world use scan 只有在 callable 同步、local 精确为 `List[Int]`、恰有一次空初始化，且所有使用都能证明不复制、不逃逸、不跨 `.await`/generic/witness/defer 边界时，才选择 compiler-private `{data, len, cap}` storage；当前允许的观察形状是局部 `add`、`length` 和直接穷尽匹配 `get` 的 `Option[Int]`。canonical 单 append range 在进入循环前读取 data/len/cap，并用 loop SSA/phi 携带三者；非增长路径不重载 header，reserve 成功后只重载可能改变的 data/cap，元素槽 store 到新 len 提交之间没有 fault point。因此下一迭代的 element 求值 fault、正常退出和 drop 总能看到一致的内存 header。容量不足时仍调用几何扩容 helper，不做隐式预 reserve。
 
-最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
+对更窄的 exact-length 形状，分析还要求从空 list 开始、零起点 build range 每个正常迭代恰好 append 一次、range end 是同一常量或 immutable local，且其后零起点 scan 使用同一 end、唯一 induction binding、direct/Unit 形状的穷尽 `Option[Int]` match，中间和 scan body 都不修改 list。此时每个到达的 `get(induction)` 必有 `0 <= induction < len`，LLVM 可直接生成 `Some` 路径，删除逐元素 negative/past-end 与不可达 `None` edge；end、binding、direct/Unit 形状或同一 list 不变性中任一无法证明时都保留完整 checked get。`Some`/`None` arm 本身可以包含可观察行为；只有在 `None` 已被前述条件证明不可达时才删除该 edge。独立的 checked checksum、fault 和 cleanup 不因该证明删除。该 storage 只含 `i64` 元素、独立于 moving heap，不需要 GC root 或 Executor；add 为摊销 O(1)，get/length 为 O(1)，正常或 fault 退出都显式释放。它不是 public/generic List ABI。
+
+最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。当前首个 scalar `Int` `NativeLayout`/`NativeSignatureShape` catalog 已作为 requirement graph 与 emitter 的共同 private-ABI selector；emitter 再把 closed-world requirement 绑定为 effect-bearing `NativeSignature`，并让声明、调用与 root gate 共用该结果。POD record/List/其他布局、统一 clone/trace/drop plan 与完整 machine-instance graph 仍待扩展，跨函数 POD record 也仍通过 universal boundary。未来具体 aggregate private ABI 由扩展后的 catalog/plan 选择，本版不预先承诺 aggregate by-value、scalar fields 或 out-pointer 物理签名。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 
@@ -157,7 +160,7 @@ i64 int_fn(i64 arguments...)                         // pure + no fault
 {status, i64} int_fn(i64 arguments..., context)      // may fault/allocate
 ```
 
-universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。其他类型在拥有完整 layout/clone/trace plan 前不得套用该 ABI。
+universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。这两种 scalar `Int` 形状已由 `NativeLayout`/`NativeSignatureShape` catalog 统一选择；POD record 当前没有同类的跨函数 concrete private signature，其他类型也必须在 catalog/plan 中补齐 layout/clone/trace 后才能套用 typed ABI。
 
 ### Runtime requirements 与 root context
 
@@ -169,7 +172,7 @@ root context 由 invocation summary 与实际 ABI 共同决定：
 - 其余同步 root 只创建、激活一个 `LoomRuntime`，不创建 Executor；
 - async/`EXECUTOR` root 先创建并激活 `LoomRuntime`，再把一个 `LoomExecutor` 附加到该 Runtime。
 
-`LoomRuntime` 始终拥有 `LoomHeap`；Executor 只借用该稳定 Runtime，并拥有 task/join/ready-queue 调度状态。OS reactor 在首次 wait registration 时初始化，blocking file/socket worker mailbox 在首次需要 worker 时初始化，因此 async root 本身不等于预先创建 kqueue/epoll 或 worker。root 先消费可能引用 heap 的结果，再按 Executor destroy → Runtime deactivate → Runtime destroy 的顺序清理；Runtime activation 或 Executor attachment 失败也走有界清理路径。
+`LoomRuntime` 始终拥有 `LoomHeap`；Executor 只借用该稳定 Runtime，并拥有 task/join/ready-queue 调度状态。OS reactor 在首次 wait registration 时初始化，blocking file/socket worker mailbox 在首次需要 worker 时初始化，因此 async root 本身不等于预先创建 kqueue/epoll 或 worker。root 先消费可能引用 heap 的结果，再按 Executor destroy → Runtime deactivate → Runtime destroy 的顺序清理；Runtime activation 或 Executor attachment 失败也走有界清理路径。Task fault record 实行 first-fault-wins：第一次成功记录的 code/message/detail 是 primary fault，后续 fault record 返回成功以让 unwind cleanup 继续，但不会覆盖该记录；当前 ABI 不向源码暴露 suppressed fault 列表。
 
 当前 native runtime ABI 总版本是 v3，精确 identity 为 `loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。旧 executor-owned runtime 入口 `loom_executor_create`、executor GC activation 入口 `loom_gc_activate_executor`/`loom_gc_deactivate_executor`、executor fault 入口 `loom_executor_raise_fault`，以及 `loom_executor_runtime_v1`/`loom_runtime_heap_v1` introspection 入口均已删除；当前 codegen 使用 `loom_runtime_create_v1`、`loom_runtime_activate_v1`、`loom_runtime_deactivate_v1`、`loom_runtime_destroy_v1`、`loom_executor_create_for_runtime_v1` 与 `loom_context_raise_fault_v1`。没有兼容 shim，旧 runtime bundle 必须因 identity 不匹配而拒绝。
 
@@ -401,4 +404,7 @@ Core 0.3 的新增关门条件：
 19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。
 20. development/release 机器 IR 回归证明常量折叠、内联与不可达函数删除真实发生，不只比较 profile 名称；
 21. 三个冻结 Core task 在解释器与 release LLVM main/test oracle 上一致，并满足 [性能、增量与 C2 implementation-controlled 门](09-quality-and-controlled-evidence.md)；
-22. lossless syntax/recovery 与 artifact decoder/checked-MIR validator 的 libFuzzer target 在 CI 持续运行。
+22. lossless syntax/recovery 与 artifact decoder/checked-MIR validator 的 libFuzzer target 在 CI 持续运行；
+23. POD record 的私有栈节点在 whole-value copy/call/return 边界物化独立 managed chain，基准 hot loop 经 SROA 后没有字段内存流量或 node allocation；
+24. native `List[Int]` 的 canonical append SSA、exact-length scan proof、保守 fallback、fault 后 header/drop 一致性与 checked checksum 均有 development/release/native 回归；
+25. terminal fault/status edge 的 cold-layout hints 不污染普通业务分支，Task 第二次 fault record 不覆盖 primary fault。

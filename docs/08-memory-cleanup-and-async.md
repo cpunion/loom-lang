@@ -152,7 +152,7 @@ scoped third = acquireThird()
 
 离开 scope 时顺序固定为 `third.dispose()`、`releaseByName(second)`、`first.dispose()`。
 
-若正常路径上的 cleanup 产生 fault，第一个按 LIFO 实际观察到的 cleanup fault 成为主失败，其余 cleanup 仍继续执行。若已经因原始 fault/取消开始 unwind，cleanup fault 不替换原始失败；实现可以把它记录为 suppressed diagnostic，但源码不能捕获它。
+若正常路径上的 cleanup 产生 fault，第一个按 LIFO 实际观察到的 cleanup fault 成为主失败，其余 cleanup 仍继续执行。若已经因原始 fault/取消开始 unwind，cleanup fault 不替换原始失败；实现可以把它记录为 suppressed diagnostic，但源码不能捕获它。当前 native Task fault record 已实现 first-fault-wins：第一次记录的 code/message/detail 保持为 primary fault，后续记录请求返回成功以便 cleanup 继续，但不会覆盖主失败；当前 ABI 尚不暴露 suppressed fault details。
 
 ### 3.4 `discard` 与资源/任务 obligation
 
@@ -463,14 +463,14 @@ closed-world reachability 从 entry/tests 继续遍历 async constructor、resum
 - lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、可穷尽匹配的 `TaskOutcome[T]`/`TaskFault`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
 - `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、compiler-private affine TaskCarrier、未消费/重复/条件 Task 转移和 interface access across await 均由静态检查器执行；
 - lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复；取消 state 保存挂起时已注册的 cleanup；
-- interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；
+- interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；native Task fault record 保留第一个 primary fault，后续 fault record 不覆盖它；
 - Task 是单个 runtime pointer；单 Task、组合 Task 与 `Task.sleep/waitReadable/waitWritable` 都可先存储再等待。静态异构参数返回 tuple，动态同构 list 返回 list，`all/settled/any/race` 共享真实 composite Task/JoinState；
 - native root 已按 compiler-private closed-world `FAULT`/`ALLOC`/`EXECUTOR` requirement summary 分层：pure/no-fault scalar `Int` root 没有隐藏 context；其余同步 root 只创建并激活 `LoomRuntime`，async root 才在该 Runtime 上附加 Executor。该 requirement 图不增加源码 effect 标注；
 - Rust runtime 实现 version 1 `WaitSource`/generation-checked one-shot `Registration`/`ReadyNotification` ABI，macOS 用 kqueue、Linux 用 epoll。timer、Unix socket、completion、重复通知和取消均有 runtime fixture；源码 fd writable wait 同时通过 interpreter 与 native artifact；
 - scheduler 只在 notification 后 enqueue，coroutine `resume` 真正返回 `Pending`，不会在 callback 栈重入或忙轮询；reactor 与 blocking-I/O worker mailbox 都按首次真实使用懒初始化；
 - `Duration`、真实文件和 TCP socket 已接入同一 Task ABI；native `Socket.read_text/write_text` 在 `WouldBlock` 时通过 kqueue/epoll registration 挂起，`File`/`Socket` 是 compiler-known `MustScope`，退出最内层 block 时自动关闭；解释器执行相同源码语义；
-- `LoomRuntime` 是 sync/async 共用的 precise moving `Heap` 所有者；async Executor 只借用该 Runtime。collector 在 resume 之间以 Task slots/runtime results 为 roots，追踪 universal `Value` 与 `ValueNode`，回收不可达对象、复制存活对象并重写指针；Task identity 与 immutable witness metadata 非移动。同步不逃逸局部 `List[Int]` 的 `{data, len, cap}` 快路只含 `i64`，由生成代码显式释放而不进入 GC；fixture 直接验证旧/新地址不同和垃圾回收计数；
+- `LoomRuntime` 是 sync/async 共用的 precise moving `Heap` 所有者；async Executor 只借用该 Runtime。collector 在 resume 之间以 Task slots/runtime results 为 roots，追踪 universal `Value` 与 `ValueNode`，回收不可达对象、复制存活对象并重写指针；Task identity 与 immutable witness metadata 非移动。同步不逃逸局部 `List[Int]` 的 `{data, len, cap}` 快路只含 `i64`，由生成代码显式释放而不进入 GC；canonical append loop 可以在 SSA 中携带 header，但每次 element store 后会立即提交 len，reserve/fault/return/drop 边界始终以一致的内存 header 为准；exact-length scan 证明只删除不可达 bounds/`None` edge，不改变 cleanup。fixture 直接验证旧/新 GC 地址不同和垃圾回收计数；
 - runtime ABI v3 已删除旧 executor-owned create、executor GC activation、executor fault 与 runtime/heap introspection 入口；当前只通过 Runtime lifecycle、attach-Executor 和通用 context-fault 入口协作，旧 bundle 不兼容。精确 symbol 与 identity 见[编译过程与后端](07-compiler-pipeline-and-backends.md#runtime-requirements-与-root-context)和[安装与发布](10-installation-and-release.md)；
 - `examples/core03` 以及专用 stored/dynamic join、nested await、取消 cleanup、fd readiness、moving-GC fixtures 均真实通过 check/build/test/source-run/native-run。runtime 全部使用 Rust 实现，不再保留 C++ wait/float runtime。
 
-这关闭的是 C1 executable reference；package/HTTPS registry、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。Core 0.3 的最小普通程序标准库还包括 Text/Bytes/Path、TextMap、JSON、typed file/socket I/O 与日志，其权威边界见[标准库规范](11-standard-library.md)。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。
+这关闭的是 C1 executable reference；package/HTTPS registry、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。Core 0.3 的最小普通程序标准库还包括 Text/Bytes/Path、TextMap、JSON、typed file/socket I/O 与日志，其权威边界见[标准库规范](11-standard-library.md)。首个 scalar `Int` `NativeLayout`/`NativeSignatureShape` catalog 已接入；当前函数内 record/List 快路还没有覆盖 POD record 的跨函数 concrete ABI，catalog/plan 也仍需扩展到 managed aggregate、container 与 coroutine trace layout。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。

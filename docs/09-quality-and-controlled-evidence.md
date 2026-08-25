@@ -68,8 +68,10 @@ LLVM 19 CI 在每次 push/PR 运行该命令并上传 JSON artifact。报告包�
 - v1 build sample 对每种语言从源码构建一次 executable，Loom 显式使用 `--no-cache`；这项单样本数据只描述当前 cold build，不能当稳定统计。后续 warm/no-change 与单 body incremental suite 必须另表记录，不得把 Loom 持久缓存命中与其他语言冷编译直接比较；
 - Loom 使用 release LLVM native artifact；Go、Rust、C、C++ 使用各自明确记录的 release/优化参数。禁止把 Loom interpreter、debug build 或不同目标架构混入 native runtime 表；
 - v1 JSON 保存 OS、architecture、CPU、逻辑核数、编译器版本与完整命令、source SHA-256、case/scale/checksum、原始纳秒样本、统计值和 artifact bytes；机器或工具链 identity 不同的报告不得直接合并排名；
-- standard profile 在 build 前记录 1 分钟 load average，超过逻辑 CPU 数的 75% 时默认拒绝测量；`--allow-busy-host` 只用于明确保存带噪声的诊断结果，不能让该结果进入稳定趋势。quick correctness smoke 不做此限制；
+- standard profile 保持冻结的基础规模；独立 `--throughput` profile 使用 int/record 100,000,000、list 10,000,000、fib 40 和默认 2 次 warmup/5 次测量，目的是让热计算更充分地压过进程启动噪声，仍不是语言排名；
+- standard/throughput profile 在 build 前记录 1 分钟 load average，超过逻辑 CPU 数的 75% 时默认拒绝测量；`--allow-busy-host` 只用于明确保存带噪声的诊断结果，不能让该结果进入稳定趋势。quick correctness smoke 不做此限制；
 - runtime timed region 是每个独立子进程从 spawn 到退出的 wall time，包含参数解析、实际计算、动态 checksum 比较和固定 `Unit` 输出，不包含 build、runner JSON 编码或其他 case。进程开销对所有实现一致，但极短 case 仍不应用来判断热点；
+- 在繁忙共享主机上手动放大 case 并读取 LLVM IR、汇编或 retired-instruction counter，只能定位结构变化，例如确认热循环少了固定次数的 header load。retired instructions 不在 v1 JSON 内；只有在同 binary/ISA/profile/scale 下保存原始样本、命令和 commit 才能作结构对照，同一次手动运行的 wall time 和语言倍数不得回填为受控 benchmark 结果；
 - peak RSS、目标 triple/data layout、机器内存、能耗和 profiler 样本尚不在 v1 JSON 内；需要分析分配、GC 或 ABI 热点时必须作为后续同机 profile 证据补充，不能从 wall time 猜测原因。
 
 基础入口由 workspace 的 benchmark runner 提供；具体参数以 `--help` 和 [`benchmarks/basic`](../benchmarks/basic/README.md) 为准：
@@ -78,6 +80,7 @@ LLVM 19 CI 在每次 push/PR 运行该命令并上传 JSON artifact。报告包�
 cargo +1.88.0 run --release -p loom-benchmark -- --help
 cargo +1.88.0 build --release -p loom-cli -p loom-benchmark
 target/release/loom-benchmark --output target/basic-benchmark.json
+target/release/loom-benchmark --throughput --output target/basic-benchmark-throughput.json
 ```
 
 基准报告是当前实现的工程数据，不是语言规范、营销排名或 CI 接受语义。共享 CI 只适合 correctness smoke 与宽松的数量级退化检查；用于趋势比较的数字应来自固定硬件的定时任务，并保留完整原始报告。小型 synthetic case 也不能替代真实服务、长期运行、并发负载或人类开发效率证据。
@@ -91,8 +94,11 @@ development 使用 `default<O0>,globaldce`，release 使用 `default<O2>,globald
 - development 保留可达的 checked constant arithmetic helper；
 - release 常量折叠并内联该 helper，移除对应 overflow intrinsic 与 machine function；
 - eligible pure/no-fault concrete `Int` 私有 body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 pointer，pure root IR 也没有 Runtime/Executor creation；fallible checked arithmetic、递归和合同路径继续使用 `{status, i64}` 加 context，并保留 root fault 回归；
-- eligible primitive record local 在 development IR 使用有预算的 `record.local` 栈节点，构造阶段不直接调用 GC node allocator，release 可进一步 SROA；
-- eligible 同步不逃逸局部 `List[Int]` 在 development/release IR 中使用 compiler-private `{data, len, cap}` storage：append 只在 capacity 不足的 block 调用 reserve，length/get 不调用 universal list helper，所有 status return 恰好 drop 一次；escaping、`List[Text]`、async 与观察顺序 hazard 有明确 fallback 回归；
+- eligible primitive record local 在 development IR 使用有预算的 `record.local` 栈节点；whole-value copy/call/return boundary 从当前字段物化独立 managed chain，不让私有栈地址逃逸。release SROA 后当前 golden/benchmark record 热循环没有 node traversal、字段 load/store 或 GC allocation，checked accumulator 仍保留；
+- eligible 同步不逃逸局部 `List[Int]` 在 development/release IR 中使用 compiler-private `{data, len, cap}` storage：canonical append loop 具有 preheader data/len/cap load 和 loop phi，非增长 backedge 不重载 header，reserve-success 只重载 data/cap，element store 后立即提交 len；所有 status return 恰好 drop 一次；
+- exact-length scan 证明只接受空初始化、零起点单 append build、相同 constant/immutable end、唯一 induction binding、无中间 mutation 和 direct exhaustive `Option[Int]` match；命中时 release IR 没有逐元素 past-end/`None` edge，所有不匹配形状保留 checked get，checked checksum 仍使用 overflow intrinsic；
+- compiler-generated terminal fault/status branch 带 branch-weight metadata，context fault sink 是 cold/noinline；普通 `if`、match pattern 与业务 `Result` 分支保持无权重。runtime fixture 另固定 Task first-fault-wins，第二次 fault record 不覆盖 primary fault；
+- escaping、`List[Text]`、async、multiple/conditional append 与观察顺序 hazard 有明确 universal 或 generic-native fallback 回归；
 - release/native 仍通过同一合同、checked integer 和双后端结果 oracle。
 
 因此这里验证的是实际 IR 变化，不只验证命令行 profile 字符串不同。
@@ -118,15 +124,16 @@ CI 用 nightly coverage instrumentation 各运行 20 秒。崩溃必须先最小
 ### P0：建立性能基线并关闭可信边界
 
 1. v1 Go/Rust/C/C++/Loom 基础 runner、等价源码、checksum oracle 和原始 JSON 已落地；下一步把 correctness smoke 接入 PR，并在固定机器建立可比较的定时趋势，再扩展 cold/warm/incremental build、peak RSS 与 profiler 报告。
-2. concrete `Int`、递归 fib 和 primitive record 第一阶段已完成：closed-world requirements 让 pure/no-fault direct call 使用无 status/context 的 `i64` 私有 ABI，fallible path 使用 `{status, value}` 加 context，边界保留当前 universal `Value` wrapper；record 静态字段读写走 scalar path，安全的同步局部 POD record 由有预算的栈节点承接并交给 LLVM SROA。回归固定 pure root 无 Runtime/Executor、overflow/status、合同/`old`、递归、root wrapper、深复制隔离和无热循环 node allocation。
-3. `list_build_scan` 的算法级退化已关闭：eligible 同步不逃逸局部 `List[Int]` 使用 compiler-private contiguous `{data, len, cap}`，几何扩容使 append 摊销 O(1)，length/get 为 O(1)，且纯 `Int` storage 在所有退出上显式释放而不进入 GC。closed-world use scan 对 escape、copy、async、generic/witness/defer 与观察顺序不确定形状 fail closed，并回退到 current universal `Value` lowering；因此这里不承诺稳定 List ABI，也不把只适用于 `Int` local 的路径外推到 generic container。
-4. 继续以基准和 profiler 证据推进 typed lowering：优先补 `Text` direct ABI、known generic instance、含 managed element 的 layout-driven container，再补 coroutine/`dyn` layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
-5. 把用户定义 `MustScope` 的 canonical obligation identity 带入 versioned checked MIR，使 artifact/cache validator 能独立复核，不长期停留在只由 sema 保证的信任边界。
-6. 保持 Core 0.1–0.3 双后端、标准库、package/cache、LLVM verifier、fuzz 和 release bundle 门持续通过；性能变化不能靠关闭合同、检查或 cleanup 获得。
+2. concrete `Int`、递归 fib 和 primitive record 第一阶段已完成：closed-world requirements 让 pure/no-fault direct call 使用无 status/context 的 `i64` 私有 ABI，fallible path 使用 `{status, value}` 加 context，边界保留当前 universal `Value` wrapper；record 静态字段读写走 scalar path，安全的同步局部 POD record 由有预算的栈节点承接并交给 LLVM SROA。whole-value copy/call/return 时才从字段物化独立 managed chain，既保持深复制隔离，也消除热循环 node allocation/traversal。该路径仍是函数内优化，不是跨函数 POD typed ABI。
+3. `list_build_scan` 的算法级退化及首轮热路冗余已关闭：eligible 同步不逃逸局部 `List[Int]` 使用 compiler-private contiguous `{data, len, cap}`，几何扩容使 append 摊销 O(1)，length/get 为 O(1)，且纯 `Int` storage 在所有退出上显式释放而不进入 GC。canonical append range 通过 loop SSA 避免非增长迭代的 header reload，reserve 后只重载 data/cap并立即提交新 len；相同稳定 end 的 exact scan proof 删除不可达的逐元素 upper-bound/`None` edge，但保留 checked checksum。closed-world use scan 对 escape、copy、async、generic/witness/defer、multiple append、end/binding 不同与观察顺序不确定形状 fail closed，并回退到 checked generic-native 或 current universal `Value` lowering；因此这里不承诺稳定 List ABI，也不把只适用于 `Int` local 的路径外推到 generic container。
+4. terminal fault cold-layout hints 与 primary-fault 语义已由独立回归固定：生成的 terminal fault/status edge 是 unlikely，fault sink cold/noinline，普通控制流不被错误加权；native Task 实行 first-fault-wins，第二次 fault record 不覆盖最初 code/message/detail。
+5. `NativeLayout`/`NativeSignatureShape` 已为 scalar `Int` 建立 requirement graph 与 emitter 的共同 private-ABI selector。下一步是把 POD record/List/其他布局收敛到该 catalog/plan，再补齐 concrete private calling convention、clone/trace/drop plan 和 machine-instance identity；跨函数 POD record ABI 尚未实现，本阶段不写死 aggregate by-value、scalar fields 或 out-pointer 形状。随后再以基准和 profiler 证据推进 `Text` direct ABI、known generic instance、含 managed element 的 layout-driven container，以及 coroutine/`dyn` layout descriptor；不得改变值相等、checked overflow、合同、GC tracing 或 concept proof 语义。
+6. 把用户定义 `MustScope` 的 canonical obligation identity 带入 versioned checked MIR，使 artifact/cache validator 能独立复核，不长期停留在只由 sema 保证的信任边界。
+7. 保持 Core 0.1–0.3 双后端、标准库、package/cache、LLVM verifier、fuzz 和 release bundle 门持续通过；性能变化不能靠关闭合同、检查或 cleanup 获得。
 
 ### P1：优化 ABI、增量和开发体验
 
-1. 把现有 concrete `Int`/POD record/局部 `List[Int]` 快路泛化为 layout-driven concrete call、managed/generic container 与 coroutine ABI，并在有实测收益时增加 hot-site specialization 或单态化；届时再把 canonical type/proof arguments 拆成独立 machine-instance cache entry。
+1. 把现有 scalar `Int` `NativeLayout`/`NativeSignatureShape` catalog 扩展到函数内 POD record/局部 `List[Int]`、跨函数 concrete call、managed/generic container 与 coroutine ABI，并在有实测收益时增加 hot-site specialization 或单态化；届时再把 canonical type/proof arguments 拆成独立 machine-instance cache entry。
 2. 把当前长驻 `AnalysisHost` 的 module body selective reuse 扩展到可验证的跨进程 per-module typed-HIR/semantic cache；整图 checked MIR 仍保留为完整 artifact validation 边界。
 3. 只有真实 async API 需要时，才实现原子 Task reparent、取消传播和失败回滚，随后按证据放宽 TaskCarrier async 参数/返回及 partial container transfer；源码仍不增加 ownership、borrow 或 lifetime。
 4. 在 LLVM release/native 主后端稳定的前提下评估 Cranelift fast-dev backend，并补充 Loom 值 debugger pretty-printer 和更大的非生成工程 fixture。
