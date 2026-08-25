@@ -16,9 +16,38 @@ use loom_runtime_abi::{
     VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
 };
 
-use crate::reactor::{ListNodeIndex, LoomExecutor};
-use crate::scheduler::{ValueNode, ValueSlot, trace_task_roots};
+use crate::reactor::LoomExecutor;
+use crate::scheduler::{LoomTask, ValueNode, ValueSlot, trace_task_roots};
 use crate::text;
+
+pub(crate) struct ListNodeIndex {
+    pub(crate) length: u64,
+    pub(crate) tail: *mut ValueNode,
+    pub(crate) nodes: Option<Vec<*mut ValueNode>>,
+}
+
+/// Runtime-owned storage for managed Loom values.
+///
+/// The heap is deliberately independent from the async reactor and scheduler:
+/// synchronous generated code needs managed allocation, but must not need an
+/// operating-system poller or worker-completion channel. Collection is still
+/// driven only by the scheduler safepoint between coroutine resume calls.
+#[derive(Default)]
+pub(crate) struct LoomHeap {
+    pub(crate) values: Vec<Box<ValueSlot>>,
+    pub(crate) nodes: Vec<Box<ValueNode>>,
+    pub(crate) sequences: Vec<Box<[u64]>>,
+    /// Derived, non-owning indexes for native List chains. Collection clears
+    /// these before relocating nodes, so they are never roots and never retain
+    /// stale pointers across a safepoint.
+    pub(crate) list_node_indexes: HashMap<usize, ListNodeIndex>,
+    /// Immutable compiler witness metadata is non-moving but shares the
+    /// runtime-owned allocation lifetime with managed values.
+    pub(crate) metadata_nodes: Vec<Box<[usize; 2]>>,
+    pub(crate) collections: u64,
+    pub(crate) relocations: u64,
+    pub(crate) reclaimed: u64,
+}
 
 thread_local! {
     static ACTIVE_EXECUTOR: Cell<*mut LoomExecutor> = const { Cell::new(ptr::null_mut()) };
@@ -89,7 +118,7 @@ pub extern "C" fn allocate_value() -> *mut c_void {
         } else {
             // SAFETY: ACTIVE_EXECUTOR is set only around its single-threaded
             // resume call and the scheduler holds no Rust reference then.
-            unsafe { (*executor).gc_values.push(allocation) };
+            unsafe { (*executor).heap.values.push(allocation) };
         }
     });
     pointer
@@ -108,7 +137,7 @@ pub extern "C" fn allocate_value_node() -> *mut c_void {
             let _ = Box::into_raw(allocation);
         } else {
             // SAFETY: see allocate_value.
-            unsafe { (*executor).gc_nodes.push(allocation) };
+            unsafe { (*executor).heap.nodes.push(allocation) };
         }
     });
     pointer
@@ -122,7 +151,7 @@ fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> *mut c_void {
         } else {
             // SAFETY: see allocate_value. Sequence objects are immutable after
             // publication and collection runs only at generated safepoints.
-            unsafe { (*executor).gc_sequences.push(allocation) };
+            unsafe { (*executor).heap.sequences.push(allocation) };
         }
     });
     object
@@ -205,6 +234,7 @@ fn cached_list_node(head: *mut ValueNode, count: u64, index: usize) -> Option<*m
         // retain a Rust borrow across any runtime allocation.
         unsafe {
             (*executor)
+                .heap
                 .list_node_indexes
                 .get(&(head as usize))
                 .filter(|entry| entry.length == count as u64)
@@ -227,6 +257,7 @@ fn cached_list_tail(head: *mut ValueNode, count: u64) -> Option<*mut ValueNode> 
         // SAFETY: see cached_list_node.
         unsafe {
             (*executor)
+                .heap
                 .list_node_indexes
                 .get(&(head as usize))
                 .filter(|entry| entry.length == count)
@@ -247,7 +278,7 @@ fn cache_list_chain(head: *mut ValueNode, count: u64, nodes: Vec<*mut ValueNode>
             // and is discarded before the collector can relocate them.
             unsafe {
                 let tail = nodes.last().copied().unwrap_or(ptr::null_mut());
-                (*executor).list_node_indexes.insert(
+                (*executor).heap.list_node_indexes.insert(
                     head as usize,
                     ListNodeIndex {
                         length: count,
@@ -269,7 +300,7 @@ fn cache_list_tail(head: *mut ValueNode, count: u64, tail: *mut ValueNode) {
         if !executor.is_null() {
             // SAFETY: see cache_list_chain.
             unsafe {
-                (*executor).list_node_indexes.insert(
+                (*executor).heap.list_node_indexes.insert(
                     head as usize,
                     ListNodeIndex {
                         length: count,
@@ -291,7 +322,7 @@ fn append_cached_list_node(head: *mut ValueNode, count: u64, node: *mut ValueNod
         // SAFETY: see cached_list_node. list_add is the only native chain
         // mutator and updates this index in the same call as the next link.
         unsafe {
-            let Some(entry) = (*executor).list_node_indexes.get_mut(&(head as usize)) else {
+            let Some(entry) = (*executor).heap.list_node_indexes.get_mut(&(head as usize)) else {
                 return false;
             };
             if entry.length != count {
@@ -424,7 +455,7 @@ pub extern "C" fn allocate_witness_node() -> *mut c_void {
             let _ = Box::into_raw(allocation);
         } else {
             // SAFETY: see allocate_value.
-            unsafe { (*executor).metadata_nodes.push(allocation) };
+            unsafe { (*executor).heap.metadata_nodes.push(allocation) };
         }
     });
     pointer
@@ -437,20 +468,20 @@ struct HeapIndex {
 }
 
 impl HeapIndex {
-    fn new(executor: &LoomExecutor) -> Self {
+    fn new(heap: &LoomHeap) -> Self {
         Self {
-            values: executor
-                .gc_values
+            values: heap
+                .values
                 .iter()
                 .map(|value| (&raw const **value) as usize)
                 .collect(),
-            nodes: executor
-                .gc_nodes
+            nodes: heap
+                .nodes
                 .iter()
                 .map(|node| (&raw const **node) as usize)
                 .collect(),
-            sequences: executor
-                .gc_sequences
+            sequences: heap
+                .sequences
                 .iter()
                 .map(|sequence| sequence.as_ptr() as usize)
                 .collect(),
@@ -611,61 +642,59 @@ unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
 }
 
 pub(crate) fn collect(executor: &mut LoomExecutor) {
-    executor.gc_collections = executor.gc_collections.saturating_add(1);
+    collect_heap(&mut executor.heap, &mut executor.tasks);
+}
+
+fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {
+    heap.collections = heap.collections.saturating_add(1);
     // List indexes are derived accelerators, not roots. Drop every raw node
     // pointer before filtering or relocating the heap; the next add/get lazily
     // rebuilds an index from the rewritten List head.
-    executor.list_node_indexes.clear();
-    if executor.gc_values.is_empty()
-        && executor.gc_nodes.is_empty()
-        && executor.gc_sequences.is_empty()
-    {
+    heap.list_node_indexes.clear();
+    if heap.values.is_empty() && heap.nodes.is_empty() && heap.sequences.is_empty() {
         return;
     }
-    let index = HeapIndex::new(executor);
+    let index = HeapIndex::new(heap);
     let mut marks = Marks::default();
     let mut trace_context = TraceContext {
         index: &raw const index,
         marks: &raw mut marks,
     };
-    for task in &executor.tasks {
+    for task in tasks.iter() {
         let task = (&raw const **task).cast_mut();
         unsafe { trace_task_roots(task, Some(trace_slot), (&raw mut trace_context).cast()) };
     }
 
-    let before = executor
-        .gc_values
+    let before = heap
+        .values
         .len()
-        .saturating_add(executor.gc_nodes.len())
-        .saturating_add(executor.gc_sequences.len());
-    executor
-        .gc_values
+        .saturating_add(heap.nodes.len())
+        .saturating_add(heap.sequences.len());
+    heap.values
         .retain(|value| marks.values.contains(&((&raw const **value) as usize)));
-    executor
-        .gc_nodes
+    heap.nodes
         .retain(|node| marks.nodes.contains(&((&raw const **node) as usize)));
-    executor
-        .gc_sequences
+    heap.sequences
         .retain(|sequence| marks.sequences.contains(&(sequence.as_ptr() as usize)));
-    let after = executor
-        .gc_values
+    let after = heap
+        .values
         .len()
-        .saturating_add(executor.gc_nodes.len())
-        .saturating_add(executor.gc_sequences.len());
-    executor.gc_reclaimed = executor
-        .gc_reclaimed
+        .saturating_add(heap.nodes.len())
+        .saturating_add(heap.sequences.len());
+    heap.reclaimed = heap
+        .reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
 
-    let mut value_moves = HashMap::with_capacity(executor.gc_values.len());
-    for value in &mut executor.gc_values {
+    let mut value_moves = HashMap::with_capacity(heap.values.len());
+    for value in &mut heap.values {
         let old = (&raw mut **value) as usize;
         let mut replacement = Box::new(**value);
         let new = &raw mut *replacement;
         *value = replacement;
         value_moves.insert(old, new);
     }
-    let mut node_moves = HashMap::with_capacity(executor.gc_nodes.len());
-    for node in &mut executor.gc_nodes {
+    let mut node_moves = HashMap::with_capacity(heap.nodes.len());
+    for node in &mut heap.nodes {
         let old = (&raw mut **node) as usize;
         let mut replacement = Box::new(ValueNode {
             value: node.value,
@@ -675,15 +704,15 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         *node = replacement;
         node_moves.insert(old, new);
     }
-    let mut sequence_moves = HashMap::with_capacity(executor.gc_sequences.len());
-    for sequence in &mut executor.gc_sequences {
+    let mut sequence_moves = HashMap::with_capacity(heap.sequences.len());
+    for sequence in &mut heap.sequences {
         let old = sequence.as_ptr() as usize;
         let mut replacement = sequence.to_vec().into_boxed_slice();
         let new = replacement.as_mut_ptr().cast::<c_void>();
         *sequence = replacement;
         sequence_moves.insert(old, new);
     }
-    executor.gc_relocations = executor.gc_relocations.saturating_add(
+    heap.relocations = heap.relocations.saturating_add(
         (value_moves
             .len()
             .saturating_add(node_moves.len())
@@ -695,7 +724,7 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         nodes: &node_moves,
         sequences: &sequence_moves,
     };
-    for task in &mut executor.tasks {
+    for task in tasks {
         unsafe {
             trace_task_roots(
                 &raw mut **task,
@@ -704,10 +733,10 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
             );
         }
     }
-    for value in &mut executor.gc_values {
+    for value in &mut heap.values {
         rewrite_value(value, &value_moves, &node_moves, &sequence_moves);
     }
-    for node in &mut executor.gc_nodes {
+    for node in &mut heap.nodes {
         rewrite_value(&mut node.value, &value_moves, &node_moves, &sequence_moves);
         if let Some(next) = node_moves.get(&(node.next as usize)) {
             node.next = *next;

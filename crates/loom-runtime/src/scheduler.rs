@@ -644,7 +644,10 @@ unsafe fn consume_notifications(executor: *mut LoomExecutor) {
 
 unsafe fn drain_worker_completions(executor: *mut LoomExecutor) {
     loop {
-        let completion = match unsafe { (*executor).worker_receiver.try_recv() } {
+        let Some(worker) = (unsafe { (*executor).worker.as_ref() }) else {
+            return;
+        };
+        let completion = match worker.receiver.try_recv() {
             Ok(completion) => completion,
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return,
         };
@@ -675,7 +678,7 @@ fn move_task_frames(executor: &mut LoomExecutor) {
             continue;
         }
         task.slots = task.slots.to_vec().into_boxed_slice();
-        executor.gc_relocations = executor.gc_relocations.saturating_add(1);
+        executor.heap.relocations = executor.heap.relocations.saturating_add(1);
     }
 }
 
@@ -814,8 +817,15 @@ where
         };
     }
     let registration = unsafe { *(*task).waits.last().expect("completion was registered") };
-    let sender = unsafe { (*executor).worker_sender.clone() };
-    let poller = unsafe { Arc::clone(&(*executor).reactor.poller) };
+    let executor_ref = unsafe { &mut *executor };
+    let sender = executor_ref.ensure_worker().sender.clone();
+    let poller = Arc::clone(
+        &executor_ref
+            .reactor
+            .as_ref()
+            .expect("completion registration initialized the reactor")
+            .poller,
+    );
     let task_address = task as usize;
     let job: BlockingJob = Box::new(move || {
         let result = work();
@@ -2749,7 +2759,7 @@ pub unsafe extern "C" fn executor_gc_collections(executor: *const LoomExecutor) 
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).gc_collections }
+        unsafe { (*executor).heap.collections }
     }
 }
 
@@ -2758,7 +2768,7 @@ pub unsafe extern "C" fn executor_gc_relocations(executor: *const LoomExecutor) 
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).gc_relocations }
+        unsafe { (*executor).heap.relocations }
     }
 }
 
@@ -2767,7 +2777,7 @@ pub unsafe extern "C" fn executor_gc_reclaimed(executor: *const LoomExecutor) ->
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).gc_reclaimed }
+        unsafe { (*executor).heap.reclaimed }
     }
 }
 
@@ -2777,9 +2787,9 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         0
     } else {
         let executor = unsafe { &*executor };
-        (executor.gc_values.len() as u64)
-            .saturating_add(executor.gc_nodes.len() as u64)
-            .saturating_add(executor.gc_sequences.len() as u64)
+        (executor.heap.values.len() as u64)
+            .saturating_add(executor.heap.nodes.len() as u64)
+            .saturating_add(executor.heap.sequences.len() as u64)
     }
 }
 

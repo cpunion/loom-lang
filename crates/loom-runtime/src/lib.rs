@@ -496,9 +496,10 @@ mod tests {
                 (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
                 (*copied).words[loom_runtime_abi::VALUE_WORD_DATA],
             );
-            assert_eq!((*executor).list_node_indexes.len(), 2);
+            assert_eq!((*executor).heap.list_node_indexes.len(), 2);
             assert!(
                 (*executor)
+                    .heap
                     .list_node_indexes
                     .values()
                     .all(|entry| entry.length == 128 && entry.nodes.is_none())
@@ -515,6 +516,7 @@ mod tests {
             }
             assert!(
                 (*executor)
+                    .heap
                     .list_node_indexes
                     .values()
                     .all(|entry| { entry.nodes.as_ref().is_some_and(|nodes| nodes.len() == 128) })
@@ -524,7 +526,7 @@ mod tests {
             let old_source_head = (*source).words[loom_runtime_abi::VALUE_WORD_DATA];
             let old_copied_head = (*copied).words[loom_runtime_abi::VALUE_WORD_DATA];
             gc::collect(&mut *executor);
-            assert!((*executor).list_node_indexes.is_empty());
+            assert!((*executor).heap.list_node_indexes.is_empty());
             assert_ne!(
                 (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
                 old_source_head,
@@ -545,7 +547,7 @@ mod tests {
                 (*first_copied).words[loom_runtime_abi::VALUE_WORD_SCALAR],
                 0,
             );
-            assert_eq!((*executor).list_node_indexes.len(), 2);
+            assert_eq!((*executor).heap.list_node_indexes.len(), 2);
             let mut extra = scheduler::ValueSlot::default();
             extra.words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
             extra.words[loom_runtime_abi::VALUE_WORD_SCALAR] = 999;
@@ -558,6 +560,7 @@ mod tests {
             );
             assert_eq!(
                 (*executor)
+                    .heap
                     .list_node_indexes
                     .get(
                         &usize::try_from((*copied).words[loom_runtime_abi::VALUE_WORD_DATA],)
@@ -573,7 +576,7 @@ mod tests {
             source.write(scheduler::ValueSlot::default());
             copied.write(scheduler::ValueSlot::default());
             gc::collect(&mut *executor);
-            assert!((*executor).list_node_indexes.is_empty());
+            assert!((*executor).heap.list_node_indexes.is_empty());
             assert_eq!(executor_gc_live_objects(executor), 0);
             executor_destroy(executor);
         }

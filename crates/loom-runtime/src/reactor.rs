@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::c_void;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use polling::{Event, Events, Poller};
 
-use crate::scheduler::{LoomJoinSpec, LoomTask, ValueNode, ValueSlot, WorkerCompletion};
+use crate::gc::LoomHeap;
+use crate::scheduler::{LoomJoinSpec, LoomTask, WorkerCompletion};
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
     WAIT_DUPLICATE_SOURCE, WAIT_INFINITE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
@@ -89,34 +90,25 @@ pub(crate) struct Reactor {
     last_os_error: i32,
 }
 
-pub(crate) struct ListNodeIndex {
-    pub(crate) length: u64,
-    pub(crate) tail: *mut ValueNode,
-    pub(crate) nodes: Option<Vec<*mut ValueNode>>,
+pub(crate) struct WorkerMailbox {
+    pub(crate) sender: mpsc::Sender<WorkerCompletion>,
+    pub(crate) receiver: mpsc::Receiver<WorkerCompletion>,
 }
 
 pub struct LoomExecutor {
-    pub(crate) reactor: Reactor,
+    /// OS readiness is absent for synchronous roots and for async work that
+    /// completes without suspending on a wait source.
+    pub(crate) reactor: Option<Reactor>,
     pub(crate) tasks: Vec<Box<LoomTask>>,
     pub(crate) retired_tasks: Vec<*mut LoomTask>,
     pub(crate) runnable: VecDeque<*mut LoomTask>,
     pub(crate) active_task: *mut LoomTask,
     pub(crate) join_specs: Vec<Box<LoomJoinSpec>>,
-    pub(crate) gc_values: Vec<Box<ValueSlot>>,
-    pub(crate) gc_nodes: Vec<Box<ValueNode>>,
-    pub(crate) gc_sequences: Vec<Box<[u64]>>,
-    /// Derived, non-owning indexes for native List chains. The key is the
-    /// current head address and the value preserves source order. Collection
-    /// clears these before relocating nodes, so this metadata is never a GC
-    /// root and never contains a stale pointer across a safepoint.
-    pub(crate) list_node_indexes: HashMap<usize, ListNodeIndex>,
-    pub(crate) metadata_nodes: Vec<Box<[usize; 2]>>,
-    pub(crate) gc_collections: u64,
-    pub(crate) gc_relocations: u64,
-    pub(crate) gc_reclaimed: u64,
+    pub(crate) heap: LoomHeap,
     pub(crate) tasks_reclaimed: u64,
-    pub(crate) worker_sender: mpsc::Sender<WorkerCompletion>,
-    pub(crate) worker_receiver: mpsc::Receiver<WorkerCompletion>,
+    /// The worker mailbox is needed only by blocking file/socket operations.
+    pub(crate) worker: Option<WorkerMailbox>,
+    reactor_init_os_error: i32,
 }
 
 /// Safe, cancellable owner for platform readiness registrations.
@@ -145,33 +137,54 @@ pub struct WaitEvent {
 }
 
 impl LoomExecutor {
-    fn new() -> io::Result<Self> {
-        let (worker_sender, worker_receiver) = mpsc::channel();
-        Ok(Self {
-            reactor: Reactor {
-                poller: Arc::new(Poller::new()?),
-                events: Events::new(),
-                entries: BTreeMap::new(),
-                ready: VecDeque::new(),
-                next_key: 1,
-                last_os_error: 0,
-            },
+    fn new() -> Self {
+        Self {
+            reactor: None,
             tasks: Vec::new(),
             retired_tasks: Vec::new(),
             runnable: VecDeque::new(),
             active_task: ptr::null_mut(),
             join_specs: Vec::new(),
-            gc_values: Vec::new(),
-            gc_nodes: Vec::new(),
-            gc_sequences: Vec::new(),
-            list_node_indexes: HashMap::new(),
-            metadata_nodes: Vec::new(),
-            gc_collections: 0,
-            gc_relocations: 0,
-            gc_reclaimed: 0,
+            heap: LoomHeap::default(),
             tasks_reclaimed: 0,
-            worker_sender,
-            worker_receiver,
+            worker: None,
+            reactor_init_os_error: 0,
+        }
+    }
+
+    fn ensure_reactor(&mut self) -> io::Result<&mut Reactor> {
+        if self.reactor.is_none() {
+            match Reactor::new() {
+                Ok(reactor) => self.reactor = Some(reactor),
+                Err(error) => {
+                    self.reactor_init_os_error = error.raw_os_error().unwrap_or_default();
+                    return Err(error);
+                }
+            }
+        }
+        Ok(self
+            .reactor
+            .as_mut()
+            .expect("reactor was initialized immediately above"))
+    }
+
+    pub(crate) fn ensure_worker(&mut self) -> &mut WorkerMailbox {
+        self.worker.get_or_insert_with(|| {
+            let (sender, receiver) = mpsc::channel();
+            WorkerMailbox { sender, receiver }
+        })
+    }
+}
+
+impl Reactor {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            poller: Arc::new(Poller::new()?),
+            events: Events::new(),
+            entries: BTreeMap::new(),
+            ready: VecDeque::new(),
+            next_key: 1,
+            last_os_error: 0,
         })
     }
 }
@@ -187,7 +200,9 @@ impl WaitSet {
         let id = NEXT_WAIT_SET_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("Loom wait set identity space was exhausted"))?;
-        LoomExecutor::new().map(|executor| Self {
+        let mut executor = LoomExecutor::new();
+        executor.ensure_reactor()?;
+        Ok(Self {
             id,
             executor: Box::new(executor),
             descriptors: BTreeMap::new(),
@@ -304,7 +319,13 @@ impl WaitSet {
     }
 
     fn status_error(&self, operation: &str, status: i32) -> io::Error {
-        let os_error = self.executor.reactor.last_os_error;
+        let os_error = self
+            .executor
+            .reactor
+            .as_ref()
+            .map_or(self.executor.reactor_init_os_error, |reactor| {
+                reactor.last_os_error
+            });
         if status == WAIT_SYSTEM_ERROR && os_error != 0 {
             return io::Error::from_raw_os_error(os_error);
         }
@@ -434,9 +455,7 @@ pub extern "C" fn wait_now_ns() -> u64 {
 
 #[unsafe(export_name = "loom_executor_create")]
 pub extern "C" fn executor_create() -> *mut LoomExecutor {
-    LoomExecutor::new().map_or(ptr::null_mut(), |executor| {
-        Box::into_raw(Box::new(executor))
-    })
+    Box::into_raw(Box::new(LoomExecutor::new()))
 }
 
 #[unsafe(export_name = "loom_executor_destroy")]
@@ -464,8 +483,11 @@ pub unsafe extern "C" fn executor_register(
     if !valid_source(&source) {
         return WAIT_INVALID_ARGUMENT;
     }
+    let Ok(reactor) = executor.ensure_reactor() else {
+        return WAIT_SYSTEM_ERROR;
+    };
     if source.kind == WAIT_SOURCE_FD
-        && executor.reactor.entries.values().any(|entry| {
+        && reactor.entries.values().any(|entry| {
             entry.source.kind == WAIT_SOURCE_FD
                 && entry.source.handle == source.handle
                 && entry.source.interests & source.interests != 0
@@ -473,14 +495,14 @@ pub unsafe extern "C" fn executor_register(
     {
         return WAIT_DUPLICATE_SOURCE;
     }
-    let key = executor.reactor.next_key;
+    let key = reactor.next_key;
     let Ok(event_key) = usize::try_from(key) else {
         return WAIT_NO_MEMORY;
     };
     if key == 0 || event_key == usize::MAX {
         return WAIT_NO_MEMORY;
     }
-    executor.reactor.next_key = key.wrapping_add(1);
+    reactor.next_key = key.wrapping_add(1);
     let registration = LoomRegistration { key, generation: 1 };
     if source.kind == WAIT_SOURCE_FD {
         let Ok(descriptor) = RawFd::try_from(source.handle) else {
@@ -491,12 +513,12 @@ pub unsafe extern "C" fn executor_register(
         event.writable = source.interests & WAIT_WRITABLE != 0;
         // SAFETY: the registration entry below retains the raw descriptor and
         // the ABI requires it to remain open until this one-shot is removed.
-        if let Err(error) = unsafe { executor.reactor.poller.add(&RawSource(descriptor), event) } {
-            remember_error(&mut executor.reactor, &error);
+        if let Err(error) = unsafe { reactor.poller.add(&RawSource(descriptor), event) } {
+            remember_error(reactor, &error);
             return WAIT_SYSTEM_ERROR;
         }
     }
-    executor.reactor.entries.insert(
+    reactor.entries.insert(
         key,
         Entry {
             source,
@@ -520,10 +542,13 @@ pub unsafe extern "C" fn executor_cancel(
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
     let registration = unsafe { *registration };
-    if !registration_exists(&executor.reactor, registration) {
+    let Some(reactor) = executor.reactor.as_mut() else {
+        return WAIT_STALE_REGISTRATION;
+    };
+    if !registration_exists(reactor, registration) {
         return WAIT_STALE_REGISTRATION;
     }
-    remove_entry(&mut executor.reactor, registration.key);
+    remove_entry(reactor, registration.key);
     WAIT_OK
 }
 
@@ -540,19 +565,17 @@ pub unsafe extern "C" fn executor_notify_completion(
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
     let registration = unsafe { *registration };
-    let Some(entry) = executor.reactor.entries.get(&registration.key).copied() else {
+    let Some(reactor) = executor.reactor.as_mut() else {
+        return WAIT_STALE_REGISTRATION;
+    };
+    let Some(entry) = reactor.entries.get(&registration.key).copied() else {
         return WAIT_STALE_REGISTRATION;
     };
     if entry.registration != registration || entry.source.kind != WAIT_SOURCE_COMPLETION {
         return WAIT_STALE_REGISTRATION;
     }
-    remove_entry(&mut executor.reactor, registration.key);
-    enqueue(
-        &mut executor.reactor,
-        entry,
-        events | READY_COMPLETED,
-        os_error,
-    );
+    remove_entry(reactor, registration.key);
+    enqueue(reactor, entry, events | READY_COMPLETED, os_error);
     WAIT_OK
 }
 
@@ -567,24 +590,23 @@ pub unsafe extern "C" fn executor_wait(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
-    collect_expired_timers(&mut executor.reactor);
-    if executor.reactor.ready.is_empty() {
-        let timeout = effective_timeout(&executor.reactor, timeout_ns);
-        executor.reactor.events.clear();
-        if let Err(error) = executor
-            .reactor
-            .poller
-            .wait(&mut executor.reactor.events, timeout)
-        {
-            remember_error(&mut executor.reactor, &error);
+    let Ok(reactor) = executor.ensure_reactor() else {
+        return WAIT_SYSTEM_ERROR;
+    };
+    collect_expired_timers(reactor);
+    if reactor.ready.is_empty() {
+        let timeout = effective_timeout(reactor, timeout_ns);
+        reactor.events.clear();
+        if let Err(error) = reactor.poller.wait(&mut reactor.events, timeout) {
+            remember_error(reactor, &error);
             return WAIT_SYSTEM_ERROR;
         }
-        let events = executor.reactor.events.iter().collect::<Vec<_>>();
+        let events = reactor.events.iter().collect::<Vec<_>>();
         for event in events {
             let Ok(key) = u64::try_from(event.key) else {
                 continue;
             };
-            let Some(entry) = remove_entry(&mut executor.reactor, key) else {
+            let Some(entry) = remove_entry(reactor, key) else {
                 continue;
             };
             let mut ready = 0;
@@ -594,11 +616,11 @@ pub unsafe extern "C" fn executor_wait(
             if event.writable {
                 ready |= READY_WRITABLE;
             }
-            enqueue(&mut executor.reactor, entry, ready, 0);
+            enqueue(reactor, entry, ready, 0);
         }
-        collect_expired_timers(&mut executor.reactor);
+        collect_expired_timers(reactor);
     }
-    let count = u32::try_from(executor.reactor.ready.len()).unwrap_or(u32::MAX);
+    let count = u32::try_from(reactor.ready.len()).unwrap_or(u32::MAX);
     // SAFETY: ready_count_out is a valid unique out pointer for this call.
     unsafe { ready_count_out.write(count) };
     WAIT_OK
@@ -614,7 +636,10 @@ pub unsafe extern "C" fn executor_pop_ready(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
-    let Some(notification) = executor.reactor.ready.pop_front() else {
+    let Some(reactor) = executor.reactor.as_mut() else {
+        return 0;
+    };
+    let Some(notification) = reactor.ready.pop_front() else {
         return 0;
     };
     // SAFETY: notification_out is a valid unique out pointer for this call.
@@ -628,7 +653,13 @@ pub unsafe extern "C" fn executor_last_os_error(executor: *const LoomExecutor) -
         return 0;
     }
     // SAFETY: the non-null executor is borrowed immutably for this call.
-    unsafe { (*executor).reactor.last_os_error }
+    let executor = unsafe { &*executor };
+    executor
+        .reactor
+        .as_ref()
+        .map_or(executor.reactor_init_os_error, |reactor| {
+            reactor.last_os_error
+        })
 }
 
 pub(crate) unsafe fn register_for_task(
@@ -663,7 +694,10 @@ pub(crate) unsafe fn pop_for_scheduler(
 }
 
 pub(crate) fn has_registrations(executor: &LoomExecutor) -> bool {
-    !executor.reactor.entries.is_empty()
+    executor
+        .reactor
+        .as_ref()
+        .is_some_and(|reactor| !reactor.entries.is_empty())
 }
 
 /// Blocks for one readiness event on a borrowed process descriptor.
@@ -719,9 +753,62 @@ pub fn wait_fd_once(handle: i64, interests: u32) -> io::Result<u32> {
 
 #[cfg(test)]
 mod wait_set_tests {
+    use std::ffi::c_void;
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn synchronous_heap_use_does_not_initialize_async_resources() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        unsafe {
+            assert!((*executor).reactor.is_none());
+            assert!((*executor).worker.is_none());
+            assert_eq!(crate::gc::activate_executor(executor), WAIT_OK);
+            assert!(!crate::gc::allocate_value().is_null());
+            assert!(!crate::gc::allocate_value_node().is_null());
+            assert_eq!(crate::gc::deactivate_executor(executor), WAIT_OK);
+            assert!((*executor).reactor.is_none());
+            assert!((*executor).worker.is_none());
+            executor_destroy(executor);
+        }
+    }
+
+    #[test]
+    fn first_registration_initializes_one_reactor_but_no_worker_mailbox() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let source = LoomWaitSource {
+            abi_version: WAIT_ABI_VERSION,
+            kind: WAIT_SOURCE_COMPLETION,
+            handle: -1,
+            ..LoomWaitSource::default()
+        };
+        let frame = NonNull::<u8>::dangling().as_ptr().cast::<c_void>();
+        let mut first = LoomRegistration::default();
+        let mut second = LoomRegistration::default();
+        unsafe {
+            assert_eq!(
+                executor_register(executor, &raw const source, frame, &raw mut first),
+                WAIT_OK
+            );
+            let poller = Arc::as_ptr(&(*executor).reactor.as_ref().unwrap().poller);
+            assert!((*executor).worker.is_none());
+            assert_eq!(
+                executor_register(executor, &raw const source, frame, &raw mut second),
+                WAIT_OK
+            );
+            assert_eq!(
+                Arc::as_ptr(&(*executor).reactor.as_ref().unwrap().poller),
+                poller
+            );
+            assert!((*executor).worker.is_none());
+            assert_eq!(executor_cancel(executor, &raw const first), WAIT_OK);
+            assert_eq!(executor_cancel(executor, &raw const second), WAIT_OK);
+            executor_destroy(executor);
+        }
+    }
 
     #[test]
     fn token_from_another_wait_set_cannot_cancel_a_colliding_registration() {
