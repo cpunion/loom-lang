@@ -208,7 +208,7 @@ pub fn main() Unit {
         .filter(|line| line.starts_with("define "))
         .collect::<Vec<_>>();
     assert!(
-        development.contains("define internal i32 @loom.int.fn.0.optimize_folded"),
+        development.contains("define internal { i32, i64 } @loom.int.fn.0.optimize_folded"),
         "{development_definitions:#?}"
     );
     assert!(!development.contains("optimize_unreachable"));
@@ -265,11 +265,11 @@ pub fn main() Int {
         fibonacci
             .lines()
             .next()
-            .is_some_and(|line| line.contains("ptr %0, i64 %1, ptr %2")),
+            .is_some_and(|line| line.contains("i64 %0, ptr %1")),
         "{fibonacci}"
     );
     assert!(
-        fibonacci.contains("call i32 @loom.int.fn.0.scalar_int_fibonacci"),
+        fibonacci.contains("call { i32, i64 } @loom.int.fn.0.scalar_int_fibonacci"),
         "{fibonacci}"
     );
     assert!(!fibonacci.contains("%loom.ArgNode"), "{fibonacci}");
@@ -445,6 +445,10 @@ pub fn main() Unit {
             );
         }
     }
+    let add = llvm_function(&llvm, "stack_loop_add");
+    assert!(add.contains("copy.scalar"), "{add}");
+    assert!(add.contains("assign.scalar"), "{add}");
+    assert!(!add.contains("move = load %loom.Value"), "{add}");
 
     let executable = project.path().join("release-program");
     let release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
@@ -552,7 +556,7 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
 }
 
 fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
-    let marker = "define internal i32 @loom.int.fn.";
+    let marker = "define internal ";
     let start = ir
         .match_indices(marker)
         .map(|(index, _)| index)
@@ -560,7 +564,7 @@ fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'so
             ir[*index..]
                 .lines()
                 .next()
-                .is_some_and(|line| line.contains(symbol_suffix))
+                .is_some_and(|line| line.contains("@loom.int.fn.") && line.contains(symbol_suffix))
         })
         .unwrap_or_else(|| panic!("missing scalar Int LLVM function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];

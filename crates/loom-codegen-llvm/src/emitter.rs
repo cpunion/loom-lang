@@ -230,6 +230,7 @@ struct Backend<'ctx, 'program> {
     value_type: StructType<'ctx>,
     value_node_type: StructType<'ctx>,
     arg_node_type: StructType<'ctx>,
+    scalar_int_result_type: StructType<'ctx>,
     witness_node_type: StructType<'ctx>,
     witness_type: StructType<'ctx>,
     wait_source_type: StructType<'ctx>,
@@ -441,6 +442,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         value_node_type.set_body(&[value_type.into(), ptr_type.into()], false);
         let arg_node_type = context.opaque_struct_type("loom.ArgNode");
         arg_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
+        let scalar_int_result_type =
+            context.struct_type(&[i32_type.into(), i64_type.into()], false);
         let witness_node_type = context.opaque_struct_type("loom.WitnessNode");
         witness_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
         let witness_type = context.opaque_struct_type("loom.Witness");
@@ -520,6 +523,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             value_type,
             value_node_type,
             arg_node_type,
+            scalar_int_result_type,
             witness_node_type,
             witness_type,
             wait_source_type,
@@ -590,12 +594,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             self.functions.insert(*id, function);
             if uses_scalar_int_abi(source) {
                 let mut parameters =
-                    Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(source.params.len() + 2);
-                parameters.push(self.ptr_type.into());
+                    Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(source.params.len() + 1);
                 let scalar_parameter: BasicMetadataTypeEnum<'ctx> = self.i64_type.into();
                 parameters.extend(std::iter::repeat_n(scalar_parameter, source.params.len()));
                 parameters.push(self.ptr_type.into());
-                let scalar_type = self.context.i32_type().fn_type(&parameters, false);
+                let scalar_type = self.scalar_int_result_type.fn_type(&parameters, false);
                 let scalar = self.module.add_function(
                     &format!("loom.int.fn.{}.{}", id.0, mangle(&source.name)),
                     scalar_type,
@@ -2907,13 +2910,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_store(output, self.value_type.const_zero())
             .map_err(builder_error)?;
 
-        let scalar_output = self
-            .builder
-            .build_alloca(self.i64_type, "integer.result")
-            .map_err(builder_error)?;
         let mut call_arguments =
-            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(source.params.len() + 2);
-        call_arguments.push(scalar_output.into());
+            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(source.params.len() + 1);
         for _ in &source.params {
             let argument = self.load_pointer_field(
                 self.arg_node_type,
@@ -2938,7 +2936,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             )?;
         }
         call_arguments.push(executor.into());
-        let status = call_int(
+        let (status, scalar) = call_scalar_int(
             &self.builder,
             self.scalar_int_functions[&id],
             &call_arguments,
@@ -2969,11 +2967,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             VALUE_FIELD_TAG,
             self.tag(VALUE_TAG_INT),
         )?;
-        let scalar = self
-            .builder
-            .build_load(self.i64_type, scalar_output, "integer.result.value")
-            .map_err(builder_error)?
-            .into_int_value();
         self.store_i64_field(self.value_type, output, VALUE_FIELD_SCALAR, scalar)?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_zero()))
@@ -3855,7 +3848,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     source: &'program Function,
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
-    scalar_output: Option<PointerValue<'ctx>>,
+    scalar_result: bool,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     executor: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
@@ -3971,7 +3964,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_output: None,
+            scalar_result: false,
             witness_parameters,
             executor,
             task: None,
@@ -4005,8 +3998,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ));
         }
         let function = backend.scalar_int_functions[&id];
-        let scalar_output = parameter_pointer(function, 0)?;
-        let executor_index = u32::try_from(source.params.len() + 1)
+        let executor_index = u32::try_from(source.params.len())
             .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
         let executor = parameter_pointer(function, executor_index)?;
         let entry = backend.context.append_basic_block(function, "entry");
@@ -4041,7 +4033,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 VALUE_FIELD_TAG,
                 backend.tag(VALUE_TAG_INT),
             )?;
-            let parameter_index = u32::try_from(index + 1)
+            let parameter_index = u32::try_from(index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
             backend.store_i64_field(
                 backend.value_type,
@@ -4094,7 +4086,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_output: Some(scalar_output),
+            scalar_result: true,
             witness_parameters: BTreeMap::new(),
             executor,
             task: None,
@@ -4268,7 +4260,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_output: None,
+            scalar_result: false,
             witness_parameters,
             executor,
             task: Some(task),
@@ -4293,19 +4285,57 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(self.body_done);
         self.emit_exit_contracts()?;
         if !self.current_block_terminated() {
-            if let Some(scalar_output) = self.scalar_output {
-                let scalar = self.int_scalar(self.output)?;
-                self.backend
-                    .builder
-                    .build_store(scalar_output, scalar)
-                    .map_err(builder_error)?;
-            }
-            self.backend
-                .builder
-                .build_return(Some(&self.backend.context.i32_type().const_zero()))
-                .map_err(builder_error)?;
+            let scalar = self
+                .scalar_result
+                .then(|| {
+                    self.backend.load_i64_field(
+                        self.backend.value_type,
+                        self.output,
+                        VALUE_FIELD_SCALAR,
+                        "integer.result",
+                    )
+                })
+                .transpose()?;
+            self.emit_status_return(self.backend.context.i32_type().const_zero(), scalar)?;
         }
         self.emit_cancellation_dispatch()?;
+        Ok(())
+    }
+
+    fn emit_status_return(
+        &self,
+        status: IntValue<'ctx>,
+        scalar: Option<IntValue<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        if self.scalar_result {
+            let aggregate = self.backend.scalar_int_result_type.get_undef();
+            let aggregate = self
+                .backend
+                .builder
+                .build_insert_value(aggregate, status, 0, "integer.status")
+                .map_err(builder_error)?
+                .into_struct_value();
+            let aggregate = self
+                .backend
+                .builder
+                .build_insert_value(
+                    aggregate,
+                    scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
+                    1,
+                    "integer.value",
+                )
+                .map_err(builder_error)?
+                .into_struct_value();
+            self.backend
+                .builder
+                .build_return(Some(&aggregate))
+                .map_err(builder_error)?;
+        } else {
+            self.backend
+                .builder
+                .build_return(Some(&status))
+                .map_err(builder_error)?;
+        }
         Ok(())
     }
 
@@ -4444,10 +4474,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &detail,
         )?;
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&self.failure_status()))
-            .map_err(builder_error)?;
+        self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(pass);
         Ok(())
     }
@@ -4629,7 +4656,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     return Ok(false);
                 }
                 let destination = self.place(place)?;
-                self.shallow_copy(destination, temporary)?;
+                if !place.projection.is_empty() && self.static_place_type(place) == Some(Type::Int)
+                {
+                    let scalar = self.backend.load_i64_field(
+                        self.backend.value_type,
+                        temporary,
+                        VALUE_FIELD_SCALAR,
+                        "assign.scalar",
+                    )?;
+                    self.backend.store_i64_field(
+                        self.backend.value_type,
+                        destination,
+                        VALUE_FIELD_SCALAR,
+                        scalar,
+                    )?;
+                } else {
+                    self.shallow_copy(destination, temporary)?;
+                }
                 Ok(true)
             }
             StatementKind::Assert { condition } => {
@@ -4663,10 +4706,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &detail,
                 )?;
                 self.emit_all_cleanups()?;
-                self.backend
-                    .builder
-                    .build_return(Some(&self.failure_status()))
-                    .map_err(builder_error)?;
+                self.emit_status_return(self.failure_status(), None)?;
                 self.backend.builder.position_at_end(pass);
                 Ok(true)
             }
@@ -4783,7 +4823,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ExprKind::Copy(place) => {
                 let source = self.place(place)?;
                 if expression.ty == Type::Int {
-                    let scalar = self.int_scalar(source)?;
+                    let scalar = self.backend.load_i64_field(
+                        self.backend.value_type,
+                        source,
+                        VALUE_FIELD_SCALAR,
+                        "copy.scalar",
+                    )?;
                     self.initialize(destination, VALUE_TAG_INT)?;
                     self.backend.store_i64_field(
                         self.backend.value_type,
@@ -5954,10 +5999,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend
             .puts("RuntimeFault: invalid wait notification")?;
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&self.failure_status()))
-            .map_err(builder_error)?;
+        self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(resume);
         Ok(())
     }
@@ -5986,14 +6028,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(failure);
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&if self.task.is_some() {
-                self.failure_status()
-            } else {
-                status
-            }))
-            .map_err(builder_error)?;
+        let status = if self.task.is_some() {
+            self.failure_status()
+        } else {
+            status
+        };
+        self.emit_status_return(status, None)?;
         self.backend.builder.position_at_end(success);
         Ok(())
     }
@@ -6367,10 +6407,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(fail);
         self.record_or_print_fault(code, native_fault_message(code), code)?;
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&self.failure_status()))
-            .map_err(builder_error)?;
+        self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(pass);
         Ok(())
     }
@@ -6968,10 +7005,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(test_block);
         self.backend.puts("NonExhaustiveMatch")?;
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&self.failure_status()))
-            .map_err(builder_error)?;
+        self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(merge);
         if any_continues {
             Ok(true)
@@ -7313,27 +7347,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
-        let scalar_output = self.alloc_temporary(self.backend.i64_type, "integer.call.result")?;
         let mut call_arguments =
-            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(values.len() + 2);
-        call_arguments.push(scalar_output.into());
+            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(values.len() + 1);
         for value in values {
-            call_arguments.push(self.int_scalar(value)?.into());
+            call_arguments.push(
+                self.backend
+                    .load_i64_field(
+                        self.backend.value_type,
+                        value,
+                        VALUE_FIELD_SCALAR,
+                        "argument.scalar",
+                    )?
+                    .into(),
+            );
         }
         call_arguments.push(self.executor.into());
-        let status = call_int(
+        let (status, scalar) = call_scalar_int(
             &self.backend.builder,
             self.backend.scalar_int_functions[&function],
             &call_arguments,
             "integer.call",
         )?;
         self.propagate_status(status)?;
-        let scalar = self
-            .backend
-            .builder
-            .build_load(self.backend.i64_type, scalar_output, "integer.call.value")
-            .map_err(builder_error)?
-            .into_int_value();
         self.initialize(destination, VALUE_TAG_INT)?;
         self.backend.store_i64_field(
             self.backend.value_type,
@@ -7556,14 +7591,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(failure);
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&if self.task.is_some() {
-                self.failure_status()
-            } else {
-                status
-            }))
-            .map_err(builder_error)?;
+        let status = if self.task.is_some() {
+            self.failure_status()
+        } else {
+            status
+        };
+        self.emit_status_return(status, None)?;
         self.backend.builder.position_at_end(success);
         Ok(())
     }
@@ -9491,10 +9524,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(test_block);
         self.backend.puts("InvalidContractMatch")?;
         self.emit_all_cleanups()?;
-        self.backend
-            .builder
-            .build_return(Some(&self.failure_status()))
-            .map_err(builder_error)?;
+        self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(merge);
         if any_continues {
             Ok(true)
@@ -9847,8 +9877,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
     fn place(&self, place: &Place) -> Result<PointerValue<'ctx>, CodegenError> {
         let mut current = self.local(place.local)?;
+        let mut current_type = self.local_type(place.local);
         for field in &place.projection {
-            current = self.unwrap(current)?;
+            if !current_type
+                .as_ref()
+                .is_some_and(|ty| self.is_static_record(ty))
+            {
+                current = self.unwrap(current)?;
+            }
             let data = self.backend.load_pointer_field(
                 self.backend.value_type,
                 current,
@@ -9862,8 +9898,38 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 VALUE_NODE_FIELD_VALUE,
                 "field.value",
             )?;
+            current_type = current_type
+                .as_ref()
+                .and_then(|ty| self.projected_type(ty, *field).ok());
         }
         Ok(current)
+    }
+
+    fn local_type(&self, local: LocalId) -> Option<Type> {
+        self.source
+            .params
+            .iter()
+            .chain(&self.source.locals)
+            .find(|declaration| declaration.id == local)
+            .map(|declaration| declaration.ty.clone())
+    }
+
+    fn static_place_type(&self, place: &Place) -> Option<Type> {
+        let mut ty = self.local_type(place.local)?;
+        for field in &place.projection {
+            ty = self.projected_type(&ty, *field).ok()?;
+        }
+        Some(ty)
+    }
+
+    fn is_static_record(&self, ty: &Type) -> bool {
+        let Type::Nominal(id, _) = ty else {
+            return false;
+        };
+        self.backend
+            .program
+            .type_def(*id)
+            .is_some_and(|definition| matches!(&definition.kind, TypeDefKind::Record { .. }))
     }
 
     fn value_node_at(
@@ -10007,6 +10073,32 @@ fn call_int<'ctx>(
         .basic()
         .map(BasicValueEnum::into_int_value)
         .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return an integer"))
+}
+
+fn call_scalar_int<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+    let aggregate = builder
+        .build_call(function, arguments, name)
+        .map_err(builder_error)?
+        .try_as_basic_value()
+        .basic()
+        .map(BasicValueEnum::into_struct_value)
+        .ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "scalar integer call did not return a pair")
+        })?;
+    let status = builder
+        .build_extract_value(aggregate, 0, &format!("{name}.status"))
+        .map_err(builder_error)?
+        .into_int_value();
+    let value = builder
+        .build_extract_value(aggregate, 1, &format!("{name}.value"))
+        .map_err(builder_error)?
+        .into_int_value();
+    Ok((status, value))
 }
 
 fn concrete_witness_id(reference: &WitnessRef) -> Option<WitnessId> {
