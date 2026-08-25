@@ -1326,7 +1326,11 @@ impl Analyzer<'_> {
         };
         let valid_target_head = matches!(
             self.typed.types.data(target),
-            TyData::Nominal { .. } | TyData::Builtin(_) | TyData::Option(_) | TyData::Result { .. }
+            TyData::Nominal { .. }
+                | TyData::Builtin(_)
+                | TyData::Option(_)
+                | TyData::Result { .. }
+                | TyData::TextMap(_)
         );
         if !valid_target_head {
             self.error(
@@ -6608,6 +6612,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::List(element) => {
                 let element = self.instantiate_concept_type(element, concrete_self, instance);
                 self.types().intern(TyData::List(element))
+            }
+            TyData::TextMap(value) => {
+                let value = self.instantiate_concept_type(value, concrete_self, instance);
+                self.types().intern(TyData::TextMap(value))
             }
             TyData::Projection {
                 concept,

@@ -306,6 +306,9 @@ fn match_target(
         (TyData::Option(left), TyData::Option(right)) => {
             match_target(types, *left, *right, substitution)
         }
+        (TyData::TextMap(left), TyData::TextMap(right)) => {
+            match_target(types, *left, *right, substitution)
+        }
         (
             TyData::Result {
                 ok: left_ok,
@@ -361,6 +364,9 @@ fn heads_may_unify_inner(
         (TyData::Option(left), TyData::Option(right)) => {
             heads_may_unify_inner(types, *left, *right, left_bindings, right_bindings)
         }
+        (TyData::TextMap(left), TyData::TextMap(right)) => {
+            heads_may_unify_inner(types, *left, *right, left_bindings, right_bindings)
+        }
         (
             TyData::Result {
                 ok: left_ok,
@@ -405,7 +411,7 @@ mod tests {
     use loom_hir::{DefId, GenericParamId};
 
     use super::{ConformanceSolver, Goal, ImplHeader, ImplIndex, ParamEnv, SolveFailure};
-    use crate::{ConceptInstance, TyData, TyInterner};
+    use crate::{BuiltinType, ConceptInstance, TyData, TyInterner};
 
     #[test]
     fn conditional_conformance_uses_only_available_parameter_proof() {
@@ -488,5 +494,43 @@ mod tests {
             });
         }
         assert!(index.overlapping_pairs(&types).is_empty());
+    }
+
+    #[test]
+    fn text_map_heads_substitute_their_value_parameter() {
+        let mut types = TyInterner::new();
+        let concept = DefId::from_raw(1);
+        let parameter = GenericParamId::from_raw(0);
+        let parameter_ty = types.intern(TyData::Param(parameter));
+        let map_parameter = types.intern(TyData::TextMap(parameter_ty));
+        let text = types.builtin(BuiltinType::Text);
+        let map_text = types.intern(TyData::TextMap(text));
+        let implementation = DefId::from_raw(10);
+
+        let mut index = ImplIndex::default();
+        index.insert(ImplHeader {
+            definition: implementation,
+            generic_params: vec![parameter],
+            concept,
+            target: map_parameter,
+            conditions: Vec::new(),
+            associated_types: Vec::new(),
+        });
+        index.finish();
+
+        let goal = Goal {
+            self_ty: map_text,
+            concept: ConceptInstance {
+                concept,
+                bindings: Vec::new(),
+            },
+        };
+        let mut solver = ConformanceSolver::new(&index, &mut types);
+        let selected = solver.solve(&goal, &ParamEnv::default()).unwrap();
+        assert_eq!(
+            selected.source,
+            super::WitnessSource::Implementation(implementation)
+        );
+        assert_eq!(selected.substitution.get(parameter), Some(text));
     }
 }

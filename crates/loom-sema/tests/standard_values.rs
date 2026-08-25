@@ -38,6 +38,18 @@ concept Dispose {
 concept MustScope {}
 concept NoSuspend {}
 
+concept IndexSelf {
+    method indexSelf(self) TextMap[Self]
+}
+
+record Token {}
+
+impl IndexSelf for Token {
+    method indexSelf(self) TextMap[Token] {
+        TextMap[Token]().insert("token", self)
+    }
+}
+
 fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
     let scalar_count = text.length()
     let scalar = text.get(index)
@@ -54,6 +66,10 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
     assert bytes == bytes
     assert base == base
     Unit
+}
+
+fn conceptValue(token Token) TextMap[Token] {
+    token.indexSelf()
 }
 
 fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
