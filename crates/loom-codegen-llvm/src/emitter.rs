@@ -24,6 +24,10 @@ use loom_mir::{
     FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, Statement,
     StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
+use loom_runtime_abi::{
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE,
+};
 
 use crate::abi::{
     ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_ABI_VERSION, COROUTINE_FRAME_FIELD_RESULT,
@@ -200,6 +204,8 @@ struct Backend<'ctx, 'program> {
     builder: Builder<'ctx>,
     i64_type: IntType<'ctx>,
     ptr_type: PointerType<'ctx>,
+    text_object_type: StructType<'ctx>,
+    text_layout: GlobalValue<'ctx>,
     value_type: StructType<'ctx>,
     value_node_type: StructType<'ctx>,
     arg_node_type: StructType<'ctx>,
@@ -370,6 +376,33 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let i64_type = context.i64_type();
         let i32_type = context.i32_type();
         let ptr_type = context.ptr_type(AddressSpace::default());
+        let layout_descriptor_type = context.opaque_struct_type("loom.LayoutDescriptor");
+        layout_descriptor_type.set_body(
+            &[
+                i32_type.into(),
+                i32_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i32_type.into(),
+                i32_type.into(),
+            ],
+            false,
+        );
+        let text_object_type = context.opaque_struct_type("loom.TextObject");
+        text_object_type.set_body(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                context.i8_type().array_type(0).into(),
+            ],
+            false,
+        );
+        let text_layout = module.add_global(layout_descriptor_type, None, "loom_layout_text_v1");
+        text_layout.set_linkage(Linkage::External);
         let value_type = context.opaque_struct_type("loom.Value");
         value_type.set_body(
             &[
@@ -460,6 +493,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             builder,
             i64_type,
             ptr_type,
+            text_object_type,
+            text_layout,
             value_type,
             value_node_type,
             arg_node_type,

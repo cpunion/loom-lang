@@ -338,6 +338,18 @@ pub(crate) fn create_target_machine(
                 format!("LLVM could not create a target machine for {triple}"),
             )
         })?;
+    let pointer_bits = machine
+        .get_target_data()
+        .get_pointer_byte_size(None)
+        .saturating_mul(8);
+    if pointer_bits != 64 {
+        return Err(CodegenError::new(
+            "UnsupportedNativePointerWidth",
+            format!(
+                "target {triple} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers"
+            ),
+        ));
+    }
     Ok((triple, machine))
 }
 

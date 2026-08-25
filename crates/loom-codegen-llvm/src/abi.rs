@@ -7,22 +7,14 @@
 //! nodes so the safe Inkwell API is sufficient; Loom's Rust workspace forbids
 //! handwritten unsafe code.
 
-pub(crate) const VALUE_TAG_UNIT: u64 = 0;
-pub(crate) const VALUE_TAG_BOOL: u64 = 1;
-pub(crate) const VALUE_TAG_INT: u64 = 2;
-pub(crate) const VALUE_TAG_FLOAT: u64 = 3;
-pub(crate) const VALUE_TAG_TEXT: u64 = 4;
-pub(crate) const VALUE_TAG_RECORD: u64 = 5;
-pub(crate) const VALUE_TAG_ENUM: u64 = 6;
-pub(crate) const VALUE_TAG_REFINED: u64 = 7;
-pub(crate) const VALUE_TAG_CONSTRAINT_ERROR: u64 = 8;
-pub(crate) const VALUE_TAG_DYN: u64 = 9;
+pub(crate) use loom_runtime_abi::{
+    VALUE_TAG_BOOL, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT,
+    VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK,
+    VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_TAG_UNIT,
+};
+
 pub(crate) const DYN_FLAG_MUTABLE: u64 = 1;
 pub(crate) const DYN_FLAG_WRITEBACK: u64 = 2;
-pub(crate) const VALUE_TAG_TUPLE: u64 = 10;
-pub(crate) const VALUE_TAG_TASK: u64 = 11;
-pub(crate) const VALUE_TAG_LIST: u64 = 12;
-pub(crate) const VALUE_TAG_TASK_OUTCOME: u64 = 13;
 
 pub(crate) const TASK_VALUE_DIRECT: u64 = 0;
 

@@ -54,6 +54,17 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
 }
 
 #[test]
+fn compatibility_value_abi_rejects_32_bit_targets() {
+    let error = target_identity(
+        Some("i686-unknown-linux-gnu"),
+        OptimizationProfile::Development,
+    )
+    .expect_err("the compatibility Value ABI is 64-bit only");
+    assert_eq!(error.code(), "UnsupportedNativePointerWidth");
+    assert!(error.to_string().contains("requires 64-bit pointers"));
+}
+
+#[test]
 fn release_pipeline_folds_live_constants_and_eliminates_machine_dead_code() {
     let source = r"module optimize
 
