@@ -219,6 +219,7 @@ pub fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn loop_temporaries_are_entry_allocated_and_large_release_loops_do_not_grow_stack() {
     let source = r"module stack_loop
 
@@ -263,12 +264,26 @@ fn recordMethod(size Int) Counter {
     counter
 }
 
+fn nestedLoops(size Int) Int {
+    var total = 0
+    for outer in 0..size {
+        for inner in 0..size {
+            total = total + 1
+            Unit
+        }
+        Unit
+    }
+    total
+}
+
 pub fn main() Unit {
     let state = spin(100000)
     assert state == 1405402365
     let counter = recordMethod(100000)
     assert counter.total == 51031728
     assert counter.calls == 100000
+    let nested = nestedLoops(100)
+    assert nested == 10000
     Unit
 }
 ";
@@ -288,7 +303,11 @@ pub fn main() Unit {
     emit_native_object(program, &development_object, &development)
         .expect("emit development loop IR");
     let llvm = std::fs::read_to_string(development_ir).expect("read development loop IR");
-    for function_name in ["stack_loop_spin", "stack_loop_recordMethod"] {
+    for function_name in [
+        "stack_loop_spin",
+        "stack_loop_recordMethod",
+        "stack_loop_nestedLoops",
+    ] {
         let signature = llvm
             .lines()
             .find(|line| line.starts_with("define ") && line.contains(function_name))
