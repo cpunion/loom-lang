@@ -1,25 +1,24 @@
 //! Runtime primitives for immutable `Text`, `Bytes`, and lexical `Path`.
 //!
-//! Native `Bytes` and `Path` are nominal records whose private payload uses
-//! the same pointer/length slot as `Text`. The nominal wrapper keeps the types
-//! distinct while sharing immutable storage and the moving byte arena.
+//! Native `Bytes` and `Path` are nominal records whose private payload uses a
+//! managed immutable sequence object. Text and arbitrary Bytes have distinct
+//! descriptors; valid UTF-8 storage may be shared only where the type-level
+//! operation preserves the Text invariant.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::Write as _;
 use std::ptr;
 
-use crate::gc::allocate_value_node;
-use crate::gc::retain_bytes;
-use crate::scheduler::{ValueNode, ValueSlot};
+use loom_runtime_abi::{
+    VALUE_TAG_BOOL, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
+    VALUE_TAG_RECORD, VALUE_TAG_TEXT,
+};
 
-const VALUE_TAG_INT: u64 = 2;
-const VALUE_TAG_BOOL: u64 = 1;
-const VALUE_TAG_FLOAT: u64 = 3;
-const VALUE_TAG_TEXT: u64 = 4;
-const VALUE_TAG_RECORD: u64 = 5;
-const VALUE_TAG_ENUM: u64 = 6;
-const VALUE_TAG_LIST: u64 = 12;
+use crate::gc::allocate_value_node;
+use crate::scheduler::{ValueNode, ValueSlot};
+use crate::{gc, text};
+
 const STANDARD_INVALID_ARGUMENT: i32 = -1;
 pub const JSON_DEPTH_LIMIT: usize = 128;
 
@@ -448,34 +447,41 @@ unsafe fn input_bytes<'value>(data: *const c_void, length: u64) -> Option<&'valu
     Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) })
 }
 
-fn store_text(output: *mut c_void, bytes: Vec<u8>) -> i32 {
+fn store_text(output: *mut c_void, bytes: &[u8]) -> i32 {
     if output.is_null() {
         return STANDARD_INVALID_ARGUMENT;
     }
-    let (data, length) = retain_bytes(bytes);
-    let mut value = ValueSlot::default();
-    value.words[0] = VALUE_TAG_TEXT;
-    value.words[2] = length;
-    value.words[4] = data as u64;
+    let Some(value) = gc::text_value(bytes) else {
+        return STANDARD_INVALID_ARGUMENT;
+    };
     // SAFETY: generated code supplies an aligned writable ValueSlot.
     unsafe { output.cast::<ValueSlot>().write(value) };
     0
 }
 
-/// Counts Unicode scalar values, not UTF-8 code units. Returns `-1` for an
-/// invalid pointer or invalid UTF-8; checked `Text` never takes that path.
-#[unsafe(export_name = "loom_runtime_text_length")]
-pub unsafe extern "C" fn text_length(data: *const c_void, length: u64, output: *mut i64) -> i32 {
+fn store_bytes(output: *mut c_void, bytes: &[u8]) -> i32 {
     if output.is_null() {
         return STANDARD_INVALID_ARGUMENT;
     }
-    let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
+    let Some(value) = gc::byte_value(bytes) else {
         return STANDARD_INVALID_ARGUMENT;
     };
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    // SAFETY: generated code supplies an aligned writable ValueSlot.
+    unsafe { output.cast::<ValueSlot>().write(value) };
+    0
+}
+
+/// Reads the cached Unicode scalar count from one validated Text object.
+/// Returns `-1` for an invalid object or output pointer.
+#[unsafe(export_name = "loom_runtime_text_length")]
+pub unsafe extern "C" fn text_length(object: *const c_void, output: *mut i64) -> i32 {
+    if output.is_null() {
+        return STANDARD_INVALID_ARGUMENT;
+    }
+    let Some(length) = (unsafe { text::scalar_length(object.cast()) }) else {
         return STANDARD_INVALID_ARGUMENT;
     };
-    let Ok(length) = i64::try_from(text.chars().count()) else {
+    let Ok(length) = i64::try_from(length) else {
         return STANDARD_INVALID_ARGUMENT;
     };
     // SAFETY: output was checked non-null above.
@@ -509,15 +515,45 @@ pub unsafe extern "C" fn text_get(
     };
     let mut encoded = [0_u8; 4];
     let encoded = scalar.encode_utf8(&mut encoded).as_bytes().to_vec();
-    if store_text(output, encoded) == 0 {
+    if store_text(output, &encoded) == 0 {
         1
     } else {
         -1
     }
 }
 
-/// Concatenates two immutable byte sequences into a new runtime-owned Text
-/// payload. The same operation backs Text concat and Bytes append.
+unsafe fn concatenate(
+    left: *const c_void,
+    left_length: u64,
+    right: *const c_void,
+    right_length: u64,
+) -> Option<Vec<u8>> {
+    let left = unsafe { input_bytes(left, left_length) }?;
+    let right = unsafe { input_bytes(right, right_length) }?;
+    let capacity = left.len().checked_add(right.len())?;
+    let mut value = Vec::with_capacity(capacity);
+    value.extend_from_slice(left);
+    value.extend_from_slice(right);
+    Some(value)
+}
+
+/// Concatenates two valid Text payloads into a new managed Text object.
+#[unsafe(export_name = "loom_runtime_text_concat")]
+pub unsafe extern "C" fn text_concat(
+    left: *const c_void,
+    left_length: u64,
+    right: *const c_void,
+    right_length: u64,
+    output: *mut c_void,
+) -> i32 {
+    let Some(value) = (unsafe { concatenate(left, left_length, right, right_length) }) else {
+        return STANDARD_INVALID_ARGUMENT;
+    };
+    store_text(output, &value)
+}
+
+/// Concatenates two arbitrary immutable byte sequences into a new managed
+/// `ByteObject`. Invalid UTF-8 remains valid Bytes and cannot become Text.
 #[unsafe(export_name = "loom_runtime_bytes_append")]
 pub unsafe extern "C" fn bytes_append(
     left: *const c_void,
@@ -526,19 +562,10 @@ pub unsafe extern "C" fn bytes_append(
     right_length: u64,
     output: *mut c_void,
 ) -> i32 {
-    let Some(left) = (unsafe { input_bytes(left, left_length) }) else {
+    let Some(value) = (unsafe { concatenate(left, left_length, right, right_length) }) else {
         return STANDARD_INVALID_ARGUMENT;
     };
-    let Some(right) = (unsafe { input_bytes(right, right_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    let Some(capacity) = left.len().checked_add(right.len()) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    let mut value = Vec::with_capacity(capacity);
-    value.extend_from_slice(left);
-    value.extend_from_slice(right);
-    store_text(output, value)
+    store_bytes(output, &value)
 }
 
 /// Byte-subsequence containment is equivalent to Text substring containment
@@ -603,6 +630,31 @@ pub unsafe extern "C" fn bytes_is_utf8(data: *const c_void, length: u64) -> i32 
     i32::from(std::str::from_utf8(bytes).is_ok())
 }
 
+/// Validates arbitrary Bytes and writes a distinct managed Text object on
+/// success. Returns `1` for valid UTF-8, `0` for invalid UTF-8, and `-1` for
+/// invalid ABI input.
+#[unsafe(export_name = "loom_runtime_bytes_decode_utf8")]
+pub unsafe extern "C" fn bytes_decode_utf8(
+    data: *const c_void,
+    length: u64,
+    output: *mut c_void,
+) -> i32 {
+    if output.is_null() {
+        return STANDARD_INVALID_ARGUMENT;
+    }
+    let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
+        return STANDARD_INVALID_ARGUMENT;
+    };
+    if std::str::from_utf8(bytes).is_err() {
+        return 0;
+    }
+    if store_text(output, bytes) == 0 {
+        1
+    } else {
+        STANDARD_INVALID_ARGUMENT
+    }
+}
+
 #[unsafe(export_name = "loom_runtime_path_contains_nul")]
 pub unsafe extern "C" fn path_contains_nul(data: *const c_void, length: u64) -> i32 {
     let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
@@ -646,7 +698,7 @@ pub unsafe extern "C" fn path_join(
         value.push(b'/');
     }
     value.extend_from_slice(child);
-    store_text(output, value)
+    store_text(output, &value)
 }
 
 unsafe fn map_entries(map: *const ValueSlot) -> Option<Vec<(ValueSlot, ValueSlot)>> {
@@ -675,11 +727,8 @@ unsafe fn map_entries(map: *const ValueSlot) -> Option<Vec<(ValueSlot, ValueSlot
     Some(entries)
 }
 
-unsafe fn text_slot_bytes<'value>(value: &ValueSlot) -> Option<&'value [u8]> {
-    if value.words[0] != VALUE_TAG_TEXT {
-        return None;
-    }
-    unsafe { input_bytes(value.words[4] as *const c_void, value.words[2]) }
+unsafe fn text_slot_bytes(value: &ValueSlot) -> Option<&[u8]> {
+    unsafe { text::text_value_bytes(value) }
 }
 
 fn build_nodes(values: impl DoubleEndedIterator<Item = ValueSlot>) -> *mut ValueNode {
@@ -821,13 +870,8 @@ fn scalar_value(tag: u64, scalar: u64) -> ValueSlot {
     value
 }
 
-fn text_value(value: String) -> ValueSlot {
-    let (data, length) = retain_bytes(value.into_bytes());
-    let mut result = ValueSlot::default();
-    result.words[0] = VALUE_TAG_TEXT;
-    result.words[2] = length;
-    result.words[4] = data as u64;
-    result
+fn text_value(value: &str) -> ValueSlot {
+    gc::text_value(value.as_bytes()).unwrap_or_else(|| std::process::abort())
 }
 
 fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> ValueSlot {
@@ -858,7 +902,7 @@ fn json_slot(value: JsonNode, json_type: u64, text_map_type: u64) -> ValueSlot {
             2,
             vec![scalar_value(VALUE_TAG_FLOAT, value.to_bits())],
         ),
-        JsonNode::Text(value) => enum_value(json_type, 3, vec![text_value(value)]),
+        JsonNode::Text(value) => enum_value(json_type, 3, vec![text_value(&value)]),
         JsonNode::Array(values) => {
             let values = values
                 .into_iter()
@@ -873,7 +917,7 @@ fn json_slot(value: JsonNode, json_type: u64, text_map_type: u64) -> ValueSlot {
         JsonNode::Object(values) => {
             let values = values
                 .into_iter()
-                .map(|(key, value)| (text_value(key), json_slot(value, json_type, text_map_type)))
+                .map(|(key, value)| (text_value(&key), json_slot(value, json_type, text_map_type)))
                 .collect();
             enum_value(json_type, 5, vec![build_map(text_map_type, values)])
         }
@@ -1040,7 +1084,7 @@ pub unsafe extern "C" fn json_format(
         Err(SlotJsonFailure::InvalidShape) => return STANDARD_INVALID_ARGUMENT,
     };
     let result = match format_json(&value) {
-        Ok(value) => result_value(result_type, true, text_value(value)),
+        Ok(value) => result_value(result_type, true, text_value(&value)),
         Err(error) => result_value(result_type, false, json_error_slot(error, json_error_type)),
     };
     unsafe { output.cast::<ValueSlot>().write(result) };
@@ -1105,10 +1149,56 @@ mod tests {
     use super::*;
 
     fn text_parts(value: &ValueSlot) -> (&[u8], u64) {
-        let length = value.words[2];
-        // SAFETY: ValueSlot contains the runtime-owned pointer/length pair.
-        let bytes = unsafe { input_bytes(value.words[4] as *const c_void, length) }.unwrap();
-        (bytes, length)
+        // SAFETY: test values remain live for the assertion.
+        let bytes = unsafe { text::text_value_bytes(value) }.unwrap();
+        (bytes, bytes.len() as u64)
+    }
+
+    #[test]
+    fn managed_text_and_bytes_outputs_keep_descriptor_direction() {
+        let mut concatenated = ValueSlot::default();
+        let mut arbitrary = ValueSlot::default();
+        let mut decoded = ValueSlot::default();
+        // SAFETY: all inputs and output slots remain live for each ABI call.
+        unsafe {
+            assert_eq!(
+                text_concat(
+                    b"a".as_ptr().cast(),
+                    1,
+                    "界".as_ptr().cast(),
+                    3,
+                    (&raw mut concatenated).cast(),
+                ),
+                0,
+            );
+            assert_eq!(
+                text::text_value_bytes(&concatenated),
+                Some("a界".as_bytes())
+            );
+            assert_eq!(text::byte_value_bytes(&concatenated), None);
+
+            assert_eq!(
+                bytes_append(
+                    [0xff].as_ptr().cast(),
+                    1,
+                    [0].as_ptr().cast(),
+                    1,
+                    (&raw mut arbitrary).cast(),
+                ),
+                0,
+            );
+            assert_eq!(text::byte_value_bytes(&arbitrary), Some(&[0xff, 0][..]));
+            assert_eq!(text::text_value_bytes(&arbitrary), None);
+            assert_eq!(
+                bytes_decode_utf8(b"ok".as_ptr().cast(), 2, (&raw mut decoded).cast(),),
+                1,
+            );
+            assert_eq!(text::text_value_bytes(&decoded), Some(&b"ok"[..]));
+            assert_eq!(
+                bytes_decode_utf8([0xff].as_ptr().cast(), 1, (&raw mut decoded).cast(),),
+                0,
+            );
+        }
     }
 
     #[test]
@@ -1116,16 +1206,11 @@ mod tests {
         let text = "a界🙂";
         let mut scalar_count = 0;
         let mut scalar = ValueSlot::default();
+        let text_value = text_value(text);
+        let text_object = text::object(&text_value).unwrap();
         // SAFETY: test buffers and outputs remain live for each call.
         unsafe {
-            assert_eq!(
-                text_length(
-                    text.as_ptr().cast(),
-                    text.len() as u64,
-                    &raw mut scalar_count,
-                ),
-                0
-            );
+            assert_eq!(text_length(text_object, &raw mut scalar_count), 0);
             assert_eq!(scalar_count, 3);
             assert_eq!(
                 text_get(
@@ -1211,7 +1296,7 @@ mod tests {
     #[test]
     fn native_map_and_json_abi_preserve_shapes_and_depth_errors() {
         let empty = build_map(15, Vec::new());
-        let key = text_value("key".to_owned());
+        let key = text_value("key");
         let value = scalar_value(VALUE_TAG_INT, 42);
         let mut inserted = ValueSlot::default();
         // SAFETY: all slots and their runtime-owned payloads remain live for this test.

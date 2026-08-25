@@ -16,6 +16,7 @@ use inkwell::targets::FileType;
 use inkwell::types::{BasicType, FunctionType, IntType, PointerType, StructType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
+    UnnamedAddress,
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_mir::{
@@ -25,8 +26,8 @@ use loom_mir::{
     StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
 use loom_runtime_abi::{
-    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
-    TEXT_OBJECT_HEADER_SIZE,
+    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
 };
 
 use crate::abi::{
@@ -1534,10 +1535,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(text);
-        let left_length =
-            self.load_i64_field(self.value_type, left, VALUE_FIELD_AUX, "left.length")?;
-        let right_length =
-            self.load_i64_field(self.value_type, right, VALUE_FIELD_AUX, "right.length")?;
+        let (_, left_data, left_length) = self.sequence_parts(left, "left.text")?;
+        let (_, right_data, right_length) = self.sequence_parts(right, "right.text")?;
         let same_length = self
             .builder
             .build_int_compare(IntPredicate::EQ, left_length, right_length, "same.length")
@@ -1548,10 +1547,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
         self.builder.position_at_end(text_bytes);
         let memcmp = self.libc_memcmp();
-        let left_data =
-            self.load_pointer_field(self.value_type, left, VALUE_FIELD_DATA, "left.data")?;
-        let right_data =
-            self.load_pointer_field(self.value_type, right, VALUE_FIELD_DATA, "right.data")?;
         let comparison = call_int(
             &self.builder,
             memcmp,
@@ -1780,7 +1775,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.printf("%.17g\n", &[number.into()])?;
         self.branch(done)?;
         self.builder.position_at_end(text);
-        let length = self.load_i64_field(self.value_type, value, VALUE_FIELD_AUX, "text.length")?;
+        let (_, _, length) = self.sequence_parts(value, "print.text")?;
         self.printf("Text(bytes=%lld)\n", &[length.into()])?;
         self.branch(done)?;
         self.builder.position_at_end(nominal);
@@ -1868,11 +1863,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .get_function("loom_runtime_format_float")
             .unwrap_or_else(|| {
                 let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.context.f64_type().into(),
-                        self.ptr_type.into(),
-                        self.ptr_type.into(),
-                    ],
+                    &[self.context.f64_type().into(), self.ptr_type.into()],
                     false,
                 );
                 self.module
@@ -1925,10 +1916,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_text_length(&self) -> FunctionValue<'ctx> {
-        self.native_data_length_output("loom_runtime_text_length")
-    }
-
     fn native_text_get(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_text_get")
@@ -1949,6 +1936,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
 
     fn native_bytes_append(&self) -> FunctionValue<'ctx> {
         self.native_two_data_output("loom_runtime_bytes_append")
+    }
+
+    fn native_text_concat(&self) -> FunctionValue<'ctx> {
+        self.native_two_data_output("loom_runtime_text_concat")
     }
 
     fn native_text_contains(&self) -> FunctionValue<'ctx> {
@@ -1987,8 +1978,21 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_bytes_is_utf8(&self) -> FunctionValue<'ctx> {
-        self.native_data_length_predicate("loom_runtime_bytes_is_utf8")
+    fn native_bytes_decode_utf8(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_bytes_decode_utf8")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_bytes_decode_utf8", function_type, None)
+            })
     }
 
     fn native_path_contains_nul(&self) -> FunctionValue<'ctx> {
@@ -2112,20 +2116,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         })
     }
 
-    fn native_data_length_output(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(name).unwrap_or_else(|| {
-            let function_type = self.context.i32_type().fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.i64_type.into(),
-                    self.ptr_type.into(),
-                ],
-                false,
-            );
-            self.module.add_function(name, function_type, None)
-        })
-    }
-
     fn native_data_length_predicate(&self, name: &str) -> FunctionValue<'ctx> {
         self.module.get_function(name).unwrap_or_else(|| {
             let function_type = self
@@ -2195,14 +2185,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.module
             .get_function("loom_runtime_process_environment")
             .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
                 self.module
                     .add_function("loom_runtime_process_environment", function_type, None)
             })
@@ -3569,6 +3554,51 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_load(self.ptr_type, field, name)
             .map_err(builder_error)
             .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn sequence_parts(
+        &self,
+        value: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let object = self.load_pointer_field(
+            self.value_type,
+            value,
+            VALUE_FIELD_DATA,
+            &format!("{name}.object"),
+        )?;
+        let length = self.load_i64_field(
+            self.text_object_type,
+            object,
+            TEXT_OBJECT_FIELD_BYTE_LENGTH,
+            &format!("{name}.length"),
+        )?;
+        let data = self.struct_pointer(
+            self.text_object_type,
+            object,
+            TEXT_OBJECT_FIELD_BYTES,
+            &format!("{name}.data"),
+        )?;
+        Ok((object, data, length))
+    }
+
+    fn text_scalar_length(
+        &self,
+        value: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let object = self.load_pointer_field(
+            self.value_type,
+            value,
+            VALUE_FIELD_DATA,
+            &format!("{name}.object"),
+        )?;
+        self.load_i64_field(
+            self.text_object_type,
+            object,
+            TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+            &format!("{name}.scalar_length"),
+        )
     }
 
     fn store_pointer_field(
@@ -7420,25 +7450,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .ok_or_else(|| CodegenError::new("InvalidPrelude", "Result is missing"))?;
         match (builtin, values) {
             (Builtin::TextLength, [text]) => {
-                let (data, length) = self.text_parts(*text, "text.length")?;
-                let scalar = self
-                    .backend
-                    .builder
-                    .build_alloca(self.backend.i64_type, "text.scalar.count")
-                    .map_err(builder_error)?;
-                let status = call_int(
-                    &self.backend.builder,
-                    self.backend.native_text_length(),
-                    &[data.into(), length.into(), scalar.into()],
-                    "text.length.status",
-                )?;
-                self.fail_on_standard_status(status, "TextRuntimeFault")?;
-                let scalar = self
-                    .backend
-                    .builder
-                    .build_load(self.backend.i64_type, scalar, "text.length.value")
-                    .map_err(builder_error)?
-                    .into_int_value();
+                let text = self.unwrap(*text)?;
+                let scalar = self.backend.text_scalar_length(text, "text.length")?;
                 self.initialize(destination, VALUE_TAG_INT)?;
                 self.backend.store_i64_field(
                     self.backend.value_type,
@@ -7466,7 +7479,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let (right_data, right_length) = self.text_parts(*right, "text.concat.right")?;
                 let status = call_int(
                     &self.backend.builder,
-                    self.backend.native_bytes_append(),
+                    self.backend.native_text_concat(),
                     &[
                         left_data.into(),
                         left_length.into(),
@@ -7585,10 +7598,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::BytesDecodeUtf8, [bytes]) => {
                 let bytes = self.opaque_record_field(*bytes, "bytes.decode.payload")?;
                 let (data, length) = self.text_parts(bytes, "bytes.decode")?;
+                let decoded = self.alloc_value("bytes.decode.text");
                 let status = call_int(
                     &self.backend.builder,
-                    self.backend.native_bytes_is_utf8(),
-                    &[data.into(), length.into()],
+                    self.backend.native_bytes_decode_utf8(),
+                    &[data.into(), length.into(), decoded.into()],
                     "bytes.decode.status",
                 )?;
                 let invalid = self
@@ -7620,7 +7634,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .build_conditional_branch(valid, ok, error)
                     .map_err(builder_error)?;
                 self.backend.builder.position_at_end(ok);
-                self.emit_variant_from_pointers(result, 0, &[bytes], destination)?;
+                self.emit_variant_from_pointers(result, 0, &[decoded], destination)?;
                 self.backend.branch(merge)?;
                 self.backend.builder.position_at_end(error);
                 let error_value = self.alloc_value("decode.error");
@@ -8238,28 +8252,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             (Builtin::ProcessEnvironment, [name]) => {
-                let name = self.unwrap(*name)?;
-                let data = self.backend.load_pointer_field(
-                    self.backend.value_type,
-                    name,
-                    VALUE_FIELD_DATA,
-                    "environment.name.data",
-                )?;
-                let length = self.backend.load_i64_field(
-                    self.backend.value_type,
-                    name,
-                    VALUE_FIELD_AUX,
-                    "environment.name.length",
-                )?;
-                let value_length = self
-                    .backend
-                    .builder
-                    .build_alloca(self.backend.i64_type, "environment.value.length")
-                    .map_err(builder_error)?;
+                let (data, length) = self.text_parts(*name, "environment.name")?;
                 let value = call_pointer(
                     &self.backend.builder,
                     self.backend.native_process_environment(),
-                    &[data.into(), length.into(), value_length.into()],
+                    &[data.into(), length.into()],
                     "environment.value",
                 )?;
                 let found = self
@@ -8278,18 +8275,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.backend.builder.position_at_end(some);
                 let text = self.alloc_value("environment.text");
                 self.initialize(text, VALUE_TAG_TEXT)?;
-                let length = self
-                    .backend
-                    .builder
-                    .build_load(self.backend.i64_type, value_length, "environment.length")
-                    .map_err(builder_error)?
-                    .into_int_value();
-                self.backend.store_i64_field(
-                    self.backend.value_type,
-                    text,
-                    VALUE_FIELD_AUX,
-                    length,
-                )?;
                 self.backend.store_pointer_field(
                     self.backend.value_type,
                     text,
@@ -8605,18 +8590,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         name: &str,
     ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
         let text = self.unwrap(text)?;
-        let data = self.backend.load_pointer_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_DATA,
-            &format!("{name}.data"),
-        )?;
-        let length = self.backend.load_i64_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_AUX,
-            &format!("{name}.length"),
-        )?;
+        let (_, data, length) = self.backend.sequence_parts(text, name)?;
         Ok((data, length))
     }
 
@@ -8652,19 +8626,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         value: PointerValue<'ctx>,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let text = self.unwrap(value)?;
-        let data = self.backend.load_pointer_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_DATA,
-            "parse.data",
-        )?;
-        let length = self.backend.load_i64_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_AUX,
-            "parse.length",
-        )?;
+        let (data, length) = self.text_parts(value, "parse.float")?;
         let parsed = self
             .backend
             .builder
@@ -8746,19 +8708,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         value: PointerValue<'ctx>,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let text = self.unwrap(value)?;
-        let data = self.backend.load_pointer_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_DATA,
-            "parse.int.data",
-        )?;
-        let length = self.backend.load_i64_field(
-            self.backend.value_type,
-            text,
-            VALUE_FIELD_AUX,
-            "parse.int.length",
-        )?;
+        let (data, length) = self.text_parts(value, "parse.int")?;
         let parsed = self
             .backend
             .builder
@@ -8852,15 +8802,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .builder
             .build_alloca(self.backend.ptr_type, "format.data")
             .map_err(builder_error)?;
-        let length_slot = self
-            .backend
-            .builder
-            .build_alloca(self.backend.i64_type, "format.length")
-            .map_err(builder_error)?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_format_float(),
-            &[number.into(), data_slot.into(), length_slot.into()],
+            &[number.into(), data_slot.into()],
             "format.float",
         )?;
         let failed = self
@@ -8880,19 +8825,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_load(self.backend.ptr_type, data_slot, "format.data.value")
             .map_err(builder_error)?
             .into_pointer_value();
-        let length = self
-            .backend
-            .builder
-            .build_load(self.backend.i64_type, length_slot, "format.length.value")
-            .map_err(builder_error)?
-            .into_int_value();
         self.initialize(destination, VALUE_TAG_TEXT)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_AUX,
-            length,
-        )?;
         self.backend.store_pointer_field(
             self.backend.value_type,
             destination,
@@ -9441,27 +9374,82 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     bits,
                 )
             }
-            Constant::Text(value) => {
-                self.initialize(destination, VALUE_TAG_TEXT)?;
-                let data = self
-                    .backend
-                    .builder
-                    .build_global_string_ptr(value, &self.backend.unique("text"))
-                    .map_err(builder_error)?;
-                self.backend.store_i64_field(
-                    self.backend.value_type,
-                    destination,
-                    VALUE_FIELD_AUX,
-                    self.backend.i64_type.const_int(value.len() as u64, false),
-                )?;
-                self.backend.store_pointer_field(
-                    self.backend.value_type,
-                    destination,
-                    VALUE_FIELD_DATA,
-                    data.as_pointer_value(),
-                )
-            }
+            Constant::Text(value) => self.emit_text_constant(value, destination),
         }
+    }
+
+    fn emit_text_constant(
+        &self,
+        value: &str,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let byte_length = u64::try_from(value.len()).map_err(|_| {
+            CodegenError::new("TextLiteralTooLarge", "Text literal length exceeds u64")
+        })?;
+        let array_length = u32::try_from(value.len()).map_err(|_| {
+            CodegenError::new(
+                "TextLiteralTooLarge",
+                "Text literal exceeds LLVM's constant array limit",
+            )
+        })?;
+        let allocation_size = TEXT_OBJECT_HEADER_SIZE
+            .checked_add(byte_length)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "TextLiteralTooLarge",
+                    "Text literal allocation size overflowed",
+                )
+            })?;
+        let scalar_length = u64::try_from(value.chars().count()).map_err(|_| {
+            CodegenError::new("TextLiteralTooLarge", "Text scalar count exceeds u64")
+        })?;
+        let bytes_type = self.backend.context.i8_type().array_type(array_length);
+        let literal_type = self.backend.context.struct_type(
+            &[
+                self.backend.ptr_type.into(),
+                self.backend.i64_type.into(),
+                self.backend.i64_type.into(),
+                self.backend.i64_type.into(),
+                bytes_type.into(),
+            ],
+            false,
+        );
+        let bytes = value
+            .as_bytes()
+            .iter()
+            .map(|byte| {
+                self.backend
+                    .context
+                    .i8_type()
+                    .const_int(u64::from(*byte), false)
+            })
+            .collect::<Vec<_>>();
+        let initializer = literal_type.const_named_struct(&[
+            self.backend.text_layout.as_pointer_value().into(),
+            self.backend
+                .i64_type
+                .const_int(allocation_size, false)
+                .into(),
+            self.backend.i64_type.const_int(byte_length, false).into(),
+            self.backend.i64_type.const_int(scalar_length, false).into(),
+            self.backend.context.i8_type().const_array(&bytes).into(),
+        ]);
+        let literal =
+            self.backend
+                .module
+                .add_global(literal_type, None, &self.backend.unique("text.object"));
+        literal.set_initializer(&initializer);
+        literal.set_constant(true);
+        literal.set_linkage(Linkage::Private);
+        literal.set_unnamed_address(UnnamedAddress::Global);
+        literal.set_alignment(u32::try_from(TEXT_OBJECT_ALIGNMENT).unwrap_or(8));
+        self.initialize(destination, VALUE_TAG_TEXT)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            literal.as_pointer_value(),
+        )
     }
 
     fn initialize(&self, destination: PointerValue<'ctx>, tag: u64) -> Result<(), CodegenError> {

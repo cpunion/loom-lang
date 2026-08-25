@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{CodegenError, OptimizationProfile, ReachableProgram, Roots, emitter::Emitter};
 
+const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v3";
+
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EmitKind {
@@ -215,7 +217,7 @@ pub fn native_object_fingerprint(
         })
         .collect::<Result<Vec<_>, CodegenError>>()?;
     let identity = ObjectFingerprint {
-        format: "loom-native-object-v2",
+        format: NATIVE_OBJECT_FORMAT,
         backend_version: crate::BACKEND_VERSION,
         mir_format: loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         mir_version: loom_mir::INTERPRETED_ARTIFACT_VERSION,
@@ -306,4 +308,12 @@ pub fn emit_native(
         functions: emitted.functions,
         witnesses: emitted.witnesses,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn managed_text_object_fingerprint_domain_is_pinned() {
+        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-native-object-v3");
+    }
 }

@@ -99,27 +99,18 @@ pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *
     0
 }
 
-/// Formats a binary64 value and transfers an immutable byte allocation to the
-/// generated process. Core 0.x Text values are process-lifetime allocations.
+/// Formats a binary64 value into one managed Text object.
 #[unsafe(export_name = "loom_runtime_format_float")]
-pub unsafe extern "C" fn format_float(
-    value: f64,
-    output: *mut *mut c_char,
-    length: *mut u64,
-) -> c_int {
-    if output.is_null() || length.is_null() {
+pub unsafe extern "C" fn format_float(value: f64, output: *mut *mut std::ffi::c_void) -> c_int {
+    if output.is_null() {
         return 1;
     }
     let text = canonical_text(value);
-    let Ok(text_length) = u64::try_from(text.len()) else {
+    let Some(object) = crate::gc::retain_text(text.as_bytes()) else {
         return 1;
     };
-    let (pointer, _) = crate::gc::retain_bytes(text.into_bytes());
-    // SAFETY: both caller-owned output slots were checked non-null.
-    unsafe {
-        output.write(pointer.cast_mut().cast::<c_char>());
-        length.write(text_length);
-    }
+    // SAFETY: the caller-owned output slot was checked non-null.
+    unsafe { output.write(object) };
     0
 }
 

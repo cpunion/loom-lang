@@ -10,7 +10,10 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
-use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
+use loom_runtime_abi::{
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, VALUE_SLOT_WORDS, VALUE_TAG_ENUM,
+    VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+};
 
 use crate::gc::{collect, enter_executor, leave_executor};
 use crate::reactor::{
@@ -25,12 +28,6 @@ use crate::{
 };
 
 const NO_JOIN_WINNER: u64 = u64::MAX;
-const VALUE_TAG_TEXT: u64 = 4;
-const VALUE_TAG_RECORD: u64 = 5;
-const VALUE_TAG_ENUM: u64 = 6;
-const VALUE_TAG_TASK: u64 = 11;
-const VALUE_TAG_LIST: u64 = 12;
-const VALUE_TAG_TUPLE: u64 = 10;
 const TASK_VALUE_DIRECT: u64 = 0;
 
 // Compiler-private synthetic prelude ids. Keep these synchronized with
@@ -113,7 +110,7 @@ fn report_fault(detail: &str, code: &str, message: &str, human: &str) {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ValueSlot {
-    pub(crate) words: [u64; 6],
+    pub(crate) words: [u64; VALUE_SLOT_WORDS],
 }
 
 #[repr(C)]
@@ -955,7 +952,7 @@ unsafe fn finish_blocking_result(
             descriptor,
         } => unsafe { store_resource_result(task, nominal, descriptor) },
         BlockingResult::Text { bytes, code } => unsafe {
-            store_text_result(task, executor, bytes, code)
+            store_text_result(task, executor, &bytes, code)
         },
         BlockingResult::Unit => unsafe { store_unit_result(task) },
         BlockingResult::Fault {
@@ -978,7 +975,9 @@ unsafe fn resume_socket_read(
     let mut chunk = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         match socket.read(&mut chunk) {
-            Ok(0) => return unsafe { store_text_result(task, executor, bytes, "SocketReadFault") },
+            Ok(0) => {
+                return unsafe { store_text_result(task, executor, &bytes, "SocketReadFault") };
+            }
             Ok(length) => bytes.extend_from_slice(&chunk[..length]),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => unsafe {
                 return suspend_io(
@@ -1070,17 +1069,15 @@ unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: O
 unsafe fn store_text_result(
     task: *mut LoomTask,
     _executor: *mut LoomExecutor,
-    bytes: Vec<u8>,
+    bytes: &[u8],
     code: &str,
 ) -> i32 {
-    if std::str::from_utf8(&bytes).is_err() {
+    if std::str::from_utf8(bytes).is_err() {
         return unsafe { complete_io_error(task, 3, code, "I/O bytes are not valid UTF-8 Text") };
     }
-    let (pointer, length) = crate::gc::retain_bytes(bytes);
-    let mut result = ValueSlot::default();
-    result.words[0] = VALUE_TAG_TEXT;
-    result.words[2] = length;
-    result.words[4] = pointer as u64;
+    let Some(result) = crate::gc::text_value(bytes) else {
+        return unsafe { fail_message(task, "OutOfMemory", "Text allocation failed") };
+    };
     unsafe { store_io_success(task, result) }
 }
 
@@ -2269,12 +2266,7 @@ unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut V
 }
 
 fn text_value(bytes: &[u8]) -> ValueSlot {
-    let (pointer, length) = crate::gc::retain_bytes(bytes.to_vec());
-    let mut value = ValueSlot::default();
-    value.words[0] = VALUE_TAG_TEXT;
-    value.words[2] = length;
-    value.words[4] = pointer as u64;
-    value
+    crate::gc::text_value(bytes).unwrap_or_else(|| std::process::abort())
 }
 
 fn retain_result_node(
@@ -2787,7 +2779,7 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         let executor = unsafe { &*executor };
         (executor.gc_values.len() as u64)
             .saturating_add(executor.gc_nodes.len() as u64)
-            .saturating_add(executor.gc_bytes.len() as u64)
+            .saturating_add(executor.gc_sequences.len() as u64)
     }
 }
 

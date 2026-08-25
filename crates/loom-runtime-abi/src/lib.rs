@@ -4,12 +4,13 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 1;
+pub const RUNTIME_ABI_VERSION: u32 = 2;
 pub const COROUTINE_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 2;
+pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 3;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v1/wait-v1/task-v1/gc-v1/stdlib-v2";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str =
+    "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/gc-v2/stdlib-v3";
 
 /// Number of machine words in the compatibility value envelope.
 ///
@@ -106,3 +107,22 @@ pub const READY_TIMER: u32 = 1 << 2;
 pub const READY_COMPLETED: u32 = 1 << 3;
 pub const READY_CLOSED: u32 = 1 << 4;
 pub const READY_ERROR: u32 = 1 << 5;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LAYOUT_ABI_VERSION, NATIVE_RUNTIME_ABI_IDENTITY, RUNTIME_ABI_VERSION,
+        STANDARD_LIBRARY_ABI_VERSION,
+    };
+
+    #[test]
+    fn managed_text_runtime_identity_is_pinned() {
+        assert_eq!(RUNTIME_ABI_VERSION, 2);
+        assert_eq!(LAYOUT_ABI_VERSION, 1);
+        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 3);
+        assert_eq!(
+            NATIVE_RUNTIME_ABI_IDENTITY,
+            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/gc-v2/stdlib-v3",
+        );
+    }
+}

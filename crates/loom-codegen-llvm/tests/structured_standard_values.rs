@@ -40,7 +40,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         NATIVE_RUNTIME_ABI,
         loom_runtime_abi::NATIVE_RUNTIME_ABI_IDENTITY
     );
-    assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v2"));
+    assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v3"));
     assert!(native_runtime_identity().starts_with(NATIVE_RUNTIME_ABI));
     let project = tempfile::tempdir().expect("create standard-library project");
     let round_trip = project.path().join("round-trip.txt");

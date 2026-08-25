@@ -3,24 +3,16 @@
 use std::ffi::c_void;
 use std::fmt::Write as _;
 
-use crate::float::canonical_text;
-use crate::gc::retain_bytes;
-use crate::scheduler::{ValueNode, ValueSlot};
-use crate::{WAIT_INVALID_ARGUMENT, WAIT_OK};
+use loom_runtime_abi::{
+    VALUE_TAG_BOOL, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_FLOAT,
+    VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK,
+    VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_TAG_UNIT,
+};
 
-const VALUE_TAG_UNIT: u64 = 0;
-const VALUE_TAG_BOOL: u64 = 1;
-const VALUE_TAG_INT: u64 = 2;
-const VALUE_TAG_FLOAT: u64 = 3;
-const VALUE_TAG_TEXT: u64 = 4;
-const VALUE_TAG_RECORD: u64 = 5;
-const VALUE_TAG_ENUM: u64 = 6;
-const VALUE_TAG_REFINED: u64 = 7;
-const VALUE_TAG_CONSTRAINT_ERROR: u64 = 8;
-const VALUE_TAG_DYN: u64 = 9;
-const VALUE_TAG_TUPLE: u64 = 10;
-const VALUE_TAG_TASK: u64 = 11;
-const VALUE_TAG_LIST: u64 = 12;
+use crate::float::canonical_text;
+use crate::scheduler::{ValueNode, ValueSlot};
+use crate::text;
+use crate::{WAIT_INVALID_ARGUMENT, WAIT_OK};
 
 fn write_nodes(mut node: *const ValueNode, count: u64, output: &mut String, depth: u8) {
     for index in 0..count {
@@ -53,7 +45,11 @@ fn write_summary(value: &ValueSlot, output: &mut String, depth: u8) {
         }
         VALUE_TAG_FLOAT => output.push_str(&canonical_text(f64::from_bits(value.words[3]))),
         VALUE_TAG_TEXT => {
-            let _ = write!(output, "Text(bytes={})", value.words[2]);
+            let Some(length) = (unsafe { text::value_bytes(value) }).map(<[u8]>::len) else {
+                output.push_str("<invalid>");
+                return;
+            };
+            let _ = write!(output, "Text(bytes={length})");
         }
         VALUE_TAG_RECORD => {
             let _ = write!(output, "type#{}", value.words[1]);
@@ -118,11 +114,9 @@ pub unsafe extern "C" fn value_summary(value: *const c_void, output: *mut c_void
     if summary.chars().count() > 256 {
         summary = summary.chars().take(253).collect::<String>() + "...";
     }
-    let (data, length) = retain_bytes(summary.into_bytes());
-    let mut result = ValueSlot::default();
-    result.words[0] = VALUE_TAG_TEXT;
-    result.words[2] = length;
-    result.words[4] = data as u64;
+    let Some(result) = crate::gc::text_value(summary.as_bytes()) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
     unsafe { output.cast::<ValueSlot>().write(result) };
     WAIT_OK
 }

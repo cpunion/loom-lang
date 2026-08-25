@@ -65,6 +65,104 @@ fn compatibility_value_abi_rejects_32_bit_targets() {
 }
 
 #[test]
+fn text_literals_are_immortal_versioned_objects_across_a_gc_safepoint() {
+    let source = r#"module text_literal_object
+
+pub async fn main() Unit {
+    let empty = ""
+    let unicode = "a界🙂"
+    let with_nul = "a\0b"
+    let empty_length = empty.length()
+    let unicode_length = unicode.length()
+    let nul_length = with_nul.length()
+    assert empty_length == 0
+    assert unicode_length == 3
+    assert nul_length == 3
+    Task.sleep(1).await
+    assert empty == ""
+    assert unicode == "a界🙂"
+    assert with_nul == "a\0b"
+    Unit
+}
+"#;
+    let project = tempfile::tempdir().expect("create Text literal project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write Text literal source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load Text literal project")
+        .snapshot()
+        .expect("analyze Text literal project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower Text literal MIR"),
+        &executable,
+        &options,
+    )
+    .expect("emit Text literal executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read Text literal LLVM IR");
+    let literals = llvm
+        .lines()
+        .filter(|line| line.starts_with("@text.object."))
+        .collect::<Vec<_>>();
+    assert!(
+        llvm.contains("@loom_layout_text_v1 = external global %loom.LayoutDescriptor"),
+        "{literals:#?}",
+    );
+    assert!(
+        literals
+            .iter()
+            .all(|line| line.contains("private unnamed_addr constant")),
+        "{literals:#?}",
+    );
+    assert!(
+        literals
+            .iter()
+            .any(|line| line.contains("i64 32, i64 0, i64 0")),
+        "missing empty TextObject: {literals:#?}",
+    );
+    assert!(
+        literals
+            .iter()
+            .any(|line| line.contains("i64 40, i64 8, i64 3")),
+        "missing Unicode TextObject: {literals:#?}",
+    );
+    assert!(
+        literals
+            .iter()
+            .any(|line| line.contains("i64 35, i64 3, i64 3")),
+        "missing embedded-NUL TextObject: {literals:#?}",
+    );
+    for (store, _) in llvm.match_indices("store ptr @text.object.") {
+        let start = llvm[..store]
+            .rfind("store %loom.Value zeroinitializer")
+            .expect("literal Value starts from a zero envelope");
+        let envelope = &llvm[start..store];
+        assert!(envelope.contains("store i64 4"), "{envelope}");
+        assert_eq!(
+            envelope.matches("store i64 ").count(),
+            1,
+            "Text literal envelope must write only its tag before data: {envelope}",
+        );
+    }
+    assert!(!llvm.contains("loom_runtime_text_length"));
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run Text literal executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn release_pipeline_folds_live_constants_and_eliminates_machine_dead_code() {
     let source = r"module optimize
 

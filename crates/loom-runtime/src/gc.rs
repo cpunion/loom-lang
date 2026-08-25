@@ -10,19 +10,15 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::ptr;
 
+use loom_runtime_abi::{
+    TASK_COMPLETED, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST,
+    VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE,
+    VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
+};
+
 use crate::reactor::LoomExecutor;
 use crate::scheduler::{ValueNode, ValueSlot, trace_task_roots};
-
-const VALUE_TAG_RECORD: u64 = 5;
-const VALUE_TAG_TEXT: u64 = 4;
-const VALUE_TAG_ENUM: u64 = 6;
-const VALUE_TAG_REFINED: u64 = 7;
-const VALUE_TAG_CONSTRAINT_ERROR: u64 = 8;
-const VALUE_TAG_DYN: u64 = 9;
-const VALUE_TAG_TUPLE: u64 = 10;
-const VALUE_TAG_LIST: u64 = 12;
-const VALUE_TAG_TASK_OUTCOME: u64 = 13;
-const TASK_COMPLETED: u64 = 0;
+use crate::text;
 
 thread_local! {
     static ACTIVE_EXECUTOR: Cell<*mut LoomExecutor> = const { Cell::new(ptr::null_mut()) };
@@ -118,24 +114,36 @@ pub extern "C" fn allocate_value_node() -> *mut c_void {
     pointer
 }
 
-pub(crate) fn retain_bytes(bytes: Vec<u8>) -> (*const u8, u64) {
-    let length = bytes.len() as u64;
-    if bytes.is_empty() {
-        return (std::ptr::NonNull::<u8>::dangling().as_ptr(), 0);
-    }
-    let bytes = bytes.into_boxed_slice();
-    let pointer = bytes.as_ptr();
+fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> *mut c_void {
     ACTIVE_EXECUTOR.with(|active| {
         let executor = active.get();
         if executor.is_null() {
-            let _ = Box::into_raw(bytes);
+            let _ = Box::into_raw(allocation);
         } else {
-            // SAFETY: see allocate_value. Text payloads are immutable after
+            // SAFETY: see allocate_value. Sequence objects are immutable after
             // publication and collection runs only at generated safepoints.
-            unsafe { (*executor).gc_bytes.push(bytes) };
+            unsafe { (*executor).gc_sequences.push(allocation) };
         }
     });
-    (pointer, length)
+    object
+}
+
+pub(crate) fn retain_text(bytes: &[u8]) -> Option<*mut c_void> {
+    let (allocation, object) = text::allocate_text_storage(bytes)?;
+    Some(retain_sequence(allocation, object.cast()))
+}
+
+pub(crate) fn retain_byte_sequence(bytes: &[u8]) -> Option<*mut c_void> {
+    let (allocation, object) = text::allocate_byte_storage(bytes)?;
+    Some(retain_sequence(allocation, object.cast()))
+}
+
+pub(crate) fn text_value(bytes: &[u8]) -> Option<ValueSlot> {
+    retain_text(bytes).map(text::value)
+}
+
+pub(crate) fn byte_value(bytes: &[u8]) -> Option<ValueSlot> {
+    retain_byte_sequence(bytes).map(text::value)
 }
 
 /// Appends one already-evaluated value to a checked native List.
@@ -230,7 +238,7 @@ pub extern "C" fn allocate_witness_node() -> *mut c_void {
 struct HeapIndex {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
-    bytes: HashSet<usize>,
+    sequences: HashSet<usize>,
 }
 
 impl HeapIndex {
@@ -246,10 +254,10 @@ impl HeapIndex {
                 .iter()
                 .map(|node| (&raw const **node) as usize)
                 .collect(),
-            bytes: executor
-                .gc_bytes
+            sequences: executor
+                .gc_sequences
                 .iter()
-                .map(|bytes| bytes.as_ptr() as usize)
+                .map(|sequence| sequence.as_ptr() as usize)
                 .collect(),
         }
     }
@@ -259,7 +267,7 @@ impl HeapIndex {
 struct Marks {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
-    bytes: HashSet<usize>,
+    sequences: HashSet<usize>,
 }
 
 struct TraceContext {
@@ -278,36 +286,45 @@ unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
 }
 
 fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
-    match value.words[0] {
+    match value.words[VALUE_WORD_TAG] {
         VALUE_TAG_TEXT => {
-            let Ok(address) = usize::try_from(value.words[4]) else {
+            let Some(object) = text::object(value) else {
                 return;
             };
-            if index.bytes.contains(&address) {
-                marks.bytes.insert(address);
+            let address = object as usize;
+            if index.sequences.contains(&address) {
+                marks.sequences.insert(address);
             }
         }
         VALUE_TAG_RECORD | VALUE_TAG_CONSTRAINT_ERROR | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
             trace_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[2],
+                value.words[VALUE_WORD_DATA] as *const ValueNode,
+                value.words[VALUE_WORD_AUX],
                 index,
                 marks,
             );
         }
         VALUE_TAG_ENUM => {
             trace_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[3],
+                value.words[VALUE_WORD_DATA] as *const ValueNode,
+                value.words[VALUE_WORD_SCALAR],
                 index,
                 marks,
             );
         }
         VALUE_TAG_REFINED | VALUE_TAG_DYN => {
-            trace_value_pointer(value.words[4] as *const ValueSlot, index, marks);
+            trace_value_pointer(
+                value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                index,
+                marks,
+            );
         }
-        VALUE_TAG_TASK_OUTCOME if value.words[2] == TASK_COMPLETED => {
-            trace_value_pointer(value.words[4] as *const ValueSlot, index, marks);
+        VALUE_TAG_TASK_OUTCOME if value.words[VALUE_WORD_AUX] == TASK_COMPLETED as u64 => {
+            trace_value_pointer(
+                value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                index,
+                marks,
+            );
         }
         _ => {}
     }
@@ -332,14 +349,17 @@ fn trace_nodes(mut pointer: *const ValueNode, count: u64, index: &HeapIndex, mar
             return;
         }
         let address = pointer as usize;
-        if index.nodes.contains(&address) && !marks.nodes.insert(address) {
-            return;
+        let newly_marked = !index.nodes.contains(&address) || marks.nodes.insert(address);
+        // A shared head may first be reached through a shorter bounded view.
+        // Continue walking an already-marked chain so a later longer view can
+        // still mark its tail, while avoiding duplicate child traversal.
+        if newly_marked {
+            // SAFETY: aggregate counts and chains were validated/constructed
+            // by compiler or runtime code and remain live until this safepoint.
+            trace_value(unsafe { &(*pointer).value }, index, marks);
         }
-        // SAFETY: aggregate counts and chains were validated/constructed by
-        // compiler or runtime code and remain live until this safepoint.
-        let node = unsafe { &*pointer };
-        trace_value(&node.value, index, marks);
-        pointer = node.next;
+        // SAFETY: the same bounded-chain invariant applies to its next link.
+        pointer = unsafe { (*pointer).next };
     }
 }
 
@@ -347,15 +367,15 @@ fn rewrite_value(
     value: &mut ValueSlot,
     values: &HashMap<usize, *mut ValueSlot>,
     nodes: &HashMap<usize, *mut ValueNode>,
-    bytes: &HashMap<usize, *const u8>,
+    sequences: &HashMap<usize, *mut c_void>,
 ) {
-    let Ok(address) = usize::try_from(value.words[4]) else {
+    let Ok(address) = usize::try_from(value.words[VALUE_WORD_DATA]) else {
         return;
     };
-    match value.words[0] {
+    match value.words[VALUE_WORD_TAG] {
         VALUE_TAG_TEXT => {
-            if let Some(pointer) = bytes.get(&address) {
-                value.words[4] = *pointer as u64;
+            if let Some(pointer) = sequences.get(&address) {
+                value.words[VALUE_WORD_DATA] = *pointer as u64;
             }
         }
         VALUE_TAG_RECORD
@@ -364,21 +384,42 @@ fn rewrite_value(
         | VALUE_TAG_TUPLE
         | VALUE_TAG_LIST => {
             if let Some(pointer) = nodes.get(&address) {
-                value.words[4] = *pointer as u64;
+                value.words[VALUE_WORD_DATA] = *pointer as u64;
             }
         }
         VALUE_TAG_REFINED | VALUE_TAG_DYN | VALUE_TAG_TASK_OUTCOME => {
             if let Some(pointer) = values.get(&address) {
-                value.words[4] = *pointer as u64;
+                value.words[VALUE_WORD_DATA] = *pointer as u64;
             }
         }
         _ => {}
     }
 }
 
+struct RewriteContext<'maps> {
+    values: &'maps HashMap<usize, *mut ValueSlot>,
+    nodes: &'maps HashMap<usize, *mut ValueNode>,
+    sequences: &'maps HashMap<usize, *mut c_void>,
+}
+
+unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
+    if slot.is_null() || context.is_null() {
+        return;
+    }
+    let context = unsafe { &*context.cast::<RewriteContext<'_>>() };
+    rewrite_value(
+        unsafe { &mut *slot.cast::<ValueSlot>() },
+        context.values,
+        context.nodes,
+        context.sequences,
+    );
+}
+
 pub(crate) fn collect(executor: &mut LoomExecutor) {
     executor.gc_collections = executor.gc_collections.saturating_add(1);
-    if executor.gc_values.is_empty() && executor.gc_nodes.is_empty() && executor.gc_bytes.is_empty()
+    if executor.gc_values.is_empty()
+        && executor.gc_nodes.is_empty()
+        && executor.gc_sequences.is_empty()
     {
         return;
     }
@@ -397,7 +438,7 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         .gc_values
         .len()
         .saturating_add(executor.gc_nodes.len())
-        .saturating_add(executor.gc_bytes.len());
+        .saturating_add(executor.gc_sequences.len());
     executor
         .gc_values
         .retain(|value| marks.values.contains(&((&raw const **value) as usize)));
@@ -405,13 +446,13 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         .gc_nodes
         .retain(|node| marks.nodes.contains(&((&raw const **node) as usize)));
     executor
-        .gc_bytes
-        .retain(|bytes| marks.bytes.contains(&(bytes.as_ptr() as usize)));
+        .gc_sequences
+        .retain(|sequence| marks.sequences.contains(&(sequence.as_ptr() as usize)));
     let after = executor
         .gc_values
         .len()
         .saturating_add(executor.gc_nodes.len())
-        .saturating_add(executor.gc_bytes.len());
+        .saturating_add(executor.gc_sequences.len());
     executor.gc_reclaimed = executor
         .gc_reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
@@ -435,31 +476,40 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
         *node = replacement;
         node_moves.insert(old, new);
     }
-    let mut byte_moves = HashMap::with_capacity(executor.gc_bytes.len());
-    for bytes in &mut executor.gc_bytes {
-        let old = bytes.as_ptr() as usize;
-        let replacement = bytes.to_vec().into_boxed_slice();
-        let new = replacement.as_ptr();
-        *bytes = replacement;
-        byte_moves.insert(old, new);
+    let mut sequence_moves = HashMap::with_capacity(executor.gc_sequences.len());
+    for sequence in &mut executor.gc_sequences {
+        let old = sequence.as_ptr() as usize;
+        let mut replacement = sequence.to_vec().into_boxed_slice();
+        let new = replacement.as_mut_ptr().cast::<c_void>();
+        *sequence = replacement;
+        sequence_moves.insert(old, new);
     }
     executor.gc_relocations = executor.gc_relocations.saturating_add(
         (value_moves
             .len()
             .saturating_add(node_moves.len())
-            .saturating_add(byte_moves.len())) as u64,
+            .saturating_add(sequence_moves.len())) as u64,
     );
 
+    let mut rewrite_context = RewriteContext {
+        values: &value_moves,
+        nodes: &node_moves,
+        sequences: &sequence_moves,
+    };
     for task in &mut executor.tasks {
-        for slot in &mut task.slots {
-            rewrite_value(slot, &value_moves, &node_moves, &byte_moves);
+        unsafe {
+            trace_task_roots(
+                &raw mut **task,
+                Some(rewrite_slot),
+                (&raw mut rewrite_context).cast(),
+            );
         }
     }
     for value in &mut executor.gc_values {
-        rewrite_value(value, &value_moves, &node_moves, &byte_moves);
+        rewrite_value(value, &value_moves, &node_moves, &sequence_moves);
     }
     for node in &mut executor.gc_nodes {
-        rewrite_value(&mut node.value, &value_moves, &node_moves, &byte_moves);
+        rewrite_value(&mut node.value, &value_moves, &node_moves, &sequence_moves);
         if let Some(next) = node_moves.get(&(node.next as usize)) {
             node.next = *next;
         }

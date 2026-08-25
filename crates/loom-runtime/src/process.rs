@@ -1,18 +1,15 @@
 //! Process boundary used by compiler-known `standard.process` operations.
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::slice;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::gc::allocate_value_node;
 use crate::scheduler::{ValueNode, ValueSlot};
-
-const VALUE_TAG_TEXT: u64 = 4;
-const VALUE_TAG_LIST: u64 = 12;
+use loom_runtime_abi::VALUE_TAG_LIST;
 
 static ARGUMENTS: OnceLock<Vec<String>> = OnceLock::new();
-static ENVIRONMENT_VALUES: OnceLock<Mutex<Vec<Box<str>>>> = OnceLock::new();
 
 #[unsafe(export_name = "loom_runtime_set_arguments")]
 pub unsafe extern "C" fn set_arguments(argument_count: i32, argument_vector: *const *const c_char) {
@@ -49,10 +46,9 @@ pub unsafe extern "C" fn process_arguments(output: *mut ValueSlot) -> i32 {
         if node.is_null() {
             return 1;
         }
-        let mut value = ValueSlot::default();
-        value.words[0] = VALUE_TAG_TEXT;
-        value.words[2] = argument.len() as u64;
-        value.words[4] = argument.as_ptr() as u64;
+        let Some(value) = crate::gc::text_value(argument.as_bytes()) else {
+            return 1;
+        };
         // SAFETY: allocate_value_node returned a fresh initialized node.
         unsafe {
             (*node).value = value;
@@ -69,35 +65,22 @@ pub unsafe extern "C" fn process_arguments(output: *mut ValueSlot) -> i32 {
     0
 }
 
-/// Looks up a Unicode environment variable and returns process-lifetime text.
+/// Looks up a Unicode environment variable and returns one managed Text object.
 /// A null return denotes a missing or non-Unicode value.
 #[unsafe(export_name = "loom_runtime_process_environment")]
-pub unsafe extern "C" fn process_environment(
-    name: *const u8,
-    name_length: u64,
-    value_length: *mut u64,
-) -> *const u8 {
-    if name.is_null() || value_length.is_null() {
-        return ptr::null();
+pub unsafe extern "C" fn process_environment(name: *const u8, name_length: u64) -> *mut c_void {
+    if name.is_null() {
+        return ptr::null_mut();
     }
     let Ok(name_length) = usize::try_from(name_length) else {
-        return ptr::null();
+        return ptr::null_mut();
     };
     // SAFETY: generated Text supplies a readable byte range of its stored length.
     let Ok(name) = std::str::from_utf8(unsafe { slice::from_raw_parts(name, name_length) }) else {
-        return ptr::null();
+        return ptr::null_mut();
     };
     let Ok(value) = std::env::var(name) else {
-        return ptr::null();
+        return ptr::null_mut();
     };
-    let values = ENVIRONMENT_VALUES.get_or_init(|| Mutex::new(Vec::new()));
-    let Ok(mut values) = values.lock() else {
-        return ptr::null();
-    };
-    let value = value.into_boxed_str();
-    let pointer = value.as_ptr();
-    // SAFETY: value_length was checked non-null.
-    unsafe { *value_length = value.len() as u64 };
-    values.push(value);
-    pointer
+    crate::gc::retain_text(value.as_bytes()).unwrap_or(ptr::null_mut())
 }

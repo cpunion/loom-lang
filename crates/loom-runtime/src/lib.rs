@@ -49,10 +49,10 @@ pub use scheduler::{
     task_trace_live_slots, task_write_join_result,
 };
 pub use standard::{
-    JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_get,
-    bytes_is_utf8, escape_json_text, format_json, json_format, json_parse, log_write, parse_json,
-    path_contains_nul, path_join, text_contains, text_get, text_length, text_map_get,
-    text_map_insert, text_map_remove,
+    JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_decode_utf8,
+    bytes_get, bytes_is_utf8, escape_json_text, format_json, json_format, json_parse, log_write,
+    parse_json, path_contains_nul, path_join, text_concat, text_contains, text_get, text_length,
+    text_map_get, text_map_insert, text_map_remove,
 };
 
 pub use loom_runtime_abi::{
@@ -136,6 +136,17 @@ mod tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn trace_managed_sequence_slots(
+        task: *mut LoomTask,
+        visitor: Option<LoomTraceVisitor>,
+        context: *mut c_void,
+    ) {
+        if let Some(visitor) = visitor {
+            unsafe { visitor(task_slot(task, 1), context) };
+            unsafe { visitor(task_slot(task, 2), context) };
+        }
     }
 
     unsafe extern "C" fn descriptor_cancel(
@@ -329,6 +340,122 @@ mod tests {
         unsafe { gc::collect(&mut *executor) };
         assert_eq!(unsafe { executor_gc_live_objects(executor) }, 0);
         unsafe { executor_destroy(executor) };
+    }
+
+    #[test]
+    fn moving_heap_rewrites_managed_text_and_bytes_as_whole_objects() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let descriptor = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION,
+            flags: 0,
+            resume: Some(completed_child_resume),
+            cancel: None,
+            trace: Some(trace_managed_sequence_slots),
+            slot_count: 3,
+            result_slot: 0,
+            state_count: 0,
+            live_bitmap_words: 0,
+            live_bitmaps: std::ptr::null(),
+        };
+        unsafe {
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            gc::enter_executor(executor);
+            let dead = gc::text_value(b"dead").unwrap();
+            let value = gc::text_value("moving 界🙂".as_bytes()).unwrap();
+            let byte_value = gc::byte_value(&[0xff, 0]).unwrap();
+            gc::leave_executor();
+            task_slot(task, 0)
+                .cast::<scheduler::ValueSlot>()
+                .write(dead);
+            let slot = task_slot(task, 1).cast::<scheduler::ValueSlot>();
+            slot.write(value);
+            let byte_slot = task_slot(task, 2).cast::<scheduler::ValueSlot>();
+            byte_slot.write(byte_value);
+            let old_object = (*slot).words[loom_runtime_abi::VALUE_WORD_DATA];
+            let old_byte_object = (*byte_slot).words[loom_runtime_abi::VALUE_WORD_DATA];
+
+            gc::collect(&mut *executor);
+
+            assert_ne!((*slot).words[loom_runtime_abi::VALUE_WORD_DATA], old_object);
+            assert_eq!(
+                text::text_value_bytes(&*slot),
+                Some("moving 界🙂".as_bytes()),
+            );
+            assert_ne!(
+                (*byte_slot).words[loom_runtime_abi::VALUE_WORD_DATA],
+                old_byte_object,
+            );
+            assert_eq!(text::byte_value_bytes(&*byte_slot), Some(&[0xff, 0][..]));
+            for index in [1, 2, 3, 5] {
+                assert_eq!((*slot).words[index], 0);
+            }
+            assert_eq!(executor_gc_live_objects(executor), 2);
+            assert!(executor_gc_reclaimed(executor) >= 1);
+
+            slot.write(scheduler::ValueSlot::default());
+            byte_slot.write(scheduler::ValueSlot::default());
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 0);
+            executor_destroy(executor);
+        }
+    }
+
+    #[test]
+    fn longer_aggregate_view_marks_the_tail_of_an_already_seen_head() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let bitmap = [0b11_u64];
+        let descriptor = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION,
+            flags: 0,
+            resume: Some(completed_child_resume),
+            cancel: None,
+            trace: None,
+            slot_count: 2,
+            result_slot: 0,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        unsafe {
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            gc::enter_executor(executor);
+            let head = gc::allocate_value_node().cast::<scheduler::ValueNode>();
+            let tail = gc::allocate_value_node().cast::<scheduler::ValueNode>();
+            gc::leave_executor();
+            (*head).next = tail;
+            (*tail).next = std::ptr::null_mut();
+
+            let first = task_slot(task, 0).cast::<scheduler::ValueSlot>();
+            (*first).words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_RECORD;
+            (*first).words[loom_runtime_abi::VALUE_WORD_AUX] = 1;
+            (*first).words[loom_runtime_abi::VALUE_WORD_DATA] = head as u64;
+            let longer = task_slot(task, 1).cast::<scheduler::ValueSlot>();
+            *longer = *first;
+            (*longer).words[loom_runtime_abi::VALUE_WORD_AUX] = 2;
+
+            gc::collect(&mut *executor);
+
+            let moved_head =
+                (*longer).words[loom_runtime_abi::VALUE_WORD_DATA] as *mut scheduler::ValueNode;
+            assert_ne!(moved_head, head);
+            assert_eq!(
+                (*first).words[loom_runtime_abi::VALUE_WORD_DATA],
+                moved_head as u64,
+            );
+            assert!(!(*moved_head).next.is_null());
+            assert_ne!((*moved_head).next, tail);
+            assert_eq!(executor_gc_live_objects(executor), 2);
+
+            first.write(scheduler::ValueSlot::default());
+            longer.write(scheduler::ValueSlot::default());
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 0);
+            executor_destroy(executor);
+        }
     }
 
     #[test]
