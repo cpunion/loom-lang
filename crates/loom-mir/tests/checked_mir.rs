@@ -5,7 +5,7 @@ use loom_core::Span;
 use loom_mir::{
     ArtifactError, AssociatedTypeDef, Block, CallArgument, CallPlan, CallTarget, CheckedProgram,
     ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm, ContractExpr,
-    ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
+    ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
     INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place,
     PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
     RequirementWitnessParam, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId,
@@ -28,20 +28,21 @@ fn local(id: u32, ty: Type, mutable: bool) -> LocalDecl {
     }
 }
 
-fn constant(value: Constant, ty: Type) -> Expr {
+fn expr(kind: ExprKind, ty: Type) -> Expr {
     Expr {
-        kind: ExprKind::Constant(value),
+        id: ExprId::UNASSIGNED,
+        kind,
         ty,
         span: span(),
     }
 }
 
+fn constant(value: Constant, ty: Type) -> Expr {
+    expr(ExprKind::Constant(value), ty)
+}
+
 fn copy(id: u32, ty: Type) -> Expr {
-    Expr {
-        kind: ExprKind::Copy(Place::local(LocalId(id))),
-        ty,
-        span: span(),
-    }
+    expr(ExprKind::Copy(Place::local(LocalId(id))), ty)
 }
 
 fn function(
@@ -51,7 +52,7 @@ fn function(
     return_ty: Type,
     body: Block,
 ) -> Function {
-    Function {
+    let mut function = Function {
         id: FunctionId(id),
         name: format!("function_{id}"),
         span: span(),
@@ -65,7 +66,11 @@ fn function(
         receiver: None,
         body,
         call_plan: CallPlan::default(),
-    }
+    };
+    function
+        .renumber_expr_ids()
+        .expect("test function expression ids");
+    function
 }
 
 fn simple_program() -> Program {
@@ -142,6 +147,340 @@ fn valid_program_crosses_checked_boundary() {
     validate_program(&program).expect("valid MIR");
     let checked = CheckedProgram::new(program).expect("checked MIR");
     assert_eq!(checked.functions.len(), 1);
+}
+
+#[test]
+fn expression_ids_are_function_local_dense_canonical_preorder() {
+    let first = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: expr(
+                            ExprKind::Binary(
+                                loom_mir::BinaryOp::Equal,
+                                Box::new(copy(0, Type::Int)),
+                                Box::new(constant(Constant::Int(7), Type::Int)),
+                            ),
+                            Type::Bool,
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Block(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Evaluate(constant(Constant::Unit, Type::Unit)),
+                                span: span(),
+                            }],
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(expr(
+                ExprKind::Binary(
+                    loom_mir::BinaryOp::Add,
+                    Box::new(copy(0, Type::Int)),
+                    Box::new(constant(Constant::Int(1), Type::Int)),
+                ),
+                Type::Int,
+            ))),
+            span: span(),
+        },
+    );
+    let second = function(
+        1,
+        Vec::new(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let program = Program {
+        functions: vec![first, second],
+        ..Program::default()
+    };
+
+    assert_eq!(
+        program.functions[0]
+            .exprs_preorder()
+            .map(|expression| expression.id.0)
+            .collect::<Vec<_>>(),
+        (0..9).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        program.functions[1]
+            .exprs_preorder()
+            .map(|expression| expression.id.0)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+    validate_program(&program).expect("canonical expression identities validate");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
+    let unit_block = || Block {
+        statements: Vec::new(),
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let shapes = vec![
+        constant(Constant::Unit, Type::Unit),
+        expr(
+            ExprKind::Tuple(vec![
+                constant(Constant::Int(1), Type::Int),
+                constant(Constant::Bool(true), Type::Bool),
+            ]),
+            Type::Tuple(vec![Type::Int, Type::Bool]),
+        ),
+        expr(
+            ExprKind::List(vec![
+                constant(Constant::Int(1), Type::Int),
+                constant(Constant::Int(2), Type::Int),
+            ]),
+            Type::List(Box::new(Type::Int)),
+        ),
+        copy(0, Type::Int),
+        expr(ExprKind::Move(Place::local(LocalId(0))), Type::Int),
+        expr(
+            ExprKind::Unary(
+                loom_mir::UnaryOp::Negate,
+                Box::new(constant(Constant::Int(1), Type::Int)),
+            ),
+            Type::Int,
+        ),
+        expr(
+            ExprKind::Binary(
+                loom_mir::BinaryOp::Add,
+                Box::new(constant(Constant::Int(1), Type::Int)),
+                Box::new(constant(Constant::Int(2), Type::Int)),
+            ),
+            Type::Int,
+        ),
+        expr(
+            ExprKind::Block(Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(constant(Constant::Unit, Type::Unit)),
+                    span: span(),
+                }],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            }),
+            Type::Unit,
+        ),
+        expr(
+            ExprKind::If {
+                condition: Box::new(constant(Constant::Bool(true), Type::Bool)),
+                then_branch: unit_block(),
+                else_branch: unit_block(),
+            },
+            Type::Unit,
+        ),
+        expr(
+            ExprKind::Match {
+                scrutinee: Box::new(constant(Constant::Bool(true), Type::Bool)),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::Constant(Constant::Bool(true)),
+                        bindings: Vec::new(),
+                        value: constant(Constant::Unit, Type::Unit),
+                    },
+                    MatchArm {
+                        pattern: Pattern::Constant(Constant::Bool(false)),
+                        bindings: Vec::new(),
+                        value: constant(Constant::Unit, Type::Unit),
+                    },
+                ],
+            },
+            Type::Unit,
+        ),
+        expr(
+            ExprKind::Record {
+                ty: TypeId(0),
+                type_arguments: Vec::new(),
+                fields: vec![
+                    constant(Constant::Int(1), Type::Int),
+                    constant(Constant::Int(2), Type::Int),
+                ],
+                construction: ConstructionMode::Plain,
+            },
+            Type::Nominal(TypeId(0), Vec::new()),
+        ),
+        expr(
+            ExprKind::Variant {
+                ty: TypeId(1),
+                type_arguments: Vec::new(),
+                variant: VariantId(0),
+                payload: vec![
+                    constant(Constant::Int(1), Type::Int),
+                    constant(Constant::Int(2), Type::Int),
+                ],
+            },
+            Type::Nominal(TypeId(1), Vec::new()),
+        ),
+        expr(
+            ExprKind::Refine {
+                ty: TypeId(2),
+                value: Box::new(constant(Constant::Int(1), Type::Int)),
+                construction: ConstructionMode::Proven,
+            },
+            Type::Nominal(TypeId(2), Vec::new()),
+        ),
+        expr(
+            ExprKind::Unrefine(Box::new(copy(0, Type::Nominal(TypeId(2), Vec::new())))),
+            Type::Int,
+        ),
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Builtin(loom_mir::Builtin::IsFinite),
+                type_arguments: Vec::new(),
+                arguments: vec![
+                    CallArgument::Value(constant(Constant::Float(1.0), Type::Float)),
+                    CallArgument::InOut(Place::local(LocalId(0))),
+                    CallArgument::Value(constant(Constant::Float(2.0), Type::Float)),
+                ],
+                witnesses: Vec::new(),
+            },
+            Type::Bool,
+        ),
+        expr(
+            ExprKind::MakeView {
+                value: Box::new(copy(0, Type::Int)),
+                writeback: None,
+                witness: WitnessRef::Concrete(WitnessId(0)),
+                mutable: false,
+                token: 0,
+            },
+            Type::View {
+                mutable: false,
+                concept: ConceptId(0),
+                bindings: BTreeMap::new(),
+            },
+        ),
+        expr(
+            ExprKind::ReborrowView {
+                owner: Place::local(LocalId(0)),
+                mutable: false,
+                token: 1,
+            },
+            Type::View {
+                mutable: false,
+                concept: ConceptId(0),
+                bindings: BTreeMap::new(),
+            },
+        ),
+        expr(
+            ExprKind::Await {
+                state: 1,
+                task: Box::new(copy(0, Type::Task(Box::new(Type::Unit)))),
+            },
+            Type::Unit,
+        ),
+        expr(
+            ExprKind::Sleep {
+                milliseconds: Box::new(constant(Constant::Int(1), Type::Int)),
+            },
+            Type::Task(Box::new(Type::Unit)),
+        ),
+        expr(
+            ExprKind::WaitFd {
+                descriptor: Box::new(constant(Constant::Int(1), Type::Int)),
+                writable: false,
+            },
+            Type::Task(Box::new(Type::Unit)),
+        ),
+        expr(
+            ExprKind::TaskJoin {
+                mode: loom_mir::TaskJoinMode::All,
+                arguments: vec![
+                    copy(0, Type::Task(Box::new(Type::Unit))),
+                    copy(0, Type::Task(Box::new(Type::Unit))),
+                ],
+            },
+            Type::Task(Box::new(Type::Tuple(vec![Type::Unit, Type::Unit]))),
+        ),
+    ];
+    let function = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: shapes
+                .into_iter()
+                .map(|expression| Statement {
+                    kind: StatementKind::Evaluate(expression),
+                    span: span(),
+                })
+                .collect(),
+            tail: None,
+            span: span(),
+        },
+    );
+
+    assert_eq!(
+        function
+            .exprs_preorder()
+            .map(|expression| expression.id.0)
+            .collect::<Vec<_>>(),
+        (0..50).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn checked_boundary_rejects_duplicate_gapped_reordered_and_unassigned_expr_ids() {
+    let mut duplicate = simple_program();
+    let StatementKind::Let { value, .. } = &mut duplicate.functions[0].body.statements[0].kind
+    else {
+        panic!("simple program starts with Let");
+    };
+    value.id = ExprId(1);
+    assert!(validation_errors(&duplicate).contains(MirValidationCode::ExpressionIdentity));
+
+    let mut gapped = simple_program();
+    gapped.functions[0]
+        .body
+        .tail
+        .as_mut()
+        .expect("simple tail")
+        .id = ExprId(2);
+    assert!(validation_errors(&gapped).contains(MirValidationCode::ExpressionIdentity));
+
+    let mut reordered = simple_program();
+    let StatementKind::Let { value, .. } = &mut reordered.functions[0].body.statements[0].kind
+    else {
+        panic!("simple program starts with Let");
+    };
+    value.id = ExprId(1);
+    reordered.functions[0]
+        .body
+        .tail
+        .as_mut()
+        .expect("simple tail")
+        .id = ExprId(0);
+    assert!(validation_errors(&reordered).contains(MirValidationCode::ExpressionIdentity));
+
+    let mut unassigned = simple_program();
+    let StatementKind::Let { value, .. } = &mut unassigned.functions[0].body.statements[0].kind
+    else {
+        panic!("simple program starts with Let");
+    };
+    value.id = ExprId::UNASSIGNED;
+    assert!(validation_errors(&unassigned).contains(MirValidationCode::ExpressionIdentity));
 }
 
 #[test]
@@ -254,6 +593,7 @@ fn obligation_hardening_allows_unit_divergence_and_phantom_parameters() {
                 },
                 Statement {
                     kind: StatementKind::Evaluate(Expr {
+                        id: ExprId::UNASSIGNED,
                         kind: ExprKind::Block(Block {
                             statements: vec![Statement {
                                 kind: StatementKind::Return(None),
@@ -315,6 +655,7 @@ fn checked_boundary_rejects_dynamic_erasure_of_provable_obligations() {
     let task = Type::Task(Box::new(Type::Int));
     let carried_file = Type::Nominal(TypeId(1), vec![Type::Nominal(TypeId(0), Vec::new())]);
     let make_view = |local_id, ty: Type, witness, token| Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::MakeView {
             value: Box::new(copy(local_id, ty)),
             writeback: None,
@@ -442,6 +783,7 @@ fn generic_equality_cannot_cross_the_checked_mir_boundary() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Binary(
                     loom_mir::BinaryOp::Equal,
                     Box::new(copy(0, parameter.clone())),
@@ -502,6 +844,7 @@ fn calls_validate_value_and_witness_arity() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Direct(FunctionId(0)),
                     type_arguments: Vec::new(),
@@ -534,6 +877,7 @@ fn locals_and_places_are_checked_without_indexing_panics() {
         span: span(),
     });
     program.functions[0].body.tail = Some(Box::new(Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Move(Place {
             local: LocalId(99),
             projection: vec![3],
@@ -583,6 +927,7 @@ fn shape_types() -> Vec<TypeDef> {
 #[test]
 fn record_and_variant_shapes_are_validated() {
     let record = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Record {
             ty: TypeId(0),
             type_arguments: Vec::new(),
@@ -593,6 +938,7 @@ fn record_and_variant_shapes_are_validated() {
         span: span(),
     };
     let variant = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Variant {
             ty: TypeId(1),
             type_arguments: Vec::new(),
@@ -730,6 +1076,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
     };
     let expressions = vec![
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Refine {
                 ty: money,
                 value: Box::new(constant(Constant::Float(1.0), Type::Float)),
@@ -739,6 +1086,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             span: span(),
         },
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Refine {
                 ty: money,
                 value: Box::new(constant(Constant::Float(1.0), Type::Float)),
@@ -748,6 +1096,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             span: span(),
         },
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Record {
                 ty: guarded,
                 type_arguments: Vec::new(),
@@ -758,6 +1107,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             span: span(),
         },
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Record {
                 ty: guarded,
                 type_arguments: Vec::new(),
@@ -768,6 +1118,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             span: span(),
         },
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Record {
                 ty: plain,
                 type_arguments: Vec::new(),
@@ -890,6 +1241,7 @@ fn witness_parameter_references_are_bounded_by_the_current_function() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::MakeView {
                         value: Box::new(copy(0, Type::Nominal(TypeId(0), Vec::new()))),
                         writeback: None,
@@ -968,6 +1320,7 @@ fn text_get_rejects_a_non_integer_index_at_the_checked_boundary() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Call {
                         target: CallTarget::Builtin(loom_mir::Builtin::TextGet),
                         type_arguments: Vec::new(),
@@ -1019,6 +1372,7 @@ fn text_map_insert_rejects_a_wrong_value_type_at_the_checked_boundary() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Call {
                         target: CallTarget::Builtin(loom_mir::Builtin::TextMapInsert),
                         type_arguments: Vec::new(),
@@ -1092,6 +1446,7 @@ fn text_map_equality_requires_value_equality_at_the_checked_boundary() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Binary(
                         loom_mir::BinaryOp::Equal,
                         Box::new(copy(0, map_file.clone())),
@@ -1166,6 +1521,7 @@ fn structured_log_write_requires_text_fields_at_the_checked_boundary() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Call {
                         target: CallTarget::Builtin(loom_mir::Builtin::LogWrite),
                         type_arguments: Vec::new(),
@@ -1250,6 +1606,7 @@ fn resource_close_requires_an_inout_place() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Call {
                         target: CallTarget::Builtin(loom_mir::Builtin::FileClose),
                         type_arguments: Vec::new(),
@@ -1395,9 +1752,26 @@ fn artifact_rejects_pre_structured_values_version_fourteen() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 15,
+            expected,
             found: 14
-        }
+        } if expected == INTERPRETED_ARTIFACT_VERSION
+    ));
+}
+
+#[test]
+fn artifact_rejects_pre_expression_identity_version_fifteen_before_body_decode() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(15);
+    value["program"] = serde_json::json!("version 15 has no expression identities");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 15 must fail at the header boundary");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected,
+            found: 15
+        } if expected == INTERPRETED_ARTIFACT_VERSION
     ));
 }
 
@@ -1450,6 +1824,7 @@ fn pattern_variant_indices_are_validated() {
             Block {
                 statements: Vec::new(),
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Match {
                         scrutinee: Box::new(copy(0, Type::Nominal(TypeId(1), Vec::new()))),
                         arms: vec![loom_mir::MatchArm {
@@ -1495,6 +1870,7 @@ fn call_arguments_validate_inout_place_shape() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Inherent(FunctionId(0)),
                     type_arguments: Vec::new(),
@@ -1586,6 +1962,7 @@ fn conditional_concept_program() -> Program {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::StaticConcept {
                         requirement: RequirementId(0),
@@ -1728,6 +2105,7 @@ fn dynamic_calls_use_requirement_metadata_for_signature_and_result() {
         bindings: BTreeMap::from([("Item".to_owned(), Type::Int)]),
     };
     let dynamic_call = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Dynamic {
                 requirement: RequirementId(0),
@@ -1825,6 +2203,7 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Unrefine(Box::new(copy(0, Type::Nominal(TypeId(0), Vec::new())))),
                 ty: Type::Float,
                 span: span(),
@@ -1888,6 +2267,7 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::If {
                     condition: Box::new(copy(0, Type::Bool)),
                     then_branch: Block {
@@ -2015,6 +2395,7 @@ fn method_generics_have_explicit_type_arguments_and_method_proofs() {
     });
 
     let call = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::StaticConcept {
                 requirement: RequirementId(1),
@@ -2133,6 +2514,7 @@ fn direct_calls_instantiate_associated_projection_from_resolved_proof() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Direct(FunctionId(0)),
                     type_arguments: vec![Type::Text],
@@ -2235,6 +2617,7 @@ fn parameter_witness_associated_projections_remain_symbolic() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::StaticConcept {
                         requirement: RequirementId(0),
@@ -2348,6 +2731,7 @@ fn nested_enum_pattern_alternatives_are_jointly_exhaustive() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Match {
                     scrutinee: Box::new(copy(0, result)),
                     arms: vec![
@@ -2749,6 +3133,7 @@ fn checked_boundary_rejects_uninitialized_double_init_and_use_after_move() {
                 },
                 Statement {
                     kind: StatementKind::Evaluate(Expr {
+                        id: ExprId::UNASSIGNED,
                         kind: ExprKind::Move(Place::local(LocalId(0))),
                         ty: Type::Int,
                         span: span(),
@@ -2789,6 +3174,7 @@ fn borrowed_view_carriers_protect_the_owner() {
         bindings: BTreeMap::new(),
     };
     let make_view = |token| Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::MakeView {
             value: Box::new(copy(0, Type::Int)),
             writeback: Some(Place::local(LocalId(0))),
@@ -2826,6 +3212,7 @@ fn borrowed_view_carriers_protect_the_owner() {
                 },
                 Statement {
                     kind: StatementKind::Evaluate(Expr {
+                        id: ExprId::UNASSIGNED,
                         kind: ExprKind::Move(Place::local(LocalId(0))),
                         ty: Type::Int,
                         span: span(),
@@ -2904,6 +3291,7 @@ fn generic_calls_and_constructors_share_one_strict_substitution() {
     );
     same.type_parameters = 1;
     let bad_record = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Record {
             ty: TypeId(0),
             type_arguments: vec![Type::Int],
@@ -2917,6 +3305,7 @@ fn generic_calls_and_constructors_share_one_strict_substitution() {
         span: span(),
     };
     let bad_call = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Direct(FunctionId(0)),
             type_arguments: vec![Type::Int],
@@ -2969,6 +3358,7 @@ fn match_must_be_exhaustive_and_nested_return_flow_is_never() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Match {
                     scrutinee: Box::new(copy(0, Type::Bool)),
                     arms: vec![loom_mir::MatchArm {
@@ -3007,6 +3397,7 @@ fn match_must_be_exhaustive_and_nested_return_flow_is_never() {
         Block {
             statements: vec![Statement {
                 kind: StatementKind::Evaluate(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::If {
                         condition: Box::new(copy(0, Type::Bool)),
                         then_branch: return_block(),
@@ -3043,6 +3434,7 @@ fn checked_mir_rejects_an_unreachable_match_arm() {
         Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Match {
                     scrutinee: Box::new(copy(0, Type::Bool)),
                     arms: vec![arm(true, 1), arm(true, 2), arm(false, 0)],

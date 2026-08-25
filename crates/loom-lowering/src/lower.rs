@@ -584,7 +584,7 @@ impl<'a> Compiler<'a> {
             if id.0 as usize != functions.len() {
                 return Err(defect("MIR function id allocation is not dense", span));
             }
-            functions.push(Function {
+            let mut function = Function {
                 id,
                 name,
                 span,
@@ -609,7 +609,14 @@ impl<'a> Compiler<'a> {
                 receiver,
                 body: mir_body,
                 call_plan: self.lower_call_plan(definition)?,
-            });
+            };
+            function.renumber_expr_ids().map_err(|error| {
+                defect(
+                    format!("could not assign MIR expression ids: {error}"),
+                    span,
+                )
+            })?;
+            functions.push(function);
         }
         Ok(functions)
     }
@@ -1959,6 +1966,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                         }
                     };
                     let call = Expr {
+                        id: loom_mir::ExprId::UNASSIGNED,
                         kind: ExprKind::Call {
                             target,
                             type_arguments: Vec::new(),
@@ -2098,11 +2106,12 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         output: &mut Vec<Statement>,
         allow_root_await: bool,
     ) -> LowerResult<Expr> {
-        let Expr { kind, ty, span } = expression;
+        let Expr { kind, ty, span, .. } = expression;
         let kind = match kind {
             ExprKind::Await { state, task } => {
                 let task = self.extract_nested_awaits(*task, output, false)?;
                 let awaited = Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Await {
                         state,
                         task: Box::new(task),
@@ -2122,6 +2131,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span,
                 });
                 return Ok(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Move(loom_mir::Place::local(local)),
                     ty,
                     span,
@@ -2256,7 +2266,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | ExprKind::Block(_)
             | ExprKind::ReborrowView { .. } => kind,
         };
-        Ok(Expr { kind, ty, span })
+        Ok(Expr::new(kind, ty, span))
     }
 
     fn lower_expr_mode(&mut self, id: ExprId, mode: ReadMode) -> LowerResult<Expr> {
@@ -2292,6 +2302,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 },
             };
             return Ok(Expr {
+                id: loom_mir::ExprId::UNASSIGNED,
                 kind,
                 ty: self.expression_ty(id)?,
                 span,
@@ -2311,6 +2322,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 Vec::new(),
             );
             return Ok(Expr {
+                id: loom_mir::ExprId::UNASSIGNED,
                 kind: ExprKind::Unrefine(Box::new(value)),
                 ty: final_ty,
                 span,
@@ -2557,7 +2569,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 return Err(defect("return reached MIR expression position", span));
             }
         };
-        Ok(Expr { kind, ty, span })
+        Ok(Expr::new(kind, ty, span))
     }
 
     fn lower_propagate(&mut self, value: ExprId, ok_ty: Type, span: Span) -> LowerResult<Expr> {
@@ -2600,16 +2612,19 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         )?;
 
         let success = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Move(loom_mir::Place::local(success_local)),
             ty: success_ty,
             span,
         };
         let propagated_error = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Variant {
                 ty: RESULT_TYPE,
                 type_arguments: return_arguments,
                 variant: VariantId(1),
                 payload: vec![Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Move(loom_mir::Place::local(error_local)),
                     ty: error_ty,
                     span,
@@ -2619,6 +2634,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             span,
         };
         let early_return = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Block(Block {
                 statements: vec![Statement {
                     kind: StatementKind::Return(Some(propagated_error)),
@@ -2632,6 +2648,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         };
 
         Ok(Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Match {
                 scrutinee: Box::new(self.lower_expr(value)?),
                 arms: vec![
@@ -2693,6 +2710,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             return Ok(value);
         }
         Ok(Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Unrefine(Box::new(value)),
             ty: base,
             span,
@@ -2769,6 +2787,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 )?;
                 let type_arguments = Self::nominal_type_arguments(&ty, enum_ty, span)?;
                 return Ok(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Variant {
                         ty: enum_ty,
                         type_arguments,
@@ -2789,6 +2808,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span,
                 )?;
                 return Ok(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Refine {
                         ty: required(
                             self.compiler.indices.types.get(&definition).copied(),
@@ -2954,6 +2974,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             }
         };
         Ok(Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Call {
                 target,
                 type_arguments,
@@ -3163,7 +3184,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 return Err(defect("non-callable builtin reached call lowering", span));
             }
         };
-        Ok(Expr { kind, ty, span })
+        Ok(Expr::new(kind, ty, span))
     }
 
     fn lower_call_type_arguments(
@@ -3389,6 +3410,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span,
                 )?;
                 Ok(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Copy(loom_mir::Place::local(*local)),
                     ty: ty.clone(),
                     span: self.expr_span(*value),
@@ -3412,6 +3434,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             }
         };
         let record = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Record {
                 ty,
                 type_arguments: Self::nominal_type_arguments(&expression_ty, ty, span)?,
@@ -3422,6 +3445,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             span,
         };
         Ok(Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Block(Block {
                 statements,
                 tail: Some(Box::new(record)),

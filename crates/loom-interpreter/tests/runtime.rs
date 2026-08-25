@@ -4,10 +4,10 @@ use loom_core::Span;
 use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptId, Constant,
-    ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind,
-    FieldDef, Function, FunctionId, LocalDecl, LocalId, Place, PreludeIds, Program, Receiver,
-    RequirementId, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef,
-    VariantId, Witness, WitnessId, WitnessRef,
+    ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue, Expr, ExprId,
+    ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, Place, PreludeIds, Program,
+    Receiver, RequirementId, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId,
+    VariantDef, VariantId, Witness, WitnessId, WitnessRef,
 };
 
 fn span() -> Span {
@@ -26,6 +26,7 @@ fn local(id: u32, name: &str, ty: Type, mutable: bool) -> LocalDecl {
 
 fn constant(value: Constant, ty: Type) -> Expr {
     Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Constant(value),
         ty,
         span: span(),
@@ -34,6 +35,7 @@ fn constant(value: Constant, ty: Type) -> Expr {
 
 fn copy(place: Place, ty: Type) -> Expr {
     Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Copy(place),
         ty,
         span: span(),
@@ -156,6 +158,7 @@ fn refined_construction_returns_language_result() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Refine {
                     ty: TypeId(1),
                     value: Box::new(copy(Place::local(LocalId(0)), Type::Float)),
@@ -274,6 +277,7 @@ fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
                 kind: StatementKind::Let {
                     local: LocalId(2),
                     value: Expr {
+                        id: ExprId::UNASSIGNED,
                         kind: ExprKind::Call {
                             target: CallTarget::Inherent(FunctionId(0)),
                             type_arguments: Vec::new(),
@@ -351,6 +355,7 @@ fn early_return_propagates_through_nested_control_expression() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::If {
                     condition: Box::new(constant(Constant::Bool(true), Type::Bool)),
                     then_branch: Block {
@@ -422,6 +427,7 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Binary(
                     BinaryOp::Multiply,
                     Box::new(copy(
@@ -462,6 +468,7 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
                 kind: StatementKind::Let {
                     local: LocalId(1),
                     value: Expr {
+                        id: ExprId::UNASSIGNED,
                         kind: ExprKind::MakeView {
                             value: Box::new(copy(
                                 Place::local(LocalId(0)),
@@ -479,6 +486,7 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
                 span: span(),
             }],
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Dynamic {
                         requirement: RequirementId(0),
@@ -587,6 +595,7 @@ fn generic_static_concept_call_forwards_hidden_witness_parameter() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Binary(
                     BinaryOp::Multiply,
                     Box::new(copy(
@@ -625,6 +634,7 @@ fn generic_static_concept_call_forwards_hidden_witness_parameter() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::StaticConcept {
                         requirement: RequirementId(0),
@@ -660,6 +670,7 @@ fn generic_static_concept_call_forwards_hidden_witness_parameter() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Direct(FunctionId(1)),
                     type_arguments: vec![Type::Nominal(TypeId(0), Vec::new())],
@@ -724,6 +735,7 @@ fn integer_overflow_is_a_runtime_fault_and_float_equality_is_ieee() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Binary(
                     BinaryOp::Add,
                     Box::new(constant(Constant::Int(i64::MAX), Type::Int)),
@@ -751,6 +763,7 @@ fn integer_overflow_is_a_runtime_fault_and_float_equality_is_ieee() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Binary(
                     BinaryOp::Equal,
                     Box::new(constant(Constant::Float(f64::NAN), Type::Float)),
@@ -961,6 +974,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Builtin(Builtin::ParseFloat),
                     type_arguments: Vec::new(),
@@ -992,6 +1006,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Builtin(Builtin::FormatFloat),
                     type_arguments: Vec::new(),
@@ -1090,6 +1105,7 @@ fn async_tasks_resume_through_the_ready_queue_and_collect_frames() {
         call_plan: CallPlan::default(),
     };
     let task = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Direct(FunctionId(0)),
             type_arguments: Vec::new(),
@@ -1118,6 +1134,7 @@ fn async_tasks_resume_through_the_ready_queue_and_collect_frames() {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Await {
                     state: 1,
                     task: Box::new(task),
@@ -1129,10 +1146,13 @@ fn async_tasks_resume_through_the_ready_queue_and_collect_frames() {
         },
         call_plan: CallPlan::default(),
     };
-    let program = Program {
+    let mut program = Program {
         functions: vec![child, parent],
         ..Program::default()
     };
+    program
+        .renumber_expr_ids()
+        .expect("async test expression ids");
     program.validate().expect("async MIR validates");
 
     let mut interpreter = Interpreter::new(&program);
@@ -1186,10 +1206,13 @@ fn async_entry_and_exit_contracts_fault_the_task() {
             },
             call_plan,
         };
-        let program = Program {
+        let mut program = Program {
             functions: vec![function],
             ..Program::default()
         };
+        program
+            .renumber_expr_ids()
+            .expect("async contract test expression ids");
         program.validate().expect("async contract MIR validates");
         let failure = Interpreter::new(&program)
             .invoke(FunctionId(0), Vec::new(), span())

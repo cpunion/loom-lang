@@ -6106,8 +6106,10 @@ mod socket_readiness_tests {
         }
 
         let timer = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
             kind: ExprKind::Sleep {
                 milliseconds: Box::new(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
                     kind: ExprKind::Constant(Constant::Int(1_000)),
                     ty: loom_mir::Type::Int,
                     span: Span::default(),

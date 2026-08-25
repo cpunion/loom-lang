@@ -31,6 +31,7 @@ pub enum MirValidationCode {
     ImmutablePlace,
     ProjectedMove,
     TypeMismatch,
+    ExpressionIdentity,
     ExpressionShape,
     ObligationShape,
     CallArity,
@@ -67,6 +68,7 @@ impl MirValidationCode {
             Self::ImmutablePlace => "MirImmutablePlace",
             Self::ProjectedMove => "MirProjectedMove",
             Self::TypeMismatch => "MirTypeMismatch",
+            Self::ExpressionIdentity => "MirExpressionIdentity",
             Self::ExpressionShape => "MirExpressionShape",
             Self::ObligationShape => "MirObligationShape",
             Self::CallArity => "MirCallArity",
@@ -2247,6 +2249,7 @@ impl<'program> Validator<'program> {
 
     #[allow(clippy::too_many_lines)]
     fn validate_function(&mut self, function: &Function, path: &str) {
+        self.validate_expression_ids(function, path);
         for (index, parameter) in function.params.iter().enumerate() {
             self.validate_type(
                 &parameter.ty,
@@ -2424,6 +2427,40 @@ impl<'program> Validator<'program> {
         );
         if !self.nesting_failed {
             self.validate_function_dataflow(function, path);
+        }
+    }
+
+    fn validate_expression_ids(&mut self, function: &Function, path: &str) {
+        for (expected, expression) in function.exprs_preorder().enumerate() {
+            let Ok(expected) = u32::try_from(expected) else {
+                self.push(
+                    MirValidationCode::ExpressionIdentity,
+                    "function exhausts the usable expression-id domain",
+                    expression.span,
+                    format!("{path}.body"),
+                );
+                return;
+            };
+            if expected == crate::ExprId::UNASSIGNED.0 {
+                self.push(
+                    MirValidationCode::ExpressionIdentity,
+                    "function exhausts the usable expression-id domain",
+                    expression.span,
+                    format!("{path}.body"),
+                );
+                return;
+            }
+            if expression.id.0 != expected {
+                self.push(
+                    MirValidationCode::ExpressionIdentity,
+                    format!(
+                        "expression id must be canonical function-local preorder id {expected}, found {}",
+                        expression.id.0
+                    ),
+                    expression.span,
+                    format!("{path}.body.expr_ids[{expected}]"),
+                );
+            }
         }
     }
 

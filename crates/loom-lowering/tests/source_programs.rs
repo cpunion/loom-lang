@@ -179,6 +179,16 @@ fn lowering_and_artifact_are_deterministic() {
     let source = include_str!("../../../examples/core02/concepts.loom");
     let first = compile(source);
     let second = compile(source);
+    for function in &first.functions {
+        assert!(
+            function
+                .exprs_preorder()
+                .enumerate()
+                .all(|(expected, expression)| u32::try_from(expected) == Ok(expression.id.0)),
+            "lowering must assign canonical dense expression ids in {}",
+            function.name
+        );
+    }
     assert_eq!(
         loom_mir::encode_interpreted_artifact(&first).expect("first artifact"),
         loom_mir::encode_interpreted_artifact(&second).expect("second artifact")

@@ -4,6 +4,8 @@ mod artifact;
 mod validation;
 
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
 
 use loom_core::Span;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ macro_rules! id_type {
 id_type!(TypeId);
 id_type!(FunctionId);
 id_type!(LocalId);
+id_type!(ExprId);
 id_type!(VariantId);
 id_type!(ConceptId);
 id_type!(RequirementId);
@@ -131,6 +134,23 @@ impl Program {
     /// Returns all independently discoverable validation failures.
     pub fn into_checked(self) -> Result<CheckedProgram, MirValidationErrors> {
         check_program(self)
+    }
+
+    /// Reassigns every executable expression a canonical, function-local id.
+    ///
+    /// Functions are independent identity domains. Within each function, ids
+    /// follow deterministic preorder over the body and form the dense range
+    /// `0..expression_count`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if one function exhausts the usable [`ExprId`] range;
+    /// [`u32::MAX`] remains permanently reserved for [`ExprId::UNASSIGNED`].
+    pub fn renumber_expr_ids(&mut self) -> Result<(), ExprIdOverflow> {
+        for function in &mut self.functions {
+            function.renumber_expr_ids()?;
+        }
+        Ok(())
     }
 }
 
@@ -295,6 +315,55 @@ pub struct Function {
     pub call_plan: CallPlan,
 }
 
+impl Function {
+    /// Iterates executable expressions in the canonical identity order.
+    ///
+    /// The iterator is stack-safe for deeply nested unchecked MIR and defines
+    /// the preorder used by both identity assignment and validation.
+    #[must_use]
+    pub fn exprs_preorder(&self) -> ExprPreorder<'_> {
+        ExprPreorder {
+            pending: vec![ExprWalkNode::Block(&self.body)],
+        }
+    }
+
+    /// Reassigns body expressions canonical, function-local dense ids.
+    ///
+    /// The traversal visits every expression before its children, preserves
+    /// statement/argument/arm order, and visits a block tail after all of that
+    /// block's statements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the function exhausts the usable [`ExprId`] range;
+    /// [`u32::MAX`] remains permanently reserved for [`ExprId::UNASSIGNED`].
+    pub fn renumber_expr_ids(&mut self) -> Result<(), ExprIdOverflow> {
+        let mut assigner = ExprIdAssigner {
+            function: self.id,
+            next: 0,
+        };
+        assigner.assign_block(&mut self.body)
+    }
+}
+
+/// A function contains more executable expressions than [`ExprId`] can name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExprIdOverflow {
+    pub function: FunctionId,
+}
+
+impl fmt::Display for ExprIdOverflow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "function {} exhausts the usable expression-id domain",
+            self.function.0
+        )
+    }
+}
+
+impl Error for ExprIdOverflow {}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SuspensionPoint {
     /// Resume states start at one; state zero is the coroutine entry.
@@ -437,9 +506,32 @@ pub enum ConstructionMode {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Expr {
+    /// Stable identity within the containing function. Checked MIR requires
+    /// canonical preorder ids forming a dense range starting at zero.
+    pub id: ExprId,
     pub kind: ExprKind,
     pub ty: Type,
     pub span: Span,
+}
+
+impl Expr {
+    /// Constructs an unchecked expression for a later function-wide identity
+    /// assignment pass.
+    #[must_use]
+    pub const fn new(kind: ExprKind, ty: Type, span: Span) -> Self {
+        Self {
+            id: ExprId::UNASSIGNED,
+            kind,
+            ty,
+            span,
+        }
+    }
+}
+
+impl ExprId {
+    /// Sentinel used only while constructing unchecked MIR. It cannot cross
+    /// the checked MIR boundary because it is not a canonical preorder id.
+    pub const UNASSIGNED: Self = Self(u32::MAX);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -585,6 +677,259 @@ pub enum CallTarget {
 pub enum CallArgument {
     Value(Expr),
     InOut(Place),
+}
+
+/// Stack-safe iterator over one function's expressions in canonical preorder.
+pub struct ExprPreorder<'function> {
+    pending: Vec<ExprWalkNode<'function>>,
+}
+
+enum ExprWalkNode<'function> {
+    Block(&'function Block),
+    Expr(&'function Expr),
+}
+
+impl<'function> ExprPreorder<'function> {
+    fn push_statement(&mut self, statement: &'function Statement) {
+        match &statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. } => {
+                self.pending.push(ExprWalkNode::Expr(value));
+            }
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                self.pending.push(ExprWalkNode::Block(body));
+                self.pending.push(ExprWalkNode::Expr(end));
+                self.pending.push(ExprWalkNode::Expr(start));
+            }
+            StatementKind::Assert { condition } => {
+                self.pending.push(ExprWalkNode::Expr(condition));
+            }
+            StatementKind::Evaluate(expression) => {
+                self.pending.push(ExprWalkNode::Expr(expression));
+            }
+            StatementKind::Defer(cleanup) => {
+                self.pending.push(ExprWalkNode::Block(cleanup));
+            }
+            StatementKind::Return(value) => {
+                if let Some(value) = value {
+                    self.pending.push(ExprWalkNode::Expr(value));
+                }
+            }
+        }
+    }
+
+    fn push_children(&mut self, expression: &'function Expr) {
+        match &expression.kind {
+            ExprKind::Constant(_)
+            | ExprKind::Copy(_)
+            | ExprKind::Move(_)
+            | ExprKind::ReborrowView { .. } => {}
+            ExprKind::Tuple(elements)
+            | ExprKind::List(elements)
+            | ExprKind::Record {
+                fields: elements, ..
+            }
+            | ExprKind::Variant {
+                payload: elements, ..
+            }
+            | ExprKind::TaskJoin {
+                arguments: elements,
+                ..
+            } => {
+                for element in elements.iter().rev() {
+                    self.pending.push(ExprWalkNode::Expr(element));
+                }
+            }
+            ExprKind::Unary(_, operand)
+            | ExprKind::Refine { value: operand, .. }
+            | ExprKind::Unrefine(operand)
+            | ExprKind::MakeView { value: operand, .. }
+            | ExprKind::Await { task: operand, .. }
+            | ExprKind::Sleep {
+                milliseconds: operand,
+            }
+            | ExprKind::WaitFd {
+                descriptor: operand,
+                ..
+            } => self.pending.push(ExprWalkNode::Expr(operand)),
+            ExprKind::Binary(_, left, right) => {
+                self.pending.push(ExprWalkNode::Expr(right));
+                self.pending.push(ExprWalkNode::Expr(left));
+            }
+            ExprKind::Block(block) => self.pending.push(ExprWalkNode::Block(block)),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.pending.push(ExprWalkNode::Block(else_branch));
+                self.pending.push(ExprWalkNode::Block(then_branch));
+                self.pending.push(ExprWalkNode::Expr(condition));
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                for arm in arms.iter().rev() {
+                    self.pending.push(ExprWalkNode::Expr(&arm.value));
+                }
+                self.pending.push(ExprWalkNode::Expr(scrutinee));
+            }
+            ExprKind::Call { arguments, .. } => {
+                for argument in arguments.iter().rev() {
+                    if let CallArgument::Value(value) = argument {
+                        self.pending.push(ExprWalkNode::Expr(value));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'function> Iterator for ExprPreorder<'function> {
+    type Item = &'function Expr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.pending.pop()? {
+                ExprWalkNode::Block(block) => {
+                    if let Some(tail) = block.tail.as_deref() {
+                        self.pending.push(ExprWalkNode::Expr(tail));
+                    }
+                    for statement in block.statements.iter().rev() {
+                        self.push_statement(statement);
+                    }
+                }
+                ExprWalkNode::Expr(expression) => {
+                    self.push_children(expression);
+                    return Some(expression);
+                }
+            }
+        }
+    }
+}
+
+struct ExprIdAssigner {
+    function: FunctionId,
+    next: u64,
+}
+
+impl ExprIdAssigner {
+    fn allocate(&mut self) -> Result<ExprId, ExprIdOverflow> {
+        if self.next >= u64::from(ExprId::UNASSIGNED.0) {
+            return Err(ExprIdOverflow {
+                function: self.function,
+            });
+        }
+        let raw = u32::try_from(self.next).map_err(|_| ExprIdOverflow {
+            function: self.function,
+        })?;
+        self.next += 1;
+        Ok(ExprId(raw))
+    }
+
+    fn assign_block(&mut self, block: &mut Block) -> Result<(), ExprIdOverflow> {
+        for statement in &mut block.statements {
+            self.assign_statement(statement)?;
+        }
+        if let Some(tail) = &mut block.tail {
+            self.assign_expr(tail)?;
+        }
+        Ok(())
+    }
+
+    fn assign_statement(&mut self, statement: &mut Statement) -> Result<(), ExprIdOverflow> {
+        match &mut statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. } => self.assign_expr(value),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                self.assign_expr(start)?;
+                self.assign_expr(end)?;
+                self.assign_block(body)
+            }
+            StatementKind::Assert { condition } => self.assign_expr(condition),
+            StatementKind::Evaluate(expression) => self.assign_expr(expression),
+            StatementKind::Defer(cleanup) => self.assign_block(cleanup),
+            StatementKind::Return(value) => {
+                if let Some(value) = value {
+                    self.assign_expr(value)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn assign_expr(&mut self, expression: &mut Expr) -> Result<(), ExprIdOverflow> {
+        expression.id = self.allocate()?;
+        match &mut expression.kind {
+            ExprKind::Constant(_)
+            | ExprKind::Copy(_)
+            | ExprKind::Move(_)
+            | ExprKind::ReborrowView { .. } => Ok(()),
+            ExprKind::Tuple(elements)
+            | ExprKind::List(elements)
+            | ExprKind::Record {
+                fields: elements, ..
+            }
+            | ExprKind::Variant {
+                payload: elements, ..
+            }
+            | ExprKind::TaskJoin {
+                arguments: elements,
+                ..
+            } => {
+                for element in elements {
+                    self.assign_expr(element)?;
+                }
+                Ok(())
+            }
+            ExprKind::Unary(_, operand)
+            | ExprKind::Refine { value: operand, .. }
+            | ExprKind::Unrefine(operand)
+            | ExprKind::MakeView { value: operand, .. }
+            | ExprKind::Await { task: operand, .. }
+            | ExprKind::Sleep {
+                milliseconds: operand,
+            }
+            | ExprKind::WaitFd {
+                descriptor: operand,
+                ..
+            } => self.assign_expr(operand),
+            ExprKind::Binary(_, left, right) => {
+                self.assign_expr(left)?;
+                self.assign_expr(right)
+            }
+            ExprKind::Block(block) => self.assign_block(block),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.assign_expr(condition)?;
+                self.assign_block(then_branch)?;
+                self.assign_block(else_branch)
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.assign_expr(scrutinee)?;
+                for arm in arms {
+                    self.assign_expr(&mut arm.value)?;
+                }
+                Ok(())
+            }
+            ExprKind::Call { arguments, .. } => {
+                for argument in arguments {
+                    if let CallArgument::Value(value) = argument {
+                        self.assign_expr(value)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
