@@ -399,7 +399,28 @@ enum HostIoValue {
 struct HostIoCompletion {
     task: u64,
     span: Span,
-    outcome: Result<HostIoValue, ExecutionFailure>,
+    outcome: HostIoCompletionOutcome,
+}
+
+enum HostIoCompletionOutcome {
+    Infallible(Result<HostIoValue, ExecutionFailure>),
+    Fallible(Result<HostIoValue, HostIoError>),
+}
+
+struct HostIoError {
+    kind: u32,
+    message: String,
+}
+
+enum JsonConversionFailure {
+    Invalid(ExecutionFailure),
+    DepthLimit,
+}
+
+impl From<ExecutionFailure> for JsonConversionFailure {
+    fn from(value: ExecutionFailure) -> Self {
+        Self::Invalid(value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -773,11 +794,17 @@ impl<'program> Interpreter<'program> {
         if !accepts_completion {
             return false;
         }
-        let outcome = completion.outcome.and_then(|value| match value {
-            HostIoValue::Value(value) => Ok(value),
-            HostIoValue::File(file) => self.insert_file(file, completion.span),
-            HostIoValue::Socket(socket) => self.insert_socket(socket, completion.span),
-        });
+        let outcome = match completion.outcome {
+            HostIoCompletionOutcome::Infallible(outcome) => {
+                outcome.and_then(|value| self.finish_host_io_value(value, completion.span))
+            }
+            HostIoCompletionOutcome::Fallible(outcome) => match outcome {
+                Ok(value) => self
+                    .finish_host_io_value(value, completion.span)
+                    .and_then(|value| self.result_value(true, value, completion.span)),
+                Err(error) => self.io_error_result(error, completion.span),
+            },
+        };
         let status = match outcome {
             Ok(value) => TaskStatus::Completed(value),
             Err(failure) => TaskStatus::Failed(failure),
@@ -788,6 +815,18 @@ impl<'program> Interpreter<'program> {
             .status = status;
         self.wake_parent(completion.task);
         true
+    }
+
+    fn finish_host_io_value(
+        &mut self,
+        value: HostIoValue,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match value {
+            HostIoValue::Value(value) => Ok(value),
+            HostIoValue::File(file) => self.insert_file(file, span),
+            HostIoValue::Socket(socket) => self.insert_socket(socket, span),
+        }
     }
 
     fn enqueue_task(&mut self, task_id: u64) {
@@ -2883,14 +2922,25 @@ impl<'program> Interpreter<'program> {
                 | Builtin::FileCreate
                 | Builtin::FileOpenReadPath
                 | Builtin::FileCreatePath
+                | Builtin::FileTryOpenRead
+                | Builtin::FileTryCreate
+                | Builtin::FileTryOpenReadPath
+                | Builtin::FileTryCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
+                | Builtin::FileTryReadText
+                | Builtin::FileTryWriteText
         ) {
             return self.eval_file_builtin(builtin, arguments, span);
         }
         if matches!(
             builtin,
-            Builtin::SocketConnect | Builtin::SocketReadText | Builtin::SocketWriteText
+            Builtin::SocketConnect
+                | Builtin::SocketReadText
+                | Builtin::SocketWriteText
+                | Builtin::SocketTryConnect
+                | Builtin::SocketTryReadText
+                | Builtin::SocketTryWriteText
         ) {
             return self.eval_socket_builtin(builtin, arguments, span);
         }
@@ -2905,6 +2955,33 @@ impl<'program> Interpreter<'program> {
             Builtin::ProcessArguments | Builtin::ProcessEnvironment
         ) {
             return self.eval_process_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::TextMapNew
+                | Builtin::TextMapLength
+                | Builtin::TextMapContains
+                | Builtin::TextMapGet
+                | Builtin::TextMapInsert
+                | Builtin::TextMapRemove
+        ) {
+            return self.eval_text_map_builtin(builtin, arguments, span);
+        }
+        if matches!(builtin, Builtin::JsonParse | Builtin::JsonFormat) {
+            return self.eval_json_builtin(builtin, arguments, span);
+        }
+        if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
+            return self.eval_io_error_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
+            Builtin::LogDebug
+                | Builtin::LogInfo
+                | Builtin::LogWarn
+                | Builtin::LogError
+                | Builtin::LogWrite
+        ) {
+            return self.eval_log_builtin(builtin, arguments, span);
         }
         match (builtin, arguments) {
             (Builtin::IsFinite, [value]) => Ok(Value::Bool {
@@ -3025,6 +3102,375 @@ impl<'program> Interpreter<'program> {
             ),
             _ => Err(self.invalid_builtin_fault(span)),
         }
+    }
+
+    fn eval_text_map_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::TextMapNew, []) => self.text_map_value(Vec::new(), span),
+            (Builtin::TextMapLength, [map]) => {
+                let entries = self.text_map_entries(map, span)?;
+                Ok(Value::Int {
+                    value: i64::try_from(entries.len()).map_err(|_| {
+                        self.runtime_fault("TextMapTooLarge", "TextMap length exceeds Int", span)
+                    })?,
+                })
+            }
+            (Builtin::TextMapContains, [map, Value::Text { value: key }]) => {
+                let entries = self.text_map_entries(map, span)?;
+                Ok(Value::Bool {
+                    value: entries.iter().any(|(candidate, _)| candidate == key),
+                })
+            }
+            (Builtin::TextMapGet, [map, Value::Text { value: key }]) => {
+                let value = self
+                    .text_map_entries(map, span)?
+                    .into_iter()
+                    .find(|(candidate, _)| candidate == key)
+                    .map(|(_, value)| value);
+                self.option_value(value, span)
+            }
+            (Builtin::TextMapInsert, [map, Value::Text { value: key }, value]) => {
+                let mut entries = self.text_map_entries(map, span)?;
+                if let Some((_, existing)) =
+                    entries.iter_mut().find(|(candidate, _)| candidate == key)
+                {
+                    *existing = value.clone();
+                } else {
+                    entries.push((key.clone(), value.clone()));
+                }
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                self.text_map_value(entries, span)
+            }
+            (Builtin::TextMapRemove, [map, Value::Text { value: key }]) => {
+                let mut entries = self.text_map_entries(map, span)?;
+                entries.retain(|(candidate, _)| candidate != key);
+                self.text_map_value(entries, span)
+            }
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn text_map_entries(
+        &self,
+        value: &Value,
+        span: Span,
+    ) -> Result<Vec<(String, Value)>, ExecutionFailure> {
+        let Value::Record { ty, fields } = value else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        if self.program.prelude.text_map != Some(*ty) || fields.len() % 2 != 0 {
+            return Err(self.invalid_builtin_fault(span));
+        }
+        fields
+            .chunks_exact(2)
+            .map(|pair| match pair {
+                [Value::Text { value: key }, value] => Ok((key.clone(), value.clone())),
+                _ => Err(self.invalid_builtin_fault(span)),
+            })
+            .collect()
+    }
+
+    fn text_map_value(
+        &self,
+        mut entries: Vec<(String, Value)>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let ty = self.program.prelude.text_map.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude TextMap type is missing",
+                span,
+            )
+        })?;
+        Ok(Value::Record {
+            ty,
+            fields: entries
+                .into_iter()
+                .flat_map(|(key, value)| [Value::Text { value: key }, value])
+                .collect(),
+        })
+    }
+
+    fn eval_json_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::JsonParse, [Value::Text { value }]) => {
+                match loom_runtime::parse_json(value) {
+                    Ok(value) => self
+                        .json_from_runtime(&value, span)
+                        .and_then(|value| self.result_value(true, value, span)),
+                    Err(error) => match error.kind {
+                        loom_runtime::JsonFailureKind::InvalidSyntax => self.json_error_result(
+                            VariantId(0),
+                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
+                            span,
+                        ),
+                        loom_runtime::JsonFailureKind::NumberOutOfRange => self.json_error_result(
+                            VariantId(1),
+                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
+                            span,
+                        ),
+                        loom_runtime::JsonFailureKind::DepthLimit => {
+                            self.json_error_result(VariantId(2), None, span)
+                        }
+                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
+                            self.json_error_result(VariantId(3), None, span)
+                        }
+                    },
+                }
+            }
+            (Builtin::JsonFormat, [value]) => match self.json_to_runtime(value, span, 0) {
+                Ok(value) => match loom_runtime::format_json(&value) {
+                    Ok(value) => self.result_value(true, Value::Text { value }, span),
+                    Err(error) => match error.kind {
+                        loom_runtime::JsonFailureKind::DepthLimit => {
+                            self.json_error_result(VariantId(2), None, span)
+                        }
+                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
+                            self.json_error_result(VariantId(3), None, span)
+                        }
+                        loom_runtime::JsonFailureKind::InvalidSyntax
+                        | loom_runtime::JsonFailureKind::NumberOutOfRange => {
+                            Err(self.invalid_builtin_fault(span))
+                        }
+                    },
+                },
+                Err(JsonConversionFailure::DepthLimit) => {
+                    self.json_error_result(VariantId(2), None, span)
+                }
+                Err(JsonConversionFailure::Invalid(failure)) => Err(failure),
+            },
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn json_from_runtime(
+        &self,
+        value: &loom_runtime::JsonNode,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let ty = self.program.prelude.json.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude Json type is missing",
+                span,
+            )
+        })?;
+        let (variant, payload) = match value {
+            loom_runtime::JsonNode::Null => (VariantId(0), Vec::new()),
+            loom_runtime::JsonNode::Bool(value) => {
+                (VariantId(1), vec![Value::Bool { value: *value }])
+            }
+            loom_runtime::JsonNode::Number(value) => {
+                (VariantId(2), vec![Value::Float { value: *value }])
+            }
+            loom_runtime::JsonNode::Text(value) => (
+                VariantId(3),
+                vec![Value::Text {
+                    value: value.clone(),
+                }],
+            ),
+            loom_runtime::JsonNode::Array(values) => (
+                VariantId(4),
+                vec![Value::List {
+                    elements: values
+                        .iter()
+                        .map(|value| self.json_from_runtime(value, span))
+                        .collect::<Result<Vec<_>, _>>()?,
+                }],
+            ),
+            loom_runtime::JsonNode::Object(values) => {
+                let entries = values
+                    .iter()
+                    .map(|(key, value)| {
+                        self.json_from_runtime(value, span)
+                            .map(|value| (key.clone(), value))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let map = self.text_map_value(entries, span)?;
+                (VariantId(5), vec![map])
+            }
+        };
+        Ok(Value::Enum {
+            ty,
+            variant,
+            payload,
+        })
+    }
+
+    fn json_to_runtime(
+        &self,
+        value: &Value,
+        span: Span,
+        depth: usize,
+    ) -> Result<loom_runtime::JsonNode, JsonConversionFailure> {
+        let Value::Enum {
+            ty,
+            variant,
+            payload,
+        } = value
+        else {
+            return Err(JsonConversionFailure::Invalid(
+                self.invalid_builtin_fault(span),
+            ));
+        };
+        if self.program.prelude.json != Some(*ty) {
+            return Err(JsonConversionFailure::Invalid(
+                self.invalid_builtin_fault(span),
+            ));
+        }
+        match (variant.0, payload.as_slice()) {
+            (0, []) => Ok(loom_runtime::JsonNode::Null),
+            (1, [Value::Bool { value }]) => Ok(loom_runtime::JsonNode::Bool(*value)),
+            (2, [Value::Float { value }]) => Ok(loom_runtime::JsonNode::Number(*value)),
+            (3, [Value::Text { value }]) => Ok(loom_runtime::JsonNode::Text(value.clone())),
+            (4, [Value::List { elements }]) => {
+                if depth >= loom_runtime::JSON_DEPTH_LIMIT {
+                    return Err(JsonConversionFailure::DepthLimit);
+                }
+                Ok(loom_runtime::JsonNode::Array(
+                    elements
+                        .iter()
+                        .map(|value| self.json_to_runtime(value, span, depth + 1))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ))
+            }
+            (5, [map]) => {
+                if depth >= loom_runtime::JSON_DEPTH_LIMIT {
+                    return Err(JsonConversionFailure::DepthLimit);
+                }
+                let mut object = BTreeMap::new();
+                for (key, value) in self.text_map_entries(map, span)? {
+                    object.insert(key, self.json_to_runtime(&value, span, depth + 1)?);
+                }
+                Ok(loom_runtime::JsonNode::Object(object))
+            }
+            _ => Err(JsonConversionFailure::Invalid(
+                self.invalid_builtin_fault(span),
+            )),
+        }
+    }
+
+    fn json_error_result(
+        &self,
+        variant: VariantId,
+        offset: Option<i64>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let ty = self.program.prelude.json_error.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude JsonError type is missing",
+                span,
+            )
+        })?;
+        let payload = offset
+            .into_iter()
+            .map(|value| Value::Int { value })
+            .collect();
+        self.result_value(
+            false,
+            Value::Enum {
+                ty,
+                variant,
+                payload,
+            },
+            span,
+        )
+    }
+
+    fn eval_io_error_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::IoErrorKind | Builtin::IoErrorMessage, [Value::Record { ty, fields }])
+                if self.program.prelude.io_error == Some(*ty) =>
+            {
+                fields
+                    .get(usize::from(builtin == Builtin::IoErrorMessage))
+                    .cloned()
+                    .ok_or_else(|| self.invalid_builtin_fault(span))
+            }
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn eval_log_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let (level, message, fields) = match (builtin, arguments) {
+            (Builtin::LogDebug, [Value::Text { value }]) => ("debug", value, Vec::new()),
+            (Builtin::LogInfo, [Value::Text { value }]) => ("info", value, Vec::new()),
+            (Builtin::LogWarn, [Value::Text { value }]) => ("warn", value, Vec::new()),
+            (Builtin::LogError, [Value::Text { value }]) => ("error", value, Vec::new()),
+            (Builtin::LogWrite, [level, Value::Text { value }, fields]) => {
+                let level = self.log_level(level, span)?;
+                (level, value, self.text_map_entries(fields, span)?)
+            }
+            _ => return Err(self.invalid_builtin_fault(span)),
+        };
+        let mut line = String::from("{\"level\":");
+        line.push_str(&loom_runtime::escape_json_text(level));
+        line.push_str(",\"message\":");
+        line.push_str(&loom_runtime::escape_json_text(message));
+        line.push_str(",\"fields\":{");
+        for (index, (key, value)) in fields.into_iter().enumerate() {
+            let Value::Text { value } = value else {
+                return Err(self.invalid_builtin_fault(span));
+            };
+            if index > 0 {
+                line.push(',');
+            }
+            line.push_str(&loom_runtime::escape_json_text(&key));
+            line.push(':');
+            line.push_str(&loom_runtime::escape_json_text(&value));
+        }
+        line.push_str("}}\n");
+        std::io::stderr()
+            .lock()
+            .write_all(line.as_bytes())
+            .map_err(|error| {
+                self.runtime_fault(
+                    "LogWriteFault",
+                    &format!("could not write log: {error}"),
+                    span,
+                )
+            })?;
+        Ok(Value::Unit)
+    }
+
+    fn log_level(&self, value: &Value, span: Span) -> Result<&'static str, ExecutionFailure> {
+        let Value::Enum {
+            ty,
+            variant,
+            payload,
+        } = value
+        else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        if self.program.prelude.log_level != Some(*ty) || !payload.is_empty() {
+            return Err(self.invalid_builtin_fault(span));
+        }
+        ["debug", "info", "warn", "error"]
+            .get(variant.0 as usize)
+            .copied()
+            .ok_or_else(|| self.invalid_builtin_fault(span))
     }
 
     fn eval_duration_builtin(
@@ -3291,6 +3737,33 @@ impl<'program> Interpreter<'program> {
                         .map_err(|error| io_failure("FileCreateFault", &error, span))
                 })
             }
+            (
+                Builtin::FileTryOpenRead
+                | Builtin::FileTryCreate
+                | Builtin::FileTryOpenReadPath
+                | Builtin::FileTryCreatePath,
+                [path],
+            ) => {
+                let path = if matches!(
+                    builtin,
+                    Builtin::FileTryOpenReadPath | Builtin::FileTryCreatePath
+                ) {
+                    self.path_payload(path, span)?.to_owned()
+                } else if let Value::Text { value } = path {
+                    value.clone()
+                } else {
+                    return Err(self.invalid_builtin_fault(span));
+                };
+                let create = matches!(builtin, Builtin::FileTryCreate | Builtin::FileTryCreatePath);
+                self.spawn_try_host_io_task(span, move || {
+                    let result = if create {
+                        std::fs::File::create(path)
+                    } else {
+                        std::fs::File::open(path)
+                    };
+                    result.map(HostIoValue::File).map_err(host_io_error)
+                })
+            }
             (Builtin::FileReadText, [Value::Record { ty, fields }])
                 if self.program.prelude.file == Some(*ty) =>
             {
@@ -3335,6 +3808,66 @@ impl<'program> Interpreter<'program> {
                     Err(failure) => self.spawn_terminal_task(Err(failure), span),
                 }
             }
+            (Builtin::FileTryReadText, [Value::Record { ty, fields }])
+                if self.program.prelude.file == Some(*ty) =>
+            {
+                let Some(Value::Int { value: descriptor }) = fields.first() else {
+                    return Err(self.invalid_builtin_fault(span));
+                };
+                let descriptor = *descriptor;
+                if descriptor < 0 {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                }
+                let Ok(handle) = u64::try_from(descriptor) else {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                };
+                let Some(file) = self.files.get(&handle) else {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                };
+                match file.try_clone() {
+                    Ok(mut file) => self.spawn_try_host_io_task(span, move || {
+                        let mut value = String::new();
+                        file.read_to_string(&mut value)
+                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map_err(host_io_error)
+                    }),
+                    Err(error) => {
+                        let error = host_io_error(error);
+                        self.spawn_io_error_task(error.kind, error.message, span)
+                    }
+                }
+            }
+            (Builtin::FileTryWriteText, [Value::Record { ty, fields }, Value::Text { value }])
+                if self.program.prelude.file == Some(*ty) =>
+            {
+                let Some(Value::Int { value: descriptor }) = fields.first() else {
+                    return Err(self.invalid_builtin_fault(span));
+                };
+                let descriptor = *descriptor;
+                if descriptor < 0 {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                }
+                let Ok(handle) = u64::try_from(descriptor) else {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                };
+                let Some(file) = self.files.get(&handle) else {
+                    return self.spawn_io_error_task(8, "File is already closed".into(), span);
+                };
+                match file.try_clone() {
+                    Ok(mut file) => {
+                        let value = value.clone();
+                        self.spawn_try_host_io_task(span, move || {
+                            file.write_all(value.as_bytes())
+                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map_err(host_io_error)
+                        })
+                    }
+                    Err(error) => {
+                        let error = host_io_error(error);
+                        self.spawn_io_error_task(error.kind, error.message, span)
+                    }
+                }
+            }
             _ => Err(self.invalid_builtin_fault(span)),
         }
     }
@@ -3371,6 +3904,27 @@ impl<'program> Interpreter<'program> {
                     TcpStream::connect(address)
                         .map(HostIoValue::Socket)
                         .map_err(|error| io_failure("SocketConnectFault", &error, span))
+                })
+            }
+            (
+                Builtin::SocketTryConnect,
+                [Value::Text { value: host }, Value::Int { value: port }],
+            ) => {
+                let Ok(port) = u16::try_from(*port) else {
+                    return self.spawn_io_error_task(3, "socket port must fit UInt16".into(), span);
+                };
+                let host = host.clone();
+                self.spawn_try_host_io_task(span, move || {
+                    let mut addresses = (host.as_str(), port)
+                        .to_socket_addrs()
+                        .map_err(host_io_error)?;
+                    let address = addresses.next().ok_or_else(|| HostIoError {
+                        kind: 9,
+                        message: "host resolved to no addresses".into(),
+                    })?;
+                    TcpStream::connect(address)
+                        .map(HostIoValue::Socket)
+                        .map_err(host_io_error)
                 })
             }
             (Builtin::SocketReadText, [Value::Record { ty, fields }])
@@ -3419,6 +3973,69 @@ impl<'program> Interpreter<'program> {
                         })
                     }
                     Err(failure) => self.spawn_terminal_task(Err(failure), span),
+                }
+            }
+            (Builtin::SocketTryReadText, [Value::Record { ty, fields }])
+                if self.program.prelude.socket == Some(*ty) =>
+            {
+                let Some(Value::Int { value: descriptor }) = fields.first() else {
+                    return Err(self.invalid_builtin_fault(span));
+                };
+                let descriptor = *descriptor;
+                if descriptor < 0 {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                }
+                let Ok(handle) = u64::try_from(descriptor) else {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                };
+                let Some(socket) = self.sockets.get(&handle) else {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                };
+                match socket.try_clone() {
+                    Ok(mut socket) => self.spawn_try_host_io_task(span, move || {
+                        let mut value = String::new();
+                        socket
+                            .read_to_string(&mut value)
+                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map_err(host_io_error)
+                    }),
+                    Err(error) => {
+                        let error = host_io_error(error);
+                        self.spawn_io_error_task(error.kind, error.message, span)
+                    }
+                }
+            }
+            (
+                Builtin::SocketTryWriteText,
+                [Value::Record { ty, fields }, Value::Text { value }],
+            ) if self.program.prelude.socket == Some(*ty) => {
+                let Some(Value::Int { value: descriptor }) = fields.first() else {
+                    return Err(self.invalid_builtin_fault(span));
+                };
+                let descriptor = *descriptor;
+                if descriptor < 0 {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                }
+                let Ok(handle) = u64::try_from(descriptor) else {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                };
+                let Some(socket) = self.sockets.get(&handle) else {
+                    return self.spawn_io_error_task(8, "Socket is already closed".into(), span);
+                };
+                match socket.try_clone() {
+                    Ok(mut socket) => {
+                        let value = value.clone();
+                        self.spawn_try_host_io_task(span, move || {
+                            socket
+                                .write_all(value.as_bytes())
+                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map_err(host_io_error)
+                        })
+                    }
+                    Err(error) => {
+                        let error = host_io_error(error);
+                        self.spawn_io_error_task(error.kind, error.message, span)
+                    }
                 }
             }
             _ => Err(self.invalid_builtin_fault(span)),
@@ -3676,7 +4293,7 @@ impl<'program> Interpreter<'program> {
             let _ = completion_sender.send(HostIoCompletion {
                 task: task_id,
                 span,
-                outcome: work(),
+                outcome: HostIoCompletionOutcome::Infallible(work()),
             });
         });
         if host_io_pool().try_send(job).is_err() {
@@ -3693,6 +4310,109 @@ impl<'program> Interpreter<'program> {
         self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
         self.gc_stats.live = self.tasks.len() as u64;
         Ok(Value::Task { id: task_id })
+    }
+
+    fn spawn_try_host_io_task<F>(&mut self, span: Span, work: F) -> Result<Value, ExecutionFailure>
+    where
+        F: FnOnce() -> Result<HostIoValue, HostIoError> + Send + 'static,
+    {
+        let task_id = self.next_task;
+        self.next_task = self.next_task.checked_add(1).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "TaskIdExhausted",
+                "async task identity space was exhausted",
+                span,
+            ))
+        })?;
+        self.tasks.insert(
+            task_id,
+            ManagedTask {
+                function: FunctionId(u32::MAX),
+                frame: u64::MAX,
+                parent: self.active_task,
+                children: Vec::new(),
+                cursor: 0,
+                awaiting_state: None,
+                cleanups: Vec::new(),
+                status: TaskStatus::Waiting,
+                queued: false,
+                marked: false,
+                timer_deadline: None,
+                host_io: true,
+                contract_state: None,
+                join_mode: TaskJoinMode::All,
+                join_dynamic: false,
+                join_combined: false,
+                join_winner: None,
+                cancel_requested: false,
+            },
+        );
+        let completion_sender = self.host_io_sender.clone();
+        let job = Box::new(move || {
+            let _ = completion_sender.send(HostIoCompletion {
+                task: task_id,
+                span,
+                outcome: HostIoCompletionOutcome::Fallible(work()),
+            });
+        });
+        if host_io_pool().try_send(job).is_err() {
+            let failure = self.runtime_fault(
+                "BlockingPoolSaturated",
+                "bounded interpreter I/O worker queue is full",
+                span,
+            );
+            self.tasks
+                .get_mut(&task_id)
+                .expect("host I/O task was just inserted")
+                .status = TaskStatus::Failed(failure.into());
+        }
+        self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+        self.gc_stats.live = self.tasks.len() as u64;
+        Ok(Value::Task { id: task_id })
+    }
+
+    fn spawn_io_error_task(
+        &mut self,
+        kind: u32,
+        message: String,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let result = self.io_error_result(HostIoError { kind, message }, span)?;
+        self.spawn_terminal_task(Ok(result), span)
+    }
+
+    fn io_error_result(&self, error: HostIoError, span: Span) -> Result<Value, ExecutionFailure> {
+        let error_ty = self.program.prelude.io_error.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude IoError type is missing",
+                span,
+            )
+        })?;
+        let kind_ty = self.program.prelude.io_error_kind.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude IoErrorKind type is missing",
+                span,
+            )
+        })?;
+        self.result_value(
+            false,
+            Value::Record {
+                ty: error_ty,
+                fields: vec![
+                    Value::Enum {
+                        ty: kind_ty,
+                        variant: VariantId(error.kind),
+                        payload: Vec::new(),
+                    },
+                    Value::Text {
+                        value: error.message,
+                    },
+                ],
+            },
+            span,
+        )
     }
 
     fn checked_refine(
@@ -4843,6 +5563,26 @@ fn io_failure(code: &str, error: &std::io::Error, span: Span) -> ExecutionFailur
         span,
     }
     .into()
+}
+
+fn host_io_error(error: std::io::Error) -> HostIoError {
+    use std::io::ErrorKind;
+    let kind = match error.kind() {
+        ErrorKind::NotFound => 0,
+        ErrorKind::PermissionDenied => 1,
+        ErrorKind::AlreadyExists => 2,
+        ErrorKind::InvalidInput | ErrorKind::InvalidData | ErrorKind::Unsupported => 3,
+        ErrorKind::ConnectionRefused => 4,
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe => 5,
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => 6,
+        ErrorKind::UnexpectedEof => 7,
+        ErrorKind::NotConnected => 8,
+        _ => 9,
+    };
+    HostIoError {
+        kind,
+        message: error.to_string(),
+    }
 }
 
 fn resource_closed(name: &str, span: Span) -> ExecutionFailure {

@@ -15,6 +15,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../loom-runtime/src/process.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/reactor.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/scheduler.rs");
+    println!("cargo:rerun-if-changed=../loom-runtime/src/standard.rs");
+    println!("cargo:rerun-if-changed=../loom-runtime/src/value.rs");
 
     let manifest = Path::new(&env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join("../loom-runtime/Cargo.toml");

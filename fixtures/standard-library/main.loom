@@ -1,0 +1,255 @@
+module standard_library
+
+import standard.file.try_open_read
+import standard.file.try_create
+import standard.net.try_connect
+import standard.json.parse_json
+import standard.json.format_json
+import standard.log.debug
+import standard.log.write
+
+record Counter {
+    value Int
+}
+
+impl Counter {
+    method increment(mut self) Unit {
+        self.value = self.value + 1
+        Unit
+    }
+}
+
+fn deeply_nested_json() Json {
+    var value = Json.Null
+    for index in 0..129 {
+        value = Json.Array([value])
+        Unit
+    }
+    value
+}
+
+test fn text_map_and_json() {
+    let empty = TextMap[Text]()
+    let inserted = empty.insert("z", "last").insert("a", "first")
+    let overwritten = inserted.insert("z", "updated")
+    let removed = overwritten.remove("missing")
+    let empty_length = empty.length()
+    let overwritten_length = overwritten.length()
+    let has_z = overwritten.contains("z")
+    assert empty_length == 0
+    assert overwritten_length == 2
+    assert has_z
+    assert removed == overwritten
+    match overwritten.get("z") {
+        Some(value) => {
+            assert value == "updated"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    let object = Json.Object(
+        TextMap[Json]()
+            .insert("z", Json.Number(-0.0))
+            .insert("a", Json.Text("line\n\"quoted\""))
+    )
+    match format_json(object) {
+        Ok(value) => {
+            assert value == "{\"a\":\"line\\n\\\"quoted\\\"\",\"z\":-0}"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+
+    match parse_json("{\"a\":1,\"a\":2}") {
+        Err(InvalidSyntax(offset)) => {
+            assert offset == 7
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match parse_json("[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[null]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]") {
+        Err(DepthLimit) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match format_json(deeply_nested_json()) {
+        Err(DepthLimit) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match format_json(Json.Number(1.0 / 0.0)) {
+        Err(NonFiniteNumber) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+
+test async fn text_map_copy_and_gc() {
+    var original = Counter { value = 0 }
+    let map = TextMap[Counter]().insert("counter", original)
+    original.increment()
+    let original_value = original.value
+    assert original_value == 1
+    match map.get("counter") {
+        Some(stored) => {
+            assert stored.value == 0
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    var fetched = match map.get("counter") {
+        Some(value) => value
+        None => Counter { value = -1 }
+    }
+    fetched.increment()
+    let fetched_value = fetched.value
+    assert fetched_value == 1
+    match map.get("counter") {
+        Some(stored) => {
+            assert stored.value == 0
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    var pressure = map
+    for index in 0..512 {
+        pressure = pressure.insert("counter", Counter { value = index })
+        Unit
+    }
+    Task.sleep(1).await
+    match pressure.get("counter") {
+        Some(stored) => {
+            assert stored.value == 511
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+
+async fn file_round_trip(path Text) Result[Text, IoError] {
+    {
+        scoped output = try_create(path).await?
+        output.try_write_text("typed I/O").await?
+        Unit
+    }
+    scoped input = try_open_read(path).await?
+    input.try_read_text().await
+}
+
+test async fn typed_io() {
+    match file_round_trip("__ROUND_TRIP_PATH__").await {
+        Ok(value) => {
+            assert value == "typed I/O"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match try_open_read("__MISSING_PATH__").await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.NotFound
+            Unit
+        }
+        Ok(file) => {
+            scoped file = file
+            assert false
+        }
+    }
+    match try_connect("invalid host name", 80).await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.Other
+            Unit
+        }
+        Ok(socket) => {
+            scoped socket = socket
+            assert false
+        }
+    }
+    match try_connect("localhost", -1).await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.InvalidInput
+            Unit
+        }
+        Ok(socket) => {
+            scoped socket = socket
+            assert false
+        }
+    }
+    match try_connect("127.0.0.1", __LOOPBACK_PORT__).await {
+        Ok(socket) => {
+            scoped socket = socket
+            match socket.try_write_text("").await {
+                Ok(_) => Unit
+                Err(_) => {
+                    assert false
+                    Unit
+                }
+            }
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+
+test fn canonical_logging() {
+    debug("debug \"line\"")
+    write(
+        LogLevel.Warn,
+        "event\nline",
+        TextMap[Text]().insert("z", "last").insert("a", "first")
+    )
+    Unit
+}

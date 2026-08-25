@@ -7,6 +7,8 @@
 pub const RUNTIME_ABI_VERSION: u32 = 1;
 pub const COROUTINE_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
+pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 1;
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v1/wait-v1/task-v1/gc-v1/stdlib-v1";
 pub const FAULT_SCHEMA_VERSION: u32 = 1;
 pub const FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 pub const FAULT_FORMAT_JSON: &str = "json";

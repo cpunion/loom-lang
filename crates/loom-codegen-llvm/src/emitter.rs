@@ -1713,6 +1713,119 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.native_two_data_output("loom_runtime_path_join")
     }
 
+    fn native_text_map_get(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_text_map_get")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_text_map_get", function_type, None)
+            })
+    }
+
+    fn native_text_map_insert(&self) -> FunctionValue<'ctx> {
+        self.native_four_pointer_status("loom_runtime_text_map_insert")
+    }
+
+    fn native_text_map_remove(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_text_map_remove")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_text_map_remove", function_type, None)
+            })
+    }
+
+    fn native_json_parse(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_json_parse")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_json_parse", function_type, None)
+            })
+    }
+
+    fn native_json_format(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_json_format")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_json_format", function_type, None)
+            })
+    }
+
+    fn native_log_write(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_log")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.context.i32_type().into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_log", function_type, None)
+            })
+    }
+
+    fn native_four_pointer_status(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.context.i32_type().fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
     fn native_data_length_output(&self, name: &str) -> FunctionValue<'ctx> {
         self.module.get_function(name).unwrap_or_else(|| {
             let function_type = self.context.i32_type().fn_type(
@@ -1817,38 +1930,67 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.native_io_task_text("loom_file_create")
     }
 
+    fn native_file_try_open_read(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_text("loom_file_try_open_read")
+    }
+
+    fn native_file_try_create(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_text("loom_file_try_create")
+    }
+
     fn native_socket_connect(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_socket_connect")
-            .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function("loom_socket_connect", function_type, None)
-            })
+        self.native_socket_connect_named("loom_socket_connect")
+    }
+
+    fn native_socket_try_connect(&self) -> FunctionValue<'ctx> {
+        self.native_socket_connect_named("loom_socket_try_connect")
+    }
+
+    fn native_socket_connect_named(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.ptr_type.fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                    self.i64_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
     }
 
     fn native_file_read_text(&self) -> FunctionValue<'ctx> {
         self.native_io_task_descriptor("loom_file_read_text")
     }
 
+    fn native_file_try_read_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_descriptor("loom_file_try_read_text")
+    }
+
     fn native_socket_read_text(&self) -> FunctionValue<'ctx> {
         self.native_io_task_descriptor("loom_socket_read_text")
+    }
+
+    fn native_socket_try_read_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_descriptor("loom_socket_try_read_text")
     }
 
     fn native_file_write_text(&self) -> FunctionValue<'ctx> {
         self.native_io_task_write("loom_file_write_text")
     }
 
+    fn native_file_try_write_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_write("loom_file_try_write_text")
+    }
+
     fn native_socket_write_text(&self) -> FunctionValue<'ctx> {
         self.native_io_task_write("loom_socket_write_text")
+    }
+
+    fn native_socket_try_write_text(&self) -> FunctionValue<'ctx> {
+        self.native_io_task_write("loom_socket_try_write_text")
     }
 
     fn native_io_close(&self) -> FunctionValue<'ctx> {
@@ -6840,18 +6982,47 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         if matches!(
             builtin,
+            Builtin::TextMapNew
+                | Builtin::TextMapLength
+                | Builtin::TextMapContains
+                | Builtin::TextMapGet
+                | Builtin::TextMapInsert
+                | Builtin::TextMapRemove
+                | Builtin::JsonParse
+                | Builtin::JsonFormat
+                | Builtin::IoErrorKind
+                | Builtin::IoErrorMessage
+                | Builtin::LogDebug
+                | Builtin::LogInfo
+                | Builtin::LogWarn
+                | Builtin::LogError
+                | Builtin::LogWrite
+        ) {
+            return self.emit_structured_value_builtin(builtin, &values, destination);
+        }
+        if matches!(
+            builtin,
             Builtin::DurationMilliseconds
                 | Builtin::DurationAsMilliseconds
                 | Builtin::FileOpenRead
                 | Builtin::FileCreate
                 | Builtin::FileOpenReadPath
                 | Builtin::FileCreatePath
+                | Builtin::FileTryOpenRead
+                | Builtin::FileTryCreate
+                | Builtin::FileTryOpenReadPath
+                | Builtin::FileTryCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
+                | Builtin::FileTryReadText
+                | Builtin::FileTryWriteText
                 | Builtin::FileClose
                 | Builtin::SocketConnect
+                | Builtin::SocketTryConnect
                 | Builtin::SocketReadText
                 | Builtin::SocketWriteText
+                | Builtin::SocketTryReadText
+                | Builtin::SocketTryWriteText
                 | Builtin::SocketClose
         ) {
             return self.emit_standard_io_builtin(builtin, &values, destination);
@@ -7288,6 +7459,294 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.fail_if(invalid, fault)
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn emit_structured_value_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        match (builtin, values) {
+            (Builtin::TextMapNew, []) => {
+                let map = self
+                    .backend
+                    .program
+                    .prelude
+                    .text_map
+                    .ok_or_else(|| CodegenError::new("InvalidPrelude", "TextMap is missing"))?;
+                self.initialize(destination, VALUE_TAG_RECORD)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_NOMINAL,
+                    self.backend.tag(u64::from(map.0)),
+                )?;
+                Ok(true)
+            }
+            (Builtin::TextMapLength, [map]) => {
+                let map = self.unwrap(*map)?;
+                let slots = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    map,
+                    VALUE_FIELD_AUX,
+                    "text.map.slots",
+                )?;
+                let length = self
+                    .backend
+                    .builder
+                    .build_int_unsigned_div(
+                        slots,
+                        self.backend.i64_type.const_int(2, false),
+                        "text.map.length",
+                    )
+                    .map_err(builder_error)?;
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    length,
+                )?;
+                Ok(true)
+            }
+            (Builtin::TextMapContains | Builtin::TextMapGet, [map, key]) => {
+                let (key_data, key_length) = self.text_parts(*key, "text.map.key")?;
+                let value = call_pointer(
+                    &self.backend.builder,
+                    self.backend.native_text_map_get(),
+                    &[(*map).into(), key_data.into(), key_length.into()],
+                    "text.map.value",
+                )?;
+                let found = self
+                    .backend
+                    .builder
+                    .build_is_not_null(value, "text.map.found")
+                    .map_err(builder_error)?;
+                if builtin == Builtin::TextMapContains {
+                    self.store_bool(destination, found)?;
+                } else {
+                    let option =
+                        self.backend.program.prelude.option.ok_or_else(|| {
+                            CodegenError::new("InvalidPrelude", "Option is missing")
+                        })?;
+                    let some = self.append_block("text.map.get.some");
+                    let none = self.append_block("text.map.get.none");
+                    let merge = self.append_block("text.map.get.merge");
+                    self.backend
+                        .builder
+                        .build_conditional_branch(found, some, none)
+                        .map_err(builder_error)?;
+                    self.backend.builder.position_at_end(some);
+                    let owned = self.alloc_value("text.map.get.owned");
+                    self.clone_value(owned, value)?;
+                    self.emit_variant_from_pointers(option, 1, &[owned], destination)?;
+                    self.backend.branch(merge)?;
+                    self.backend.builder.position_at_end(none);
+                    self.emit_variant_from_pointers(option, 0, &[], destination)?;
+                    self.backend.branch(merge)?;
+                    self.backend.builder.position_at_end(merge);
+                }
+                Ok(true)
+            }
+            (Builtin::TextMapInsert, [map, key, value]) => {
+                let owned = self.alloc_value("text.map.insert.owned");
+                self.clone_value(owned, *value)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_text_map_insert(),
+                    &[
+                        (*map).into(),
+                        (*key).into(),
+                        owned.into(),
+                        destination.into(),
+                    ],
+                    "text.map.insert.status",
+                )?;
+                self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::TextMapRemove, [map, key]) => {
+                let (key_data, key_length) = self.text_parts(*key, "text.map.remove.key")?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_text_map_remove(),
+                    &[
+                        (*map).into(),
+                        key_data.into(),
+                        key_length.into(),
+                        destination.into(),
+                    ],
+                    "text.map.remove.status",
+                )?;
+                self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::JsonParse, [text]) => {
+                let (data, length) = self.text_parts(*text, "json.parse")?;
+                let (result, json, error, map) = self.json_type_ids()?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_json_parse(),
+                    &[
+                        data.into(),
+                        length.into(),
+                        self.backend.tag(u64::from(result.0)).into(),
+                        self.backend.tag(u64::from(json.0)).into(),
+                        self.backend.tag(u64::from(error.0)).into(),
+                        self.backend.tag(u64::from(map.0)).into(),
+                        destination.into(),
+                    ],
+                    "json.parse.status",
+                )?;
+                self.fail_on_standard_status(status, "JsonRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::JsonFormat, [json]) => {
+                let (result, json_type, error, map) = self.json_type_ids()?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_json_format(),
+                    &[
+                        (*json).into(),
+                        self.backend.tag(u64::from(result.0)).into(),
+                        self.backend.tag(u64::from(json_type.0)).into(),
+                        self.backend.tag(u64::from(error.0)).into(),
+                        self.backend.tag(u64::from(map.0)).into(),
+                        destination.into(),
+                    ],
+                    "json.format.status",
+                )?;
+                self.fail_on_standard_status(status, "JsonRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::IoErrorKind | Builtin::IoErrorMessage, [error]) => {
+                let error = self.unwrap(*error)?;
+                let data = self.backend.load_pointer_field(
+                    self.backend.value_type,
+                    error,
+                    VALUE_FIELD_DATA,
+                    "io.error.fields",
+                )?;
+                let index = u32::from(builtin == Builtin::IoErrorMessage);
+                let node = self.value_node_at(data, index)?;
+                let field = self.backend.struct_pointer(
+                    self.backend.value_node_type,
+                    node,
+                    VALUE_NODE_FIELD_VALUE,
+                    "io.error.field",
+                )?;
+                self.clone_value(destination, field)?;
+                Ok(true)
+            }
+            (
+                Builtin::LogDebug | Builtin::LogInfo | Builtin::LogWarn | Builtin::LogError,
+                [message],
+            ) => {
+                let level = match builtin {
+                    Builtin::LogDebug => 0,
+                    Builtin::LogInfo => 1,
+                    Builtin::LogWarn => 2,
+                    Builtin::LogError => 3,
+                    _ => unreachable!(),
+                };
+                self.emit_log_write(
+                    level,
+                    *message,
+                    self.backend.ptr_type.const_null(),
+                    destination,
+                )
+            }
+            (Builtin::LogWrite, [level, message, fields]) => {
+                let level = self.unwrap(*level)?;
+                let level = self.backend.load_i64_field(
+                    self.backend.value_type,
+                    level,
+                    VALUE_FIELD_AUX,
+                    "log.level",
+                )?;
+                let level = self
+                    .backend
+                    .builder
+                    .build_int_truncate(level, self.backend.context.i32_type(), "log.level.i32")
+                    .map_err(builder_error)?;
+                self.emit_log_write_value(level, *message, *fields, destination)
+            }
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "structured value builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
+    fn json_type_ids(&self) -> Result<(TypeId, TypeId, TypeId, TypeId), CodegenError> {
+        Ok((
+            self.backend
+                .program
+                .prelude
+                .result
+                .ok_or_else(|| CodegenError::new("InvalidPrelude", "Result is missing"))?,
+            self.backend
+                .program
+                .prelude
+                .json
+                .ok_or_else(|| CodegenError::new("InvalidPrelude", "Json is missing"))?,
+            self.backend
+                .program
+                .prelude
+                .json_error
+                .ok_or_else(|| CodegenError::new("InvalidPrelude", "JsonError is missing"))?,
+            self.backend
+                .program
+                .prelude
+                .text_map
+                .ok_or_else(|| CodegenError::new("InvalidPrelude", "TextMap is missing"))?,
+        ))
+    }
+
+    fn emit_log_write(
+        &self,
+        level: u64,
+        message: PointerValue<'ctx>,
+        fields: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        self.emit_log_write_value(
+            self.backend.context.i32_type().const_int(level, false),
+            message,
+            fields,
+            destination,
+        )
+    }
+
+    fn emit_log_write_value(
+        &self,
+        level: IntValue<'ctx>,
+        message: PointerValue<'ctx>,
+        fields: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let (data, length) = self.text_parts(message, "log.message")?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_log_write(),
+            &[level.into(), data.into(), length.into(), fields.into()],
+            "log.write.status",
+        )?;
+        let failed = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "log.write.failed",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(failed, "LogWriteFault")?;
+        self.emit_constant(&Constant::Unit, destination)?;
+        Ok(true)
+    }
+
     fn emit_option_from_status(
         &self,
         status: IntValue<'ctx>,
@@ -7601,22 +8060,40 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Builtin::FileOpenRead
                 | Builtin::FileCreate
                 | Builtin::FileOpenReadPath
-                | Builtin::FileCreatePath,
+                | Builtin::FileCreatePath
+                | Builtin::FileTryOpenRead
+                | Builtin::FileTryCreate
+                | Builtin::FileTryOpenReadPath
+                | Builtin::FileTryCreatePath,
                 [path],
             ) => {
-                let path = if matches!(builtin, Builtin::FileOpenReadPath | Builtin::FileCreatePath)
-                {
+                let path = if matches!(
+                    builtin,
+                    Builtin::FileOpenReadPath
+                        | Builtin::FileCreatePath
+                        | Builtin::FileTryOpenReadPath
+                        | Builtin::FileTryCreatePath
+                ) {
                     self.opaque_record_field(*path, "file.path.payload")?
                 } else {
                     *path
                 };
                 let (data, length) = self.text_parts(path, "file.path")?;
-                let function =
-                    if matches!(builtin, Builtin::FileOpenRead | Builtin::FileOpenReadPath) {
+                let function = match builtin {
+                    Builtin::FileOpenRead | Builtin::FileOpenReadPath => {
                         self.backend.native_file_open_read()
-                    } else {
+                    }
+                    Builtin::FileCreate | Builtin::FileCreatePath => {
                         self.backend.native_file_create()
-                    };
+                    }
+                    Builtin::FileTryOpenRead | Builtin::FileTryOpenReadPath => {
+                        self.backend.native_file_try_open_read()
+                    }
+                    Builtin::FileTryCreate | Builtin::FileTryCreatePath => {
+                        self.backend.native_file_try_create()
+                    }
+                    _ => unreachable!("matched file open/create builtin"),
+                };
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
@@ -7626,12 +8103,20 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.store_io_task(task, destination, "FileTaskAllocationFault")?;
                 Ok(true)
             }
-            (Builtin::FileReadText | Builtin::SocketReadText, [resource]) => {
+            (
+                Builtin::FileReadText
+                | Builtin::SocketReadText
+                | Builtin::FileTryReadText
+                | Builtin::SocketTryReadText,
+                [resource],
+            ) => {
                 let descriptor = self.resource_descriptor(*resource)?;
-                let function = if builtin == Builtin::FileReadText {
-                    self.backend.native_file_read_text()
-                } else {
-                    self.backend.native_socket_read_text()
+                let function = match builtin {
+                    Builtin::FileReadText => self.backend.native_file_read_text(),
+                    Builtin::SocketReadText => self.backend.native_socket_read_text(),
+                    Builtin::FileTryReadText => self.backend.native_file_try_read_text(),
+                    Builtin::SocketTryReadText => self.backend.native_socket_try_read_text(),
+                    _ => unreachable!("matched I/O read builtin"),
                 };
                 let task = call_pointer(
                     &self.backend.builder,
@@ -7642,13 +8127,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.store_io_task(task, destination, "IoTaskAllocationFault")?;
                 Ok(true)
             }
-            (Builtin::FileWriteText | Builtin::SocketWriteText, [resource, text]) => {
+            (
+                Builtin::FileWriteText
+                | Builtin::SocketWriteText
+                | Builtin::FileTryWriteText
+                | Builtin::SocketTryWriteText,
+                [resource, text],
+            ) => {
                 let descriptor = self.resource_descriptor(*resource)?;
                 let (data, length) = self.text_parts(*text, "io.write.text")?;
-                let function = if builtin == Builtin::FileWriteText {
-                    self.backend.native_file_write_text()
-                } else {
-                    self.backend.native_socket_write_text()
+                let function = match builtin {
+                    Builtin::FileWriteText => self.backend.native_file_write_text(),
+                    Builtin::SocketWriteText => self.backend.native_socket_write_text(),
+                    Builtin::FileTryWriteText => self.backend.native_file_try_write_text(),
+                    Builtin::SocketTryWriteText => self.backend.native_socket_try_write_text(),
+                    _ => unreachable!("matched I/O write builtin"),
                 };
                 let task = call_pointer(
                     &self.backend.builder,
@@ -7664,34 +8157,41 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.store_io_task(task, destination, "IoTaskAllocationFault")?;
                 Ok(true)
             }
-            (Builtin::SocketConnect, [host, port]) => {
+            (Builtin::SocketConnect | Builtin::SocketTryConnect, [host, port]) => {
                 let (data, length) = self.text_parts(*host, "socket.host")?;
                 let port = self.int_scalar(*port)?;
-                let negative = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::SLT,
-                        port,
-                        self.backend.i64_type.const_zero(),
-                        "socket.port.negative",
-                    )
-                    .map_err(builder_error)?;
-                self.fail_if(negative, "InvalidPort")?;
-                let too_large = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::SGT,
-                        port,
-                        self.backend.i64_type.const_int(u64::from(u16::MAX), false),
-                        "socket.port.large",
-                    )
-                    .map_err(builder_error)?;
-                self.fail_if(too_large, "InvalidPort")?;
+                if builtin == Builtin::SocketConnect {
+                    let negative = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::SLT,
+                            port,
+                            self.backend.i64_type.const_zero(),
+                            "socket.port.negative",
+                        )
+                        .map_err(builder_error)?;
+                    self.fail_if(negative, "InvalidPort")?;
+                    let too_large = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::SGT,
+                            port,
+                            self.backend.i64_type.const_int(u64::from(u16::MAX), false),
+                            "socket.port.large",
+                        )
+                        .map_err(builder_error)?;
+                    self.fail_if(too_large, "InvalidPort")?;
+                }
+                let function = if builtin == Builtin::SocketTryConnect {
+                    self.backend.native_socket_try_connect()
+                } else {
+                    self.backend.native_socket_connect()
+                };
                 let task = call_pointer(
                     &self.backend.builder,
-                    self.backend.native_socket_connect(),
+                    function,
                     &[
                         self.executor.into(),
                         data.into(),

@@ -44,6 +44,9 @@ const TASK_FAULT_CODE: &[u8] = b"TaskFault";
 const TASK_FAULT_MESSAGE: &[u8] = b"task execution failed";
 const FILE_TYPE: u64 = 9;
 const SOCKET_TYPE: u64 = 10;
+const RESULT_TYPE: u64 = 1;
+const IO_ERROR_TYPE: u64 = 18;
+const IO_ERROR_KIND_TYPE: u64 = 19;
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;
@@ -184,10 +187,20 @@ enum IoOperation {
 }
 
 pub(crate) enum BlockingResult {
-    Resource { nominal: u64, descriptor: OwnedFd },
-    Text { bytes: Vec<u8>, code: &'static str },
+    Resource {
+        nominal: u64,
+        descriptor: OwnedFd,
+    },
+    Text {
+        bytes: Vec<u8>,
+        code: &'static str,
+    },
     Unit,
-    Fault { code: &'static str, message: String },
+    Fault {
+        code: &'static str,
+        kind: u32,
+        message: String,
+    },
 }
 
 pub(crate) struct WorkerCompletion {
@@ -256,6 +269,7 @@ pub struct LoomTask {
     composite_spec: *mut LoomJoinSpec,
     io_operation: Option<IoOperation>,
     blocking_result: Option<BlockingResult>,
+    io_fallible: bool,
     fault_code: String,
     fault_message: String,
     fault_detail: String,
@@ -850,6 +864,7 @@ fn blocking_file_open(path: String, create: bool) -> BlockingResult {
             } else {
                 "FileOpenFault"
             },
+            kind: io_error_kind(&error),
             message: error.to_string(),
         },
     }
@@ -865,6 +880,7 @@ fn blocking_file_read(descriptor: OwnedFd) -> BlockingResult {
         },
         Err(error) => BlockingResult::Fault {
             code: "FileReadFault",
+            kind: io_error_kind(&error),
             message: error.to_string(),
         },
     }
@@ -876,19 +892,28 @@ fn blocking_file_write(descriptor: OwnedFd, bytes: Vec<u8>) -> BlockingResult {
         Ok(()) => BlockingResult::Unit,
         Err(error) => BlockingResult::Fault {
             code: "FileWriteFault",
+            kind: io_error_kind(&error),
             message: error.to_string(),
         },
     }
 }
 
 fn blocking_socket_connect(host: String, port: u16) -> BlockingResult {
-    let address = (host.as_str(), port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addresses| addresses.next());
+    let mut addresses = match (host.as_str(), port).to_socket_addrs() {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            return BlockingResult::Fault {
+                code: "SocketResolveFault",
+                kind: io_error_kind(&error),
+                message: error.to_string(),
+            };
+        }
+    };
+    let address = addresses.next();
     let Some(address) = address else {
         return BlockingResult::Fault {
             code: "SocketResolveFault",
+            kind: 9,
             message: "host resolved to no addresses".into(),
         };
     };
@@ -897,6 +922,7 @@ fn blocking_socket_connect(host: String, port: u16) -> BlockingResult {
             if let Err(error) = socket.set_nonblocking(true) {
                 return BlockingResult::Fault {
                     code: "SocketConnectFault",
+                    kind: io_error_kind(&error),
                     message: error.to_string(),
                 };
             }
@@ -907,6 +933,7 @@ fn blocking_socket_connect(host: String, port: u16) -> BlockingResult {
         }
         Err(error) => BlockingResult::Fault {
             code: "SocketConnectFault",
+            kind: io_error_kind(&error),
             message: error.to_string(),
         },
     }
@@ -926,7 +953,11 @@ unsafe fn finish_blocking_result(
             store_text_result(task, executor, bytes, code)
         },
         BlockingResult::Unit => unsafe { store_unit_result(task) },
-        BlockingResult::Fault { code, message } => unsafe { fail_message(task, code, &message) },
+        BlockingResult::Fault {
+            code,
+            kind,
+            message,
+        } => unsafe { complete_io_error(task, kind, code, &message) },
     }
 }
 
@@ -965,12 +996,23 @@ unsafe fn resume_socket_write(
     bytes: Vec<u8>,
     mut offset: usize,
 ) -> i32 {
+    if offset == bytes.len() {
+        return unsafe { store_unit_result(task) };
+    }
     // SAFETY: the Socket value owns the descriptor; this temporary only borrows it.
     let mut socket = ManuallyDrop::new(unsafe { TcpStream::from_raw_fd(descriptor) });
     loop {
+        if offset == bytes.len() {
+            return unsafe { store_unit_result(task) };
+        }
         match socket.write(&bytes[offset..]) {
             Ok(0) => unsafe {
-                return fail_message(task, "SocketWriteFault", "socket accepted zero bytes");
+                return complete_io_error(
+                    task,
+                    9,
+                    "SocketWriteFault",
+                    "socket accepted zero bytes",
+                );
             },
             Ok(written) => {
                 offset += written;
@@ -1014,9 +1056,7 @@ unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: i
     result.words[1] = nominal;
     result.words[2] = 1;
     result.words[4] = node as u64;
-    let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
-    *slot = result;
-    TASK_COMPLETED
+    unsafe { store_io_success(task, result) }
 }
 
 unsafe fn store_text_result(
@@ -1026,21 +1066,35 @@ unsafe fn store_text_result(
     code: &str,
 ) -> i32 {
     if std::str::from_utf8(&bytes).is_err() {
-        return unsafe { fail_message(task, code, "I/O bytes are not valid UTF-8 Text") };
+        return unsafe { complete_io_error(task, 3, code, "I/O bytes are not valid UTF-8 Text") };
     }
     let (pointer, length) = crate::gc::retain_bytes(bytes);
     let mut result = ValueSlot::default();
     result.words[0] = VALUE_TAG_TEXT;
     result.words[2] = length;
     result.words[4] = pointer as u64;
-    let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
-    *slot = result;
-    TASK_COMPLETED
+    unsafe { store_io_success(task, result) }
 }
 
 unsafe fn store_unit_result(task: *mut LoomTask) -> i32 {
+    unsafe { store_io_success(task, ValueSlot::default()) }
+}
+
+unsafe fn store_io_success(task: *mut LoomTask, value: ValueSlot) -> i32 {
+    let result = if unsafe { (*task).io_fallible } {
+        let payload = retain_result_node(unsafe { &mut *(*task).executor }, value, ptr::null_mut());
+        let mut result = ValueSlot::default();
+        result.words[0] = VALUE_TAG_ENUM;
+        result.words[1] = RESULT_TYPE;
+        result.words[2] = 0;
+        result.words[3] = 1;
+        result.words[4] = payload as u64;
+        result
+    } else {
+        value
+    };
     let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
-    *slot = ValueSlot::default();
+    *slot = result;
     TASK_COMPLETED
 }
 
@@ -1074,7 +1128,53 @@ unsafe fn suspend_io(
 }
 
 unsafe fn fail_io(task: *mut LoomTask, code: &str, error: &io::Error) -> i32 {
-    unsafe { fail_message(task, code, &error.to_string()) }
+    unsafe { complete_io_error(task, io_error_kind(error), code, &error.to_string()) }
+}
+
+fn io_error_kind(error: &io::Error) -> u32 {
+    match error.kind() {
+        io::ErrorKind::NotFound => 0,
+        io::ErrorKind::PermissionDenied => 1,
+        io::ErrorKind::AlreadyExists => 2,
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData | io::ErrorKind::Unsupported => 3,
+        io::ErrorKind::ConnectionRefused => 4,
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => 5,
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => 6,
+        io::ErrorKind::UnexpectedEof => 7,
+        io::ErrorKind::NotConnected => 8,
+        _ => 9,
+    }
+}
+
+unsafe fn complete_io_error(task: *mut LoomTask, kind: u32, code: &str, message: &str) -> i32 {
+    if task.is_null() || !unsafe { (*task).io_fallible } {
+        return unsafe { fail_message(task, code, message) };
+    }
+    let mut kind_value = ValueSlot::default();
+    kind_value.words[0] = VALUE_TAG_ENUM;
+    kind_value.words[1] = IO_ERROR_KIND_TYPE;
+    kind_value.words[2] = u64::from(kind);
+    let message = text_value(message.as_bytes());
+    let message_node =
+        retain_result_node(unsafe { &mut *(*task).executor }, message, ptr::null_mut());
+    let kind_node = retain_result_node(unsafe { &mut *(*task).executor }, kind_value, message_node);
+    let mut error = ValueSlot::default();
+    error.words[0] = VALUE_TAG_RECORD;
+    error.words[1] = IO_ERROR_TYPE;
+    error.words[2] = 2;
+    error.words[4] = kind_node as u64;
+    let error_node = retain_result_node(unsafe { &mut *(*task).executor }, error, ptr::null_mut());
+    let mut result = ValueSlot::default();
+    result.words[0] = VALUE_TAG_ENUM;
+    result.words[1] = RESULT_TYPE;
+    result.words[2] = 1;
+    result.words[3] = 1;
+    result.words[4] = error_node as u64;
+    let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
+    *slot = result;
+    TASK_COMPLETED
 }
 
 unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
@@ -1172,6 +1272,7 @@ pub unsafe extern "C" fn task_spawn_descriptor(
         composite_spec: ptr::null_mut(),
         io_operation: None,
         blocking_result: None,
+        io_fallible: false,
         fault_code: "TaskFault".into(),
         fault_message: "task execution failed".into(),
         fault_detail: String::new(),
@@ -1248,9 +1349,44 @@ pub unsafe extern "C" fn task_clone_witness(
 }
 
 unsafe fn spawn_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
+    unsafe { spawn_io_task_with_mode(executor, operation, false) }
+}
+
+unsafe fn spawn_try_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
+    unsafe { spawn_io_task_with_mode(executor, operation, true) }
+}
+
+unsafe fn spawn_io_task_with_mode(
+    executor: *mut LoomExecutor,
+    operation: IoOperation,
+    fallible: bool,
+) -> *mut LoomTask {
     let task = unsafe { task_spawn(executor, Some(resume_io), 1, 0) };
     if !task.is_null() {
-        unsafe { (*task).io_operation = Some(operation) };
+        unsafe {
+            (*task).io_operation = Some(operation);
+            (*task).io_fallible = fallible;
+        }
+    }
+    task
+}
+
+unsafe fn spawn_io_error_task(
+    executor: *mut LoomExecutor,
+    kind: u32,
+    code: &'static str,
+    message: impl Into<String>,
+) -> *mut LoomTask {
+    let task = unsafe { task_spawn(executor, Some(resume_io), 1, 0) };
+    if !task.is_null() {
+        unsafe {
+            (*task).io_fallible = true;
+            (*task).blocking_result = Some(BlockingResult::Fault {
+                code,
+                kind,
+                message: message.into(),
+            });
+        }
     }
     task
 }
@@ -1329,6 +1465,52 @@ pub unsafe extern "C" fn file_create(
     unsafe { spawn_io_task(executor, IoOperation::FileOpen { path, create: true }) }
 }
 
+#[unsafe(export_name = "loom_file_try_open_read")]
+pub unsafe extern "C" fn file_try_open_read(
+    executor: *mut LoomExecutor,
+    path: *const u8,
+    path_length: u64,
+) -> *mut LoomTask {
+    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "FileOpenFault",
+                "file path is not valid UTF-8 Text",
+            )
+        };
+    };
+    unsafe {
+        spawn_try_io_task(
+            executor,
+            IoOperation::FileOpen {
+                path,
+                create: false,
+            },
+        )
+    }
+}
+
+#[unsafe(export_name = "loom_file_try_create")]
+pub unsafe extern "C" fn file_try_create(
+    executor: *mut LoomExecutor,
+    path: *const u8,
+    path_length: u64,
+) -> *mut LoomTask {
+    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "FileCreateFault",
+                "file path is not valid UTF-8 Text",
+            )
+        };
+    };
+    unsafe { spawn_try_io_task(executor, IoOperation::FileOpen { path, create: true }) }
+}
+
 #[unsafe(export_name = "loom_file_read_text")]
 pub unsafe extern "C" fn file_read_text(
     executor: *mut LoomExecutor,
@@ -1338,6 +1520,19 @@ pub unsafe extern "C" fn file_read_text(
         return ptr::null_mut();
     };
     unsafe { spawn_io_task(executor, IoOperation::FileRead { descriptor }) }
+}
+
+#[unsafe(export_name = "loom_file_try_read_text")]
+pub unsafe extern "C" fn file_try_read_text(
+    executor: *mut LoomExecutor,
+    descriptor: i64,
+) -> *mut LoomTask {
+    let Some(descriptor) = checked_fd(descriptor) else {
+        return unsafe {
+            spawn_io_error_task(executor, 8, "FileReadFault", "file resource is closed")
+        };
+    };
+    unsafe { spawn_try_io_task(executor, IoOperation::FileRead { descriptor }) }
 }
 
 #[unsafe(export_name = "loom_file_write_text")]
@@ -1363,6 +1558,39 @@ pub unsafe extern "C" fn file_write_text(
     }
 }
 
+#[unsafe(export_name = "loom_file_try_write_text")]
+pub unsafe extern "C" fn file_try_write_text(
+    executor: *mut LoomExecutor,
+    descriptor: i64,
+    data: *const u8,
+    length: u64,
+) -> *mut LoomTask {
+    let Some(descriptor) = checked_fd(descriptor) else {
+        return unsafe {
+            spawn_io_error_task(executor, 8, "FileWriteFault", "file resource is closed")
+        };
+    };
+    let Some(text) = (unsafe { copy_text(data, length) }) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "FileWriteFault",
+                "file contents are not valid UTF-8 Text",
+            )
+        };
+    };
+    unsafe {
+        spawn_try_io_task(
+            executor,
+            IoOperation::FileWrite {
+                descriptor,
+                bytes: text.into_bytes(),
+            },
+        )
+    }
+}
+
 #[unsafe(export_name = "loom_socket_connect")]
 pub unsafe extern "C" fn socket_connect(
     executor: *mut LoomExecutor,
@@ -1377,6 +1605,36 @@ pub unsafe extern "C" fn socket_connect(
     unsafe { spawn_io_task(executor, IoOperation::SocketConnect { host, port }) }
 }
 
+#[unsafe(export_name = "loom_socket_try_connect")]
+pub unsafe extern "C" fn socket_try_connect(
+    executor: *mut LoomExecutor,
+    host: *const u8,
+    host_length: u64,
+    port: i64,
+) -> *mut LoomTask {
+    let Some(host) = (unsafe { copy_text(host, host_length) }) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "SocketConnectFault",
+                "socket host is not valid UTF-8 Text",
+            )
+        };
+    };
+    let Ok(port) = u16::try_from(port) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "SocketConnectFault",
+                "socket port must be in 0..65535",
+            )
+        };
+    };
+    unsafe { spawn_try_io_task(executor, IoOperation::SocketConnect { host, port }) }
+}
+
 #[unsafe(export_name = "loom_socket_read_text")]
 pub unsafe extern "C" fn socket_read_text(
     executor: *mut LoomExecutor,
@@ -1387,6 +1645,27 @@ pub unsafe extern "C" fn socket_read_text(
     };
     unsafe {
         spawn_io_task(
+            executor,
+            IoOperation::SocketRead {
+                descriptor,
+                bytes: Vec::new(),
+            },
+        )
+    }
+}
+
+#[unsafe(export_name = "loom_socket_try_read_text")]
+pub unsafe extern "C" fn socket_try_read_text(
+    executor: *mut LoomExecutor,
+    descriptor: i64,
+) -> *mut LoomTask {
+    let Some(descriptor) = checked_fd(descriptor) else {
+        return unsafe {
+            spawn_io_error_task(executor, 8, "SocketReadFault", "socket resource is closed")
+        };
+    };
+    unsafe {
+        spawn_try_io_task(
             executor,
             IoOperation::SocketRead {
                 descriptor,
@@ -1410,6 +1689,40 @@ pub unsafe extern "C" fn socket_write_text(
     };
     unsafe {
         spawn_io_task(
+            executor,
+            IoOperation::SocketWrite {
+                descriptor,
+                bytes: text.into_bytes(),
+                offset: 0,
+            },
+        )
+    }
+}
+
+#[unsafe(export_name = "loom_socket_try_write_text")]
+pub unsafe extern "C" fn socket_try_write_text(
+    executor: *mut LoomExecutor,
+    descriptor: i64,
+    data: *const u8,
+    length: u64,
+) -> *mut LoomTask {
+    let Some(descriptor) = checked_fd(descriptor) else {
+        return unsafe {
+            spawn_io_error_task(executor, 8, "SocketWriteFault", "socket resource is closed")
+        };
+    };
+    let Some(text) = (unsafe { copy_text(data, length) }) else {
+        return unsafe {
+            spawn_io_error_task(
+                executor,
+                3,
+                "SocketWriteFault",
+                "socket contents are not valid UTF-8 Text",
+            )
+        };
+    };
+    unsafe {
+        spawn_try_io_task(
             executor,
             IoOperation::SocketWrite {
                 descriptor,

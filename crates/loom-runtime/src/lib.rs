@@ -37,26 +37,31 @@ pub use scheduler::{
     LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,
     LoomTraceVisitor, executor_gc_collections, executor_gc_live_objects, executor_gc_reclaimed,
     executor_gc_relocations, executor_live_tasks, executor_raise_fault, executor_run,
-    executor_tasks_reclaimed, join_add_list, join_add_task, join_create, join_task,
-    task_add_join_child, task_cancel, task_clone_witness, task_from_wait_source, task_is_cancelled,
-    task_join_count, task_join_result, task_join_result_step, task_join_step, task_join_winner,
-    task_prepare_join, task_report_fault, task_result, task_set_fault, task_set_state, task_slot,
-    task_spawn, task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
+    executor_tasks_reclaimed, file_try_create, file_try_open_read, file_try_read_text,
+    file_try_write_text, join_add_list, join_add_task, join_create, join_task, socket_try_connect,
+    socket_try_read_text, socket_try_write_text, task_add_join_child, task_cancel,
+    task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
+    task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
+    task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
+    task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
     task_trace_live_slots, task_write_join_result,
 };
 pub use standard::{
-    bytes_append, bytes_get, bytes_is_utf8, path_contains_nul, path_join, text_contains, text_get,
-    text_length,
+    JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_get,
+    bytes_is_utf8, escape_json_text, format_json, json_format, json_parse, log_write, parse_json,
+    path_contains_nul, path_join, text_contains, text_get, text_length, text_map_get,
+    text_map_insert, text_map_remove,
 };
 
 pub use loom_runtime_abi::{
     COROUTINE_ABI_VERSION, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX,
-    FAULT_SCHEMA_VERSION, READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE, READY_TIMER,
-    READY_WRITABLE, RUNTIME_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
-    TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
-    WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
-    WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
-    WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE,
+    FAULT_SCHEMA_VERSION, NATIVE_RUNTIME_ABI_IDENTITY, READY_CLOSED, READY_COMPLETED, READY_ERROR,
+    READY_READABLE, READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE,
+    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_READABLE, WAIT_SOURCE_COMPLETION,
+    WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR,
+    WAIT_UNSUPPORTED, WAIT_WRITABLE,
 };
 
 pub const WAIT_INFINITE: u64 = u64::MAX;

@@ -16,7 +16,7 @@ pub const CPU_FEATURES: &str = "";
 pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
 pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
-pub const NATIVE_RUNTIME_ABI: &str = "loom-value-v1/wait-v1/task-v1/gc-v1";
+pub const NATIVE_RUNTIME_ABI: &str = loom_runtime_abi::NATIVE_RUNTIME_ABI_IDENTITY;
 
 /// User-selected LLVM optimization policy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
