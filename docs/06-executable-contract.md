@@ -344,11 +344,9 @@ ConformanceSignatureMismatch AssociatedBoundNotSatisfied
 AssociatedProjectionCycle AmbiguousConceptMethod DynNotDeclared
 DynStaticRequirement DynGenericMethod DynSelfLeak
 DynAssociatedTypeUnbound DynAssociatedTypeMismatch
-DynMutReceiverUnavailable IllegalDynConversion ViewEscape
-DynViewInGeneric BorrowConflict ReadonlyBorrowConflict UseAfterViewMove
-DynCarrierRequired AssociatedProjectionAmbiguous
+DynMutReceiverUnavailable IllegalDynConversion
+BorrowConflict ReadonlyBorrowConflict AssociatedProjectionAmbiguous
 UnconstrainedImplParameter ConformanceResolutionCycle
-IllegalDynAbiBoundary DynOwnedCarrierUnavailable
 ```
 
 failure/value code：
@@ -551,7 +549,7 @@ fn explicitly_erased(value dyn Display) Text
 - `mut self` requirement 的 receiver 必须是 `var` place；同步 concrete-to-interface 调用可以用 call-scoped inout 并在正常返回后写回，异步调用则复制拥有值进入 Task；
 - call-scoped 写回/reborrow 载体是 checked-MIR 内部值，不得存储、返回、嵌套或进入异步调用；
 - 编译器可以对具体类型和 witness 静态可知的调用直接派发；否则使用携带已选 proof 的 compiler-private 表示。当前 LLVM C1 可以传递 data/witness pair，但该形状不是源码、artifact 或未来后端合同；
-- 旧 `view[dyn C]`、`view[mut dyn C]` 和显式 view construction 报 `UnsupportedSyntax`；`box[...]`、`shared[...]` 同样不得产生可进入 typed program 的类型；
+- `dyn C` 是唯一的内建接口类型语法；`view`、`box`、`shared` 是普通标识符，未声明时只产生普通 `UnknownName`，编译器没有旧 carrier AST/HIR、迁移诊断或兼容 lowering；
 - 当前没有 universal `any`，也不得从 `any` 运行时搜索 conformance 并转换为 `dyn C`。
 
 这些规则不建立源码级 borrow、lifetime、move token 或 owner freeze。一等接口的物理表示、同步参数的临时写回和地址传递完全属于 compiler-private ABI。
