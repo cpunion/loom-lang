@@ -1156,39 +1156,98 @@ unsafe fn collect_heap(
     unsafe { relocate_marked_heap(heap, tasks, root_top, root_depth) }
 }
 
+struct FromSpace {
+    values: Vec<Box<ValueSlot>>,
+    nodes: Vec<Box<ValueNode>>,
+    sequences: Vec<Box<[u64]>>,
+}
+
+struct HeapRelocation {
+    from_space: FromSpace,
+    values: HashMap<usize, *mut ValueSlot>,
+    nodes: HashMap<usize, *mut ValueNode>,
+    sequences: HashMap<usize, *mut c_void>,
+}
+
+fn evacuate_marked_heap(heap: &mut LoomHeap) -> HeapRelocation {
+    // Keep the complete from-space live until every replacement is allocated
+    // and every reference is rewritten. Besides preventing accidental
+    // use-after-free, this makes the old and new address sets disjoint, so
+    // rewriting aliased/nested root descriptions is naturally idempotent.
+    let from_space = FromSpace {
+        values: std::mem::take(&mut heap.values),
+        nodes: std::mem::take(&mut heap.nodes),
+        sequences: std::mem::take(&mut heap.sequences),
+    };
+
+    let mut values = Vec::with_capacity(from_space.values.len());
+    let mut value_moves = HashMap::with_capacity(from_space.values.len());
+    for value in &from_space.values {
+        let old = (&raw const **value) as usize;
+        let mut replacement = Box::new(**value);
+        let new = &raw mut *replacement;
+        values.push(replacement);
+        value_moves.insert(old, new);
+    }
+    let mut nodes = Vec::with_capacity(from_space.nodes.len());
+    let mut node_moves = HashMap::with_capacity(from_space.nodes.len());
+    for node in &from_space.nodes {
+        let old = (&raw const **node) as usize;
+        let mut replacement = Box::new(ValueNode {
+            value: node.value,
+            next: node.next,
+        });
+        let new = &raw mut *replacement;
+        nodes.push(replacement);
+        node_moves.insert(old, new);
+    }
+    let mut sequences = Vec::with_capacity(from_space.sequences.len());
+    let mut sequence_moves = HashMap::with_capacity(from_space.sequences.len());
+    for sequence in &from_space.sequences {
+        let old = sequence.as_ptr() as usize;
+        let mut replacement = sequence.to_vec().into_boxed_slice();
+        let new = replacement.as_mut_ptr().cast::<c_void>();
+        sequences.push(replacement);
+        sequence_moves.insert(old, new);
+    }
+    heap.values = values;
+    heap.nodes = nodes;
+    heap.sequences = sequences;
+    debug_assert!(
+        value_moves
+            .values()
+            .all(|pointer| !value_moves.contains_key(&(*pointer as usize)))
+    );
+    debug_assert!(
+        node_moves
+            .values()
+            .all(|pointer| !node_moves.contains_key(&(*pointer as usize)))
+    );
+    debug_assert!(
+        sequence_moves
+            .values()
+            .all(|pointer| !sequence_moves.contains_key(&(*pointer as usize)))
+    );
+    HeapRelocation {
+        from_space,
+        values: value_moves,
+        nodes: node_moves,
+        sequences: sequence_moves,
+    }
+}
+
 unsafe fn relocate_marked_heap(
     heap: &mut LoomHeap,
     tasks: &mut [Box<LoomTask>],
     root_top: *mut LoomGcRootFrame,
     root_depth: u64,
 ) -> i32 {
-    let mut value_moves = HashMap::with_capacity(heap.values.len());
-    for value in &mut heap.values {
-        let old = (&raw mut **value) as usize;
-        let mut replacement = Box::new(**value);
-        let new = &raw mut *replacement;
-        *value = replacement;
-        value_moves.insert(old, new);
-    }
-    let mut node_moves = HashMap::with_capacity(heap.nodes.len());
-    for node in &mut heap.nodes {
-        let old = (&raw mut **node) as usize;
-        let mut replacement = Box::new(ValueNode {
-            value: node.value,
-            next: node.next,
-        });
-        let new = &raw mut *replacement;
-        *node = replacement;
-        node_moves.insert(old, new);
-    }
-    let mut sequence_moves = HashMap::with_capacity(heap.sequences.len());
-    for sequence in &mut heap.sequences {
-        let old = sequence.as_ptr() as usize;
-        let mut replacement = sequence.to_vec().into_boxed_slice();
-        let new = replacement.as_mut_ptr().cast::<c_void>();
-        *sequence = replacement;
-        sequence_moves.insert(old, new);
-    }
+    let HeapRelocation {
+        from_space,
+        values: value_moves,
+        nodes: node_moves,
+        sequences: sequence_moves,
+    } = evacuate_marked_heap(heap);
     heap.relocations = heap.relocations.saturating_add(
         (value_moves
             .len()
@@ -1230,6 +1289,7 @@ unsafe fn relocate_marked_heap(
             node.next = *next;
         }
     }
+    drop(from_space);
     let live_bytes = heap
         .values
         .len()
@@ -1256,7 +1316,7 @@ mod tests {
 
     struct TestRootFrame<const ROOTS: usize> {
         roots: Box<[ValueSlot; ROOTS]>,
-        _slots: Box<[*mut c_void; ROOTS]>,
+        slots: Box<[*mut c_void; ROOTS]>,
         _live_bitmaps: Box<[u64]>,
         descriptor: Box<LoomGcRootDescriptor>,
         header: Box<LoomGcRootFrame>,
@@ -1290,7 +1350,7 @@ mod tests {
             });
             Self {
                 roots,
-                _slots: slots,
+                slots,
                 _live_bitmaps: live_bitmaps,
                 descriptor,
                 header,
@@ -1445,6 +1505,88 @@ mod tests {
             assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], frame_live as u64);
 
             assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn relocation_is_idempotent_for_the_same_task_slot_in_nested_root_frames() {
+        let runtime = runtime_create_v1();
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let task = unsafe { task_spawn(executor, Some(completed_task), 1, 0) };
+        assert!(!task.is_null());
+        let task_root = unsafe { task_slot(task, 0).cast::<ValueSlot>() };
+        assert!(!task_root.is_null());
+        let mut outer = TestRootFrame::<1>::all_live();
+        let mut inner = TestRootFrame::<1>::all_live();
+        outer.slots[0] = task_root.cast();
+        outer.header.slots = outer.slots.as_ptr();
+        inner.slots[0] = task_root.cast();
+        inner.header.slots = inner.slots.as_ptr();
+
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(outer.pointer()), GC_OK);
+            assert_eq!(root_push_v1(inner.pointer()), GC_OK);
+
+            let tail = allocate_value_node().cast::<ValueNode>();
+            let head = allocate_value_node().cast::<ValueNode>();
+            let child = allocate_value().cast::<ValueSlot>();
+            assert!(!head.is_null() && !tail.is_null());
+            assert!(!child.is_null());
+            (*child).words[VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
+            (*child).words[VALUE_WORD_SCALAR] = 42;
+            (*tail).value = text_value(b"rooted text").expect("retain test Text");
+            let text_before = (*tail).value.words[VALUE_WORD_DATA];
+            (*tail).next = ptr::null_mut();
+            (*head).value.words[VALUE_WORD_TAG] = VALUE_TAG_REFINED;
+            (*head).value.words[VALUE_WORD_DATA] = child as u64;
+            (*head).next = tail;
+            (*task_root).words[VALUE_WORD_TAG] = VALUE_TAG_RECORD;
+            (*task_root).words[VALUE_WORD_AUX] = 2;
+            (*task_root).words[VALUE_WORD_DATA] = head as u64;
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            let moved_head = (*task_root).words[VALUE_WORD_DATA] as *mut ValueNode;
+            assert!(!moved_head.is_null());
+            assert_ne!(moved_head, head);
+            assert_eq!((*moved_head).value.words[VALUE_WORD_TAG], VALUE_TAG_REFINED,);
+            let moved_child = (*moved_head).value.words[VALUE_WORD_DATA] as *mut ValueSlot;
+            assert!(!moved_child.is_null());
+            assert_ne!(moved_child, child);
+            assert_eq!(
+                (*moved_child).words[VALUE_WORD_TAG],
+                loom_runtime_abi::VALUE_TAG_INT,
+            );
+            assert_eq!((*moved_child).words[VALUE_WORD_SCALAR], 42);
+            let moved_tail = (*moved_head).next;
+            assert!(!moved_tail.is_null());
+            assert_eq!((*moved_tail).value.words[VALUE_WORD_TAG], VALUE_TAG_TEXT,);
+            assert_ne!((*moved_tail).value.words[VALUE_WORD_DATA], text_before);
+            assert_eq!(
+                text::text_value_bytes(&(*moved_tail).value),
+                Some(&b"rooted text"[..]),
+            );
+            assert!((*moved_tail).next.is_null());
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            let twice_moved_head = (*task_root).words[VALUE_WORD_DATA] as *mut ValueNode;
+            assert!(!twice_moved_head.is_null());
+            assert_ne!(twice_moved_head, moved_head);
+            let twice_moved_tail = (*twice_moved_head).next;
+            assert!(!twice_moved_tail.is_null());
+            assert_eq!(
+                text::text_value_bytes(&(*twice_moved_tail).value),
+                Some(&b"rooted text"[..]),
+            );
+
+            assert_eq!(root_pop_v1(inner.pointer()), GC_OK);
+            assert_eq!(root_pop_v1(outer.pointer()), GC_OK);
             assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), GC_OK);
