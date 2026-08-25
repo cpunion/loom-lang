@@ -166,11 +166,21 @@ R native_fn(native arguments...)                       // pure + no fault
 {status, R} native_fn(native arguments..., context)    // may fault/collect
 ```
 
-`R` 可以是 `i1`/`i64`/`double` 或当前 first-class POD aggregate；native arguments 默认是 primitive scalar，首个 mutable POD receiver 可以是 InOut pointer。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic 或其他不能证明安全的 body 保留 status，并把 fault/collect 路由到调用方 context。primitive scalar 的 universal wrapper 负责入口拆箱、调用私有 body 和结果装箱；POD 则保留一份完整 universal fallback body，因为普通 aggregate 边界仍需要独立 managed result 和 moving-GC root。普通 POD 参数、readonly receiver 与合同/invariant callable 尚未套用 typed ABI；其中合同路径应采用一次 checked entry 后进入 assumed private body，而不是在热 body 重复 universal 检查。
+`R` 可以是 `i1`/`i64`/`double` 或当前 first-class POD aggregate；native arguments 默认是 primitive scalar，首个 mutable POD receiver 可以是 InOut pointer。`RuntimeRequirements` 证明为 pure/no-fault 的 native body 及其所选 call edge 没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic 或其他不能证明安全的 body 保留 status，并把 fault/collect 路由到调用方 context。primitive scalar 的 universal wrapper 负责入口拆箱、调用私有 body 和结果装箱；POD 则保留一份完整 universal fallback body，因为普通 aggregate 边界仍需要独立 managed result 和 moving-GC root。普通 POD 参数、readonly receiver 与合同/invariant callable 尚未套用 typed ABI；其中合同路径应采用一次 checked entry 后进入 assumed private body，而不是在热 body 重复 universal 检查。
+
+其中递归 checked-`Int` 还可有第三种 compiler-private 形状：
+
+```text
+i64 assumed_fn(i64 argument)
+```
+
+这是通用的 MIR 结构分析，不依赖函数名，但当前仅接受纯、同步、非泛型、无 receiver/合同/witness 的单个 immutable `Int -> Int` 函数，局部只能是 immutable `Unit`/`Bool`/`Int`，调用边只能是 direct self recursion。编译器对稠密输入 `0..=128` 依次做有界精确求值；每条递归边必须严格降低到已完成输入，每个语法上的整数运算和递归 site 也必须在成功域中被执行覆盖。精确求值在第一个不可证明输入处停止；若覆盖不完整、安全域过小，或遇到别名、mutation、间接调用、suspension、cleanup、非标量值或非递减递归，整个 assumed variant fail closed。这不是一般递归证明，也不向源码暴露 effect、assume 或 unchecked 语义。
+
+对当前 Fibonacci，精确安全域是 `0..92`：`fibonacci(92)` 仍在 signed 64-bit 内，`fibonacci(93)` 的加法会溢出。checked entry 用 unsigned `argument <= 92` guard，所以所有负数都落入原 checked slow path；域内 fast edge 调用纯 `i64` assumed body，后者的严格递减 self call 继续调用 assumed body，不携带 context/status，也不生成 overflow helper。外部 direct call site 只有在其完整推导 range 被该域包含时才跳过 checked entry；任一不完整或跨域 range 都保留 checked call，因此 `fibonacci(93)` 和其他域外输入仍产生标准 `IntegerOverflow`。若其他函数形状满足 LLVM tail-call 条件，release pipeline 仍可继续做尾调用/尾递归优化；该证明本身不承诺此优化，Fibonacci 也不是尾递归。
 
 ### Runtime requirements 与 root context
 
-LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 compiler-private requirement 图。三个独立 bit 是 `FAULT`（实现名 `MAY_FAULT`）、`COLLECT`（`MAY_COLLECT`）和 `EXECUTOR`（`NEEDS_EXECUTOR`）；它们描述当前 lowering 所需设施，不是源码 effect system，也不进入 concept 或公共函数类型。`COLLECT` 只表示可能进入 moving-GC collection boundary；普通 native allocation、只读 runtime 调用和私有 POD/List storage 不会误设该 bit。scanner 记录 local operation、builtin、direct/static/dynamic witness call edge，再以固定点传播 callee 的对应 invocation/native summary。每个 callable 分开保存 invocation、universal body 和 native body summary：POD private result 可以不含 materialization 的 `COLLECT`，同一源码的 universal fallback 仍保留 build/root requirement。async invocation 是建立 Task 的需求，deferred resume body 另行统计，避免把 resume 工作错误地当作同步构造器执行。
+LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 compiler-private requirement 图。三个独立 bit 是 `FAULT`（实现名 `MAY_FAULT`）、`COLLECT`（`MAY_COLLECT`）和 `EXECUTOR`（`NEEDS_EXECUTOR`）；它们描述当前 lowering 所需设施，不是源码 effect system，也不进入 concept 或公共函数类型。`COLLECT` 只表示可能进入 moving-GC collection boundary；普通 native allocation、只读 runtime 调用和私有 POD/List storage 不会误设该 bit。scanner 记录 local operation、builtin、direct/static/dynamic witness call edge，再以固定点传播 callee 的对应 universal/native/assumed summary。每个 callable 分开保存 invocation、universal body、native checked body 和可选 assumed body summary：POD private result 可以不含 materialization 的 `COLLECT`，同一源码的 universal fallback 仍保留 build/root requirement；assumed edge 只能指向有限精确证明已成立的 assumed body，且该 summary 必须是 pure/no-fault，否则 codegen fail closed。async invocation 是建立 Task 的需求，deferred resume body 另行统计，避免把 resume 工作错误地当作同步构造器执行。
 
 root context 由 invocation summary 与实际 ABI 共同决定：
 
