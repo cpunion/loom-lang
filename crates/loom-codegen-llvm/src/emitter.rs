@@ -3636,7 +3636,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_conditional_branch(ok, success, failure)
                     .map_err(builder_error)?;
                 self.builder.position_at_end(success);
-                self.destroy_root_executor(executor, needs_executor)?;
                 let print = self
                     .module
                     .get_function("loom.runtime.print")
@@ -3644,6 +3643,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.builder
                     .build_call(print, &[result.into()], "print.result")
                     .map_err(builder_error)?;
+                // The root result can contain pointers into the moving heap
+                // owned by this execution context. Consume it before tearing
+                // that context down; destroying first would leave print with
+                // dangling aggregate/Text/container payloads.
+                self.destroy_root_executor(executor, needs_executor)?;
                 self.builder
                     .build_return(Some(&self.context.i32_type().const_zero()))
                     .map_err(builder_error)?;
@@ -3677,7 +3681,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     {
                         status = self.drive_async_root(status, result, executor)?;
                     }
-                    self.destroy_root_executor(executor, needs_executor)?;
                     let status_ok = self
                         .builder
                         .build_int_compare(
@@ -3692,6 +3695,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         .builder
                         .build_and(status_ok, value_ok, "test.passed")
                         .map_err(builder_error)?;
+                    // `test_value_passed` may inspect a heap-backed root
+                    // result. Finish that inspection before releasing the
+                    // per-test execution context.
+                    self.destroy_root_executor(executor, needs_executor)?;
                     let pass = self.context.append_basic_block(main, "test.pass");
                     let fail = self.context.append_basic_block(main, "test.fail");
                     let next = self.context.append_basic_block(main, "test.next");

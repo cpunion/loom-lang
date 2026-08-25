@@ -29,6 +29,86 @@ fn emits_links_and_runs_a_native_unit_entry() {
 }
 
 #[test]
+fn root_result_is_consumed_before_its_runtime_is_destroyed() {
+    let source = r"module root_result_lifetime
+
+pub fn main() Unit {
+    var values = List[Int]()
+    values.add(1)
+    Unit
+}
+
+test fn list_result_lifetime() {
+    var values = List[Int]()
+    values.add(2)
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create root lifetime project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write root lifetime source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load root lifetime project")
+        .snapshot()
+        .expect("analyze root lifetime project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower root lifetime MIR"),
+        &executable,
+        &options,
+    )
+    .expect("emit root lifetime executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read root lifetime LLVM IR");
+    let print = llvm
+        .find("call void @loom.runtime.print")
+        .expect("root must consume its result");
+    let destroy = llvm
+        .find("call void @loom_executor_destroy")
+        .expect("allocating root must release its runtime");
+    assert!(
+        print < destroy,
+        "root runtime was destroyed before result use:\n{llvm}"
+    );
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run root lifetime executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+
+    let tests = project.path().join("tests");
+    let tests_ir = project.path().join("tests.ll");
+    let mut options = EmitOptions::tests();
+    options.emit_ir = Some(tests_ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower root lifetime test MIR"),
+        &tests,
+        &options,
+    )
+    .expect("emit root lifetime tests");
+    let llvm = std::fs::read_to_string(tests_ir).expect("read test root lifetime LLVM IR");
+    let inspect = llvm
+        .find("test.tag")
+        .expect("test harness must inspect its root result");
+    let destroy = llvm
+        .find("call void @loom_executor_destroy")
+        .expect("allocating test root must release its runtime");
+    assert!(
+        inspect < destroy,
+        "test runtime was destroyed before result inspection:\n{llvm}"
+    );
+    let output = Command::new(tests)
+        .output()
+        .expect("run root lifetime tests");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
 fn release_and_cross_target_object_policies_are_real_target_inputs() {
     let development =
         target_identity(None, OptimizationProfile::Development).expect("development target");
