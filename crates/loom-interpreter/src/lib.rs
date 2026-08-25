@@ -6098,11 +6098,39 @@ mod socket_readiness_tests {
         }
         assert!(interpreter.socket_io.is_empty());
         for task in reads {
+            interpreter.remove_ready_task(task);
             assert!(matches!(
                 interpreter.resume_task(task).expect("finish cancellation"),
                 TaskPoll::Failed
             ));
         }
+
+        let timer = Expr {
+            kind: ExprKind::Sleep {
+                milliseconds: Box::new(Expr {
+                    kind: ExprKind::Constant(Constant::Int(1_000)),
+                    ty: loom_mir::Type::Int,
+                    span: Span::default(),
+                }),
+            },
+            ty: loom_mir::Type::Task(Box::new(loom_mir::Type::Unit)),
+            span: Span::default(),
+        };
+        let Ok(Value::Task { id: timer_task }) = interpreter.eval_expr(0, &timer) else {
+            panic!("sleep must produce a task");
+        };
+        assert_eq!(interpreter.ready.pop_front(), Some(timer_task));
+        interpreter
+            .tasks
+            .get_mut(&timer_task)
+            .expect("timer task exists")
+            .queued = false;
+        assert!(matches!(
+            interpreter
+                .resume_task(timer_task)
+                .expect("arm regression timeout"),
+            TaskPoll::Pending
+        ));
 
         let span = Span::default();
         let Value::Task { id: file_task } = interpreter
@@ -6119,14 +6147,7 @@ mod socket_readiness_tests {
         else {
             panic!("file read must produce a task");
         };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while matches!(
-            interpreter.tasks.get(&file_task).map(|task| &task.status),
-            Some(TaskStatus::Waiting)
-        ) && Instant::now() < deadline
-        {
-            assert!(interpreter.wait_for_work());
-        }
+        assert!(interpreter.wait_for_work());
         assert!(matches!(
             interpreter.tasks.get(&file_task).map(|task| &task.status),
             Some(TaskStatus::Completed(Value::Int { value: 0 }))
