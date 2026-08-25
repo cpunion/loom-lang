@@ -26,6 +26,8 @@ source files
 
 `checked MIR` 是唯一可信后端输入。后端不得重新猜名字、conformance、associated type、合同顺序或 mutability；MIR validator 失败属于 compiler defect，不能降级执行。
 
+validator 还在 artifact/cache 边界复核可由 MIR 类型形状证明的 obligation：`Evaluate` 不得丢弃直接或递归携带 `Task`、预置 `File`/`Socket` 或未解析泛型义务的值，`MakeView` 也不得把这些义务擦除进 `dyn`。用户定义的 `MustScope` 仍由 sema 保证，因为当前 MIR 没有可独立恢复的 canonical `MustScope` concept identity；在该 identity 进入 MIR 前，validator 不得靠 concept 名字猜测。
+
 当前 crate 边界：
 
 | crate | 职责 |
