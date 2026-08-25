@@ -52,7 +52,9 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
-use crate::native_layout::{NativeLayout, NativeScalar, NativeSignatureShape};
+use crate::native_layout::{
+    NativeEffectAbi, NativeLayout, NativeScalar, NativeSignature, NativeSignatureShape,
+};
 use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
 use crate::requirements::RuntimeRequirementGraph;
 use crate::target::create_target_machine;
@@ -526,12 +528,6 @@ pub(crate) fn native_linker_program() -> std::ffi::OsString {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScalarIntAbi {
-    PureNoFault,
-    Fallible,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RootContextPlan {
     None,
     Runtime,
@@ -584,7 +580,7 @@ struct Backend<'ctx, 'program> {
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     scalar_int_functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
-    scalar_int_abis: BTreeMap<FunctionId, ScalarIntAbi>,
+    native_signatures: BTreeMap<FunctionId, NativeSignature>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
@@ -883,7 +879,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             task_resume_type,
             functions: BTreeMap::new(),
             scalar_int_functions: BTreeMap::new(),
-            scalar_int_abis: BTreeMap::new(),
+            native_signatures: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -941,28 +937,32 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 source.span.range.start,
             )?;
             self.functions.insert(*id, function);
-            if let Some(signature) = NativeSignatureShape::for_supported_function(source) {
+            if let Some(shape) = NativeSignatureShape::for_supported_function(source) {
                 let requirements = self.requirements.function(*id)?.body;
-                let abi = if requirements.is_pure_no_fault() {
-                    ScalarIntAbi::PureNoFault
+                let effect = if requirements.is_pure_no_fault() {
+                    NativeEffectAbi::PureNoFault
                 } else {
-                    ScalarIntAbi::Fallible
+                    NativeEffectAbi::RuntimeStatus
                 };
-                let extra_parameters = usize::from(abi == ScalarIntAbi::Fallible);
+                let signature = shape.with_effect(effect);
+                let extra_parameters =
+                    usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus);
                 let mut parameters = Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(
-                    signature.parameters().len() + extra_parameters,
+                    signature.shape().parameters().len() + extra_parameters,
                 );
-                parameters.extend(signature.parameters().iter().map(|layout| match layout {
-                    NativeLayout::Scalar(NativeScalar::Int) => {
-                        BasicMetadataTypeEnum::from(self.i64_type)
-                    }
-                }));
-                let result_type = match signature.result() {
+                parameters.extend(signature.shape().parameters().iter().map(
+                    |layout| match layout {
+                        NativeLayout::Scalar(NativeScalar::Int) => {
+                            BasicMetadataTypeEnum::from(self.i64_type)
+                        }
+                    },
+                ));
+                let result_type = match signature.shape().result() {
                     NativeLayout::Scalar(NativeScalar::Int) => self.i64_type,
                 };
-                let scalar_type = match abi {
-                    ScalarIntAbi::PureNoFault => result_type.fn_type(&parameters, false),
-                    ScalarIntAbi::Fallible => {
+                let scalar_type = match signature.effect() {
+                    NativeEffectAbi::PureNoFault => result_type.fn_type(&parameters, false),
+                    NativeEffectAbi::RuntimeStatus => {
                         parameters.push(self.ptr_type.into());
                         self.scalar_int_result_type.fn_type(&parameters, false)
                     }
@@ -979,7 +979,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     source.span.range.start,
                 )?;
                 self.scalar_int_functions.insert(*id, scalar);
-                self.scalar_int_abis.insert(*id, abi);
+                self.native_signatures.insert(*id, signature);
             }
             if source.is_async {
                 let resume = self.module.add_function(
@@ -3336,9 +3336,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_store(output, self.value_type.const_zero())
             .map_err(builder_error)?;
 
-        let abi = self.scalar_int_abis[&id];
+        let signature = &self.native_signatures[&id];
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
-            source.params.len() + usize::from(abi == ScalarIntAbi::Fallible),
+            source.params.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
         for _ in &source.params {
             let argument = self.load_pointer_field(
@@ -3363,7 +3363,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "argument.next",
             )?;
         }
-        let scalar = if abi == ScalarIntAbi::PureNoFault {
+        let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
             call_int(
                 &self.builder,
                 self.scalar_int_functions[&id],
@@ -3584,7 +3584,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         // Universal Value bodies may hide representation allocations even
         // when their source operations look pure, so they retain a standalone
         // runtime until their typed layout exists.
-        if self.scalar_int_abis.get(&root) == Some(&ScalarIntAbi::PureNoFault)
+        if self
+            .native_signatures
+            .get(&root)
+            .is_some_and(|signature| signature.effect() == NativeEffectAbi::PureNoFault)
             && requirements.is_pure_no_fault()
         {
             return Ok(RootContextPlan::None);
@@ -4400,7 +4403,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     source: &'program Function,
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
-    scalar_int_abi: Option<ScalarIntAbi>,
+    native_signature: Option<&'backend NativeSignature>,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     runtime_context: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
@@ -4523,7 +4526,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_int_abi: None,
+            native_signature: None,
             witness_parameters,
             runtime_context,
             task: None,
@@ -4561,8 +4564,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ));
         }
         let function = backend.scalar_int_functions[&id];
-        let abi = backend.scalar_int_abis[&id];
-        let runtime_context = if abi == ScalarIntAbi::Fallible {
+        let signature = &backend.native_signatures[&id];
+        let runtime_context = if signature.effect() == NativeEffectAbi::RuntimeStatus {
             let context_index = u32::try_from(source.params.len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
             parameter_pointer(function, context_index)?
@@ -4657,7 +4660,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_int_abi: Some(abi),
+            native_signature: Some(signature),
             witness_parameters: BTreeMap::new(),
             runtime_context,
             task: None,
@@ -4896,7 +4899,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_int_abi: None,
+            native_signature: None,
             witness_parameters,
             runtime_context: executor,
             task: Some(task),
@@ -4926,7 +4929,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_exit_contracts()?;
         if !self.current_block_terminated() {
             let scalar = self
-                .scalar_int_abi
+                .native_signature
                 .is_some()
                 .then(|| {
                     self.backend.load_i64_field(
@@ -4961,8 +4964,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 )
                 .map_err(builder_error)?;
         }
-        match self.scalar_int_abi {
-            Some(ScalarIntAbi::PureNoFault) => {
+        match self.native_signature.map(NativeSignature::effect) {
+            Some(NativeEffectAbi::PureNoFault) => {
                 self.backend
                     .builder
                     .build_return(Some(&scalar.ok_or_else(|| {
@@ -4973,7 +4976,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     })?))
                     .map_err(builder_error)?;
             }
-            Some(ScalarIntAbi::Fallible) => {
+            Some(NativeEffectAbi::RuntimeStatus) => {
                 let aggregate = self.backend.scalar_int_result_type.get_undef();
                 let aggregate = self
                     .backend
@@ -8495,9 +8498,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
-        let abi = self.backend.scalar_int_abis[&function];
+        let signature = &self.backend.native_signatures[&function];
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
-            values.len() + usize::from(abi == ScalarIntAbi::Fallible),
+            values.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
         for value in values {
             call_arguments.push(
@@ -8511,7 +8514,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .into(),
             );
         }
-        let scalar = if abi == ScalarIntAbi::PureNoFault {
+        let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
             call_int(
                 &self.backend.builder,
                 self.backend.scalar_int_functions[&function],

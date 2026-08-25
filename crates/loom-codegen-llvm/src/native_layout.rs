@@ -27,6 +27,20 @@ pub(crate) struct NativeSignatureShape {
     result: NativeLayout,
 }
 
+/// Runtime/status convention paired with one compiler-private native signature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeEffectAbi {
+    PureNoFault,
+    RuntimeStatus,
+}
+
+/// A production-supported native shape with its closed-world runtime effect ABI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeSignature {
+    shape: NativeSignatureShape,
+    effect: NativeEffectAbi,
+}
+
 impl NativeSignatureShape {
     /// Selects only functions which the production LLVM emitter fully lowers through a private
     /// native ABI. This deliberately preserves the current monomorphic scalar-`Int` slice.
@@ -61,6 +75,26 @@ impl NativeSignatureShape {
     pub(crate) const fn result(&self) -> NativeLayout {
         self.result
     }
+
+    #[must_use]
+    pub(crate) fn with_effect(self, effect: NativeEffectAbi) -> NativeSignature {
+        NativeSignature {
+            shape: self,
+            effect,
+        }
+    }
+}
+
+impl NativeSignature {
+    #[must_use]
+    pub(crate) const fn shape(&self) -> &NativeSignatureShape {
+        &self.shape
+    }
+
+    #[must_use]
+    pub(crate) const fn effect(&self) -> NativeEffectAbi {
+        self.effect
+    }
 }
 
 #[cfg(test)]
@@ -73,7 +107,7 @@ mod tests {
         WitnessParam,
     };
 
-    use super::{NativeLayout, NativeScalar, NativeSignatureShape};
+    use super::{NativeEffectAbi, NativeLayout, NativeScalar, NativeSignatureShape};
 
     fn scalar_int_function() -> Function {
         Function {
@@ -110,6 +144,14 @@ mod tests {
         let int = NativeLayout::Scalar(NativeScalar::Int);
         assert_eq!(shape.parameters(), &[int]);
         assert_eq!(shape.result(), int);
+
+        let signature = shape.clone().with_effect(NativeEffectAbi::PureNoFault);
+        assert_eq!(signature.shape(), &shape);
+        assert_eq!(signature.effect(), NativeEffectAbi::PureNoFault);
+        assert_eq!(
+            shape.with_effect(NativeEffectAbi::RuntimeStatus).effect(),
+            NativeEffectAbi::RuntimeStatus
+        );
     }
 
     #[test]
