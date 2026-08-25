@@ -269,26 +269,12 @@ pub enum TypeRef {
         associated: Name,
     },
     Dyn(ConceptRef),
-    View {
-        mutable: bool,
-        target: TypeRefId,
-    },
-    UnavailableCarrier {
-        kind: CarrierKind,
-        target: ConceptRef,
-    },
 }
 
 #[derive(Clone, Debug)]
 pub enum TypeArgumentRef {
     Type(TypeRefId),
     Binding(AssociatedBindingRef),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CarrierKind {
-    Box,
-    Shared,
 }
 
 #[derive(Clone, Debug)]
@@ -436,11 +422,6 @@ pub enum Expr {
     RecordLiteral {
         ty: Path,
         fields: Vec<RecordFieldValue>,
-    },
-    View {
-        mutable: bool,
-        concept: ConceptRef,
-        source: ExprId,
     },
     Await(ExprId),
     /// Compiler-known timer task constructor: `Task.sleep(milliseconds)`.

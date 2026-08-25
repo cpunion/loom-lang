@@ -361,11 +361,7 @@ impl AnalysisSnapshot {
                     .source_map
                     .type_ref(reference)
                     .and_then(|span| self.ident_span(span, associated.as_str(), true)),
-                TypeRef::Error
-                | TypeRef::Tuple(_)
-                | TypeRef::SelfType
-                | TypeRef::View { .. }
-                | TypeRef::UnavailableCarrier { .. } => None,
+                TypeRef::Error | TypeRef::Tuple(_) | TypeRef::SelfType => None,
             };
             if let Some(span) = span {
                 occurrences.push(Occurrence {
@@ -475,13 +471,6 @@ impl AnalysisSnapshot {
                                     });
                                 }
                             }
-                        }
-                    }
-                    Expr::View { concept, .. } => {
-                        if let Some(target) =
-                            self.resolve_unique(module, &concept.path, Namespace::Concept)
-                        {
-                            push_path(occurrences, target, &concept.path);
                         }
                     }
                     Expr::QualifiedMethodCall {

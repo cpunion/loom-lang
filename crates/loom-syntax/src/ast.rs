@@ -285,24 +285,9 @@ pub enum TypeExprKind {
         concept: ConceptRef,
         associated: Ident,
     },
-    View {
-        mutable: bool,
-        target: ConceptRef,
-    },
-    /// Parsed so the semantic phase can issue the stable carrier diagnostic.
+    /// A dynamically dispatched concept value type written as `dyn C`.
     BareDyn(ConceptRef),
-    /// Reserved syntax whose ownership semantics are intentionally unavailable.
-    UnavailableCarrier {
-        kind: CarrierKind,
-        target: ConceptRef,
-    },
     Error,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum CarrierKind {
-    Box,
-    Shared,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -352,12 +337,6 @@ pub enum ExprKind {
         callee: Box<Expr>,
         type_arguments: Vec<TypeExpr>,
         arguments: Vec<Expr>,
-    },
-    /// An explicit lexical borrow and dynamic projection.
-    ViewConstruction {
-        mutable: bool,
-        target: ConceptRef,
-        source: Box<Expr>,
     },
     Await(Box<Expr>),
     /// Propagates the `Err` branch of a `Result` from the current callable.

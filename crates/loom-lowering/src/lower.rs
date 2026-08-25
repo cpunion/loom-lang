@@ -1564,7 +1564,6 @@ impl ContractLowerer<'_, '_> {
             | loom_hir::Expr::QualifiedMethodCall { .. }
             | loom_hir::Expr::Assign { .. }
             | loom_hir::Expr::RecordLiteral { .. }
-            | loom_hir::Expr::View { .. }
             | loom_hir::Expr::Await(_)
             | loom_hir::Expr::Sleep(_)
             | loom_hir::Expr::WaitFd { .. }
@@ -2538,29 +2537,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             }
             loom_hir::Expr::RecordLiteral { fields, .. } => {
                 return self.lower_record_literal(id, &fields);
-            }
-            loom_hir::Expr::View { source, .. } => {
-                let view = required(
-                    self.semantics.views.get(id),
-                    "checked erased interface has no semantic interface resolution",
-                    span,
-                )?;
-                let ViewSource::Concrete { witness, writeback } = &view.source else {
-                    return Err(defect(
-                        "explicit interface adaptation reborrowed a view",
-                        span,
-                    ));
-                };
-                ExprKind::MakeView {
-                    value: Box::new(self.lower_expr(source)?),
-                    writeback: writeback
-                        .as_ref()
-                        .map(|owner| self.lower_place(owner, span))
-                        .transpose()?,
-                    witness: self.lower_witness_selection(witness, span)?,
-                    mutable: view.mutable,
-                    token: view.token.0,
-                }
             }
             loom_hir::Expr::Await(value) => {
                 let state = self.next_suspend_state;

@@ -80,10 +80,6 @@ pub enum TokenKind {
     AsKw,
     ForKw,
     InKw,
-    ViewKw,
-    BoxKw,
-    SharedKw,
-
     LParen,
     RParen,
     LBracket,
@@ -168,9 +164,6 @@ impl TokenKind {
                 | Self::AsKw
                 | Self::ForKw
                 | Self::InKw
-                | Self::ViewKw
-                | Self::BoxKw
-                | Self::SharedKw
         )
     }
 
@@ -724,9 +717,6 @@ fn keyword(text: &str) -> TokenKind {
         "as" => TokenKind::AsKw,
         "for" => TokenKind::ForKw,
         "in" => TokenKind::InKw,
-        "view" => TokenKind::ViewKw,
-        "box" => TokenKind::BoxKw,
-        "shared" => TokenKind::SharedKw,
         _ => TokenKind::Ident,
     }
 }
@@ -777,6 +767,19 @@ mod tests {
             vec![TokenKind::DiscardKw, TokenKind::Ident, TokenKind::Eof]
         );
         assert!(TokenKind::DiscardKw.is_keyword());
+    }
+
+    #[test]
+    fn removed_carrier_words_are_plain_identifiers() {
+        assert_eq!(
+            kinds("view box shared"),
+            vec![
+                TokenKind::Ident,
+                TokenKind::Ident,
+                TokenKind::Ident,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]

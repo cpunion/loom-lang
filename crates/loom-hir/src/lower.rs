@@ -7,11 +7,11 @@ use loom_syntax::ast as syntax;
 
 use crate::{
     AssociatedBindingRef, AssociatedTypeDef, BodyBuilder, BodyId, BodyKind, CallableSignature,
-    CarrierKind, ConceptDef, ConceptRef, ConformanceDef, Contracts, DefId, DefinitionKind, EnumDef,
-    Expr, ExprId, FieldDef, FunctionDef, GenericParam, GenericParamId, ImplDef, Import, Literal,
-    Local, MatchArm, MethodDef, ModuleId, Param, Path, PathSegment, Pattern, ReceiverKind,
-    RecordDef, RecordFieldValue, RefinedTypeDef, Statement, TypeArgumentRef, TypeRef, TypeRefId,
-    UnaryOp, VariantDef, Visibility,
+    ConceptDef, ConceptRef, ConformanceDef, Contracts, DefId, DefinitionKind, EnumDef, Expr,
+    ExprId, FieldDef, FunctionDef, GenericParam, GenericParamId, ImplDef, Import, Literal, Local,
+    MatchArm, MethodDef, ModuleId, Param, Path, PathSegment, Pattern, ReceiverKind, RecordDef,
+    RecordFieldValue, RefinedTypeDef, Statement, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
+    VariantDef, Visibility,
 };
 
 /// One parsed file supplied to HIR lowering.
@@ -768,15 +768,6 @@ impl<'a> BodyLower<'a> {
                 type_arguments,
                 arguments,
             } => self.lower_call(callee, type_arguments, arguments),
-            syntax::ExprKind::ViewConstruction {
-                mutable,
-                target,
-                source,
-            } => Expr::View {
-                mutable: *mutable,
-                concept: self.lower_concept_ref(target),
-                source: self.lower_expr(source),
-            },
             syntax::ExprKind::Await(value) => Expr::Await(self.lower_expr(value)),
             syntax::ExprKind::Propagate(value) => Expr::Propagate(self.lower_expr(value)),
             syntax::ExprKind::RecordLiteral {
@@ -1032,25 +1023,9 @@ fn lower_type_into(
             concept: Some(lower_path(file, &concept.path)),
             associated: Name::new(associated.text.clone()),
         },
-        syntax::TypeExprKind::View { mutable, target } => {
-            let target_span = span(file, target.range);
-            let target = lower_concept_ref_into(program, file, target);
-            let target = program.alloc_type_ref(TypeRef::Dyn(target), target_span);
-            TypeRef::View {
-                mutable: *mutable,
-                target,
-            }
-        }
         syntax::TypeExprKind::BareDyn(target) => {
             TypeRef::Dyn(lower_concept_ref_into(program, file, target))
         }
-        syntax::TypeExprKind::UnavailableCarrier { kind, target } => TypeRef::UnavailableCarrier {
-            kind: match kind {
-                syntax::CarrierKind::Box => CarrierKind::Box,
-                syntax::CarrierKind::Shared => CarrierKind::Shared,
-            },
-            target: lower_concept_ref_into(program, file, target),
-        },
         syntax::TypeExprKind::Error => TypeRef::Error,
     };
     program.alloc_type_ref(lowered, span(file, source.range))

@@ -213,10 +213,9 @@ fn use(
 }
 
 #[test]
-fn legacy_view_surface_is_rejected_but_lossless() {
-    let source = "module legacy\nfn use(value view[dyn C]) Unit { Unit }\n";
-    let parsed = parse(source);
-    assert!(codes(&parsed).contains(&"UnexpectedToken"));
+fn removed_carrier_words_parse_as_plain_identifiers_and_remain_lossless() {
+    let source = "module legacy\nfn use(value view[dyn C]) Unit { discard box(value)\n discard shared(value)\n Unit }\n";
+    let parsed = assert_clean(source);
     assert_eq!(parsed.reconstructed(), source);
 }
 

@@ -5,13 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     Assignment, AssociatedBinding, AssociatedTypeBinding, AssociatedTypeRequirement, BinaryOp,
-    Block, BlockItem, CallableSignature, CarrierKind, ConceptDecl, ConceptMember, ConceptRef,
-    ConformanceMember, ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch,
-    EnumDecl, EnumVariant, ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident,
-    ImplDecl, ImplKind, ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement,
-    ModuleDecl, Parameter, Path, Pattern, PatternKind, Receiver, RecordDecl, RecordField,
-    RecordLiteralField, ReturnExpr, SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp,
-    Visibility,
+    Block, BlockItem, CallableSignature, ConceptDecl, ConceptMember, ConceptRef, ConformanceMember,
+    ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch, EnumDecl, EnumVariant,
+    ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident, ImplDecl, ImplKind,
+    ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement, ModuleDecl,
+    Parameter, Path, Pattern, PatternKind, Receiver, RecordDecl, RecordField, RecordLiteralField,
+    ReturnExpr, SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp, Visibility,
 };
 use crate::lexer::{Lexed, Token, TokenKind, lex};
 
@@ -990,31 +989,6 @@ impl<'a> Parser<'a> {
                     range: self.finish(start),
                 }
             }
-            TokenKind::BoxKw | TokenKind::SharedKw => {
-                let kind = if self.kind() == TokenKind::BoxKw {
-                    CarrierKind::Box
-                } else {
-                    CarrierKind::Shared
-                };
-                let Some(child_nesting) = self.enter_nesting(nesting, "owning dyn carrier") else {
-                    return self.error_type_from(start);
-                };
-                let carrier_range = self.current_range();
-                self.bump();
-                self.expect(TokenKind::LBracket, "`[` after owning carrier");
-                self.expect(TokenKind::DynKw, "`dyn` inside owning carrier");
-                let target = self.parse_concept_ref_at(child_nesting);
-                self.expect(TokenKind::RBracket, "`]` after owning carrier target");
-                self.error_at(
-                    "DynOwnedCarrierUnavailable",
-                    "`box[...]` and `shared[...]` are not part of the current interface syntax",
-                    carrier_range,
-                );
-                TypeExpr {
-                    kind: TypeExprKind::UnavailableCarrier { kind, target },
-                    range: self.finish(start),
-                }
-            }
             TokenKind::Lt => self.parse_qualified_projection_at(nesting),
             TokenKind::Ident => {
                 let path = self.parse_path();
@@ -1481,25 +1455,6 @@ impl<'a> Parser<'a> {
             TokenKind::IfKw => self.parse_if_at(nesting),
             TokenKind::MatchKw => self.parse_match_at(nesting),
             TokenKind::Lt => self.parse_qualified_member_at(nesting),
-            TokenKind::BoxKw | TokenKind::SharedKw => {
-                let token = self.bump();
-                self.error_at(
-                    "DynOwnedCarrierUnavailable",
-                    "owning dyn carrier construction is reserved but not accepted",
-                    token.range,
-                );
-                let ident = Ident {
-                    text: token.text,
-                    range: token.range,
-                };
-                Expr {
-                    kind: ExprKind::Name(Path {
-                        segments: vec![ident],
-                        range: token.range,
-                    }),
-                    range: token.range,
-                }
-            }
             _ => {
                 self.error_here("UnexpectedToken", "expected an expression");
                 if !self.at_expr_boundary() {
@@ -2316,13 +2271,7 @@ impl<'a> Parser<'a> {
     fn starts_type(&self) -> bool {
         matches!(
             self.kind(),
-            TokenKind::Ident
-                | TokenKind::LParen
-                | TokenKind::Lt
-                | TokenKind::ViewKw
-                | TokenKind::DynKw
-                | TokenKind::BoxKw
-                | TokenKind::SharedKw
+            TokenKind::Ident | TokenKind::LParen | TokenKind::Lt | TokenKind::DynKw
         )
     }
 

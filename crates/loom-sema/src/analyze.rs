@@ -527,22 +527,6 @@ impl Analyzer<'_> {
                 Some(target) => self.dynamic_view_type(target),
                 None => self.typed.types.error(),
             },
-            TypeRef::View { .. } => {
-                self.error(
-                    "UnsupportedSyntax",
-                    "`view[...]` has been replaced by the single `dyn C` type",
-                    self.type_span(reference),
-                );
-                self.typed.types.error()
-            }
-            TypeRef::UnavailableCarrier { .. } => {
-                self.error(
-                    "UnsupportedSyntax",
-                    "dynamic concepts use the single `dyn C` type",
-                    self.type_span(reference),
-                );
-                self.typed.types.error()
-            }
         };
         self.record_type(reference, ty)
     }
@@ -1776,8 +1760,7 @@ impl Analyzer<'_> {
             } => projection_concept
                 .as_ref()
                 .is_some_and(|path| self.program.definitions[concept].name.as_ref() != path.last()),
-            TypeRef::View { target, .. } => self.type_ref_leaks_self(*target, concept),
-            TypeRef::Dyn(target) | TypeRef::UnavailableCarrier { target, .. } => target
+            TypeRef::Dyn(target) => target
                 .bindings
                 .iter()
                 .any(|binding| self.type_ref_leaks_self(binding.ty, concept)),
@@ -2056,7 +2039,6 @@ struct BodyChecker<'a, 'program> {
     self_dirty: bool,
     allow_dirty_self_projection: bool,
     checking_assignment_target: bool,
-    checking_view_source: bool,
     checking_discard_operand: bool,
     dynamic_coercion_mode: DynamicCoercionMode,
     regions: Vec<RegionId>,
@@ -2092,7 +2074,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self_dirty: false,
             allow_dirty_self_projection: false,
             checking_assignment_target: false,
-            checking_view_source: false,
             checking_discard_operand: false,
             dynamic_coercion_mode: DynamicCoercionMode::Owned,
             regions: vec![RegionId(0)],
@@ -2205,11 +2186,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Expr::RecordLiteral { ty, fields } => {
                 self.check_record_literal(expression, &ty, &fields, expected)
             }
-            Expr::View {
-                mutable,
-                concept,
-                source,
-            } => self.check_view(expression, mutable, &concept, source),
             Expr::Await(value) => self.check_await(expression, value, await_allowed),
             Expr::Sleep(arguments) => self.check_sleep(expression, &arguments),
             Expr::WaitFd { arguments, .. } => self.check_wait_fd(expression, &arguments),
@@ -2631,7 +2607,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             Mutability::ReadOnly
                         },
                     };
-                    if !self.checking_assignment_target && !self.checking_view_source {
+                    if !self.checking_assignment_target {
                         self.check_borrowed_place_use(&place, PlaceAccess::Read, expression);
                     }
                     self.semantics.expression_places.insert(expression, place);
@@ -2647,7 +2623,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     projections: Vec::new(),
                     mutability: Mutability::ReadOnly,
                 };
-                if !self.checking_assignment_target && !self.checking_view_source {
+                if !self.checking_assignment_target {
                     self.check_borrowed_place_use(&place, PlaceAccess::Read, expression);
                 }
                 self.semantics.expression_places.insert(expression, place);
@@ -2725,7 +2701,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 Mutability::ReadOnly
             },
         };
-        if !self.checking_assignment_target && !self.checking_view_source {
+        if !self.checking_assignment_target {
             self.check_borrowed_place_use(&place, PlaceAccess::Read, expression);
         }
         self.semantics.expression_places.insert(expression, place);
@@ -4788,7 +4764,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::MethodCall { .. }
             | Expr::QualifiedMethodCall { .. }
             | Expr::Assign { .. }
-            | Expr::View { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
             | Expr::WaitFd { .. }
@@ -5053,7 +5028,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::QualifiedMethodCall { .. }
             | Expr::Assign { .. }
             | Expr::RecordLiteral { .. }
-            | Expr::View { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
             | Expr::WaitFd { .. }
@@ -7422,94 +7396,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn check_view(
-        &mut self,
-        expression: ExprId,
-        mutable: bool,
-        concept: &loom_hir::ConceptRef,
-        source: ExprId,
-    ) -> TyId {
-        let previous_view_source = self.checking_view_source;
-        self.checking_view_source = true;
-        let owner_ty = self.check_expr(source, None, ExpressionContext::Value);
-        self.checking_view_source = previous_view_source;
-        let hidden_obligation = self.reject_dyn_obligation(owner_ty, source);
-        let owner = self.semantics.expression_places.get(source).cloned();
-        if owner.is_none() {
-            self.error_at(
-                "IllegalDynConversion",
-                "interface adaptation requires a concrete argument place",
-                source,
-            );
-        }
-        if mutable
-            && self
-                .semantics
-                .expression_places
-                .get(source)
-                .is_none_or(|place| place.mutability != Mutability::Mutable)
-        {
-            self.error_at(
-                "DynMutReceiverUnavailable",
-                "a concept with `mut self` requires a mutable argument place",
-                source,
-            );
-        }
-        if matches!(
-            self.analyzer.typed.types.data(owner_ty),
-            TyData::View { .. }
-        ) {
-            self.error_at(
-                "IllegalDynConversion",
-                "an erased interface argument cannot be adapted a second time",
-                source,
-            );
-        }
-        let context = self.analyzer.type_context(self.environment.owner);
-        let target_instance = self.analyzer.resolve_concept_ref(concept, &context, true);
-        let target = if let Some(target) = &target_instance {
-            self.types().intern(TyData::DynTarget(target.clone()))
-        } else {
-            self.types().error()
-        };
-        if !hidden_obligation
-            && let (Some(owner), Some(target_instance)) = (owner, target_instance)
-            && let Some(witness) = self.solve_witness(owner_ty, target_instance.clone(), expression)
-        {
-            let region = *self.regions.last().expect("body has a lexical region");
-            let token = ViewTokenId(self.next_view_token);
-            self.next_view_token = self.next_view_token.saturating_add(1);
-            let _ = self.register_borrow(
-                owner.clone(),
-                mutable,
-                region,
-                BorrowIdentity::Interface(token),
-                self.expr_span(expression),
-                expression,
-            );
-            self.semantics.views.insert(
-                expression,
-                ViewResolution {
-                    source: ViewSource::Concrete {
-                        witness,
-                        writeback: Some(owner),
-                    },
-                    mutable,
-                    region,
-                    token,
-                },
-            );
-        }
-        self.types().intern(TyData::View {
-            mutability: if mutable {
-                Mutability::Mutable
-            } else {
-                Mutability::ReadOnly
-            },
-            target,
-        })
-    }
-
     fn solve_witness(
         &mut self,
         self_ty: TyId,
@@ -7538,11 +7424,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let (code, message) = match failure {
                     SolveFailure::Missing => (
                         "MissingConformance",
-                        "no conformance satisfies this dyn construction".to_owned(),
+                        "no conformance satisfies this concept requirement".to_owned(),
                     ),
                     SolveFailure::Ambiguous(_) => (
                         "DuplicateConformance",
-                        "multiple conformances satisfy this dyn construction".to_owned(),
+                        "multiple conformances satisfy this concept requirement".to_owned(),
                     ),
                     SolveFailure::Cycle(_) => (
                         "ConformanceResolutionCycle",
@@ -8787,7 +8673,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::QualifiedMethodCall { .. }
             | Expr::Assign { .. }
             | Expr::RecordLiteral { .. }
-            | Expr::View { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
             | Expr::WaitFd { .. }
@@ -9589,6 +9474,39 @@ fn consume(source Source[Item = Int]) {
         );
         let analysis = analyze(&lowered.program);
         (lowered.program, analysis)
+    }
+
+    #[test]
+    fn removed_carrier_forms_are_ordinary_unresolved_names() {
+        let source = r"module legacy
+
+dyn concept C {}
+
+fn typed(
+    first view[dyn C],
+    second box[dyn C],
+    third shared[dyn C],
+) Unit {
+    Unit
+}
+
+fn constructed(value Int) Unit {
+    discard view(value)
+    discard box(value)
+    discard shared(value)
+    Unit
+}
+";
+        let (_, analysis) = analyze_source(source);
+        assert!(!analysis.diagnostics.is_empty());
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == "UnknownName"),
+            "{:#?}",
+            analysis.diagnostics
+        );
     }
 
     #[test]
