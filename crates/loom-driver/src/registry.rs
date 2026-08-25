@@ -984,6 +984,11 @@ fn registry_token(config: &HttpRegistryConfig) -> Result<Option<String>, String>
     let token = std::env::var(variable).map_err(|_| {
         format!("registry authentication environment variable `{variable}` is not set")
     })?;
+    validate_registry_token(variable, &token)?;
+    Ok(Some(token))
+}
+
+fn validate_registry_token(variable: &str, token: &str) -> Result<(), String> {
     if token.len() < MIN_AUTH_TOKEN_BYTES
         || token.len() > MAX_AUTH_TOKEN_BYTES
         || !token.bytes().all(|byte| {
@@ -995,7 +1000,7 @@ fn registry_token(config: &HttpRegistryConfig) -> Result<Option<String>, String>
             "registry authentication environment variable `{variable}` is not a valid bearer token"
         ));
     }
-    Ok(Some(token))
+    Ok(())
 }
 
 fn index_endpoint(base: &str, package: &str) -> String {
@@ -1209,6 +1214,23 @@ mod tests {
                 "accepted unsafe registry configuration: {}",
                 rejected.url
             );
+        }
+    }
+
+    #[test]
+    fn bearer_token_validation_is_bounded_and_never_echoes_values() {
+        assert!(validate_registry_token("LOOM_TOKEN", "0123456789abcdef").is_ok());
+        for token in [
+            "short".to_owned(),
+            "0123456789abcde\0secret".to_owned(),
+            "0123456789abcde\nsecret".to_owned(),
+            "0123456789abcde\u{7f}secret".to_owned(),
+            "x".repeat(MAX_AUTH_TOKEN_BYTES + 1),
+        ] {
+            let error = validate_registry_token("LOOM_TOKEN", &token)
+                .expect_err("reject unsafe bearer token");
+            assert!(error.contains("LOOM_TOKEN"), "{error}");
+            assert!(!error.contains(&token), "{error}");
         }
     }
 
