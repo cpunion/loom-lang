@@ -2150,7 +2150,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 let function_type = self
                     .context
                     .i32_type()
-                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                    .fn_type(&[self.ptr_type.into()], false);
                 self.module
                     .add_function("loom_runtime_process_arguments", function_type, None)
             })
