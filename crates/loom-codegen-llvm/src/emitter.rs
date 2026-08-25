@@ -4,6 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use inkwell::AddressSpace;
+use inkwell::attributes::{Attribute, AttributeLoc};
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
@@ -56,6 +58,15 @@ use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
 
 pub(crate) struct Emitter;
+
+const LIKELY_BRANCH_WEIGHT: u64 = 2_000;
+const UNLIKELY_BRANCH_WEIGHT: u64 = 1;
+
+#[derive(Clone, Copy)]
+enum LikelyBranch {
+    Then,
+    Else,
+}
 
 fn native_fault_message(code: &str) -> &str {
     match code {
@@ -3030,27 +3041,29 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_context_raise_fault(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_context_raise_fault_v1")
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function("loom_context_raise_fault_v1", function_type, None)
-            })
+    fn native_context_raise_fault(&self) -> Result<FunctionValue<'ctx>, CodegenError> {
+        if let Some(function) = self.module.get_function("loom_context_raise_fault_v1") {
+            return Ok(function);
+        }
+        let function_type = self.context.i32_type().fn_type(
+            &[
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+            ],
+            false,
+        );
+        let function = self
+            .module
+            .add_function("loom_context_raise_fault_v1", function_type, None);
+        mark_cold_noinline(self.context, function)?;
+        Ok(function)
     }
 
     fn native_task_join_step(&self) -> FunctionValue<'ctx> {
@@ -3237,7 +3250,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
         self.builder
             .build_call(
-                self.native_context_raise_fault(),
+                self.native_context_raise_fault()?,
                 &[
                     context.into(),
                     code_data.as_pointer_value().into(),
@@ -3369,9 +3382,14 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     "integer.call.ok",
                 )
                 .map_err(builder_error)?;
-            self.builder
-                .build_conditional_branch(ok, success, failure)
-                .map_err(builder_error)?;
+            build_weighted_conditional_branch(
+                self.context,
+                &self.builder,
+                ok,
+                success,
+                failure,
+                LikelyBranch::Then,
+            )?;
 
             self.builder.position_at_end(failure);
             self.builder
@@ -6694,10 +6712,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &format!("{name}.ok"),
             )
             .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(ok, success, failure)
-            .map_err(builder_error)?;
+        build_weighted_conditional_branch(
+            self.backend.context,
+            &self.backend.builder,
+            ok,
+            success,
+            failure,
+            LikelyBranch::Then,
+        )?;
         self.backend.builder.position_at_end(failure);
         self.emit_all_cleanups()?;
         let status = if self.task.is_some() {
@@ -7072,10 +7094,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn fail_if(&self, condition: IntValue<'ctx>, code: &str) -> Result<(), CodegenError> {
         let fail = self.append_block("operation.fail");
         let pass = self.append_block("operation.pass");
-        self.backend
-            .builder
-            .build_conditional_branch(condition, fail, pass)
-            .map_err(builder_error)?;
+        build_weighted_conditional_branch(
+            self.backend.context,
+            &self.backend.builder,
+            condition,
+            fail,
+            pass,
+            LikelyBranch::Else,
+        )?;
         self.backend.builder.position_at_end(fail);
         self.record_or_print_fault(code, native_fault_message(code), code)?;
         self.emit_all_cleanups()?;
@@ -8451,10 +8477,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "call.ok",
             )
             .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(ok, success, failure)
-            .map_err(builder_error)?;
+        build_weighted_conditional_branch(
+            self.backend.context,
+            &self.backend.builder,
+            ok,
+            success,
+            failure,
+            LikelyBranch::Then,
+        )?;
         self.backend.builder.position_at_end(failure);
         self.emit_all_cleanups()?;
         let status = if self.task.is_some() {
@@ -11213,6 +11243,49 @@ struct ContractContext<'ctx> {
 enum NumericKind {
     Int,
     Float,
+}
+
+fn build_weighted_conditional_branch<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    condition: IntValue<'ctx>,
+    then_block: BasicBlock<'ctx>,
+    else_block: BasicBlock<'ctx>,
+    likely: LikelyBranch,
+) -> Result<(), CodegenError> {
+    let branch = builder
+        .build_conditional_branch(condition, then_block, else_block)
+        .map_err(builder_error)?;
+    let (then_weight, else_weight) = match likely {
+        LikelyBranch::Then => (LIKELY_BRANCH_WEIGHT, UNLIKELY_BRANCH_WEIGHT),
+        LikelyBranch::Else => (UNLIKELY_BRANCH_WEIGHT, LIKELY_BRANCH_WEIGHT),
+    };
+    let weights = context.metadata_node(&[
+        context.metadata_string("branch_weights").into(),
+        context.i32_type().const_int(then_weight, false).into(),
+        context.i32_type().const_int(else_weight, false).into(),
+    ]);
+    branch
+        .set_metadata(weights, context.get_kind_id("prof"))
+        .map_err(|error| CodegenError::new("LlvmMetadataFailed", error.to_string()))?;
+    Ok(())
+}
+
+fn mark_cold_noinline(context: &Context, function: FunctionValue<'_>) -> Result<(), CodegenError> {
+    for name in ["cold", "noinline"] {
+        let kind = Attribute::get_named_enum_kind_id(name);
+        if kind == 0 {
+            return Err(CodegenError::new(
+                "LlvmAttributeUnavailable",
+                format!("LLVM does not provide the `{name}` function attribute"),
+            ));
+        }
+        function.add_attribute(
+            AttributeLoc::Function,
+            context.create_enum_attribute(kind, 0),
+        );
+    }
+    Ok(())
 }
 
 #[allow(clippy::needless_pass_by_value)] // `Result::map_err` passes it by value.

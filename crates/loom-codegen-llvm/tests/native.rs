@@ -390,6 +390,40 @@ pub fn main() Int {
         fibonacci.contains("llvm.sadd.with.overflow.i64"),
         "{fibonacci}"
     );
+    let terminal_branches = fibonacci
+        .lines()
+        .filter(|line| {
+            line.trim_start().starts_with("br i1 ")
+                && (line.contains("label %operation.fail") || line.contains("label %call.failure"))
+        })
+        .collect::<Vec<_>>();
+    assert!(terminal_branches.len() >= 5, "{fibonacci}");
+    assert!(
+        terminal_branches.iter().all(|line| line.contains("!prof")),
+        "{terminal_branches:#?}"
+    );
+    let ordinary_if = fibonacci
+        .lines()
+        .find(|line| line.contains("label %if.then") && line.contains("label %if.else"))
+        .unwrap_or_else(|| panic!("missing ordinary if branch: {fibonacci}"));
+    assert!(!ordinary_if.contains("!prof"), "{ordinary_if}");
+    assert!(
+        llvm.contains(r#"!{!"branch_weights", i32 2000, i32 1}"#),
+        "{llvm}"
+    );
+    assert!(
+        llvm.contains(r#"!{!"branch_weights", i32 1, i32 2000}"#),
+        "{llvm}"
+    );
+    let wrapper = llvm_function(&llvm, "scalar_int_main");
+    let wrapper_status = wrapper
+        .lines()
+        .find(|line| line.contains("br i1 %integer.call.ok"))
+        .unwrap_or_else(|| panic!("missing scalar wrapper status branch: {wrapper}"));
+    assert!(wrapper_status.contains("!prof"), "{wrapper_status}");
+    let fault_attributes = llvm_declaration_attributes(&llvm, "loom_context_raise_fault_v1");
+    assert!(fault_attributes.contains("cold"), "{fault_attributes}");
+    assert!(fault_attributes.contains("noinline"), "{fault_attributes}");
     let contracted = llvm_integer_function(&llvm, "scalar_int_contracted");
     assert!(
         contracted.contains("call void @loom.runtime.clone"),
@@ -844,6 +878,21 @@ pub async fn main() Unit {
     );
     assert!(!read_at[..get].contains("@loom.runtime.clone"), "{read_at}");
     assert!(read_at[get..].contains("@loom.runtime.clone"), "{read_at}");
+    let option_match_branches = read_at
+        .lines()
+        .filter(|line| {
+            line.trim_start().starts_with("br i1 ")
+                && line.contains("label %match.arm")
+                && (line.contains("label %match.next") || line.contains("label %pattern.payload"))
+        })
+        .collect::<Vec<_>>();
+    assert!(!option_match_branches.is_empty(), "{read_at}");
+    assert!(
+        option_match_branches
+            .iter()
+            .all(|line| !line.contains("!prof")),
+        "{option_match_branches:#?}"
+    );
 
     let output = Command::new(executable)
         .output()
@@ -1247,6 +1296,13 @@ pub fn main() Unit {
     assert!(!direct.contains("assert.fail"), "{direct}");
     assert!(checked.contains("constraint.ok"), "{checked}");
     assert!(checked.contains("constraint.error"), "{checked}");
+    let result_branch = checked
+        .lines()
+        .find(|line| {
+            line.contains("label %constraint.ok") && line.contains("label %constraint.error")
+        })
+        .unwrap_or_else(|| panic!("missing checked Result branch: {checked}"));
+    assert!(!result_branch.contains("!prof"), "{result_branch}");
 
     let output = Command::new(executable)
         .output()
@@ -1287,6 +1343,20 @@ fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'so
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
+}
+
+fn llvm_declaration_attributes<'source>(ir: &'source str, symbol: &str) -> &'source str {
+    let declaration = ir
+        .lines()
+        .find(|line| line.starts_with("declare ") && line.contains(&format!("@{symbol}")))
+        .unwrap_or_else(|| panic!("missing LLVM declaration `{symbol}`"));
+    let (_, group) = declaration
+        .rsplit_once(" #")
+        .unwrap_or_else(|| panic!("LLVM declaration has no attribute group: {declaration}"));
+    let marker = format!("attributes #{group} =");
+    ir.lines()
+        .find(|line| line.starts_with(&marker))
+        .unwrap_or_else(|| panic!("missing LLVM attribute group `{marker}`"))
 }
 
 fn llvm_resume_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
