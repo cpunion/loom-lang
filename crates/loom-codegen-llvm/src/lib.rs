@@ -9,6 +9,7 @@ mod codegen;
 mod emitter;
 mod error;
 mod reachability;
+mod requirements;
 mod runtime_bundle;
 mod target;
 

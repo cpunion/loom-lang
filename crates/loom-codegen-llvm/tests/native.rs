@@ -336,6 +336,78 @@ pub fn main() Int {
 }
 
 #[test]
+fn pure_scalar_int_abi_omits_status_executor_and_root_runtime() {
+    let source = r"module pure_scalar_int
+
+fn identity(value Int) Int {
+    value
+}
+
+fn choose(value Int) Int {
+    if value < 0 {
+        identity(0)
+    } else {
+        identity(value)
+    }
+}
+
+pub fn main() Int {
+    choose(42)
+}
+";
+    let project = tempfile::tempdir().expect("create pure scalar Int project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write pure scalar source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load pure scalar project")
+        .snapshot()
+        .expect("analyze pure scalar project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower pure scalar MIR");
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit pure scalar executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read pure scalar LLVM IR");
+    let identity = llvm_integer_function(&llvm, "pure_scalar_int_identity");
+    let choose = llvm_integer_function(&llvm, "pure_scalar_int_choose");
+    let main = llvm_integer_function(&llvm, "pure_scalar_int_main");
+    assert!(
+        identity
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("define internal i64") && line.contains("i64 %0")),
+        "{identity}"
+    );
+    assert!(
+        choose.contains("call i64 @loom.int.fn.0.pure_scalar_int_identity"),
+        "{choose}"
+    );
+    assert!(
+        main.contains("call i64 @loom.int.fn.1.pure_scalar_int_choose"),
+        "{main}"
+    );
+    assert!(!identity.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(!choose.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(!main.lines().next().unwrap_or_default().contains("ptr"));
+    assert!(!llvm.contains("@loom_executor_create"), "{llvm}");
+    assert!(!llvm.contains("@loom_gc_activate_executor"), "{llvm}");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run pure scalar executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(output.stdout, b"42\n");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn loop_temporaries_are_entry_allocated_and_large_release_loops_do_not_grow_stack() {
     let source = r"module stack_loop

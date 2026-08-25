@@ -50,6 +50,7 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
+use crate::requirements::{RuntimeRequirementGraph, is_scalar_int_candidate};
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
 
@@ -69,18 +70,6 @@ fn native_fault_message(code: &str) -> &str {
         "ResourceCloseFault" => "resource close failed",
         _ => "runtime operation failed",
     }
-}
-
-fn uses_scalar_int_abi(function: &Function) -> bool {
-    !function.is_async
-        && function.type_parameters == 0
-        && function.receiver.is_none()
-        && function.witness_params.is_empty()
-        && function.return_ty == Type::Int
-        && function
-            .params
-            .iter()
-            .all(|parameter| parameter.ty == Type::Int)
 }
 
 fn needs_parameter_snapshots(function: &Function) -> bool {
@@ -406,7 +395,8 @@ impl Emitter {
             create_target_machine(options.target_triple.as_deref(), options.optimization)?;
 
         let context = Context::create();
-        let mut backend = Backend::new(&context, program, reachable, roots, options);
+        let requirements = RuntimeRequirementGraph::analyze(program, reachable)?;
+        let mut backend = Backend::new(&context, program, reachable, roots, options, requirements);
         backend.module.set_triple(&triple);
         backend
             .module
@@ -519,12 +509,19 @@ pub(crate) fn native_linker_program() -> std::ffi::OsString {
     std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScalarIntAbi {
+    PureNoFault,
+    Fallible,
+}
+
 struct Backend<'ctx, 'program> {
     context: &'ctx Context,
     program: &'program Program,
     reachable: &'program ReachableProgram,
     roots: &'program Roots,
     options: &'program EmitOptions,
+    requirements: RuntimeRequirementGraph,
     debug: DebugState<'ctx>,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -547,6 +544,7 @@ struct Backend<'ctx, 'program> {
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     scalar_int_functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
+    scalar_int_abis: BTreeMap<FunctionId, ScalarIntAbi>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
@@ -698,6 +696,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         reachable: &'program ReachableProgram,
         roots: &'program Roots,
         options: &'program EmitOptions,
+        requirements: RuntimeRequirementGraph,
     ) -> Self {
         let module = context.create_module("loom.program");
         let builder = context.create_builder();
@@ -818,6 +817,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             reachable,
             roots,
             options,
+            requirements,
             debug,
             module,
             builder,
@@ -840,6 +840,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             task_resume_type,
             functions: BTreeMap::new(),
             scalar_int_functions: BTreeMap::new(),
+            scalar_int_abis: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -897,13 +898,26 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 source.span.range.start,
             )?;
             self.functions.insert(*id, function);
-            if uses_scalar_int_abi(source) {
-                let mut parameters =
-                    Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(source.params.len() + 1);
+            if is_scalar_int_candidate(source) {
+                let requirements = self.requirements.function(*id)?.body;
+                let abi = if requirements.is_pure_no_fault() {
+                    ScalarIntAbi::PureNoFault
+                } else {
+                    ScalarIntAbi::Fallible
+                };
+                let extra_parameters = usize::from(abi == ScalarIntAbi::Fallible);
+                let mut parameters = Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(
+                    source.params.len() + extra_parameters,
+                );
                 let scalar_parameter: BasicMetadataTypeEnum<'ctx> = self.i64_type.into();
                 parameters.extend(std::iter::repeat_n(scalar_parameter, source.params.len()));
-                parameters.push(self.ptr_type.into());
-                let scalar_type = self.scalar_int_result_type.fn_type(&parameters, false);
+                let scalar_type = match abi {
+                    ScalarIntAbi::PureNoFault => self.i64_type.fn_type(&parameters, false),
+                    ScalarIntAbi::Fallible => {
+                        parameters.push(self.ptr_type.into());
+                        self.scalar_int_result_type.fn_type(&parameters, false)
+                    }
+                };
                 let scalar = self.module.add_function(
                     &format!("loom.int.fn.{}.{}", id.0, mangle(&source.name)),
                     scalar_type,
@@ -916,6 +930,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     source.span.range.start,
                 )?;
                 self.scalar_int_functions.insert(*id, scalar);
+                self.scalar_int_abis.insert(*id, abi);
             }
             if source.is_async {
                 let resume = self.module.add_function(
@@ -3206,17 +3221,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.set_debug_location(wrapper, source.span.file.0, source.span.range.start);
         let output = parameter_pointer(wrapper, 0)?;
         let mut argument_node = parameter_pointer(wrapper, 1)?;
-        let executor = parameter_pointer(wrapper, 3)?;
         let entry = self.context.append_basic_block(wrapper, "entry");
-        let success = self.context.append_basic_block(wrapper, "call.success");
-        let failure = self.context.append_basic_block(wrapper, "call.failure");
         self.builder.position_at_end(entry);
         self.builder
             .build_store(output, self.value_type.const_zero())
             .map_err(builder_error)?;
 
-        let mut call_arguments =
-            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(source.params.len() + 1);
+        let abi = self.scalar_int_abis[&id];
+        let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
+            source.params.len() + usize::from(abi == ScalarIntAbi::Fallible),
+        );
         for _ in &source.params {
             let argument = self.load_pointer_field(
                 self.arg_node_type,
@@ -3240,32 +3254,43 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "argument.next",
             )?;
         }
-        call_arguments.push(executor.into());
-        let (status, scalar) = call_scalar_int(
-            &self.builder,
-            self.scalar_int_functions[&id],
-            &call_arguments,
-            "integer.call",
-        )?;
-        let ok = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.context.i32_type().const_zero(),
-                "integer.call.ok",
-            )
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(ok, success, failure)
-            .map_err(builder_error)?;
+        let scalar = if abi == ScalarIntAbi::PureNoFault {
+            call_int(
+                &self.builder,
+                self.scalar_int_functions[&id],
+                &call_arguments,
+                "integer.call",
+            )?
+        } else {
+            call_arguments.push(parameter_pointer(wrapper, 3)?.into());
+            let (status, scalar) = call_scalar_int(
+                &self.builder,
+                self.scalar_int_functions[&id],
+                &call_arguments,
+                "integer.call",
+            )?;
+            let success = self.context.append_basic_block(wrapper, "call.success");
+            let failure = self.context.append_basic_block(wrapper, "call.failure");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.context.i32_type().const_zero(),
+                    "integer.call.ok",
+                )
+                .map_err(builder_error)?;
+            self.builder
+                .build_conditional_branch(ok, success, failure)
+                .map_err(builder_error)?;
 
-        self.builder.position_at_end(failure);
-        self.builder
-            .build_return(Some(&status))
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(success);
+            self.builder.position_at_end(failure);
+            self.builder
+                .build_return(Some(&status))
+                .map_err(builder_error)?;
+            self.builder.position_at_end(success);
+            scalar
+        };
         self.store_i64_field(
             self.value_type,
             output,
@@ -3438,11 +3463,17 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
-    const fn needs_executor() -> bool {
-        // The executor also owns the moving heap used by synchronous roots.
-        // Keeping one root heap for every invocation avoids process-lifetime
-        // fallback allocations in programs that do not use async functions.
-        true
+    fn root_needs_executor(&self, root: FunctionId) -> Result<bool, CodegenError> {
+        let requirements = self.requirements.function(root)?.invocation;
+        // The first context-free root slice is intentionally restricted to a
+        // private typed ABI whose wrapper only unboxes/boxes scalar words.
+        // Compatibility bodies may hide representation allocations even when
+        // their source operations look pure, so they retain the executor-owned
+        // heap until their typed layout exists.
+        Ok(
+            self.scalar_int_abis.get(&root) != Some(&ScalarIntAbi::PureNoFault)
+                || !requirements.is_pure_no_fault(),
+        )
     }
 
     fn native_gc_activate_executor(&self) -> FunctionValue<'ctx> {
@@ -3471,8 +3502,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn create_root_executor(&self) -> Result<PointerValue<'ctx>, CodegenError> {
-        if !Self::needs_executor() {
+    fn create_root_executor(&self, required: bool) -> Result<PointerValue<'ctx>, CodegenError> {
+        if !required {
             return Ok(self.ptr_type.const_null());
         }
         let executor = call_pointer(
@@ -3517,8 +3548,12 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(executor)
     }
 
-    fn destroy_root_executor(&self, executor: PointerValue<'ctx>) -> Result<(), CodegenError> {
-        if Self::needs_executor() {
+    fn destroy_root_executor(
+        &self,
+        executor: PointerValue<'ctx>,
+        required: bool,
+    ) -> Result<(), CodegenError> {
+        if required {
             self.builder
                 .build_call(
                     self.native_gc_deactivate_executor(),
@@ -3562,7 +3597,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let null = self.ptr_type.const_null();
         match &self.options.kind {
             EmitKind::Run { .. } => {
-                let executor = self.create_root_executor()?;
                 let root = self
                     .roots
                     .functions()
@@ -3572,6 +3606,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .ok_or_else(|| {
                         CodegenError::new("NoCompilationRoots", "run harness has no root")
                     })?;
+                let needs_executor = self.root_needs_executor(root)?;
+                let executor = self.create_root_executor(needs_executor)?;
                 let mut status = call_int(
                     &self.builder,
                     self.functions[&root],
@@ -3600,7 +3636,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_conditional_branch(ok, success, failure)
                     .map_err(builder_error)?;
                 self.builder.position_at_end(success);
-                self.destroy_root_executor(executor)?;
+                self.destroy_root_executor(executor, needs_executor)?;
                 let print = self
                     .module
                     .get_function("loom.runtime.print")
@@ -3612,7 +3648,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_return(Some(&self.context.i32_type().const_zero()))
                     .map_err(builder_error)?;
                 self.builder.position_at_end(failure);
-                self.destroy_root_executor(executor)?;
+                self.destroy_root_executor(executor, needs_executor)?;
                 self.builder
                     .build_return(Some(&status))
                     .map_err(builder_error)?;
@@ -3626,7 +3662,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_store(failed, self.context.i32_type().const_zero())
                     .map_err(builder_error)?;
                 for root in self.roots.functions() {
-                    let executor = self.create_root_executor()?;
+                    let needs_executor = self.root_needs_executor(*root)?;
+                    let executor = self.create_root_executor(needs_executor)?;
                     let mut status = call_int(
                         &self.builder,
                         self.functions[root],
@@ -3640,7 +3677,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     {
                         status = self.drive_async_root(status, result, executor)?;
                     }
-                    self.destroy_root_executor(executor)?;
+                    self.destroy_root_executor(executor, needs_executor)?;
                     let status_ok = self
                         .builder
                         .build_int_compare(
@@ -4153,7 +4190,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     source: &'program Function,
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
-    scalar_result: bool,
+    scalar_int_abi: Option<ScalarIntAbi>,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     executor: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
@@ -4271,7 +4308,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_result: false,
+            scalar_int_abi: None,
             witness_parameters,
             executor,
             task: None,
@@ -4299,16 +4336,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 format!("function #{} does not exist", id.0),
             )
         })?;
-        if !uses_scalar_int_abi(source) {
+        if !is_scalar_int_candidate(source) {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "non-integer function selected for the scalar integer ABI",
             ));
         }
         let function = backend.scalar_int_functions[&id];
-        let executor_index = u32::try_from(source.params.len())
-            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
-        let executor = parameter_pointer(function, executor_index)?;
+        let abi = backend.scalar_int_abis[&id];
+        let executor = if abi == ScalarIntAbi::Fallible {
+            let executor_index = u32::try_from(source.params.len())
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
+            parameter_pointer(function, executor_index)?
+        } else {
+            backend.ptr_type.const_null()
+        };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
         backend.builder.position_at_end(entry);
@@ -4395,7 +4437,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_result: true,
+            scalar_int_abi: Some(abi),
             witness_parameters: BTreeMap::new(),
             executor,
             task: None,
@@ -4609,7 +4651,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
-            scalar_result: false,
+            scalar_int_abi: None,
             witness_parameters,
             executor,
             task: Some(task),
@@ -4636,7 +4678,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_exit_contracts()?;
         if !self.current_block_terminated() {
             let scalar = self
-                .scalar_result
+                .scalar_int_abi
+                .is_some()
                 .then(|| {
                     self.backend.load_i64_field(
                         self.backend.value_type,
@@ -4657,34 +4700,48 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         status: IntValue<'ctx>,
         scalar: Option<IntValue<'ctx>>,
     ) -> Result<(), CodegenError> {
-        if self.scalar_result {
-            let aggregate = self.backend.scalar_int_result_type.get_undef();
-            let aggregate = self
-                .backend
-                .builder
-                .build_insert_value(aggregate, status, 0, "integer.status")
-                .map_err(builder_error)?
-                .into_struct_value();
-            let aggregate = self
-                .backend
-                .builder
-                .build_insert_value(
-                    aggregate,
-                    scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
-                    1,
-                    "integer.value",
-                )
-                .map_err(builder_error)?
-                .into_struct_value();
-            self.backend
-                .builder
-                .build_return(Some(&aggregate))
-                .map_err(builder_error)?;
-        } else {
-            self.backend
-                .builder
-                .build_return(Some(&status))
-                .map_err(builder_error)?;
+        match self.scalar_int_abi {
+            Some(ScalarIntAbi::PureNoFault) => {
+                self.backend
+                    .builder
+                    .build_return(Some(&scalar.ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "pure scalar return is missing its value",
+                        )
+                    })?))
+                    .map_err(builder_error)?;
+            }
+            Some(ScalarIntAbi::Fallible) => {
+                let aggregate = self.backend.scalar_int_result_type.get_undef();
+                let aggregate = self
+                    .backend
+                    .builder
+                    .build_insert_value(aggregate, status, 0, "integer.status")
+                    .map_err(builder_error)?
+                    .into_struct_value();
+                let aggregate = self
+                    .backend
+                    .builder
+                    .build_insert_value(
+                        aggregate,
+                        scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
+                        1,
+                        "integer.value",
+                    )
+                    .map_err(builder_error)?
+                    .into_struct_value();
+                self.backend
+                    .builder
+                    .build_return(Some(&aggregate))
+                    .map_err(builder_error)?;
+            }
+            None => {
+                self.backend
+                    .builder
+                    .build_return(Some(&status))
+                    .map_err(builder_error)?;
+            }
         }
         Ok(())
     }
@@ -7811,8 +7868,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
-        let mut call_arguments =
-            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(values.len() + 1);
+        let abi = self.backend.scalar_int_abis[&function];
+        let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
+            values.len() + usize::from(abi == ScalarIntAbi::Fallible),
+        );
         for value in values {
             call_arguments.push(
                 self.backend
@@ -7825,14 +7884,24 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .into(),
             );
         }
-        call_arguments.push(self.executor.into());
-        let (status, scalar) = call_scalar_int(
-            &self.backend.builder,
-            self.backend.scalar_int_functions[&function],
-            &call_arguments,
-            "integer.call",
-        )?;
-        self.propagate_status(status)?;
+        let scalar = if abi == ScalarIntAbi::PureNoFault {
+            call_int(
+                &self.backend.builder,
+                self.backend.scalar_int_functions[&function],
+                &call_arguments,
+                "integer.call",
+            )?
+        } else {
+            call_arguments.push(self.executor.into());
+            let (status, scalar) = call_scalar_int(
+                &self.backend.builder,
+                self.backend.scalar_int_functions[&function],
+                &call_arguments,
+                "integer.call",
+            )?;
+            self.propagate_status(status)?;
+            scalar
+        };
         self.initialize(destination, VALUE_TAG_INT)?;
         self.backend.store_i64_field(
             self.backend.value_type,
