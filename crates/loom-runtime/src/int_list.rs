@@ -2,7 +2,7 @@
 //!
 //! Generated LLVM owns the header and inlines element append/access. The
 //! runtime is only responsible for growing and releasing the allocation. This
-//! representation is deliberately separate from the compatibility `Value`
+//! representation is deliberately separate from the universal `Value`
 //! list and from the managed heap: a proven synchronous local list neither
 //! needs GC roots nor an executor/reactor.
 

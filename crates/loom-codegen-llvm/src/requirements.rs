@@ -11,7 +11,7 @@ use crate::{CodegenError, ReachableProgram};
 ///
 /// This is deliberately not a source-language effect system. The bits describe
 /// the currently selected native representation and may become smaller as
-/// typed lowering replaces compatibility `Value` operations.
+/// typed lowering replaces universal `Value` operations.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RuntimeRequirements(u8);
 
@@ -282,7 +282,7 @@ fn scan_expr(
             {
                 output.requirements.include(RuntimeRequirements::MAY_FAULT);
             } else if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual) {
-                // Equality still goes through the compatibility runtime helper.
+                // Equality still goes through the universal Value helper.
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_ALLOCATE);
@@ -299,7 +299,7 @@ fn scan_expr(
             scan_block(program, reachable, function, else_branch, output)?;
         }
         ExprKind::Match { scrutinee, arms } => {
-            // Pattern bindings are logical copies in the compatibility ABI.
+            // Pattern bindings are logical copies in the universal Value ABI.
             output
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
@@ -351,7 +351,7 @@ fn scan_expr(
                     output.callees.insert(*callee);
                     if !is_scalar_int_candidate(target) {
                         // The first typed slice only proves the scalar Int ABI.
-                        // Other calls retain the compatibility runtime boundary.
+                        // Other calls retain the universal Value ABI boundary.
                         output
                             .requirements
                             .include(RuntimeRequirements::MAY_ALLOCATE);

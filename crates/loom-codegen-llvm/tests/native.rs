@@ -163,12 +163,12 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
 }
 
 #[test]
-fn compatibility_value_abi_rejects_32_bit_targets() {
+fn universal_value_abi_rejects_32_bit_targets() {
     let error = target_identity(
         Some("i686-unknown-linux-gnu"),
         OptimizationProfile::Development,
     )
-    .expect_err("the compatibility Value ABI is 64-bit only");
+    .expect_err("the universal Value ABI is 64-bit only");
     assert_eq!(error.code(), "UnsupportedNativePointerWidth");
     assert!(error.to_string().contains("requires 64-bit pointers"));
 }
@@ -329,7 +329,7 @@ pub fn main() Unit {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn scalar_int_abi_is_recursive_checked_and_uses_runtime_at_the_root() {
+fn scalar_int_abi_is_recursive_checked_and_bridges_to_universal_value_at_root() {
     let source = r"module scalar_int
 
 fn fibonacci(value Int) Int {

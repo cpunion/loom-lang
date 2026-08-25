@@ -12,7 +12,7 @@ pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const NATIVE_RUNTIME_ABI_IDENTITY: &str =
     "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3";
 
-/// Number of machine words in the compatibility value envelope.
+/// Number of machine words in the universal `Value` envelope.
 ///
 /// The current native ABI is deliberately restricted to 64-bit targets, so a
 /// runtime word and an LLVM pointer have the same width. Concrete `Text`

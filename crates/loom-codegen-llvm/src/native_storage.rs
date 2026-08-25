@@ -2,7 +2,7 @@
 //!
 //! These plans are deliberately conservative. A local is selected only when
 //! every use in its synchronous MIR body can be lowered without ever exposing
-//! the private representation through the compatibility `Value` ABI.
+//! the private representation through the universal `Value` ABI.
 
 use std::collections::BTreeSet;
 

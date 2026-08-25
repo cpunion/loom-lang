@@ -2078,8 +2078,8 @@ unsafe fn raise_fault_for_task_or_root(
         let Some(detail) = (unsafe { copy_text(arguments.detail, arguments.detail_length) }) else {
             return WAIT_INVALID_ARGUMENT;
         };
-        // SAFETY: the non-null task is owned by the validated executor (or by
-        // the legacy ABI caller) and remains live throughout this call.
+        // SAFETY: the non-null task is owned by the executor validated by the
+        // active runtime and remains live throughout this call.
         unsafe { (*active_task).fault_detail = detail };
         return WAIT_OK;
     }

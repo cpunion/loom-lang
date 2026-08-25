@@ -1,4 +1,4 @@
-//! Managed immutable storage used by native `Text` compatibility envelopes.
+//! Managed immutable `Text` storage used by universal `Value` envelopes.
 
 use std::ffi::c_void;
 use std::mem::{align_of, size_of};
