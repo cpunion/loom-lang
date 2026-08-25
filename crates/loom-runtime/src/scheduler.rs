@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
@@ -11,8 +10,8 @@ use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use loom_runtime_abi::{
-    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, VALUE_SLOT_WORDS, VALUE_TAG_ENUM,
-    VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, LoomWitnessInstance, VALUE_SLOT_WORDS,
+    VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
 use crate::gc::{active_runtime_pointer, enter_executor, leave_executor, poll};
@@ -20,6 +19,7 @@ use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
 };
+use crate::witness::{WitnessArena, clone_witnesses};
 use crate::{
     COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
     TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
@@ -133,16 +133,11 @@ pub struct LoomCoroutineDescriptor {
     pub cancel: Option<LoomTaskCancel>,
     pub trace: Option<LoomTaskTrace>,
     pub slot_count: u64,
+    pub witness_count: u64,
     pub result_slot: u64,
     pub state_count: u64,
     pub live_bitmap_words: u64,
     pub live_bitmaps: *const u64,
-}
-
-#[repr(C)]
-struct RuntimeWitnessNode {
-    value: *mut c_void,
-    next: *mut RuntimeWitnessNode,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -272,9 +267,9 @@ pub struct LoomTask {
     fault_code: String,
     fault_message: String,
     fault_detail: String,
-    witness_values: Vec<Box<[usize]>>,
-    witness_nodes: Vec<Box<RuntimeWitnessNode>>,
-    witness_clones: BTreeMap<usize, usize>,
+    witness_slots: Box<[*const LoomWitnessInstance]>,
+    witness_arena: WitnessArena,
+    witnesses_captured: bool,
 }
 
 pub struct LoomJoinSpec {
@@ -1222,6 +1217,7 @@ pub unsafe extern "C" fn task_spawn(
         cancel: None,
         trace: None,
         slot_count,
+        witness_count: 0,
         result_slot,
         state_count: 0,
         live_bitmap_words: 0,
@@ -1238,8 +1234,9 @@ pub unsafe extern "C" fn task_spawn_descriptor(
     let Some(mut descriptor) = (unsafe { descriptor.as_ref() }).copied() else {
         return ptr::null_mut();
     };
-    let (Ok(slot_count), Ok(result_slot), Some(_)) = (
+    let (Ok(slot_count), Ok(witness_count), Ok(result_slot), Some(_)) = (
         usize::try_from(descriptor.slot_count),
+        usize::try_from(descriptor.witness_count),
         usize::try_from(descriptor.result_slot),
         descriptor.resume,
     ) else {
@@ -1298,9 +1295,9 @@ pub unsafe extern "C" fn task_spawn_descriptor(
         fault_code: "TaskFault".into(),
         fault_message: "task execution failed".into(),
         fault_detail: String::new(),
-        witness_values: Vec::new(),
-        witness_nodes: Vec::new(),
-        witness_clones: BTreeMap::new(),
+        witness_slots: vec![ptr::null(); witness_count].into_boxed_slice(),
+        witness_arena: WitnessArena::default(),
+        witnesses_captured: witness_count == 0,
     });
     let pointer = &raw mut *task;
     executor_ref.tasks.push(task);
@@ -1311,63 +1308,64 @@ pub unsafe extern "C" fn task_spawn_descriptor(
     pointer
 }
 
-unsafe fn clone_witness_tree(
-    task: &mut LoomTask,
-    source: *const c_void,
-    field_count: usize,
-) -> *mut c_void {
-    if source.is_null() {
-        return ptr::null_mut();
-    }
-    if let Some(cloned) = task.witness_clones.get(&(source as usize)).copied() {
-        return cloned as *mut c_void;
-    }
-    let fields = unsafe { slice::from_raw_parts(source.cast::<usize>(), field_count) };
-    let mut cloned = fields.to_vec().into_boxed_slice();
-    cloned[0] = 0;
-    let cloned_pointer = cloned.as_mut_ptr().cast::<c_void>();
-    task.witness_values.push(cloned);
-    task.witness_clones
-        .insert(source as usize, cloned_pointer as usize);
-    let arguments =
-        unsafe { clone_witness_nodes(task, fields[0] as *const RuntimeWitnessNode, field_count) };
-    unsafe { *cloned_pointer.cast::<usize>() = arguments as usize };
-    cloned_pointer
-}
-
-unsafe fn clone_witness_nodes(
-    task: &mut LoomTask,
-    source: *const RuntimeWitnessNode,
-    field_count: usize,
-) -> *mut RuntimeWitnessNode {
-    if source.is_null() {
-        return ptr::null_mut();
-    }
-    let value = unsafe { clone_witness_tree(task, (*source).value, field_count) };
-    let next = unsafe { clone_witness_nodes(task, (*source).next, field_count) };
-    let mut node = Box::new(RuntimeWitnessNode { value, next });
-    let pointer = &raw mut *node;
-    task.witness_nodes.push(node);
-    pointer
-}
-
-/// Deep-clones a compiler witness and its prerequisite proof tree into task
-/// lifetime storage. Applied witnesses may originate in a caller stack frame,
-/// while the coroutine can outlive that frame after its first suspension.
-#[unsafe(export_name = "loom_task_clone_witness")]
-pub unsafe extern "C" fn task_clone_witness(
+/// Atomically captures every hidden proof parameter into Task-owned,
+/// non-moving storage.
+///
+/// `count` must equal the coroutine descriptor's `witness_count`. The source
+/// array and every proof reachable from it only need to remain live for this
+/// call; no source address is retained as a cache key afterwards.
+#[unsafe(export_name = "loom_task_capture_witnesses_v1")]
+pub unsafe extern "C" fn task_capture_witnesses_v1(
     task: *mut LoomTask,
-    source: *const c_void,
-    field_count: u64,
-) -> *mut c_void {
-    const MAX_WITNESS_FIELDS: usize = 1 << 20;
-    let Ok(field_count) = usize::try_from(field_count) else {
-        return ptr::null_mut();
+    sources: *const *const LoomWitnessInstance,
+    count: u64,
+) -> i32 {
+    let Some(task) = (unsafe { task.as_mut() }) else {
+        return WAIT_INVALID_ARGUMENT;
     };
-    if task.is_null() || source.is_null() || field_count == 0 || field_count > MAX_WITNESS_FIELDS {
-        return ptr::null_mut();
+    let Ok(count) = usize::try_from(count) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    if task.witnesses_captured
+        || task.status != TaskStatus::Runnable
+        || task.state != 0
+        || count != task.witness_slots.len()
+        || (count != 0 && sources.is_null())
+    {
+        return WAIT_INVALID_ARGUMENT;
     }
-    unsafe { clone_witness_tree(&mut *task, source, field_count) }
+    let sources = if count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(sources, count) }
+    };
+    let Some(staged) = (unsafe { clone_witnesses(sources) }) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    task.witness_slots = task.witness_arena.adopt(staged);
+    task.witnesses_captured = true;
+    WAIT_OK
+}
+
+/// Returns one Task-owned hidden proof parameter by its checked dense index.
+#[unsafe(export_name = "loom_task_witness_v1")]
+pub unsafe extern "C" fn task_witness_v1(
+    task: *const LoomTask,
+    index: u64,
+) -> *const LoomWitnessInstance {
+    let Some(task) = (unsafe { task.as_ref() }) else {
+        return ptr::null();
+    };
+    let Ok(index) = usize::try_from(index) else {
+        return ptr::null();
+    };
+    if !task.witnesses_captured {
+        return ptr::null();
+    }
+    task.witness_slots
+        .get(index)
+        .copied()
+        .unwrap_or(ptr::null())
 }
 
 unsafe fn spawn_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
@@ -3045,6 +3043,7 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         (heap.values.len() as u64)
             .saturating_add(heap.nodes.len() as u64)
             .saturating_add(heap.sequences.len() as u64)
+            .saturating_add(heap.witnesses.len() as u64)
     }
 }
 

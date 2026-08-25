@@ -41,12 +41,9 @@ pub(crate) const VALUE_NODE_FIELD_VALUE: u32 = 0;
 pub(crate) const VALUE_NODE_FIELD_NEXT: u32 = 1;
 pub(crate) const ARG_NODE_FIELD_VALUE: u32 = 0;
 pub(crate) const ARG_NODE_FIELD_NEXT: u32 = 1;
-pub(crate) const WITNESS_NODE_FIELD_VALUE: u32 = 0;
-pub(crate) const WITNESS_NODE_FIELD_NEXT: u32 = 1;
-
-/// Witness field zero is the linked list of prerequisite proof arguments.
-/// Requirement method slots follow in global `RequirementId` order.
-pub(crate) const WITNESS_METHOD_FIELD_OFFSET: u32 = 1;
+pub(crate) const WITNESS_DESCRIPTOR_FIELD_METHODS: u32 = 2;
+pub(crate) const WITNESS_INSTANCE_FIELD_DESCRIPTOR: u32 = 0;
+pub(crate) const WITNESS_INSTANCE_FIELD_PREREQUISITES: u32 = 1;
 
 pub(crate) const WAIT_ABI_VERSION: u64 = loom_runtime_abi::WAIT_ABI_VERSION as u64;
 pub(crate) const COROUTINE_ABI_VERSION: u64 = loom_runtime_abi::COROUTINE_ABI_VERSION as u64;

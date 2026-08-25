@@ -24,8 +24,8 @@ use inkwell::values::{
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, ConstructionMode, Contract,
-    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
+    Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
     FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, Statement,
     StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
@@ -49,7 +49,8 @@ use crate::abi::{
     WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE, WAIT_SOURCE_FIELD_HANDLE,
     WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND, WAIT_SOURCE_FIELD_RESERVED,
     WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD, WAIT_SOURCE_KIND_TIMER,
-    WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
+    WITNESS_DESCRIPTOR_FIELD_METHODS, WITNESS_INSTANCE_FIELD_DESCRIPTOR,
+    WITNESS_INSTANCE_FIELD_PREREQUISITES,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
 use crate::native_layout::{
@@ -572,8 +573,8 @@ struct Backend<'ctx, 'program> {
     value_node_type: StructType<'ctx>,
     arg_node_type: StructType<'ctx>,
     int_list_type: StructType<'ctx>,
-    witness_node_type: StructType<'ctx>,
-    witness_type: StructType<'ctx>,
+    witness_descriptor_type: StructType<'ctx>,
+    witness_instance_type: StructType<'ctx>,
     wait_source_type: StructType<'ctx>,
     registration_type: StructType<'ctx>,
     ready_notification_type: StructType<'ctx>,
@@ -585,7 +586,10 @@ struct Backend<'ctx, 'program> {
     native_functions: BTreeMap<FunctionId, NativeFunctionDecl<'ctx>>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
-    witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
+    witness_method_types: BTreeMap<ConceptId, StructType<'ctx>>,
+    witness_method_slots: BTreeMap<RequirementId, u32>,
+    witness_descriptors: BTreeMap<WitnessId, GlobalValue<'ctx>>,
+    witness_instances: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     names: Cell<u64>,
 }
 
@@ -787,14 +791,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         arg_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
         let int_list_type = context.opaque_struct_type("loom.IntListStorage");
         int_list_type.set_body(&[ptr_type.into(), i64_type.into(), i64_type.into()], false);
-        let witness_node_type = context.opaque_struct_type("loom.WitnessNode");
-        witness_node_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
-        let witness_type = context.opaque_struct_type("loom.Witness");
-        witness_type.set_body(
-            &std::iter::repeat_n(ptr_type.into(), program.requirements.len() + 1)
-                .collect::<Vec<_>>(),
-            false,
-        );
+        let witness_descriptor_type = context.opaque_struct_type("loom.WitnessDescriptor");
+        witness_descriptor_type
+            .set_body(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
+        let witness_instance_type = context.opaque_struct_type("loom.WitnessInstance");
+        witness_instance_type.set_body(&[ptr_type.into(), ptr_type.into()], false);
         let wait_source_type = context.opaque_struct_type("loom.WaitSource");
         wait_source_type.set_body(
             &[
@@ -833,12 +834,14 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 i64_type.into(),
                 i64_type.into(),
                 i64_type.into(),
+                i64_type.into(),
                 ptr_type.into(),
             ],
             false,
         );
         let loom_function_type = context.i32_type().fn_type(
             &[
+                ptr_type.into(),
                 ptr_type.into(),
                 ptr_type.into(),
                 ptr_type.into(),
@@ -869,8 +872,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             value_node_type,
             arg_node_type,
             int_list_type,
-            witness_node_type,
-            witness_type,
+            witness_descriptor_type,
+            witness_instance_type,
             wait_source_type,
             registration_type,
             ready_notification_type,
@@ -882,7 +885,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             native_functions: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
-            witnesses: BTreeMap::new(),
+            witness_method_types: BTreeMap::new(),
+            witness_method_slots: BTreeMap::new(),
+            witness_descriptors: BTreeMap::new(),
+            witness_instances: BTreeMap::new(),
             names: Cell::new(0),
         }
     }
@@ -1160,6 +1166,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         resume: FunctionValue<'ctx>,
     ) -> Result<GlobalValue<'ctx>, CodegenError> {
         let layout = AsyncLayout::new(source)?;
+        let witness_count = u64::try_from(source.witness_params.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many coroutine witnesses"))?;
         let state_count = source
             .suspension_points
             .iter()
@@ -1238,6 +1246,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             resume.into(),
             trace.into(),
             self.i64_type.const_int(layout.slot_count, false).into(),
+            self.i64_type.const_int(witness_count, false).into(),
             self.i64_type.const_int(layout.result_slot, false).into(),
             self.i64_type.const_int(state_count, false).into(),
             self.i64_type.const_int(words, false).into(),
@@ -1255,210 +1264,136 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     }
 
     fn declare_witnesses(&mut self) -> Result<(), CodegenError> {
-        for id in &self.reachable.witnesses {
-            let global =
-                self.module
-                    .add_global(self.witness_type, None, &format!("loom.witness.{}", id.0));
-            let mut fields = vec![self.ptr_type.const_null().into()];
-            for requirement_index in 0..self.program.requirements.len() {
-                let requirement =
-                    loom_mir::RequirementId(u32::try_from(requirement_index).map_err(|_| {
-                        CodegenError::new("ProgramTooLarge", "too many requirements")
-                    })?);
-                let pointer = self
-                    .reachable
-                    .witness_methods
-                    .get(id)
-                    .filter(|methods| methods.contains(&requirement))
-                    .and_then(|_| self.program.witness(*id))
-                    .and_then(|witness| witness.methods.get(&requirement))
-                    .and_then(|function| self.functions.get(function))
-                    .map_or_else(
-                        || self.ptr_type.const_null(),
-                        |function| function.as_global_value().as_pointer_value(),
-                    );
-                fields.push(pointer.into());
+        let live_requirements = self.declare_witness_method_layouts()?;
+        for id in self.reachable.witnesses.iter().copied().collect::<Vec<_>>() {
+            self.declare_witness(id, &live_requirements)?;
+        }
+        Ok(())
+    }
+
+    fn declare_witness_method_layouts(
+        &mut self,
+    ) -> Result<BTreeMap<ConceptId, Vec<RequirementId>>, CodegenError> {
+        let mut live_requirements = BTreeMap::<ConceptId, Vec<RequirementId>>::new();
+        for concept in &self.program.concepts {
+            let requirements = concept
+                .requirements
+                .iter()
+                .copied()
+                .filter(|requirement| {
+                    self.reachable.witnesses.iter().any(|witness_id| {
+                        self.program
+                            .witness(*witness_id)
+                            .is_some_and(|witness| witness.concept == concept.id)
+                            && self
+                                .reachable
+                                .witness_methods
+                                .get(witness_id)
+                                .is_some_and(|methods| methods.contains(requirement))
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !requirements.is_empty() {
+                let method_type = self
+                    .context
+                    .opaque_struct_type(&format!("loom.WitnessMethods.{}", concept.id.0));
+                method_type.set_body(
+                    &std::iter::repeat_n(self.ptr_type.into(), requirements.len())
+                        .collect::<Vec<_>>(),
+                    false,
+                );
+                for (slot, requirement) in requirements.iter().copied().enumerate() {
+                    let slot = u32::try_from(slot).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many concept requirements")
+                    })?;
+                    self.witness_method_slots.insert(requirement, slot);
+                }
+                self.witness_method_types.insert(concept.id, method_type);
             }
-            global.set_initializer(&self.witness_type.const_named_struct(&fields));
-            global.set_constant(true);
-            global.set_linkage(Linkage::Internal);
-            self.witnesses.insert(*id, global);
+            live_requirements.insert(concept.id, requirements);
+        }
+        Ok(live_requirements)
+    }
+
+    fn declare_witness(
+        &mut self,
+        id: WitnessId,
+        live_requirements: &BTreeMap<ConceptId, Vec<RequirementId>>,
+    ) -> Result<(), CodegenError> {
+        let witness = self.program.witness(id).ok_or_else(|| {
+            CodegenError::new("InvalidWitnessReference", "reachable witness is missing")
+        })?;
+        let requirements = &live_requirements[&witness.concept];
+        let methods = if requirements.is_empty() {
+            self.ptr_type.const_null()
+        } else {
+            let method_type = self.witness_method_types[&witness.concept];
+            let fields = requirements
+                .iter()
+                .map(|requirement| {
+                    self.reachable
+                        .witness_methods
+                        .get(&id)
+                        .filter(|methods| methods.contains(requirement))
+                        .and_then(|_| witness.methods.get(requirement))
+                        .and_then(|function| self.functions.get(function))
+                        .map_or_else(
+                            || self.ptr_type.const_null(),
+                            |function| function.as_global_value().as_pointer_value(),
+                        )
+                        .into()
+                })
+                .collect::<Vec<_>>();
+            let methods = self.module.add_global(
+                method_type,
+                None,
+                &format!("loom.witness.methods.{}", id.0),
+            );
+            methods.set_initializer(&method_type.const_named_struct(&fields));
+            methods.set_constant(true);
+            methods.set_linkage(Linkage::Internal);
+            methods.as_pointer_value()
+        };
+        let prerequisite_count = u64::try_from(witness.prerequisites.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many witness prerequisites"))?;
+        let method_count = u64::try_from(requirements.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many concept methods"))?;
+        let descriptor = self.module.add_global(
+            self.witness_descriptor_type,
+            None,
+            &format!("loom.witness.descriptor.{}", id.0),
+        );
+        descriptor.set_initializer(&self.witness_descriptor_type.const_named_struct(&[
+            self.i64_type.const_int(prerequisite_count, false).into(),
+            self.i64_type.const_int(method_count, false).into(),
+            methods.into(),
+        ]));
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Internal);
+        self.witness_descriptors.insert(id, descriptor);
+
+        if witness.prerequisites.is_empty() {
+            let instance = self.module.add_global(
+                self.witness_instance_type,
+                None,
+                &format!("loom.witness.instance.{}", id.0),
+            );
+            instance.set_initializer(&self.witness_instance_type.const_named_struct(&[
+                descriptor.as_pointer_value().into(),
+                self.ptr_type.const_null().into(),
+            ]));
+            instance.set_constant(true);
+            instance.set_linkage(Linkage::Internal);
+            self.witness_instances.insert(id, instance);
         }
         Ok(())
     }
 
     fn emit_runtime_helpers(&self) -> Result<(), CodegenError> {
-        self.emit_witness_helpers()?;
         self.emit_clone_helpers()?;
         self.emit_unwrap_helper()?;
         self.emit_equal_helpers()?;
         self.emit_print_helper()
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn emit_witness_helpers(&self) -> Result<(), CodegenError> {
-        let function_type = self
-            .ptr_type
-            .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
-        let concatenate = self.module.add_function(
-            "loom.runtime.concat_witnesses",
-            function_type,
-            Some(Linkage::Internal),
-        );
-        let entry = self.context.append_basic_block(concatenate, "entry");
-        let empty = self.context.append_basic_block(concatenate, "empty");
-        let loop_header = self.context.append_basic_block(concatenate, "loop");
-        let copy = self.context.append_basic_block(concatenate, "copy");
-        let first = self.context.append_basic_block(concatenate, "first");
-        let append = self.context.append_basic_block(concatenate, "append");
-        let advance = self.context.append_basic_block(concatenate, "advance");
-        let finish = self.context.append_basic_block(concatenate, "finish");
-        self.builder.position_at_end(entry);
-        let prefix = parameter_pointer(concatenate, 0)?;
-        let suffix = parameter_pointer(concatenate, 1)?;
-        let current_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "witness.current.slot")
-            .map_err(builder_error)?;
-        let head_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "witness.head.slot")
-            .map_err(builder_error)?;
-        let tail_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "witness.tail.slot")
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(current_slot, prefix)
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(head_slot, self.ptr_type.const_null())
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(tail_slot, self.ptr_type.const_null())
-            .map_err(builder_error)?;
-        let prefix_empty = self
-            .builder
-            .build_is_null(prefix, "prefix.empty")
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(prefix_empty, empty, loop_header)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(empty);
-        self.builder
-            .build_return(Some(&suffix))
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(loop_header);
-        let current = self
-            .builder
-            .build_load(self.ptr_type, current_slot, "witness.current")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        let exhausted = self
-            .builder
-            .build_is_null(current, "witness.exhausted")
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(exhausted, finish, copy)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(copy);
-        let node = call_pointer(
-            &self.builder,
-            self.native_gc_alloc_witness_node(),
-            &[],
-            "witness.concat",
-        )?;
-        let value = self.load_pointer_field(
-            self.witness_node_type,
-            current,
-            WITNESS_NODE_FIELD_VALUE,
-            "witness.concat.value",
-        )?;
-        self.store_pointer_field(
-            self.witness_node_type,
-            node,
-            WITNESS_NODE_FIELD_VALUE,
-            value,
-        )?;
-        self.store_pointer_field(
-            self.witness_node_type,
-            node,
-            WITNESS_NODE_FIELD_NEXT,
-            self.ptr_type.const_null(),
-        )?;
-        let head = self
-            .builder
-            .build_load(self.ptr_type, head_slot, "witness.head")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        let head_empty = self
-            .builder
-            .build_is_null(head, "witness.head.empty")
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(head_empty, first, append)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(first);
-        self.builder
-            .build_store(head_slot, node)
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(advance)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(append);
-        let tail = self
-            .builder
-            .build_load(self.ptr_type, tail_slot, "witness.tail")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.store_pointer_field(self.witness_node_type, tail, WITNESS_NODE_FIELD_NEXT, node)?;
-        self.builder
-            .build_unconditional_branch(advance)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(advance);
-        self.builder
-            .build_store(tail_slot, node)
-            .map_err(builder_error)?;
-        let next = self.load_pointer_field(
-            self.witness_node_type,
-            current,
-            WITNESS_NODE_FIELD_NEXT,
-            "witness.concat.next",
-        )?;
-        self.builder
-            .build_store(current_slot, next)
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(loop_header)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(finish);
-        let tail = self
-            .builder
-            .build_load(self.ptr_type, tail_slot, "witness.finished.tail")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.store_pointer_field(
-            self.witness_node_type,
-            tail,
-            WITNESS_NODE_FIELD_NEXT,
-            suffix,
-        )?;
-        let head = self
-            .builder
-            .build_load(self.ptr_type, head_slot, "witness.finished.head")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.builder
-            .build_return(Some(&head))
-            .map_err(builder_error)?;
-        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2461,6 +2396,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_gc_clone_witness(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_clone_witness_v1")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_gc_clone_witness_v1", function_type, None)
+            })
+    }
+
     fn native_list_add(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_list_add")
@@ -2911,16 +2856,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         })
     }
 
-    fn native_gc_alloc_witness_node(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_gc_alloc_witness_node")
-            .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(&[], false);
-                self.module
-                    .add_function("loom_gc_alloc_witness_node", function_type, None)
-            })
-    }
-
     fn native_wait_now_ns(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_wait_now_ns")
@@ -3081,11 +3016,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_task_clone_witness(&self) -> FunctionValue<'ctx> {
+    fn native_task_capture_witnesses(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_task_clone_witness")
+            .get_function("loom_task_capture_witnesses_v1")
             .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(
+                let function_type = self.context.i32_type().fn_type(
                     &[
                         self.ptr_type.into(),
                         self.ptr_type.into(),
@@ -3094,7 +3029,19 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     false,
                 );
                 self.module
-                    .add_function("loom_task_clone_witness", function_type, None)
+                    .add_function("loom_task_capture_witnesses_v1", function_type, None)
+            })
+    }
+
+    fn native_task_witness(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_witness_v1")
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function("loom_task_witness_v1", function_type, None)
             })
     }
 
@@ -3519,7 +3466,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "native.call",
             )?
         } else {
-            call_arguments.push(parameter_pointer(wrapper, 3)?.into());
+            call_arguments.push(parameter_pointer(wrapper, 4)?.into());
             let (status, value) = call_native_status(
                 &self.builder,
                 declaration.function,
@@ -3586,8 +3533,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.set_debug_location(constructor, source.span.file.0, source.span.range.start);
         let output = parameter_pointer(constructor, 0)?;
         let mut argument = parameter_pointer(constructor, 1)?;
-        let mut witness_argument = parameter_pointer(constructor, 2)?;
-        let executor = parameter_pointer(constructor, 3)?;
+        let conformance_proofs = parameter_pointer(constructor, 2)?;
+        let requirement_proofs = parameter_pointer(constructor, 3)?;
+        let executor = parameter_pointer(constructor, 4)?;
         let entry = self.context.append_basic_block(constructor, "entry");
         let ready = self.context.append_basic_block(constructor, "task.ready");
         let failed = self.context.append_basic_block(constructor, "task.failed");
@@ -3661,47 +3609,77 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "task.argument.next",
             )?;
         }
-        let witness_field_count = u64::try_from(self.program.requirements.len())
-            .ok()
-            .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many requirements"))?;
-        for index in 0..source.witness_params.len() {
-            let index = u32::try_from(index)
-                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
-            let witness = self.load_pointer_field(
-                self.witness_node_type,
-                witness_argument,
-                WITNESS_NODE_FIELD_VALUE,
-                "task.witness",
-            )?;
-            let witness = call_pointer(
+        let prefix_count = usize::try_from(source.witness_prefix_count)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "witness prefix is too large"))?;
+        let suffix_count = source
+            .witness_params
+            .len()
+            .checked_sub(prefix_count)
+            .ok_or_else(|| CodegenError::new("InvalidWitnessReference", "invalid proof prefix"))?;
+        if !source.witness_params.is_empty() {
+            let roots_type = self.pointer_array_type(source.witness_params.len(), "task proofs")?;
+            let prefix_type = self.pointer_array_type(prefix_count, "conformance proofs")?;
+            let suffix_type = self.pointer_array_type(suffix_count, "requirement proofs")?;
+            let roots = self
+                .builder
+                .build_alloca(roots_type, "task.witness.roots")
+                .map_err(builder_error)?;
+            for index in 0..source.witness_params.len() {
+                let (source_array, source_type, source_index) = if index < prefix_count {
+                    (conformance_proofs, prefix_type, index)
+                } else {
+                    (requirement_proofs, suffix_type, index - prefix_count)
+                };
+                let source_index = u32::try_from(source_index)
+                    .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
+                let witness = self.load_pointer_field(
+                    source_type,
+                    source_array,
+                    source_index,
+                    "task.witness",
+                )?;
+                self.store_pointer_field(
+                    roots_type,
+                    roots,
+                    u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many task witnesses")
+                    })?,
+                    witness,
+                )?;
+            }
+            let status = call_int(
                 &self.builder,
-                self.native_task_clone_witness(),
+                self.native_task_capture_witnesses(),
                 &[
                     task.into(),
-                    witness.into(),
-                    self.i64_type.const_int(witness_field_count, false).into(),
-                ],
-                "task.witness.clone",
-            )?;
-            let slot = call_pointer(
-                &self.builder,
-                self.native_task_slot(),
-                &[
-                    task.into(),
+                    roots.into(),
                     self.i64_type
-                        .const_int(layout.witness_slots[&index], false)
+                        .const_int(
+                            u64::try_from(source.witness_params.len()).map_err(|_| {
+                                CodegenError::new("ProgramTooLarge", "too many task witnesses")
+                            })?,
+                            false,
+                        )
                         .into(),
                 ],
-                "task.witness.slot",
+                "task.witness.capture",
             )?;
-            self.store_pointer_field(self.value_type, slot, VALUE_FIELD_DATA, witness)?;
-            witness_argument = self.load_pointer_field(
-                self.witness_node_type,
-                witness_argument,
-                WITNESS_NODE_FIELD_NEXT,
-                "task.witness.next",
-            )?;
+            let captured = self
+                .context
+                .append_basic_block(constructor, "task.proofs.ready");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.context.i32_type().const_zero(),
+                    "task.proofs.ok",
+                )
+                .map_err(builder_error)?;
+            self.builder
+                .build_conditional_branch(ok, captured, failed)
+                .map_err(builder_error)?;
+            self.builder.position_at_end(captured);
         }
         self.builder
             .build_store(output, self.value_type.const_zero())
@@ -3953,6 +3931,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         result.into(),
                         null.into(),
                         null.into(),
+                        null.into(),
                         context.hidden().into(),
                     ],
                     "run",
@@ -4015,6 +3994,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         self.functions[root],
                         &[
                             result.into(),
+                            null.into(),
                             null.into(),
                             null.into(),
                             context.hidden().into(),
@@ -4315,6 +4295,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .const_int(u64::from_ne_bytes(value.to_ne_bytes()), true)
     }
 
+    fn pointer_array_type(
+        &self,
+        count: usize,
+        description: &str,
+    ) -> Result<StructType<'ctx>, CodegenError> {
+        u32::try_from(count).map_err(|_| {
+            CodegenError::new(
+                "ProgramTooLarge",
+                format!("too many {description} for the native ABI"),
+            )
+        })?;
+        Ok(self.context.struct_type(
+            &std::iter::repeat_n(self.ptr_type.into(), count).collect::<Vec<_>>(),
+            false,
+        ))
+    }
+
     fn struct_pointer<T: BasicType<'ctx>>(
         &self,
         structure: T,
@@ -4494,7 +4491,6 @@ struct CompletionWait<'ctx> {
 struct AsyncLayout {
     local_slots: BTreeMap<LocalId, u64>,
     old_parameter_slots: BTreeMap<LocalId, u64>,
-    witness_slots: BTreeMap<u32, u64>,
     result_slot: u64,
     slot_count: u64,
 }
@@ -4516,15 +4512,6 @@ impl AsyncLayout {
                 .checked_add(1)
                 .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
         }
-        let mut witness_slots = BTreeMap::new();
-        for index in 0..function.witness_params.len() {
-            let index = u32::try_from(index)
-                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
-            witness_slots.insert(index, next);
-            next = next
-                .checked_add(1)
-                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
-        }
         let result_slot = next;
         let slot_count = next
             .checked_add(1)
@@ -4532,7 +4519,6 @@ impl AsyncLayout {
         Ok(Self {
             local_slots,
             old_parameter_slots,
-            witness_slots,
             result_slot,
             slot_count,
         })
@@ -4578,8 +4564,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let function = backend.functions[&id];
         let output = parameter_pointer(function, 0)?;
         let arguments = parameter_pointer(function, 1)?;
-        let mut witness_argument = parameter_pointer(function, 2)?;
-        let runtime_context = parameter_pointer(function, 3)?;
+        let conformance_proofs = parameter_pointer(function, 2)?;
+        let requirement_proofs = parameter_pointer(function, 3)?;
+        let runtime_context = parameter_pointer(function, 4)?;
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
         backend.builder.position_at_end(entry);
@@ -4645,22 +4632,31 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
         }
         let mut witness_parameters = BTreeMap::new();
+        let prefix_count = usize::try_from(source.witness_prefix_count)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "witness prefix is too large"))?;
+        let suffix_count = source
+            .witness_params
+            .len()
+            .checked_sub(prefix_count)
+            .ok_or_else(|| CodegenError::new("InvalidWitnessReference", "invalid proof prefix"))?;
+        let prefix_type = backend.pointer_array_type(prefix_count, "conformance proofs")?;
+        let suffix_type = backend.pointer_array_type(suffix_count, "requirement proofs")?;
         for index in 0..source.witness_params.len() {
-            let index = u32::try_from(index)
+            let parameter_index = u32::try_from(index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many witnesses"))?;
+            let (proofs, proof_type, proof_index) = if index < prefix_count {
+                (conformance_proofs, prefix_type, index)
+            } else {
+                (requirement_proofs, suffix_type, index - prefix_count)
+            };
             let witness = backend.load_pointer_field(
-                backend.witness_node_type,
-                witness_argument,
-                WITNESS_NODE_FIELD_VALUE,
+                proof_type,
+                proofs,
+                u32::try_from(proof_index)
+                    .map_err(|_| CodegenError::new("ProgramTooLarge", "too many witnesses"))?,
                 "witness.value",
             )?;
-            witness_parameters.insert(index, witness);
-            witness_argument = backend.load_pointer_field(
-                backend.witness_node_type,
-                witness_argument,
-                WITNESS_NODE_FIELD_NEXT,
-                "witness.next",
-            )?;
+            witness_parameters.insert(parameter_index, witness);
         }
         Ok(Self {
             backend,
@@ -4956,22 +4952,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         for index in 0..source.witness_params.len() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
-            let slot = call_pointer(
+            let witness = call_pointer(
                 &backend.builder,
-                backend.native_task_slot(),
+                backend.native_task_witness(),
                 &[
                     task.into(),
-                    backend
-                        .i64_type
-                        .const_int(layout.witness_slots[&index], false)
-                        .into(),
+                    backend.i64_type.const_int(u64::from(index), false).into(),
                 ],
-                "task.witness.slot",
-            )?;
-            let witness = backend.load_pointer_field(
-                backend.value_type,
-                slot,
-                VALUE_FIELD_DATA,
                 "task.witness",
             )?;
             witness_parameters.insert(index, witness);
@@ -6020,7 +6007,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "dyn.data",
                 )?;
                 self.clone_value(data, source)?;
+                let proof_is_global = matches!(witness, WitnessRef::Concrete(_))
+                    || matches!(witness, WitnessRef::Apply { arguments, .. } if arguments.is_empty());
                 let witness = self.resolve_witness(witness)?;
+                let witness = if writeback.is_none() && !proof_is_global {
+                    call_pointer(
+                        &self.backend.builder,
+                        self.backend.native_gc_clone_witness(),
+                        &[witness.into()],
+                        "dyn.witness.owned",
+                    )?
+                } else {
+                    witness
+                };
                 let writeback = writeback
                     .as_ref()
                     .map(|writeback| self.place(writeback))
@@ -8515,7 +8514,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return Ok(false);
         };
         let mut dynamic_writeback = None;
-        let (direct, indirect, witness_head) = match target {
+        let (direct, indirect, conformance_proofs, requirement_proofs) = match target {
             CallTarget::Direct(function) | CallTarget::Inherent(function) => {
                 let target = self
                     .backend
@@ -8528,10 +8527,29 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                             format!("call target #{} was not emitted", function.0),
                         )
                     })?;
+                let prefix_count = self
+                    .backend
+                    .program
+                    .function(*function)
+                    .and_then(|function| usize::try_from(function.witness_prefix_count).ok())
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "InvalidWitnessReference",
+                            "call target has an invalid proof prefix",
+                        )
+                    })?;
+                let (prefix, suffix) =
+                    witnesses.split_at_checked(prefix_count).ok_or_else(|| {
+                        CodegenError::new(
+                            "InvalidWitnessReference",
+                            "call does not supply its conformance proof prefix",
+                        )
+                    })?;
                 (
                     Some(target),
                     None,
-                    self.build_witness_nodes(witnesses, self.backend.ptr_type.const_null())?,
+                    self.build_witness_array(prefix, "call.conformance.proofs")?,
+                    self.build_witness_array(suffix, "call.requirement.proofs")?,
                 )
             }
             CallTarget::StaticConcept {
@@ -8540,15 +8558,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 ..
             } => {
                 let runtime_witness = self.resolve_witness(witness)?;
-                let proof_head = self.backend.load_pointer_field(
-                    self.backend.witness_type,
+                let conformance_proofs = self.backend.load_pointer_field(
+                    self.backend.witness_instance_type,
                     runtime_witness,
-                    0,
-                    "witness.arguments",
+                    WITNESS_INSTANCE_FIELD_PREREQUISITES,
+                    "witness.prerequisites",
                 )?;
-                let method_head =
-                    self.build_witness_nodes(witnesses, self.backend.ptr_type.const_null())?;
-                let witness_head = self.concat_witness_nodes(proof_head, method_head)?;
+                let requirement_proofs =
+                    self.build_witness_array(witnesses, "call.requirement.proofs")?;
                 if let Some(witness_id) = concrete_witness_id(witness) {
                     let function = self
                         .backend
@@ -8566,10 +8583,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                                 ),
                             )
                         })?;
-                    (Some(function), None, witness_head)
+                    (Some(function), None, conformance_proofs, requirement_proofs)
                 } else {
                     let method = self.load_witness_method(runtime_witness, *requirement)?;
-                    (None, Some(method), witness_head)
+                    (None, Some(method), conformance_proofs, requirement_proofs)
                 }
             }
             CallTarget::Dynamic { requirement } => {
@@ -8606,13 +8623,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     dynamic_writeback = Some((owner, writeback));
                 }
                 let method = self.load_witness_method(runtime_witness, *requirement)?;
-                let witness_head = self.backend.load_pointer_field(
-                    self.backend.witness_type,
+                let conformance_proofs = self.backend.load_pointer_field(
+                    self.backend.witness_instance_type,
                     runtime_witness,
-                    0,
-                    "dyn.witness.arguments",
+                    WITNESS_INSTANCE_FIELD_PREREQUISITES,
+                    "dyn.witness.prerequisites",
                 )?;
-                (None, Some(method), witness_head)
+                (
+                    None,
+                    Some(method),
+                    conformance_proofs,
+                    self.backend.ptr_type.const_null(),
+                )
             }
             CallTarget::Builtin(_) => unreachable!(),
         };
@@ -8624,7 +8646,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &[
                     destination.into(),
                     argument_head.into(),
-                    witness_head.into(),
+                    conformance_proofs.into(),
+                    requirement_proofs.into(),
                     self.runtime_context.into(),
                 ],
                 "call",
@@ -8638,7 +8661,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &[
                         destination.into(),
                         argument_head.into(),
-                        witness_head.into(),
+                        conformance_proofs.into(),
+                        requirement_proofs.into(),
                         self.runtime_context.into(),
                     ],
                     "dyn.call",
@@ -8785,56 +8809,33 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(head)
     }
 
-    fn build_witness_nodes(
+    fn build_witness_array(
         &self,
         witnesses: &[WitnessRef],
-        mut tail: PointerValue<'ctx>,
+        name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        for witness in witnesses.iter().rev() {
-            let value = self.resolve_witness(witness)?;
-            let node = self.alloc_temporary(self.backend.witness_node_type, "witness.node")?;
-            self.backend.store_pointer_field(
-                self.backend.witness_node_type,
-                node,
-                WITNESS_NODE_FIELD_VALUE,
-                value,
-            )?;
-            self.backend.store_pointer_field(
-                self.backend.witness_node_type,
-                node,
-                WITNESS_NODE_FIELD_NEXT,
-                tail,
-            )?;
-            tail = node;
+        if witnesses.is_empty() {
+            return Ok(self.backend.ptr_type.const_null());
         }
-        Ok(tail)
-    }
-
-    fn concat_witness_nodes(
-        &self,
-        prefix: PointerValue<'ctx>,
-        suffix: PointerValue<'ctx>,
-    ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let concatenate = self
-            .backend
-            .module
-            .get_function("loom.runtime.concat_witnesses")
-            .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "witness concat helper is missing")
-            })?;
-        call_pointer(
-            &self.backend.builder,
-            concatenate,
-            &[prefix.into(), suffix.into()],
-            "witness.arguments",
-        )
+        let array_type = self.backend.pointer_array_type(witnesses.len(), name)?;
+        let array = self.alloc_temporary(array_type, name)?;
+        for (index, witness) in witnesses.iter().enumerate() {
+            self.backend.store_pointer_field(
+                array_type,
+                array,
+                u32::try_from(index)
+                    .map_err(|_| CodegenError::new("ProgramTooLarge", "too many witnesses"))?,
+                self.resolve_witness(witness)?,
+            )?;
+        }
+        Ok(array)
     }
 
     fn resolve_witness(&self, witness: &WitnessRef) -> Result<PointerValue<'ctx>, CodegenError> {
         match witness {
             WitnessRef::Concrete(id) => self
                 .backend
-                .witnesses
+                .witness_instances
                 .get(id)
                 .map(|global| global.as_pointer_value())
                 .ok_or_else(|| {
@@ -8852,9 +8853,22 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 })
             }
             WitnessRef::Apply { witness, arguments } => {
-                let base = self
+                if arguments.is_empty() {
+                    return self
+                        .backend
+                        .witness_instances
+                        .get(witness)
+                        .map(|instance| instance.as_pointer_value())
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "ReachabilityDefect",
+                                format!("witness #{} has no emitted global instance", witness.0),
+                            )
+                        });
+                }
+                let descriptor = self
                     .backend
-                    .witnesses
+                    .witness_descriptors
                     .get(witness)
                     .map(|global| global.as_pointer_value())
                     .ok_or_else(|| {
@@ -8863,23 +8877,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                             format!("witness #{} was not emitted", witness.0),
                         )
                     })?;
-                let applied =
-                    self.alloc_temporary(self.backend.witness_type, "witness.application")?;
-                let value = self
-                    .backend
-                    .builder
-                    .build_load(self.backend.witness_type, base, "witness.base")
-                    .map_err(builder_error)?;
-                self.backend
-                    .builder
-                    .build_store(applied, value)
-                    .map_err(builder_error)?;
-                let arguments =
-                    self.build_witness_nodes(arguments, self.backend.ptr_type.const_null())?;
+                let applied = self
+                    .alloc_temporary(self.backend.witness_instance_type, "witness.application")?;
+                let arguments = self.build_witness_array(arguments, "witness.prerequisites")?;
                 self.backend.store_pointer_field(
-                    self.backend.witness_type,
+                    self.backend.witness_instance_type,
                     applied,
-                    0,
+                    WITNESS_INSTANCE_FIELD_DESCRIPTOR,
+                    descriptor,
+                )?;
+                self.backend.store_pointer_field(
+                    self.backend.witness_instance_type,
+                    applied,
+                    WITNESS_INSTANCE_FIELD_PREREQUISITES,
                     arguments,
                 )?;
                 Ok(applied)
@@ -8892,13 +8902,52 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         witness: PointerValue<'ctx>,
         requirement: RequirementId,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let field = WITNESS_METHOD_FIELD_OFFSET
-            .checked_add(requirement.0)
+        let definition = self
+            .backend
+            .program
+            .requirement(requirement)
             .ok_or_else(|| {
-                CodegenError::new("ProgramTooLarge", "requirement method index overflowed")
+                CodegenError::new(
+                    "InvalidRequirementReference",
+                    "dynamic requirement is missing",
+                )
             })?;
+        let method_type = self
+            .backend
+            .witness_method_types
+            .get(&definition.concept)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "ReachabilityDefect",
+                    format!("concept #{} has no live method table", definition.concept.0),
+                )
+            })?;
+        let slot = self
+            .backend
+            .witness_method_slots
+            .get(&requirement)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "ReachabilityDefect",
+                    format!("requirement #{} has no live method slot", requirement.0),
+                )
+            })?;
+        let descriptor = self.backend.load_pointer_field(
+            self.backend.witness_instance_type,
+            witness,
+            WITNESS_INSTANCE_FIELD_DESCRIPTOR,
+            "witness.descriptor",
+        )?;
+        let methods = self.backend.load_pointer_field(
+            self.backend.witness_descriptor_type,
+            descriptor,
+            WITNESS_DESCRIPTOR_FIELD_METHODS,
+            "witness.methods",
+        )?;
         self.backend
-            .load_pointer_field(self.backend.witness_type, witness, field, "witness.method")
+            .load_pointer_field(method_type, methods, slot, "witness.method")
     }
 
     fn propagate_status(&self, status: IntValue<'ctx>) -> Result<(), CodegenError> {

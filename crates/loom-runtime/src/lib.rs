@@ -27,8 +27,12 @@ mod scheduler;
 mod standard;
 mod text;
 mod value;
+mod witness;
 
-pub use gc::{activate_runtime_v1, deactivate_runtime_v1, root_pop_v1, root_push_v1, safepoint_v1};
+pub use gc::{
+    activate_runtime_v1, clone_witness_v1, deactivate_runtime_v1, root_pop_v1, root_push_v1,
+    safepoint_v1,
+};
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
 
@@ -46,11 +50,11 @@ pub use scheduler::{
     executor_tasks_reclaimed, file_try_create, file_try_open_read, file_try_read_text,
     file_try_write_text, join_add_list, join_add_task, join_create, join_task, socket_try_connect,
     socket_try_read_text, socket_try_write_text, task_add_join_child, task_cancel,
-    task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
+    task_capture_witnesses_v1, task_from_wait_source, task_is_cancelled, task_join_count,
     task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
     task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
     task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
-    task_trace_live_slots, task_write_join_result,
+    task_trace_live_slots, task_witness_v1, task_write_join_result,
 };
 pub use standard::{
     JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_decode_utf8,
@@ -64,13 +68,14 @@ pub use loom_runtime_abi::{
     FAULT_SCHEMA_VERSION, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK,
     GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
     LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
-    LoomGcRootDescriptor, LoomGcRootFrame, LoomLayoutDescriptor, NATIVE_RUNTIME_ABI_IDENTITY,
-    READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE, READY_TIMER, READY_WRITABLE,
-    RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
-    TASK_PENDING, WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY,
-    WAIT_OK, WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
-    WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE,
+    LoomGcRootDescriptor, LoomGcRootFrame, LoomLayoutDescriptor, LoomWitnessDescriptor,
+    LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, READY_CLOSED, READY_COMPLETED, READY_ERROR,
+    READY_READABLE, READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
+    STANDARD_LIBRARY_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
+    TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
+    WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_READABLE,
+    WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION,
+    WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE, WITNESS_ABI_VERSION,
 };
 
 pub const WAIT_INFINITE: u64 = u64::MAX;
@@ -79,6 +84,7 @@ pub const WAIT_INFINITE: u64 = u64::MAX;
 mod tests {
     use std::ffi::c_void;
     use std::io::Write;
+    use std::mem::{align_of, offset_of, size_of};
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -98,6 +104,24 @@ mod tests {
     static VALUE_RELOCATED: AtomicBool = AtomicBool::new(false);
     static DESCRIPTOR_CANCELLED: AtomicBool = AtomicBool::new(false);
     const TASK_BATCH_SIZE: usize = 512;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn coroutine_descriptor_layout_includes_independent_witness_slots() {
+        assert_eq!(size_of::<LoomCoroutineDescriptor>(), 80);
+        assert_eq!(align_of::<LoomCoroutineDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, resume), 8);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, cancel), 16);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, trace), 24);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, slot_count), 32);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, witness_count), 40);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, result_slot), 48);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, state_count), 56);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, live_bitmap_words), 64);
+        assert_eq!(offset_of!(LoomCoroutineDescriptor, live_bitmaps), 72);
+    }
 
     unsafe extern "C" fn gc_fixture_resume(
         task: *mut LoomTask,
@@ -161,12 +185,6 @@ mod tests {
     ) -> i32 {
         DESCRIPTOR_CANCELLED.store(true, Ordering::SeqCst);
         TASK_CANCELLED
-    }
-
-    #[repr(C)]
-    struct TestWitnessNode {
-        value: *mut c_void,
-        next: *mut TestWitnessNode,
     }
 
     unsafe extern "C" fn task_batch_resume(
@@ -358,6 +376,44 @@ mod tests {
     }
 
     #[test]
+    fn public_gc_live_object_count_includes_owned_witness_proofs() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let descriptor = LoomWitnessDescriptor {
+            prerequisite_count: 0,
+            method_count: 0,
+            methods: std::ptr::null(),
+        };
+        let source = LoomWitnessInstance {
+            descriptor: &raw const descriptor,
+            prerequisites: std::ptr::null(),
+        };
+        unsafe {
+            let task = task_spawn(executor, Some(completed_child_resume), 1, 0);
+            assert!(!task.is_null());
+            gc::enter_executor(executor);
+            let data = gc::allocate_value().cast::<scheduler::ValueSlot>();
+            let witness = clone_witness_v1(&raw const source);
+            gc::leave_executor();
+            assert!(!data.is_null() && !witness.is_null());
+            let root = task_slot(task, 0).cast::<scheduler::ValueSlot>();
+            (*root).words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_DYN;
+            (*root).words[loom_runtime_abi::VALUE_WORD_DATA] = data as u64;
+            (*root).words[loom_runtime_abi::VALUE_WORD_WITNESS] = witness as u64;
+
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 2);
+            root.write(scheduler::ValueSlot::default());
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 0);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
     fn borrowed_executor_collects_into_its_runtime_heap_and_reports_stats() {
         VALUE_RELOCATED.store(false, Ordering::SeqCst);
         let runtime = runtime_create_v1();
@@ -395,6 +451,7 @@ mod tests {
             cancel: None,
             trace: Some(trace_managed_sequence_slots),
             slot_count: 3,
+            witness_count: 0,
             result_slot: 0,
             state_count: 0,
             live_bitmap_words: 0,
@@ -459,6 +516,7 @@ mod tests {
             cancel: None,
             trace: None,
             slot_count: 2,
+            witness_count: 0,
             result_slot: 0,
             state_count: 1,
             live_bitmap_words: 1,
@@ -519,6 +577,7 @@ mod tests {
             cancel: None,
             trace: None,
             slot_count: 2,
+            witness_count: 0,
             result_slot: 0,
             state_count: 1,
             live_bitmap_words: 1,
@@ -632,36 +691,76 @@ mod tests {
     }
 
     #[test]
-    fn task_witness_clone_owns_conditional_proof_tree() {
+    fn task_capture_owns_compact_conditional_proof_dag() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
+        let leaf_descriptor = LoomWitnessDescriptor {
+            prerequisite_count: 0,
+            method_count: 0,
+            methods: std::ptr::null(),
+        };
+        let applied_descriptor = LoomWitnessDescriptor {
+            prerequisite_count: 1,
+            method_count: 0,
+            methods: std::ptr::null(),
+        };
+        let descriptor = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION,
+            flags: 0,
+            resume: Some(completed_child_resume),
+            cancel: None,
+            trace: None,
+            slot_count: 1,
+            witness_count: 1,
+            result_slot: 0,
+            state_count: 0,
+            live_bitmap_words: 0,
+            live_bitmaps: std::ptr::null(),
+        };
         unsafe {
-            let task = task_spawn(executor, Some(completed_child_resume), 1, 0);
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
             assert!(!task.is_null());
-            let mut prerequisite = vec![0_usize, 0x11, 0x12].into_boxed_slice();
-            let mut prerequisite_node = Box::new(TestWitnessNode {
-                value: prerequisite.as_mut_ptr().cast(),
-                next: std::ptr::null_mut(),
-            });
-            let mut applied =
-                vec![(&raw mut *prerequisite_node) as usize, 0x21, 0x22].into_boxed_slice();
-            let cloned = task_clone_witness(task, applied.as_ptr().cast(), 3).cast::<usize>();
-            assert!(!cloned.is_null());
-            assert_ne!(cloned, applied.as_mut_ptr());
+            let invalid = LoomWitnessInstance {
+                descriptor: &raw const applied_descriptor,
+                prerequisites: std::ptr::null(),
+            };
+            let invalid_roots = [&raw const invalid];
+            assert_eq!(
+                task_capture_witnesses_v1(task, invalid_roots.as_ptr(), 1),
+                WAIT_INVALID_ARGUMENT,
+            );
+            assert!(task_witness_v1(task, 0).is_null());
+            let source_root = {
+                let mut leaf = LoomWitnessInstance {
+                    descriptor: &raw const leaf_descriptor,
+                    prerequisites: std::ptr::null(),
+                };
+                let prerequisites = [&raw const leaf];
+                let mut applied = LoomWitnessInstance {
+                    descriptor: &raw const applied_descriptor,
+                    prerequisites: prerequisites.as_ptr(),
+                };
+                let roots = [&raw const applied];
+                assert_eq!(task_capture_witnesses_v1(task, roots.as_ptr(), 1), WAIT_OK,);
+                let captured = task_witness_v1(task, 0);
+                assert!(!captured.is_null());
+                assert_ne!(captured, &raw const applied);
+                applied.descriptor = std::ptr::null();
+                leaf.descriptor = std::ptr::null();
+                captured
+            };
 
-            applied.fill(0);
-            prerequisite.fill(0);
-            prerequisite_node.value = std::ptr::null_mut();
-
-            let cloned_fields = std::slice::from_raw_parts(cloned, 3);
-            assert_eq!(&cloned_fields[1..], &[0x21, 0x22]);
-            let node = cloned_fields[0] as *const TestWitnessNode;
-            assert!(!node.is_null());
-            let nested = std::slice::from_raw_parts((*node).value.cast::<usize>(), 3);
-            assert_eq!(nested, &[0, 0x11, 0x12]);
-            assert!((*node).next.is_null());
+            assert_eq!((*source_root).descriptor, &raw const applied_descriptor);
+            let prerequisite = *(*source_root).prerequisites;
+            assert!(!prerequisite.is_null());
+            assert_eq!((*prerequisite).descriptor, &raw const leaf_descriptor);
+            assert!(task_witness_v1(task, 1).is_null());
+            assert_eq!(
+                task_capture_witnesses_v1(task, std::ptr::null(), 0),
+                WAIT_INVALID_ARGUMENT,
+            );
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -682,6 +781,7 @@ mod tests {
             cancel: Some(descriptor_cancel),
             trace: None,
             slot_count: 3,
+            witness_count: 0,
             result_slot: 2,
             state_count: 1,
             live_bitmap_words: 1,

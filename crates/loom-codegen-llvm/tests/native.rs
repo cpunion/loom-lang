@@ -1621,6 +1621,37 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
     &ir[start..start + marker.len() + end]
 }
 
+fn emit_source_with_ir(source: &str) -> (tempfile::TempDir, Program, String) {
+    let project = tempfile::tempdir().expect("create source project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load source project")
+        .snapshot()
+        .expect("analyze source project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower executable MIR").clone();
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(&program, &executable, &options).expect("emit native executable");
+    let llvm = std::fs::read_to_string(ir).expect("read native LLVM IR");
+    (project, program, llvm)
+}
+
+fn assert_emitted_main_succeeds(project: &tempfile::TempDir) {
+    let output = Command::new(project.path().join("program"))
+        .output()
+        .expect("run native executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+}
+
 fn llvm_any_function<'source>(ir: &'source str, symbol_suffix: &str) -> Option<&'source str> {
     let start = ir
         .match_indices("define ")
@@ -2138,6 +2169,52 @@ pub async fn main() Unit {
 }
 
 #[test]
+fn compact_witness_ir_removes_linked_nodes_concat_and_legacy_task_clone() {
+    let source = r"module compact_witness
+
+concept Check {
+    method check(self) Bool
+}
+
+record Number { value Int }
+
+impl Check for Number {
+    method check(self) Bool { self.value == 7 }
+}
+
+async fn delayedCheck[T: Check](value T) Bool {
+    Task.sleep(1).await
+    value.check()
+}
+
+pub async fn main() Unit {
+    let checked = delayedCheck(Number { value = 7 }).await
+    assert checked
+    Unit
+}
+";
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    assert!(llvm.contains("%loom.WitnessDescriptor = type"), "{llvm}");
+    assert!(llvm.contains("%loom.WitnessInstance = type"), "{llvm}");
+    assert!(llvm.contains("@loom_task_capture_witnesses_v1"), "{llvm}");
+    assert!(llvm.contains("@loom_task_witness_v1"), "{llvm}");
+    for legacy in [
+        "%loom.WitnessNode",
+        "@loom.runtime.concat_witnesses",
+        "@loom_gc_alloc_witness_node",
+        "@loom_task_clone_witness",
+    ] {
+        assert!(
+            !llvm.contains(legacy),
+            "legacy witness ABI `{legacy}`:\n{llvm}"
+        );
+    }
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
 fn static_generic_concepts_and_conditional_witnesses_compile_natively() {
     let source = r"module sample
 
@@ -2252,8 +2329,46 @@ pub fn main() Unit {
         .expect("analyze project");
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower executable MIR");
+    let both_source = program
+        .functions
+        .iter()
+        .find(|function| function.name.rsplit('.').next() == Some("both"))
+        .expect("lowered Combine.both method");
+    assert_eq!(both_source.witness_prefix_count, 1);
+    assert_eq!(both_source.witness_params.len(), 2);
     let executable = project.path().join("program");
-    emit_native(program, &executable, &EmitOptions::run("main")).expect("emit native executable");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit native executable");
+    let llvm = std::fs::read_to_string(ir).expect("read proof ABI LLVM IR");
+    let both = llvm_function(&llvm, "both");
+    let signature = both.lines().next().expect("Combine.both definition");
+    let parameters = signature
+        .split_once('(')
+        .and_then(|(_, tail)| tail.split_once(')'))
+        .map(|(parameters, _)| parameters)
+        .expect("Combine.both parameter list");
+    let parameters = parameters.split(',').map(str::trim).collect::<Vec<_>>();
+    assert_eq!(parameters.len(), 5, "{signature}");
+    assert!(
+        parameters
+            .iter()
+            .all(|parameter| parameter.starts_with("ptr %")),
+        "{signature}"
+    );
+    let proof_loads = both
+        .lines()
+        .filter(|line| line.contains("witness.value") && line.contains("getelementptr"))
+        .collect::<Vec<_>>();
+    assert!(
+        proof_loads.iter().any(|line| line.contains("ptr %2")),
+        "missing conformance proof load: {both}"
+    );
+    assert!(
+        proof_loads.iter().any(|line| line.contains("ptr %3")),
+        "missing requirement proof load: {both}"
+    );
     let output = Command::new(&executable)
         .output()
         .expect("run native executable");
@@ -2263,6 +2378,163 @@ pub fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn witness_method_tables_are_dense_per_concept_and_live_requirement() {
+    let source = r#"module compact_table
+
+dyn concept Noise {
+    method noiseOne(self) Text
+    method noiseTwo(self) Text
+    method noiseThree(self) Text
+}
+
+record NoiseValue {}
+
+impl Noise for NoiseValue {
+    method noiseOne(self) Text { "one" }
+    method noiseTwo(self) Text { "two" }
+    method noiseThree(self) Text { "three" }
+}
+
+dyn concept Visible {
+    method visibleText(self) Text
+    method unusedText(self) Text
+}
+
+record Message { text Text }
+
+impl Visible for Message {
+    method visibleText(self) Text { self.text }
+    method unusedText(self) Text { "unused" }
+}
+
+fn eraseMessage(value Message) dyn Visible { value }
+
+pub fn main() Unit {
+    let erased = eraseMessage(Message { text = "live" })
+    let text = erased.visibleText()
+    assert text == "live"
+    Unit
+}
+"#;
+    let (project, program, llvm) = emit_source_with_ir(source);
+    let noise = program
+        .concepts
+        .iter()
+        .find(|concept| concept.name == "Noise")
+        .expect("Noise concept");
+    let visible = program
+        .concepts
+        .iter()
+        .find(|concept| concept.name == "Visible")
+        .expect("Visible concept");
+    let visible_requirement = program
+        .requirements
+        .iter()
+        .find(|requirement| requirement.name == "visibleText")
+        .expect("visibleText requirement");
+    assert!(visible_requirement.id.0 >= 3);
+
+    let table_definitions = llvm
+        .lines()
+        .filter(|line| line.starts_with("%loom.WitnessMethods."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        table_definitions,
+        vec![format!(
+            "%loom.WitnessMethods.{} = type {{ ptr }}",
+            visible.id.0
+        )],
+        "{llvm}"
+    );
+    assert!(
+        !llvm.contains(&format!("%loom.WitnessMethods.{} = type", noise.id.0)),
+        "{llvm}"
+    );
+    let method_tables = llvm
+        .lines()
+        .filter(|line| line.starts_with("@loom.witness.methods."))
+        .collect::<Vec<_>>();
+    assert_eq!(method_tables.len(), 1, "{method_tables:#?}");
+    assert_eq!(
+        method_tables[0].matches("ptr @").count(),
+        1,
+        "{method_tables:#?}"
+    );
+    let descriptors = llvm
+        .lines()
+        .filter(|line| line.starts_with("@loom.witness.descriptor."))
+        .collect::<Vec<_>>();
+    assert_eq!(descriptors.len(), 1, "{descriptors:#?}");
+    assert!(descriptors[0].contains("i64 0, i64 1"), "{descriptors:#?}");
+    assert!(!llvm.contains("noiseOne"), "{llvm}");
+    assert!(!llvm.contains("noiseTwo"), "{llvm}");
+    assert!(!llvm.contains("noiseThree"), "{llvm}");
+    assert!(!llvm.contains("unusedText"), "{llvm}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn concrete_conditional_erasure_owns_proof_after_the_producer_stack_returns() {
+    let source = r#"module compact_escape
+
+dyn concept Render {
+    method render(self) Text
+}
+
+record Label { text Text }
+
+impl Render for Label {
+    method render(self) Text { self.text }
+}
+
+record Wrapped[T] { value T }
+
+impl[T: Render] Render for Wrapped[T] {
+    method render(self) Text { self.value.render() }
+}
+
+fn eraseWrapped(value Wrapped[Label]) dyn Render { value }
+
+fn produce() dyn Render {
+    eraseWrapped(Wrapped { value = Label { text = "survived" } })
+}
+
+pub fn main() Unit {
+    let erased = produce()
+    let text = erased.render()
+    assert text == "survived"
+    Unit
+}
+"#;
+    let (project, program, llvm) = emit_source_with_ir(source);
+    let erase_source = program
+        .functions
+        .iter()
+        .find(|function| function.name.rsplit('.').next() == Some("eraseWrapped"))
+        .expect("concrete conditional erase function");
+    assert_eq!(erase_source.witness_prefix_count, 0);
+    assert_eq!(erase_source.witness_params.len(), 0);
+    assert!(program.functions.iter().any(|function| {
+        function.name.rsplit('.').next() == Some("render") && function.witness_prefix_count == 1
+    }));
+
+    let erase = llvm_function(&llvm, "eraseWrapped");
+    assert!(erase.contains("@loom_gc_clone_witness_v1"), "{erase}");
+    assert!(erase.contains("witness.application"), "{erase}");
+    assert!(erase.contains("witness.prerequisites"), "{erase}");
+    assert!(llvm.contains("dyn.call"), "{llvm}");
+    assert!(
+        llvm.lines().any(|line| {
+            line.starts_with("@loom.witness.descriptor.") && line.contains("i64 1")
+        })
+    );
+
+    assert_emitted_main_succeeds(&project);
 }
 
 #[test]

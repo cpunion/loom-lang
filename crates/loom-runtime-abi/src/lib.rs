@@ -4,13 +4,14 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 4;
-pub const COROUTINE_ABI_VERSION: u32 = 1;
+pub const RUNTIME_ABI_VERSION: u32 = 5;
+pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 3;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v4/shadow-stack-v1/int-list-v1/stdlib-v3";
+pub const WITNESS_ABI_VERSION: u32 = 1;
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v5/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -36,6 +37,32 @@ pub const VALUE_WORD_AUX: usize = 2;
 pub const VALUE_WORD_SCALAR: usize = 3;
 pub const VALUE_WORD_DATA: usize = 4;
 pub const VALUE_WORD_WITNESS: usize = 5;
+
+/// Immutable compiler-emitted dispatch metadata for one conformance.
+///
+/// `methods` is a dense concept-local table selected by the closed-world
+/// reachability plan. Descriptors and their method arrays are process-lifetime
+/// constants. They intentionally contain no runtime type or concept identity.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomWitnessDescriptor {
+    pub prerequisite_count: u64,
+    pub method_count: u64,
+    pub methods: *const *const core::ffi::c_void,
+}
+
+/// One immutable conformance proof and its recursively supplied prerequisites.
+///
+/// Instances may be compiler globals, synchronous stack temporaries, Task-owned
+/// captures, or allocations in the non-moving GC proof arena. A nonzero
+/// descriptor prerequisite count requires a contiguous, non-null
+/// `prerequisites` array of exactly that length.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomWitnessInstance {
+    pub descriptor: *const LoomWitnessDescriptor,
+    pub prerequisites: *const *const LoomWitnessInstance,
+}
 
 /// Description of the precise universal-value roots within one native stack
 /// frame.
@@ -164,19 +191,23 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::{
-        LAYOUT_ABI_VERSION, LoomGcRootDescriptor, LoomGcRootFrame, NATIVE_RUNTIME_ABI_IDENTITY,
+        COROUTINE_ABI_VERSION, LAYOUT_ABI_VERSION, LoomGcRootDescriptor, LoomGcRootFrame,
+        LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
+        WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 4);
+        assert_eq!(RUNTIME_ABI_VERSION, 5);
+        assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
+        assert_eq!(WITNESS_ABI_VERSION, 1);
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 3);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v4/shadow-stack-v1/int-list-v1/stdlib-v3",
+            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v5/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3",
         );
     }
 
@@ -200,5 +231,16 @@ mod tests {
         assert_eq!(offset_of!(LoomGcRootFrame, descriptor), 16);
         assert_eq!(offset_of!(LoomGcRootFrame, slots), 24);
         assert_eq!(offset_of!(LoomGcRootFrame, previous), 32);
+
+        assert_eq!(size_of::<LoomWitnessDescriptor>(), 24);
+        assert_eq!(align_of::<LoomWitnessDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomWitnessDescriptor, prerequisite_count), 0);
+        assert_eq!(offset_of!(LoomWitnessDescriptor, method_count), 8);
+        assert_eq!(offset_of!(LoomWitnessDescriptor, methods), 16);
+
+        assert_eq!(size_of::<LoomWitnessInstance>(), 16);
+        assert_eq!(align_of::<LoomWitnessInstance>(), 8);
+        assert_eq!(offset_of!(LoomWitnessInstance, descriptor), 0);
+        assert_eq!(offset_of!(LoomWitnessInstance, prerequisites), 8);
     }
 }

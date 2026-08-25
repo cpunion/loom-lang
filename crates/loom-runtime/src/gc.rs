@@ -15,16 +15,18 @@ use std::sync::atomic::Ordering;
 
 use loom_runtime_abi::{
     GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK, GC_ROOT_FRAME_LINKED,
-    GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame, SHADOW_STACK_ABI_VERSION,
-    TASK_COMPLETED, VALUE_SLOT_WORDS, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM,
-    VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT,
-    VALUE_TAG_TUPLE, VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
+    GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame, LoomWitnessInstance,
+    SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, VALUE_SLOT_WORDS, VALUE_TAG_CONSTRAINT_ERROR,
+    VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED,
+    VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_WORD_AUX, VALUE_WORD_DATA,
+    VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
 
 use crate::reactor::LoomExecutor;
 use crate::runtime::LoomRuntime;
 use crate::scheduler::{LoomTask, LoomTraceVisitor, ValueNode, ValueSlot, trace_task_roots};
 use crate::text;
+use crate::witness::{WitnessArena, clone_witnesses, walk_witnesses};
 
 pub(crate) struct ListNodeIndex {
     pub(crate) length: u64,
@@ -49,9 +51,11 @@ pub(crate) struct LoomHeap {
     /// these before relocating nodes, so they are never roots and never retain
     /// stale pointers across a safepoint.
     pub(crate) list_node_indexes: HashMap<usize, ListNodeIndex>,
-    /// Immutable compiler witness metadata is non-moving but shares the
-    /// runtime-owned allocation lifetime with managed values.
-    pub(crate) metadata_nodes: Vec<Box<[usize; 2]>>,
+    /// Immutable proof instances remain non-moving because generated hidden
+    /// arguments may hold their raw addresses across a safepoint. Unlike
+    /// compiler descriptor globals, this arena is marked from owned `dyn`
+    /// values and swept with the moving value heap.
+    pub(crate) witnesses: WitnessArena,
     pub(crate) collections: u64,
     pub(crate) relocations: u64,
     pub(crate) reclaimed: u64,
@@ -743,26 +747,38 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
     }
 }
 
-/// Witness argument lists are immutable compiler metadata. They are kept in a
-/// non-moving runtime arena because generated call sites can hold their raw
-/// address transiently; they never contain user heap values.
-#[unsafe(export_name = "loom_gc_alloc_witness_node")]
-pub extern "C" fn allocate_witness_node() -> *mut c_void {
+/// Deep-clones one immutable conformance proof into the active Runtime's
+/// non-moving, traced proof arena.
+///
+/// The clone is not published until its complete prerequisite DAG has been
+/// validated. Allocation itself never collects; generated code must store the
+/// returned root in an initialized owned `dyn` value before its next
+/// safepoint.
+#[unsafe(export_name = "loom_gc_clone_witness_v1")]
+pub unsafe extern "C" fn clone_witness_v1(
+    source: *const LoomWitnessInstance,
+) -> *const LoomWitnessInstance {
     let runtime = active_runtime_pointer();
-    if runtime.is_null() {
-        return ptr::null_mut();
+    if runtime.is_null() || source.is_null() {
+        return ptr::null();
     }
-    let mut allocation = Box::new([0_usize; 2]);
-    let pointer = (&raw mut *allocation).cast::<c_void>();
-    // SAFETY: see allocate_value.
-    unsafe { (*runtime).heap.metadata_nodes.push(allocation) };
-    pointer
+    let Some(staged) = (unsafe { clone_witnesses(&[source]) }) else {
+        return ptr::null();
+    };
+    let charge = staged.allocation_bytes();
+    // SAFETY: ACTIVE_RUNTIME is installed only around one generated-code
+    // interval. Adopting stable Boxes cannot invalidate the staged root.
+    let heap = unsafe { &mut (*runtime).heap };
+    let roots = heap.witnesses.adopt(staged);
+    heap.allocation_charge = heap.allocation_charge.saturating_add(charge);
+    roots[0]
 }
 
 struct HeapIndex {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
     sequences: HashSet<usize>,
+    witnesses: HashSet<usize>,
 }
 
 impl HeapIndex {
@@ -783,6 +799,7 @@ impl HeapIndex {
                 .iter()
                 .map(|sequence| sequence.as_ptr() as usize)
                 .collect(),
+            witnesses: heap.witnesses.addresses().collect(),
         }
     }
 }
@@ -792,6 +809,8 @@ struct Marks {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
     sequences: HashSet<usize>,
+    witnesses: HashSet<usize>,
+    invalid_witness: bool,
 }
 
 struct TraceContext {
@@ -836,9 +855,21 @@ fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
                 marks,
             );
         }
-        VALUE_TAG_REFINED | VALUE_TAG_DYN => {
+        VALUE_TAG_REFINED => {
             trace_value_pointer(
                 value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                index,
+                marks,
+            );
+        }
+        VALUE_TAG_DYN => {
+            trace_value_pointer(
+                value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                index,
+                marks,
+            );
+            trace_witness_pointer(
+                value.words[VALUE_WORD_WITNESS] as *const LoomWitnessInstance,
                 index,
                 marks,
             );
@@ -851,6 +882,24 @@ fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
             );
         }
         _ => {}
+    }
+}
+
+fn trace_witness_pointer(
+    pointer: *const LoomWitnessInstance,
+    index: &HeapIndex,
+    marks: &mut Marks,
+) {
+    let valid = unsafe {
+        walk_witnesses(pointer, |instance| {
+            let address = instance as usize;
+            if index.witnesses.contains(&address) {
+                marks.witnesses.insert(address);
+            }
+        })
+    };
+    if !valid {
+        marks.invalid_witness = true;
     }
 }
 
@@ -1047,7 +1096,11 @@ unsafe fn collect_heap(
     // pointer before filtering or relocating the heap; the next add/get lazily
     // rebuilds an index from the rewritten List head.
     heap.list_node_indexes.clear();
-    if heap.values.is_empty() && heap.nodes.is_empty() && heap.sequences.is_empty() {
+    if heap.values.is_empty()
+        && heap.nodes.is_empty()
+        && heap.sequences.is_empty()
+        && heap.witnesses.is_empty()
+    {
         heap.allocation_charge = 0;
         heap.next_gc_threshold = MIN_GC_THRESHOLD_BYTES;
         return GC_OK;
@@ -1073,23 +1126,29 @@ unsafe fn collect_heap(
     if root_status != GC_OK {
         return root_status;
     }
+    if marks.invalid_witness {
+        return GC_INVALID_ARGUMENT;
+    }
 
     let before = heap
         .values
         .len()
         .saturating_add(heap.nodes.len())
-        .saturating_add(heap.sequences.len());
+        .saturating_add(heap.sequences.len())
+        .saturating_add(heap.witnesses.len());
     heap.values
         .retain(|value| marks.values.contains(&((&raw const **value) as usize)));
     heap.nodes
         .retain(|node| marks.nodes.contains(&((&raw const **node) as usize)));
     heap.sequences
         .retain(|sequence| marks.sequences.contains(&(sequence.as_ptr() as usize)));
+    heap.witnesses.retain_marked(&marks.witnesses);
     let after = heap
         .values
         .len()
         .saturating_add(heap.nodes.len())
-        .saturating_add(heap.sequences.len());
+        .saturating_add(heap.sequences.len())
+        .saturating_add(heap.witnesses.len());
     heap.reclaimed = heap
         .reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
@@ -1181,7 +1240,8 @@ unsafe fn relocate_marked_heap(
                 .iter()
                 .map(|sequence| sequence.len().saturating_mul(size_of::<u64>()))
                 .fold(0_usize, usize::saturating_add),
-        );
+        )
+        .saturating_add(heap.witnesses.allocation_bytes());
     heap.allocation_charge = live_bytes;
     heap.next_gc_threshold = live_bytes.saturating_mul(2).max(MIN_GC_THRESHOLD_BYTES);
     GC_OK
@@ -1396,7 +1456,7 @@ mod tests {
         assert!(active_runtime_pointer().is_null());
         assert!(allocate_value().is_null());
         assert!(allocate_value_node().is_null());
-        assert!(allocate_witness_node().is_null());
+        assert!(unsafe { clone_witness_v1(ptr::null()) }.is_null());
         assert!(retain_text(b"not leaked").is_none());
         assert!(retain_byte_sequence(b"not leaked").is_none());
 
@@ -1404,6 +1464,58 @@ mod tests {
         assert!(!runtime.is_null());
         assert!(allocate_value().is_null());
         unsafe {
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn owned_dyn_traces_nonmoving_proof_dag_and_sweeps_it_when_dead() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<1>::all_live();
+        let leaf_descriptor = loom_runtime_abi::LoomWitnessDescriptor {
+            prerequisite_count: 0,
+            method_count: 0,
+            methods: ptr::null(),
+        };
+        let applied_descriptor = loom_runtime_abi::LoomWitnessDescriptor {
+            prerequisite_count: 1,
+            method_count: 0,
+            methods: ptr::null(),
+        };
+        let leaf = LoomWitnessInstance {
+            descriptor: &raw const leaf_descriptor,
+            prerequisites: ptr::null(),
+        };
+        let prerequisites = [&raw const leaf];
+        let applied = LoomWitnessInstance {
+            descriptor: &raw const applied_descriptor,
+            prerequisites: prerequisites.as_ptr(),
+        };
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let data = allocate_value().cast::<ValueSlot>();
+            let witness = clone_witness_v1(&raw const applied);
+            assert!(!data.is_null() && !witness.is_null());
+            frame.roots[0].words[VALUE_WORD_TAG] = VALUE_TAG_DYN;
+            frame.roots[0].words[VALUE_WORD_DATA] = data as u64;
+            frame.roots[0].words[VALUE_WORD_WITNESS] = witness as u64;
+            assert_eq!((*runtime).heap.witnesses.len(), 2);
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_eq!((*runtime).heap.witnesses.len(), 2);
+            assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], data as u64);
+            assert_eq!(frame.roots[0].words[VALUE_WORD_WITNESS], witness as u64);
+
+            frame.roots[0] = ValueSlot::default();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert!((*runtime).heap.values.is_empty());
+            assert!((*runtime).heap.witnesses.is_empty());
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
             assert_eq!(runtime_destroy_v1(runtime), GC_OK);
         }
     }
