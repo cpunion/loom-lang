@@ -5309,9 +5309,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.types().error()
     }
 
-    fn finish_async_call(&mut self, _expression: ExprId, is_async: bool, output: TyId) -> TyId {
+    fn finish_async_call(&mut self, expression: ExprId, is_async: bool, output: TyId) -> TyId {
         if !is_async {
             return output;
+        }
+        if self.has_task_obligation(output, &mut BTreeSet::new(), 0) {
+            self.error_at(
+                "TaskAsyncResultUnsupported",
+                "an instantiated async callable cannot complete with a Task-carrying result before runtime reparenting is available",
+                expression,
+            );
         }
         self.types().intern(TyData::Task(output))
     }
@@ -5767,7 +5774,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         (return_ty, substitution)
     }
 
-    fn transfer_task_receiver(&mut self, receiver: ExprId, receiver_ty: TyId, is_async: bool) {
+    fn transfer_task_receiver(
+        &mut self,
+        receiver: ExprId,
+        receiver_ty: TyId,
+        declared_task_carrier: bool,
+        is_async: bool,
+    ) {
         if !self.has_task_obligation(receiver_ty, &mut BTreeSet::new(), 0) {
             return;
         }
@@ -5775,6 +5788,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.error_at(
                 "TaskAsyncTransferUnsupported",
                 "a Task-carrying receiver cannot cross an async call boundary before runtime reparenting is available",
+                receiver,
+            );
+        } else if !declared_task_carrier {
+            self.error_at(
+                "TaskGenericTransferUnsupported",
+                "a Task-carrying receiver cannot pass through a generic or concept receiver that does not explicitly declare the obligation",
                 receiver,
             );
         }
@@ -5925,7 +5944,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             for method in &inherent.methods {
                 if self.analyzer.program.definitions[*method].name.as_ref() == Some(method_name) {
-                    candidates.push((implementation, *method, substitution.clone()));
+                    candidates.push((implementation, *method, target, substitution.clone()));
                 }
             }
         }
@@ -5958,7 +5977,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             else {
                 return self.types().error();
             };
-            self.transfer_task_receiver(receiver, receiver_ty, signature.is_async);
+            self.transfer_task_receiver(receiver, receiver_ty, false, signature.is_async);
             if signature.receiver == Some(ReceiverKind::Mutable)
                 && self
                     .semantics
@@ -6001,13 +6020,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return return_ty;
         }
-        let (_, method, initial) = candidates.pop().expect("one candidate");
+        let (_, method, declared_receiver_ty, initial) = candidates.pop().expect("one candidate");
         let Some(Signature::Callable(signature)) =
             self.analyzer.typed.signatures.get(method).cloned()
         else {
             return self.types().error();
         };
-        self.transfer_task_receiver(receiver, receiver_ty, signature.is_async);
+        let declared_task_carrier =
+            self.has_task_obligation(declared_receiver_ty, &mut BTreeSet::new(), 0);
+        self.transfer_task_receiver(
+            receiver,
+            receiver_ty,
+            declared_task_carrier,
+            signature.is_async,
+        );
         if signature.receiver == Some(ReceiverKind::Mutable) {
             let mutable_place = self
                 .semantics
@@ -7059,7 +7085,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         if let Some(receiver) = receiver {
             self.reject_manual_scoped_dispose(requirement, receiver);
-            self.transfer_task_receiver(receiver, self_ty, signature.is_async);
+            self.transfer_task_receiver(receiver, self_ty, false, signature.is_async);
         }
         let explicit = self.resolve_call_type_arguments(type_arguments);
         let (return_ty, substitution) = self.check_callable_arguments(
@@ -7949,7 +7975,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.consume_task_obligation(argument);
                 }
             }
-            Expr::Propagate(value) => self.consume_task_obligation(value),
             _ => {}
         }
     }

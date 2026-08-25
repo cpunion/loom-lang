@@ -288,6 +288,24 @@ async fn propagate() Result[Unit, Failure] {
 }
 
 #[test]
+fn propagation_transfers_a_task_carrying_result_once() {
+    let diagnostics = analyze_source(
+        r"
+module task_propagation_transfer
+
+enum Failure { Failed }
+
+async fn consume(value Result[Task[Int], Failure]) Result[Unit, Failure] {
+    let task = value?
+    discard task.await
+    Ok(Unit)
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
 fn early_return_audits_live_tasks_on_the_exiting_path() {
     let diagnostics = analyze_source(
         r"
@@ -340,6 +358,71 @@ async fn caller() Unit {
     );
     assert!(
         diagnostics.contains(&"TaskAsyncTransferUnsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.contains(&"TaskAsyncResultUnsupported"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn instantiated_generic_receivers_and_async_results_cannot_hide_tasks() {
+    let diagnostics = analyze_source(
+        r"
+module task_generic_boundaries
+
+record GenericBox[T] {
+    value T
+}
+
+record ConceptBox[T] {
+    value T
+}
+
+concept Forget {
+    method forget(self) Unit
+}
+
+impl[T] GenericBox[T] {
+    method forget(self) Unit { Unit }
+}
+
+impl[T] Forget for ConceptBox[T] {
+    method forget(self) Unit { Unit }
+}
+
+async fn work() Int { 42 }
+
+async fn maybe[T]() Option[T] { None }
+
+fn inherentReceiver() Unit {
+    let boxed = GenericBox { value = work() }
+    boxed.forget()
+}
+
+fn conceptReceiver() Unit {
+    let boxed = ConceptBox { value = work() }
+    boxed.forget()
+}
+
+fn qualifiedConceptReceiver() Unit {
+    let boxed = ConceptBox { value = work() }
+    <ConceptBox[Task[Int]] as Forget>.forget(boxed)
+}
+
+async fn instantiatedAsyncResult() Unit {
+    discard maybe[Task[Int]]().await
+}
+",
+    );
+    let diagnostics = codes(&diagnostics);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|code| **code == "TaskGenericTransferUnsupported")
+            .count(),
+        3,
         "{diagnostics:#?}"
     );
     assert!(
