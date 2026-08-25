@@ -59,7 +59,7 @@ use crate::native_layout::{
     NativeEffectAbi, NativeLayout, NativePassMode, NativePodRecord, NativeScalar, NativeSignature,
     NativeSignatureShape,
 };
-use crate::native_range::NativeIntRangePlan;
+use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
 use crate::native_storage::{
     NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan, NativeStackRecordPlan,
 };
@@ -383,6 +383,7 @@ struct Backend<'ctx, 'program> {
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     native_functions: BTreeMap<FunctionId, NativeFunctionDecl<'ctx>>,
+    assumed_functions: BTreeMap<FunctionId, NativeFunctionDecl<'ctx>>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witness_method_types: BTreeMap<ConceptId, StructType<'ctx>>,
@@ -710,6 +711,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             task_resume_type,
             functions: BTreeMap::new(),
             native_functions: BTreeMap::new(),
+            assumed_functions: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
             witness_method_types: BTreeMap::new(),
@@ -733,6 +735,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.emit_async_resume(*function)?;
             } else if self.native_functions.contains_key(function) {
                 self.emit_native_function(*function)?;
+                if self.assumed_functions.contains_key(function) {
+                    self.emit_assumed_function(*function)?;
+                }
                 if self.native_functions[function].signature.shape().uses_pod() {
                     self.emit_function(*function)?;
                 } else {
@@ -947,13 +952,13 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             self.functions.insert(*id, function);
             if let Some(shape) = NativeSignatureShape::for_supported_function(self.program, source)
             {
-                let requirements = self.requirements.function(*id)?.native_body;
-                let effect = if requirements.is_pure_no_fault() {
+                let requirements = self.requirements.function(*id)?;
+                let effect = if requirements.native_body.is_pure_no_fault() {
                     NativeEffectAbi::PureNoFault
                 } else {
                     NativeEffectAbi::RuntimeStatus
                 };
-                let signature = shape.with_effect(effect);
+                let signature = shape.clone().with_effect(effect);
                 let native = self.module.add_function(
                     &format!("loom.native.fn.{}.{}", id.0, mangle(&source.name)),
                     self.native_function_type(&signature)?,
@@ -972,6 +977,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         signature,
                     },
                 );
+                self.declare_assumed_function(*id, source, shape)?;
             }
             if source.is_async {
                 let resume = self.module.add_function(
@@ -990,6 +996,62 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 self.coroutine_descriptors.insert(*id, descriptor);
             }
         }
+        Ok(())
+    }
+
+    fn declare_assumed_function(
+        &mut self,
+        id: FunctionId,
+        source: &Function,
+        shape: NativeSignatureShape,
+    ) -> Result<(), CodegenError> {
+        if self.int_ranges.assumption(id).is_none() {
+            return Ok(());
+        }
+        let requirements = self
+            .requirements
+            .function(id)?
+            .assumed_body
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "proved assumed body has no runtime-requirement summary",
+                )
+            })?;
+        if !requirements.is_pure_no_fault()
+            || shape.uses_pod()
+            || !matches!(
+                shape.parameters(),
+                [parameter]
+                    if parameter.mode() == NativePassMode::Value
+                        && parameter.layout() == &NativeLayout::Scalar(NativeScalar::Int)
+            )
+            || shape.result() != &NativeLayout::Scalar(NativeScalar::Int)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "assumed recursive Int body is not a pure scalar native function",
+            ));
+        }
+        let signature = shape.with_effect(NativeEffectAbi::PureNoFault);
+        let function = self.module.add_function(
+            &format!("loom.native.assumed.fn.{}.{}", id.0, mangle(&source.name)),
+            self.native_function_type(&signature)?,
+            Some(Linkage::Internal),
+        );
+        self.debug.attach_function(
+            function,
+            &format!("{}$assumed", source.name),
+            source.span.file.0,
+            source.span.range.start,
+        )?;
+        self.assumed_functions.insert(
+            id,
+            NativeFunctionDecl {
+                function,
+                signature,
+            },
+        );
         Ok(())
     }
 
@@ -2959,7 +3021,21 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             source.span.file.0,
             source.span.range.start,
         );
-        let result = FunctionCompiler::new_native(self, id)?.compile();
+        let result = FunctionCompiler::new_native(self, id, NativeBodyMode::Checked)?.compile();
+        self.builder.unset_current_debug_location();
+        result
+    }
+
+    fn emit_assumed_function(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self.program.function(id).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "assumed function is missing")
+        })?;
+        self.set_debug_location(
+            self.assumed_functions[&id].function,
+            source.span.file.0,
+            source.span.range.start,
+        );
+        let result = FunctionCompiler::new_native(self, id, NativeBodyMode::Assumed)?.compile();
         self.builder.unset_current_debug_location();
         result
     }
@@ -4140,6 +4216,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
     native_signature: Option<&'backend NativeSignature>,
+    body_mode: NativeBodyMode,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     runtime_context: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
@@ -4368,6 +4445,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             function,
             output,
             native_signature: None,
+            body_mode: NativeBodyMode::Checked,
             witness_parameters,
             runtime_context,
             task: None,
@@ -4403,6 +4481,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn new_native(
         backend: &'backend Backend<'ctx, 'program>,
         id: FunctionId,
+        body_mode: NativeBodyMode,
     ) -> Result<Self, CodegenError> {
         let source = backend.program.function(id).ok_or_else(|| {
             CodegenError::new(
@@ -4416,7 +4495,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "unsupported function selected for the native ABI",
             ));
         }
-        let declaration = &backend.native_functions[&id];
+        let declaration = match body_mode {
+            NativeBodyMode::Checked => &backend.native_functions[&id],
+            NativeBodyMode::Assumed => backend.assumed_functions.get(&id).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "assumed native body has no declared function",
+                )
+            })?,
+        };
         let function = declaration.function;
         let signature = &declaration.signature;
         let stack_record_plan = &backend.stack_record_plans[&id];
@@ -4430,7 +4517,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
-        let gc_may_collect = backend.requirements.function(id)?.native_body.may_collect();
+        let requirements = backend.requirements.function(id)?;
+        let body_requirements = match body_mode {
+            NativeBodyMode::Checked => requirements.native_body,
+            NativeBodyMode::Assumed => requirements.assumed_body.ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "assumed native body has no runtime-requirement summary",
+                )
+            })?,
+        };
+        if body_mode == NativeBodyMode::Assumed && !body_requirements.is_pure_no_fault() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "assumed native body unexpectedly requires runtime support",
+            ));
+        }
+        let gc_may_collect = body_requirements.may_collect();
         let needs_gc_roots = gc_may_collect && function_may_need_gc_roots(backend.program, source);
         let gc_root_setup = needs_gc_roots.then(|| {
             backend
@@ -4611,6 +4714,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             function,
             output,
             native_signature: Some(signature),
+            body_mode,
             witness_parameters: BTreeMap::new(),
             runtime_context,
             task: None,
@@ -5024,6 +5128,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             function,
             output,
             native_signature: None,
+            body_mode: NativeBodyMode::Checked,
             witness_parameters,
             runtime_context: executor,
             task: Some(task),
@@ -5056,13 +5161,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn compile(&self) -> Result<(), CodegenError> {
-        self.emit_entry_contracts()?;
+        self.emit_assumed_entry()?;
+        if self.body_mode == NativeBodyMode::Checked {
+            self.emit_entry_contracts()?;
+        }
         let continues = self.emit_block(&self.source.body, self.output)?;
         if continues {
             self.backend.branch(self.body_done)?;
         }
         self.backend.builder.position_at_end(self.body_done);
-        self.emit_exit_contracts()?;
+        if self.body_mode == NativeBodyMode::Checked {
+            self.emit_exit_contracts()?;
+        }
         if !self.current_block_terminated() {
             let value = self
                 .native_signature
@@ -5088,6 +5198,93 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_cancellation_dispatch()?;
         self.emit_invalid_state_return()?;
         self.emit_gc_root_setup()?;
+        Ok(())
+    }
+
+    fn emit_assumed_entry(&self) -> Result<(), CodegenError> {
+        let Some(signature) = self.native_signature else {
+            return Ok(());
+        };
+        let Some(assumption) = self.backend.int_ranges.assumption(self.source.id) else {
+            if self.body_mode == NativeBodyMode::Assumed {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "assumed native body has no integer-domain proof",
+                ));
+            }
+            return Ok(());
+        };
+        if !matches!(
+            signature.shape().parameters(),
+            [parameter]
+                if parameter.mode() == NativePassMode::Value
+                    && parameter.layout() == &NativeLayout::Scalar(NativeScalar::Int)
+        ) || signature.shape().result() != &NativeLayout::Scalar(NativeScalar::Int)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "assumed integer entry has an incompatible native signature",
+            ));
+        }
+
+        let input = parameter_int(self.function, 0)?;
+        let in_domain = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                input,
+                self.backend.signed_i64(assumption.upper()),
+                "assumed.domain",
+            )
+            .map_err(builder_error)?;
+        match self.body_mode {
+            NativeBodyMode::Assumed => {
+                let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.assume")
+                    .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "missing llvm.assume for an assumed integer body",
+                        )
+                    })?;
+                self.backend
+                    .builder
+                    .build_call(intrinsic, &[in_domain.into()], "")
+                    .map_err(builder_error)?;
+            }
+            NativeBodyMode::Checked => {
+                let assumed = self
+                    .backend
+                    .assumed_functions
+                    .get(&self.source.id)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "checked entry has no declared assumed body",
+                        )
+                    })?;
+                let fast = self.append_block("assumed.fast");
+                let slow = self.append_block("checked.slow");
+                build_weighted_conditional_branch(
+                    self.backend.context,
+                    &self.backend.builder,
+                    in_domain,
+                    fast,
+                    slow,
+                    LikelyBranch::Then,
+                )?;
+                self.backend.builder.position_at_end(fast);
+                let value = call_basic_value(
+                    &self.backend.builder,
+                    assumed.function,
+                    &[input.into()],
+                    "assumed.entry",
+                )?;
+                self.emit_status_return(self.backend.context.i32_type().const_zero(), Some(value))?;
+                self.backend.builder.position_at_end(slow);
+            }
+        }
         Ok(())
     }
 
@@ -6360,14 +6557,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 *operator,
                 value,
                 destination,
-                self.backend.int_ranges.proves(self.source.id, expression),
+                self.backend
+                    .int_ranges
+                    .proves_for(self.body_mode, self.source.id, expression),
             ),
             ExprKind::Binary(operator, left, right) => self.emit_binary(
                 *operator,
                 left,
                 right,
                 destination,
-                self.backend.int_ranges.proves(self.source.id, expression),
+                self.backend
+                    .int_ranges
+                    .proves_for(self.body_mode, self.source.id, expression),
             ),
             ExprKind::Block(block) => self.emit_block(block, destination),
             ExprKind::If {
@@ -6422,7 +6623,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 arguments,
                 witnesses,
                 ..
-            } => self.emit_call(target, arguments, witnesses, destination),
+            } => self.emit_call(expression, target, arguments, witnesses, destination),
             ExprKind::MakeView {
                 value,
                 writeback,
@@ -8212,8 +8413,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 arguments,
                 witnesses,
                 ..
-            } if self.native_call_is_private_compatible(*function, arguments, Some(nodes)) => {
-                self.emit_native_call(*function, arguments, witnesses, destination, Some(nodes))
+            } if self.native_call_is_private_compatible(
+                *function,
+                arguments,
+                Some(nodes),
+                NativeBodyMode::Checked,
+            ) =>
+            {
+                self.emit_native_call(
+                    *function,
+                    arguments,
+                    witnesses,
+                    destination,
+                    Some(nodes),
+                    NativeBodyMode::Checked,
+                )
             }
             _ => Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -9004,6 +9218,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     #[allow(clippy::too_many_lines)]
     fn emit_call(
         &self,
+        expression: &Expr,
         target: &CallTarget,
         arguments: &[CallArgument],
         witnesses: &[WitnessRef],
@@ -9012,10 +9227,45 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let CallTarget::Builtin(builtin) = target {
             return self.emit_builtin(*builtin, arguments, destination);
         }
-        if let CallTarget::Direct(function) | CallTarget::Inherent(function) = target
-            && self.native_call_is_private_compatible(*function, arguments, None)
+        if let CallTarget::Direct(function) = target
+            && self.backend.int_ranges.uses_assumed_call(
+                self.body_mode,
+                self.source.id,
+                expression,
+                *function,
+            )
+            && self.native_call_is_private_compatible(
+                *function,
+                arguments,
+                None,
+                NativeBodyMode::Assumed,
+            )
         {
-            return self.emit_native_call(*function, arguments, witnesses, destination, None);
+            return self.emit_native_call(
+                *function,
+                arguments,
+                witnesses,
+                destination,
+                None,
+                NativeBodyMode::Assumed,
+            );
+        }
+        if let CallTarget::Direct(function) | CallTarget::Inherent(function) = target
+            && self.native_call_is_private_compatible(
+                *function,
+                arguments,
+                None,
+                NativeBodyMode::Checked,
+            )
+        {
+            return self.emit_native_call(
+                *function,
+                arguments,
+                witnesses,
+                destination,
+                None,
+                NativeBodyMode::Checked,
+            );
         }
 
         let Some(mut prepared) = self.emit_call_arguments(arguments)? else {
@@ -9239,6 +9489,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         witnesses: &[WitnessRef],
         destination: PointerValue<'ctx>,
         native_record_destination: Option<&[PointerValue<'ctx>]>,
+        body_mode: NativeBodyMode,
     ) -> Result<bool, CodegenError> {
         if !witnesses.is_empty() {
             return Err(CodegenError::new(
@@ -9246,18 +9497,35 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "native ABI call unexpectedly carries witnesses",
             ));
         }
-        let declaration = &self.backend.native_functions[&function];
+        let declaration = match body_mode {
+            NativeBodyMode::Checked => &self.backend.native_functions[&function],
+            NativeBodyMode::Assumed => {
+                self.backend
+                    .assumed_functions
+                    .get(&function)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "assumed native call has no declared target",
+                        )
+                    })?
+            }
+        };
         let signature = &declaration.signature;
         let Some(mut prepared) = self.emit_native_call_arguments(arguments, signature)? else {
             return Ok(false);
         };
-        if self
-            .backend
-            .requirements
-            .function(function)?
-            .native_body
-            .may_collect()
-        {
+        let requirements = self.backend.requirements.function(function)?;
+        let callee_requirements = match body_mode {
+            NativeBodyMode::Checked => requirements.native_body,
+            NativeBodyMode::Assumed => requirements.assumed_body.ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "assumed native call has no runtime-requirement summary",
+                )
+            })?,
+        };
+        if callee_requirements.may_collect() {
             self.publish_gc_root_state()?;
         }
         let value = if signature.effect() == NativeEffectAbi::PureNoFault {
@@ -9375,8 +9643,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         function: FunctionId,
         arguments: &[CallArgument],
         native_record_destination: Option<&[PointerValue<'ctx>]>,
+        body_mode: NativeBodyMode,
     ) -> bool {
-        let Some(declaration) = self.backend.native_functions.get(&function) else {
+        let declaration = match body_mode {
+            NativeBodyMode::Checked => self.backend.native_functions.get(&function),
+            NativeBodyMode::Assumed => self.backend.assumed_functions.get(&function),
+        };
+        let Some(declaration) = declaration else {
             return false;
         };
         let signature = &declaration.signature;

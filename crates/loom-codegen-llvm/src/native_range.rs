@@ -22,6 +22,7 @@ use crate::{ReachableProgram, Roots};
 const CONTEXT_WIDEN_LIMIT: usize = 64;
 const LOOP_FIXPOINT_LIMIT: usize = 12;
 const TYPE_EXPANSION_LIMIT: usize = 16;
+const ASSUMED_RECURSION_LIMIT: i64 = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IntRange {
@@ -356,6 +357,7 @@ impl FunctionContext {
 struct CallObservation {
     function: FunctionId,
     arguments: Vec<AbstractValue>,
+    site: Option<ExprSite>,
 }
 
 #[derive(Clone, Debug)]
@@ -364,10 +366,54 @@ struct CallSummary {
     parameters: Vec<AbstractValue>,
 }
 
-/// Proven checked-Int expressions for one immutable MIR program.
+/// Selects which compiler-private body is being analyzed or emitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeBodyMode {
+    Checked,
+    Assumed,
+}
+
+/// A dense, exhaustively checked non-negative input domain for one pure,
+/// well-founded recursive Int function.
+#[derive(Clone, Debug)]
+pub(crate) struct AssumedIntFunctionPlan {
+    upper: i64,
+    exact_results: Vec<i64>,
+    arithmetic: BTreeSet<ExprId>,
+    recursive_calls: BTreeSet<ExprId>,
+}
+
+impl AssumedIntFunctionPlan {
+    #[must_use]
+    pub(crate) const fn upper(&self) -> i64 {
+        self.upper
+    }
+
+    #[must_use]
+    pub(crate) fn exact_result(&self, input: i64) -> Option<i64> {
+        usize::try_from(input)
+            .ok()
+            .and_then(|input| self.exact_results.get(input).copied())
+    }
+
+    fn contains(&self, range: IntRange) -> bool {
+        range.lower >= 0 && range.upper <= self.upper && self.exact_result(range.upper).is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectCallFact {
+    callee: FunctionId,
+    argument: IntRange,
+}
+
+/// Proven checked-Int expressions and compiler-private assumed bodies for one
+/// immutable MIR program.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NativeIntRangePlan {
     arithmetic: BTreeSet<ExprSite>,
+    assumed: BTreeMap<FunctionId, AssumedIntFunctionPlan>,
+    assumed_call_sites: BTreeSet<ExprSite>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -494,6 +540,7 @@ impl NativeIntRangePlan {
         }
 
         let mut proof_visits = BTreeMap::<ExprSite, bool>::new();
+        let mut direct_calls = BTreeMap::<ExprSite, DirectCallFact>::new();
         for (function_id, context) in &contexts {
             if !context.reached {
                 continue;
@@ -519,13 +566,56 @@ impl NativeIntRangePlan {
                 conservative_calls: false,
             };
             analyzer.scan(function, context);
+            for observation in observations {
+                let (Some(site), [AbstractValue::Int(argument)]) =
+                    (observation.site, observation.arguments.as_slice())
+                else {
+                    continue;
+                };
+                let incoming = DirectCallFact {
+                    callee: observation.function,
+                    argument: argument.range,
+                };
+                direct_calls
+                    .entry(site)
+                    .and_modify(|current| {
+                        if current.callee == incoming.callee {
+                            current.argument = current.argument.join(incoming.argument);
+                        } else {
+                            current.argument = IntRange::FULL;
+                        }
+                    })
+                    .or_insert(incoming);
+            }
         }
+
+        let assumed = reachable
+            .functions
+            .iter()
+            .filter_map(|function| {
+                program
+                    .function(*function)
+                    .and_then(analyze_assumed_int_function)
+                    .map(|plan| (*function, plan))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let assumed_call_sites = direct_calls
+            .into_iter()
+            .filter_map(|(site, call)| {
+                assumed
+                    .get(&call.callee)
+                    .is_some_and(|plan| plan.contains(call.argument))
+                    .then_some(site)
+            })
+            .collect();
 
         Self {
             arithmetic: proof_visits
                 .into_iter()
                 .filter_map(|(expression, safe)| safe.then_some(expression))
                 .collect(),
+            assumed,
+            assumed_call_sites,
         }
     }
 
@@ -536,6 +626,430 @@ impl NativeIntRangePlan {
             expression: expression.id,
         })
     }
+
+    #[must_use]
+    pub(crate) fn proves_for(
+        &self,
+        mode: NativeBodyMode,
+        function: FunctionId,
+        expression: &Expr,
+    ) -> bool {
+        match mode {
+            NativeBodyMode::Checked => self.proves(function, expression),
+            NativeBodyMode::Assumed => self
+                .assumed
+                .get(&function)
+                .is_some_and(|plan| plan.arithmetic.contains(&expression.id)),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn assumption(&self, function: FunctionId) -> Option<&AssumedIntFunctionPlan> {
+        self.assumed.get(&function)
+    }
+
+    #[must_use]
+    pub(crate) fn uses_assumed_call(
+        &self,
+        mode: NativeBodyMode,
+        source_function: FunctionId,
+        expression: &Expr,
+        target_function: FunctionId,
+    ) -> bool {
+        if self.assumption(target_function).is_none() {
+            return false;
+        }
+        match mode {
+            NativeBodyMode::Checked => {
+                source_function != target_function
+                    && self.assumed_call_sites.contains(&ExprSite {
+                        function: source_function,
+                        expression: expression.id,
+                    })
+            }
+            NativeBodyMode::Assumed => {
+                source_function == target_function
+                    && self
+                        .assumed
+                        .get(&source_function)
+                        .is_some_and(|plan| plan.recursive_calls.contains(&expression.id))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct AssumedSyntax {
+    arithmetic: BTreeSet<ExprId>,
+    recursive_calls: BTreeSet<ExprId>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExactProof {
+    arithmetic: BTreeSet<ExprId>,
+    recursive_calls: BTreeSet<ExprId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExactValue {
+    Unit,
+    Bool(bool),
+    Int(i64),
+}
+
+fn analyze_assumed_int_function(function: &Function) -> Option<AssumedIntFunctionPlan> {
+    if function.is_async
+        || function.type_parameters != 0
+        || !function.witness_params.is_empty()
+        || function.receiver.is_some()
+        || function.params.len() != 1
+        || function.params[0].ty != Type::Int
+        || function.params[0].mutable
+        || function.return_ty != Type::Int
+        || function.call_plan.receiver_invariant.is_some()
+        || !function.call_plan.requires.is_empty()
+        || !function.call_plan.ensures.is_empty()
+        || function
+            .locals
+            .iter()
+            .any(|local| local.mutable || !is_exact_scalar_type(&local.ty))
+    {
+        return None;
+    }
+
+    let syntax = assumed_syntax(function)?;
+    if syntax.recursive_calls.is_empty() {
+        return None;
+    }
+
+    let mut exact_results = Vec::new();
+    let mut proof = ExactProof::default();
+    for input in 0..=ASSUMED_RECURSION_LIMIT {
+        let mut trial = proof.clone();
+        let evaluated = ExactEvaluator {
+            function,
+            input,
+            exact_results: &exact_results,
+            proof: &mut trial,
+        }
+        .evaluate();
+        let Some(result) = evaluated else {
+            break;
+        };
+        let ExactValue::Int(result) = result else {
+            return None;
+        };
+        exact_results.push(result);
+        proof = trial;
+    }
+
+    finish_assumed_plan(&syntax, exact_results, proof)
+}
+
+fn finish_assumed_plan(
+    syntax: &AssumedSyntax,
+    exact_results: Vec<i64>,
+    proof: ExactProof,
+) -> Option<AssumedIntFunctionPlan> {
+    if exact_results.len() < 3
+        || proof.arithmetic != syntax.arithmetic
+        || proof.recursive_calls != syntax.recursive_calls
+    {
+        return None;
+    }
+    let upper = i64::try_from(exact_results.len().checked_sub(1)?).ok()?;
+    Some(AssumedIntFunctionPlan {
+        upper,
+        exact_results,
+        arithmetic: proof.arithmetic,
+        recursive_calls: proof.recursive_calls,
+    })
+}
+
+fn assumed_syntax(function: &Function) -> Option<AssumedSyntax> {
+    let mut syntax = AssumedSyntax::default();
+    collect_assumed_block(function, &function.body, &mut syntax)?;
+    Some(syntax)
+}
+
+fn collect_assumed_block(
+    function: &Function,
+    block: &Block,
+    syntax: &mut AssumedSyntax,
+) -> Option<()> {
+    for statement in &block.statements {
+        let StatementKind::Let { value, .. } = &statement.kind else {
+            return None;
+        };
+        collect_assumed_expr(function, value, syntax)?;
+    }
+    collect_assumed_expr(function, block.tail.as_deref()?, syntax)
+}
+
+fn collect_assumed_expr(
+    function: &Function,
+    expression: &Expr,
+    syntax: &mut AssumedSyntax,
+) -> Option<()> {
+    if expression.id == ExprId::UNASSIGNED || !is_exact_scalar_type(&expression.ty) {
+        return None;
+    }
+    match &expression.kind {
+        ExprKind::Constant(Constant::Unit | Constant::Bool(_) | Constant::Int(_)) => Some(()),
+        ExprKind::Copy(place) | ExprKind::Move(place) if place.projection.is_empty() => Some(()),
+        ExprKind::Unary(operator, value) => {
+            collect_assumed_expr(function, value, syntax)?;
+            if *operator == UnaryOp::Negate && expression.ty == Type::Int {
+                syntax.arithmetic.insert(expression.id);
+            }
+            Some(())
+        }
+        ExprKind::Binary(operator, left, right) => {
+            collect_assumed_expr(function, left, syntax)?;
+            collect_assumed_expr(function, right, syntax)?;
+            if matches!(
+                operator,
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+            ) && expression.ty == Type::Int
+            {
+                syntax.arithmetic.insert(expression.id);
+            }
+            Some(())
+        }
+        ExprKind::Block(block) => collect_assumed_block(function, block, syntax),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_assumed_expr(function, condition, syntax)?;
+            collect_assumed_block(function, then_branch, syntax)?;
+            collect_assumed_block(function, else_branch, syntax)
+        }
+        ExprKind::Call {
+            target: CallTarget::Direct(callee),
+            type_arguments,
+            arguments,
+            witnesses,
+        } if *callee == function.id && type_arguments.is_empty() && witnesses.is_empty() => {
+            let [CallArgument::Value(argument)] = arguments.as_slice() else {
+                return None;
+            };
+            collect_assumed_expr(function, argument, syntax)?;
+            syntax.recursive_calls.insert(expression.id);
+            Some(())
+        }
+        ExprKind::Constant(Constant::Float(_) | Constant::Text(_))
+        | ExprKind::Tuple(_)
+        | ExprKind::List(_)
+        | ExprKind::Match { .. }
+        | ExprKind::Record { .. }
+        | ExprKind::Variant { .. }
+        | ExprKind::Refine { .. }
+        | ExprKind::Unrefine(_)
+        | ExprKind::Call { .. }
+        | ExprKind::MakeView { .. }
+        | ExprKind::ReborrowView { .. }
+        | ExprKind::Await { .. }
+        | ExprKind::Sleep { .. }
+        | ExprKind::WaitFd { .. }
+        | ExprKind::TaskJoin { .. }
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_) => None,
+    }
+}
+
+const fn is_exact_scalar_type(ty: &Type) -> bool {
+    matches!(ty, Type::Unit | Type::Bool | Type::Int)
+}
+
+struct ExactEvaluator<'function, 'results, 'proof> {
+    function: &'function Function,
+    input: i64,
+    exact_results: &'results [i64],
+    proof: &'proof mut ExactProof,
+}
+
+impl ExactEvaluator<'_, '_, '_> {
+    fn evaluate(&mut self) -> Option<ExactValue> {
+        let parameter = self.function.params.first()?;
+        let mut environment = BTreeMap::from([(parameter.id, ExactValue::Int(self.input))]);
+        self.eval_block(&self.function.body, &mut environment)
+    }
+
+    fn eval_block(
+        &mut self,
+        block: &Block,
+        environment: &mut BTreeMap<LocalId, ExactValue>,
+    ) -> Option<ExactValue> {
+        for statement in &block.statements {
+            let StatementKind::Let { local, value } = &statement.kind else {
+                return None;
+            };
+            let value = self.eval_expr(value, environment)?;
+            environment.insert(*local, value);
+        }
+        self.eval_expr(block.tail.as_deref()?, environment)
+    }
+
+    fn eval_expr(
+        &mut self,
+        expression: &Expr,
+        environment: &mut BTreeMap<LocalId, ExactValue>,
+    ) -> Option<ExactValue> {
+        match &expression.kind {
+            ExprKind::Constant(Constant::Unit) => Some(ExactValue::Unit),
+            ExprKind::Constant(Constant::Bool(value)) => Some(ExactValue::Bool(*value)),
+            ExprKind::Constant(Constant::Int(value)) => Some(ExactValue::Int(*value)),
+            ExprKind::Copy(place) if place.projection.is_empty() => {
+                environment.get(&place.local).copied()
+            }
+            ExprKind::Move(place) if place.projection.is_empty() => {
+                environment.remove(&place.local)
+            }
+            ExprKind::Unary(operator, value) => {
+                let value = self.eval_expr(value, environment)?;
+                let result = match (operator, value) {
+                    (UnaryOp::Not, ExactValue::Bool(value)) => ExactValue::Bool(!value),
+                    (UnaryOp::Negate, ExactValue::Int(value)) => {
+                        ExactValue::Int(value.checked_neg()?)
+                    }
+                    _ => return None,
+                };
+                if *operator == UnaryOp::Negate {
+                    self.proof.arithmetic.insert(expression.id);
+                }
+                Some(result)
+            }
+            ExprKind::Binary(operator, left, right) => {
+                self.eval_binary(expression.id, *operator, left, right, environment)
+            }
+            ExprKind::Block(block) => self.eval_block(block, environment),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let ExactValue::Bool(condition) = self.eval_expr(condition, environment)? else {
+                    return None;
+                };
+                if condition {
+                    self.eval_block(then_branch, environment)
+                } else {
+                    self.eval_block(else_branch, environment)
+                }
+            }
+            ExprKind::Call {
+                target: CallTarget::Direct(callee),
+                type_arguments,
+                arguments,
+                witnesses,
+            } if *callee == self.function.id
+                && type_arguments.is_empty()
+                && witnesses.is_empty() =>
+            {
+                let [CallArgument::Value(argument)] = arguments.as_slice() else {
+                    return None;
+                };
+                let ExactValue::Int(argument) = self.eval_expr(argument, environment)? else {
+                    return None;
+                };
+                if argument < 0 || argument >= self.input {
+                    return None;
+                }
+                let result = *self.exact_results.get(usize::try_from(argument).ok()?)?;
+                self.proof.recursive_calls.insert(expression.id);
+                Some(ExactValue::Int(result))
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_binary(
+        &mut self,
+        expression: ExprId,
+        operator: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        environment: &mut BTreeMap<LocalId, ExactValue>,
+    ) -> Option<ExactValue> {
+        if operator == BinaryOp::And || operator == BinaryOp::Or {
+            return self.eval_logical(operator, left, right, environment);
+        }
+        let left = self.eval_expr(left, environment)?;
+        let right = self.eval_expr(right, environment)?;
+        let result = match (operator, left, right) {
+            (BinaryOp::Add, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Int(exact_checked_integer(BinaryOp::Add, left, right)?)
+            }
+            (BinaryOp::Subtract, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Int(exact_checked_integer(BinaryOp::Subtract, left, right)?)
+            }
+            (BinaryOp::Multiply, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Int(exact_checked_integer(BinaryOp::Multiply, left, right)?)
+            }
+            (BinaryOp::Divide, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Int(exact_checked_integer(BinaryOp::Divide, left, right)?)
+            }
+            (BinaryOp::Equal, left, right) => ExactValue::Bool(left == right),
+            (BinaryOp::NotEqual, left, right) => ExactValue::Bool(left != right),
+            (BinaryOp::Less, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Bool(left < right)
+            }
+            (BinaryOp::LessEqual, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Bool(left <= right)
+            }
+            (BinaryOp::Greater, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Bool(left > right)
+            }
+            (BinaryOp::GreaterEqual, ExactValue::Int(left), ExactValue::Int(right)) => {
+                ExactValue::Bool(left >= right)
+            }
+            _ => return None,
+        };
+        if matches!(
+            operator,
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+        ) {
+            self.proof.arithmetic.insert(expression);
+        }
+        Some(result)
+    }
+
+    fn eval_logical(
+        &mut self,
+        operator: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        environment: &mut BTreeMap<LocalId, ExactValue>,
+    ) -> Option<ExactValue> {
+        let ExactValue::Bool(left) = self.eval_expr(left, environment)? else {
+            return None;
+        };
+        if (operator == BinaryOp::And && !left) || (operator == BinaryOp::Or && left) {
+            return Some(ExactValue::Bool(left));
+        }
+        let ExactValue::Bool(right) = self.eval_expr(right, environment)? else {
+            return None;
+        };
+        Some(ExactValue::Bool(right))
+    }
+}
+
+fn exact_checked_integer(operator: BinaryOp, left: i64, right: i64) -> Option<i64> {
+    let result = match operator {
+        BinaryOp::Add => i128::from(left).checked_add(i128::from(right))?,
+        BinaryOp::Subtract => i128::from(left).checked_sub(i128::from(right))?,
+        BinaryOp::Multiply => i128::from(left).checked_mul(i128::from(right))?,
+        BinaryOp::Divide => {
+            if right == 0 || (left == i64::MIN && right == -1) {
+                return None;
+            }
+            i128::from(left) / i128::from(right)
+        }
+        _ => return None,
+    };
+    i64::try_from(result).ok()
 }
 
 fn set_unknown_entry(program: &Program, function: &Function, context: &mut FunctionContext) {
@@ -1006,6 +1520,7 @@ impl FunctionAnalyzer<'_, '_> {
                 !witnesses.is_empty(),
                 &expression.ty,
                 environment,
+                Some(expression.id),
             ),
             ExprKind::Tuple(values) => {
                 for value in values {
@@ -1114,6 +1629,7 @@ impl FunctionAnalyzer<'_, '_> {
         has_witnesses: bool,
         result_ty: &Type,
         environment: &mut RangeEnv,
+        expression: Option<ExprId>,
     ) -> AbstractValue {
         let inout_alias_hazard = call_has_later_move_alias(arguments);
         let mut values = Vec::with_capacity(arguments.len());
@@ -1192,6 +1708,7 @@ impl FunctionAnalyzer<'_, '_> {
                         .iter()
                         .map(|parameter| unknown_value(self.program, &parameter.ty, 0))
                         .collect(),
+                    site: None,
                 });
             }
             for place in inout.into_iter().flatten() {
@@ -1203,6 +1720,10 @@ impl FunctionAnalyzer<'_, '_> {
         self.observations.push(CallObservation {
             function,
             arguments: values.iter().map(AbstractValue::without_affine).collect(),
+            site: expression.map(|expression| ExprSite {
+                function: self.function_id,
+                expression,
+            }),
         });
         let Some(summary) = self.summarize_transparent(function, &values) else {
             for place in inout.into_iter().flatten() {
@@ -1243,6 +1764,7 @@ impl FunctionAnalyzer<'_, '_> {
                 .iter()
                 .map(|parameter| unknown_value(self.program, &parameter.ty, 0))
                 .collect(),
+            site: None,
         });
     }
 
@@ -2667,6 +3189,411 @@ mod tests {
         )
     }
 
+    fn recursive_fibonacci_function() -> Function {
+        let parameter = LocalId(0);
+        let recursive_call = |offset| {
+            Expr::new(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(0)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(binary_int(
+                        BinaryOp::Subtract,
+                        copy_int(parameter),
+                        int(offset),
+                    ))],
+                    witnesses: Vec::new(),
+                },
+                Type::Int,
+                Default::default(),
+            )
+        };
+        let mut function = test_function(
+            0,
+            vec![test_local(0, Type::Int, false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::If {
+                        condition: Box::new(Expr::new(
+                            ExprKind::Binary(
+                                BinaryOp::Less,
+                                Box::new(copy_int(parameter)),
+                                Box::new(int(2)),
+                            ),
+                            Type::Bool,
+                            Default::default(),
+                        )),
+                        then_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(copy_int(parameter))),
+                            span: Default::default(),
+                        },
+                        else_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(binary_int(
+                                BinaryOp::Add,
+                                recursive_call(1),
+                                recursive_call(2),
+                            ))),
+                            span: Default::default(),
+                        },
+                    },
+                    Type::Int,
+                    Default::default(),
+                ))),
+                span: Default::default(),
+            },
+        );
+        function.renumber_expr_ids().expect("renumber fibonacci");
+        function
+    }
+
+    #[test]
+    fn bounded_recursive_int_plan_proves_fibonacci_through_92_only() {
+        let function = recursive_fibonacci_function();
+        let expressions = function.exprs_preorder().cloned().collect::<Vec<_>>();
+        let program = Program {
+            functions: vec![function],
+            ..Program::default()
+        };
+        let reachable = ReachableProgram {
+            functions: BTreeSet::from([FunctionId(0)]),
+            ..ReachableProgram::default()
+        };
+        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(0)));
+        let assumed = plan.assumption(FunctionId(0)).expect("assumed fibonacci");
+        assert_eq!(assumed.upper(), 92);
+        assert_eq!(assumed.exact_result(45), Some(1_134_903_170));
+        assert_eq!(assumed.exact_result(92), Some(7_540_113_804_746_346_429));
+        assert_eq!(assumed.exact_result(93), None);
+
+        let arithmetic = expressions
+            .iter()
+            .filter(|expression| {
+                matches!(
+                    expression.kind,
+                    ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, _, _)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(arithmetic.len(), 3);
+        assert!(arithmetic.iter().all(|expression| {
+            plan.proves_for(NativeBodyMode::Assumed, FunctionId(0), expression)
+        }));
+
+        let recursive_calls = expressions
+            .iter()
+            .filter(|expression| matches!(expression.kind, ExprKind::Call { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(recursive_calls.len(), 2);
+        assert!(recursive_calls.iter().all(|expression| {
+            plan.uses_assumed_call(
+                NativeBodyMode::Assumed,
+                FunctionId(0),
+                expression,
+                FunctionId(0),
+            )
+        }));
+        assert!(recursive_calls.iter().all(|expression| {
+            !plan.uses_assumed_call(
+                NativeBodyMode::Checked,
+                FunctionId(0),
+                expression,
+                FunctionId(0),
+            )
+        }));
+    }
+
+    fn direct_int_call(function: FunctionId, argument: Expr) -> Expr {
+        Expr::new(
+            ExprKind::Call {
+                target: CallTarget::Direct(function),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(argument)],
+                witnesses: Vec::new(),
+            },
+            Type::Int,
+            Default::default(),
+        )
+    }
+
+    fn select_int(condition: Expr, then_value: i64, else_value: i64) -> Expr {
+        Expr::new(
+            ExprKind::If {
+                condition: Box::new(condition),
+                then_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(int(then_value))),
+                    span: Default::default(),
+                },
+                else_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(int(else_value))),
+                    span: Default::default(),
+                },
+            },
+            Type::Int,
+            Default::default(),
+        )
+    }
+
+    #[test]
+    fn assumed_call_sites_require_the_entire_argument_range() {
+        let fibonacci = recursive_fibonacci_function();
+        let parameter = LocalId(0);
+        let negative_condition = || {
+            Expr::new(
+                ExprKind::Binary(
+                    BinaryOp::Less,
+                    Box::new(copy_int(parameter)),
+                    Box::new(int(0)),
+                ),
+                Type::Bool,
+                Default::default(),
+            )
+        };
+        let arguments = vec![
+            select_int(negative_condition(), 0, 45),
+            int(92),
+            int(0),
+            int(-1),
+            int(93),
+            select_int(negative_condition(), 92, 93),
+            copy_int(parameter),
+        ];
+        let statements = arguments
+            .into_iter()
+            .map(|argument| loom_mir::Statement {
+                kind: StatementKind::Evaluate(direct_int_call(FunctionId(0), argument)),
+                span: Default::default(),
+            })
+            .collect();
+        let mut caller = test_function(
+            1,
+            vec![test_local(0, Type::Int, false)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(unit())),
+                span: Default::default(),
+            },
+        );
+        caller.renumber_expr_ids().expect("renumber caller");
+        let calls = caller
+            .exprs_preorder()
+            .filter(|expression| matches!(expression.kind, ExprKind::Call { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 7);
+
+        let program = Program {
+            functions: vec![fibonacci, caller],
+            ..Program::default()
+        };
+        let reachable = ReachableProgram {
+            functions: BTreeSet::from([FunctionId(0), FunctionId(1)]),
+            ..ReachableProgram::default()
+        };
+        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(1)));
+        assert!(calls[..3].iter().all(|expression| {
+            plan.uses_assumed_call(
+                NativeBodyMode::Checked,
+                FunctionId(1),
+                expression,
+                FunctionId(0),
+            )
+        }));
+        assert!(calls[3..].iter().all(|expression| {
+            !plan.uses_assumed_call(
+                NativeBodyMode::Checked,
+                FunctionId(1),
+                expression,
+                FunctionId(0),
+            )
+        }));
+    }
+
+    fn single_recursive_function(argument: Expr) -> Function {
+        let parameter = LocalId(0);
+        let mut function = test_function(
+            0,
+            vec![test_local(0, Type::Int, false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::If {
+                        condition: Box::new(Expr::new(
+                            ExprKind::Binary(
+                                BinaryOp::Less,
+                                Box::new(copy_int(parameter)),
+                                Box::new(int(1)),
+                            ),
+                            Type::Bool,
+                            Default::default(),
+                        )),
+                        then_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(int(0))),
+                            span: Default::default(),
+                        },
+                        else_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(direct_int_call(FunctionId(0), argument))),
+                            span: Default::default(),
+                        },
+                    },
+                    Type::Int,
+                    Default::default(),
+                ))),
+                span: Default::default(),
+            },
+        );
+        function.renumber_expr_ids().expect("renumber recursion");
+        function
+    }
+
+    #[test]
+    fn assumed_solver_rejects_non_decreasing_and_negative_recursion() {
+        let parameter = LocalId(0);
+        let non_decreasing = single_recursive_function(copy_int(parameter));
+        assert!(analyze_assumed_int_function(&non_decreasing).is_none());
+
+        let negative =
+            single_recursive_function(binary_int(BinaryOp::Subtract, copy_int(parameter), int(2)));
+        assert!(analyze_assumed_int_function(&negative).is_none());
+    }
+
+    fn uncovered_arithmetic_function() -> Function {
+        let parameter = LocalId(0);
+        let inner = Expr::new(
+            ExprKind::If {
+                condition: Box::new(Expr::new(
+                    ExprKind::Binary(
+                        BinaryOp::Less,
+                        Box::new(copy_int(parameter)),
+                        Box::new(int(1)),
+                    ),
+                    Type::Bool,
+                    Default::default(),
+                )),
+                then_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(int(0))),
+                    span: Default::default(),
+                },
+                else_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(direct_int_call(
+                        FunctionId(0),
+                        binary_int(BinaryOp::Subtract, copy_int(parameter), int(1)),
+                    ))),
+                    span: Default::default(),
+                },
+            },
+            Type::Int,
+            Default::default(),
+        );
+        let mut function = test_function(
+            0,
+            vec![test_local(0, Type::Int, false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::If {
+                        condition: Box::new(Expr::new(
+                            ExprKind::Binary(
+                                BinaryOp::Less,
+                                Box::new(copy_int(parameter)),
+                                Box::new(int(129)),
+                            ),
+                            Type::Bool,
+                            Default::default(),
+                        )),
+                        then_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(inner)),
+                            span: Default::default(),
+                        },
+                        else_branch: Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(binary_int(BinaryOp::Add, int(i64::MAX), int(1)))),
+                            span: Default::default(),
+                        },
+                    },
+                    Type::Int,
+                    Default::default(),
+                ))),
+                span: Default::default(),
+            },
+        );
+        function
+            .renumber_expr_ids()
+            .expect("renumber uncovered branch");
+        function
+    }
+
+    #[test]
+    fn assumed_solver_rejects_uncovered_checks_contracts_asserts_and_effects() {
+        assert!(analyze_assumed_int_function(&uncovered_arithmetic_function()).is_none());
+
+        let mut contracted = recursive_fibonacci_function();
+        contracted.call_plan.requires.push(loom_mir::Contract {
+            code: "PreconditionFailed".to_owned(),
+            span: Default::default(),
+            expression: loom_mir::ContractExpr {
+                kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
+                span: Default::default(),
+            },
+        });
+        assert!(analyze_assumed_int_function(&contracted).is_none());
+
+        let mut asserted = recursive_fibonacci_function();
+        asserted.body.statements.push(loom_mir::Statement {
+            kind: StatementKind::Assert {
+                condition: Expr::new(
+                    ExprKind::Constant(Constant::Bool(true)),
+                    Type::Bool,
+                    Default::default(),
+                ),
+            },
+            span: Default::default(),
+        });
+        asserted.renumber_expr_ids().expect("renumber assertion");
+        assert!(analyze_assumed_int_function(&asserted).is_none());
+
+        let mut effectful = recursive_fibonacci_function();
+        effectful.locals.push(test_local(1, Type::Unit, false));
+        effectful.body.statements.push(loom_mir::Statement {
+            kind: StatementKind::Let {
+                local: LocalId(1),
+                value: Expr::new(
+                    ExprKind::Call {
+                        target: CallTarget::Builtin(Builtin::LogInfo),
+                        type_arguments: Vec::new(),
+                        arguments: vec![CallArgument::Value(Expr::new(
+                            ExprKind::Constant(Constant::Text("effect".to_owned())),
+                            Type::Text,
+                            Default::default(),
+                        ))],
+                        witnesses: Vec::new(),
+                    },
+                    Type::Unit,
+                    Default::default(),
+                ),
+            },
+            span: Default::default(),
+        });
+        effectful.renumber_expr_ids().expect("renumber effect");
+        assert!(analyze_assumed_int_function(&effectful).is_none());
+    }
+
     #[test]
     fn counted_translation_uses_closed_i128_bounds() {
         let site = origin(1, OriginKind::Integer);
@@ -3285,6 +4212,7 @@ mod tests {
             false,
             &Type::Unit,
             &mut environment,
+            None,
         );
         let AbstractValue::IntList(list) = environment.get(&list).expect("list remains bound")
         else {
@@ -3342,6 +4270,7 @@ mod tests {
                 false,
                 &Type::Unit,
                 &mut environment,
+                None,
             );
         }
         assert!(
@@ -3402,6 +4331,7 @@ mod tests {
                 false,
                 &Type::Unit,
                 &mut environment,
+                None,
             );
         }
         assert!(

@@ -6,7 +6,7 @@ use loom_mir::{
 };
 
 use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
-use crate::native_range::NativeIntRangePlan;
+use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
 use crate::native_storage::{NativeIntListPlan, NativeStackRecordPlan};
 use crate::{CodegenError, ReachableProgram};
 
@@ -79,6 +79,9 @@ pub(crate) struct FunctionRequirements {
     /// return can avoid managed materialization while the universal fallback must still root its
     /// moving-GC allocation boundary.
     pub(crate) native_body: RuntimeRequirements,
+    /// Requirements of the compiler-private assumed body. `None` means no
+    /// exhaustively proved assumed variant exists for this function.
+    pub(crate) assumed_body: Option<RuntimeRequirements>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -96,12 +99,14 @@ struct LocalRequirements {
 enum RequirementCallee {
     Universal(FunctionId),
     Native(FunctionId),
+    Assumed(FunctionId),
 }
 
 #[derive(Clone, Debug, Default)]
 struct LocalFunctionRequirements {
     universal: LocalRequirements,
     native: LocalRequirements,
+    assumed: Option<LocalRequirements>,
     has_native_abi: bool,
     native_uses_pod: bool,
 }
@@ -114,6 +119,7 @@ struct RequirementScanner<'a> {
     native_int_lists: NativeIntListPlan,
     stack_records: &'a NativeStackRecordPlan,
     native_result: bool,
+    body_mode: NativeBodyMode,
 }
 
 impl RuntimeRequirementGraph {
@@ -177,11 +183,12 @@ fn analyze_local_function(
     let empty_stack_records = NativeStackRecordPlan::default();
     let stack_records = stack_record_plans.get(&id).unwrap_or(&empty_stack_records);
     let native_shape = NativeSignatureShape::for_supported_function(program, function);
-    let scan = |native_result| -> Result<LocalRequirements, CodegenError> {
+    let scan = |native_result, body_mode| -> Result<LocalRequirements, CodegenError> {
         let mut requirements = LocalRequirements::default();
-        if function.call_plan.receiver_invariant.is_some()
-            || !function.call_plan.requires.is_empty()
-            || !function.call_plan.ensures.is_empty()
+        if body_mode == NativeBodyMode::Checked
+            && (function.call_plan.receiver_invariant.is_some()
+                || !function.call_plan.requires.is_empty()
+                || !function.call_plan.ensures.is_empty())
         {
             requirements
                 .requirements
@@ -195,19 +202,25 @@ fn analyze_local_function(
             native_int_lists: NativeIntListPlan::analyze(program, function),
             stack_records,
             native_result,
+            body_mode,
         }
         .scan_function_body(&function.body, &mut requirements)?;
         Ok(requirements)
     };
-    let universal = scan(false)?;
+    let universal = scan(false, NativeBodyMode::Checked)?;
     let native = if native_shape.is_some() {
-        scan(true)?
+        scan(true, NativeBodyMode::Checked)?
     } else {
         universal.clone()
     };
+    let assumed = int_ranges
+        .assumption(id)
+        .map(|_| scan(true, NativeBodyMode::Assumed))
+        .transpose()?;
     Ok(LocalFunctionRequirements {
         universal,
         native,
+        assumed,
         has_native_abi: native_shape.is_some(),
         native_uses_pod: native_shape
             .as_ref()
@@ -226,6 +239,7 @@ fn initial_function_requirements(
         local,
         local.universal.requirements,
         local.native.requirements,
+        local.assumed.as_ref().map(|assumed| assumed.requirements),
     )
 }
 
@@ -237,12 +251,18 @@ fn resolve_function_requirements(
 ) -> Result<FunctionRequirements, CodegenError> {
     let body = resolve_callees(&local.universal, previous)?;
     let native_body = resolve_callees(&local.native, previous)?;
+    let assumed_body = local
+        .assumed
+        .as_ref()
+        .map(|assumed| resolve_callees(assumed, previous))
+        .transpose()?;
     Ok(compose_function_requirements(
         program,
         id,
         local,
         body,
         native_body,
+        assumed_body,
     ))
 }
 
@@ -252,9 +272,10 @@ fn resolve_callees(
 ) -> Result<RuntimeRequirements, CodegenError> {
     let mut resolved = local.requirements;
     for edge in &local.callees {
-        let (callee_id, native) = match edge {
-            RequirementCallee::Universal(callee) => (*callee, false),
-            RequirementCallee::Native(callee) => (*callee, true),
+        let callee_id = match edge {
+            RequirementCallee::Universal(callee)
+            | RequirementCallee::Native(callee)
+            | RequirementCallee::Assumed(callee) => *callee,
         };
         let callee = previous.get(&callee_id).ok_or_else(|| {
             CodegenError::new(
@@ -265,10 +286,18 @@ fn resolve_callees(
                 ),
             )
         })?;
-        resolved.include(if native {
-            callee.native_body
-        } else {
-            callee.invocation
+        resolved.include(match edge {
+            RequirementCallee::Universal(_) => callee.invocation,
+            RequirementCallee::Native(_) => callee.native_body,
+            RequirementCallee::Assumed(_) => callee.assumed_body.ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!(
+                        "assumed requirement edge targets function #{} without an assumed body",
+                        callee_id.0
+                    ),
+                )
+            })?,
         });
     }
     Ok(resolved)
@@ -280,6 +309,7 @@ fn compose_function_requirements(
     local: &LocalFunctionRequirements,
     mut body: RuntimeRequirements,
     mut native_body: RuntimeRequirements,
+    mut assumed_body: Option<RuntimeRequirements>,
 ) -> FunctionRequirements {
     let asynchronous = program
         .function(id)
@@ -287,6 +317,9 @@ fn compose_function_requirements(
     if asynchronous {
         body.include(RuntimeRequirements::ASYNC);
         native_body.include(RuntimeRequirements::ASYNC);
+        if let Some(assumed) = &mut assumed_body {
+            assumed.include(RuntimeRequirements::ASYNC);
+        }
     }
     let invocation = if asynchronous {
         RuntimeRequirements::ASYNC
@@ -299,6 +332,7 @@ fn compose_function_requirements(
         invocation,
         body,
         native_body,
+        assumed_body,
     }
 }
 
@@ -410,7 +444,7 @@ impl RequirementScanner<'_> {
                 && witnesses.is_empty()
                 && self.native_call_compatible(target, arguments, true) =>
             {
-                self.scan_call(target, arguments, output, true)
+                self.scan_call(target, arguments, output, true, false)
             }
             _ => Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -473,7 +507,7 @@ impl RequirementScanner<'_> {
                 && witnesses.is_empty()
                 && self.native_call_compatible(target, arguments, true) =>
             {
-                self.scan_call(target, arguments, output, true)
+                self.scan_call(target, arguments, output, true, false)
             }
             _ => self.scan_expr(expression, output),
         }
@@ -535,6 +569,7 @@ impl RequirementScanner<'_> {
         arguments: &[CallArgument],
         output: &mut LocalRequirements,
         private_result: bool,
+        assumed: bool,
     ) -> Result<(), CodegenError> {
         for argument in arguments {
             if let CallArgument::Value(value) = argument {
@@ -553,7 +588,11 @@ impl RequirementScanner<'_> {
                 "private native call scanner disagrees with ABI selection",
             ));
         }
-        output.callees.insert(RequirementCallee::Native(*callee));
+        output.callees.insert(if assumed {
+            RequirementCallee::Assumed(*callee)
+        } else {
+            RequirementCallee::Native(*callee)
+        });
         Ok(())
     }
 
@@ -592,7 +631,9 @@ impl RequirementScanner<'_> {
                 self.scan_expr(value, output)?;
                 if *operator == UnaryOp::Negate
                     && is_int_like(self.program, &value.ty)
-                    && !self.int_ranges.proves(self.function.id, expression)
+                    && !self
+                        .int_ranges
+                        .proves_for(self.body_mode, self.function.id, expression)
                 {
                     output.requirements.include(RuntimeRequirements::MAY_FAULT);
                 }
@@ -604,7 +645,9 @@ impl RequirementScanner<'_> {
                     operator,
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
                 ) && is_int_like(self.program, &left.ty)
-                    && !self.int_ranges.proves(self.function.id, expression)
+                    && !self
+                        .int_ranges
+                        .proves_for(self.body_mode, self.function.id, expression)
                 {
                     output.requirements.include(RuntimeRequirements::MAY_FAULT);
                 }
@@ -668,8 +711,19 @@ impl RequirementScanner<'_> {
             ExprKind::Call {
                 target, arguments, ..
             } => {
+                if let CallTarget::Direct(callee) = target
+                    && self.int_ranges.uses_assumed_call(
+                        self.body_mode,
+                        self.function.id,
+                        expression,
+                        *callee,
+                    )
+                    && self.native_call_compatible(target, arguments, false)
+                {
+                    return self.scan_call(target, arguments, output, false, true);
+                }
                 if self.native_call_compatible(target, arguments, false) {
-                    return self.scan_call(target, arguments, output, false);
+                    return self.scan_call(target, arguments, output, false, false);
                 }
                 for (index, argument) in arguments.iter().enumerate() {
                     if let CallArgument::Value(value) = argument {
@@ -966,6 +1020,94 @@ mod tests {
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
         Expr::new(kind, ty, Default::default())
+    }
+
+    fn int(value: i64) -> Expr {
+        expression(ExprKind::Constant(Constant::Int(value)), Type::Int)
+    }
+
+    fn copy_int() -> Expr {
+        expression(
+            ExprKind::Copy(loom_mir::Place::local(LocalId(0))),
+            Type::Int,
+        )
+    }
+
+    fn binary_int(operator: BinaryOp, left: Expr, right: Expr) -> Expr {
+        expression(
+            ExprKind::Binary(operator, Box::new(left), Box::new(right)),
+            Type::Int,
+        )
+    }
+
+    fn fibonacci_call(offset: i64) -> Expr {
+        expression(
+            ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(binary_int(
+                    BinaryOp::Subtract,
+                    copy_int(),
+                    int(offset),
+                ))],
+                witnesses: Vec::new(),
+            },
+            Type::Int,
+        )
+    }
+
+    #[test]
+    fn recursive_int_checked_and_assumed_bodies_have_isolated_requirements() {
+        let body = expression(
+            ExprKind::If {
+                condition: Box::new(expression(
+                    ExprKind::Binary(BinaryOp::Less, Box::new(copy_int()), Box::new(int(2))),
+                    Type::Bool,
+                )),
+                then_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(copy_int())),
+                    span: Default::default(),
+                },
+                else_branch: Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(binary_int(
+                        BinaryOp::Add,
+                        fibonacci_call(1),
+                        fibonacci_call(2),
+                    ))),
+                    span: Default::default(),
+                },
+            },
+            Type::Int,
+        );
+        let mut fibonacci = int_function(0, body);
+        fibonacci
+            .renumber_expr_ids()
+            .expect("renumber fibonacci expressions");
+        let program = Program {
+            functions: vec![fibonacci],
+            ..Program::default()
+        };
+        let reachable = crate::ReachableProgram {
+            functions: BTreeSet::from([FunctionId(0)]),
+            ..crate::ReachableProgram::default()
+        };
+        let ranges = crate::native_range::NativeIntRangePlan::analyze(
+            &program,
+            &reachable,
+            &crate::Roots::one(FunctionId(0)),
+        );
+        let graph =
+            RuntimeRequirementGraph::analyze(&program, &reachable, &ranges, &BTreeMap::new())
+                .expect("requirements");
+        let requirements = graph.function(FunctionId(0)).expect("fibonacci summary");
+        assert!(requirements.native_body.may_fault());
+        assert_eq!(
+            requirements.assumed_body,
+            Some(super::RuntimeRequirements::NONE)
+        );
+        assert!(requirements.invocation.may_fault());
     }
 
     #[test]

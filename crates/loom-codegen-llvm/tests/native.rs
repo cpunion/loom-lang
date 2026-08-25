@@ -504,7 +504,16 @@ fn contracted(value Int) Int
 pub fn main() Int {
     let recursive = fibonacci(20)
     assert recursive == 6765
+    let negative = checkedFibonacci(-1)
+    assert negative == -1
     contracted(41)
+}
+
+fn checkedFibonacci(value Int) Int {
+    defer {
+        Unit
+    }
+    fibonacci(value)
 }
 ";
     let project = tempfile::tempdir().expect("create scalar Int project");
@@ -524,6 +533,7 @@ pub fn main() Int {
 
     let llvm = std::fs::read_to_string(ir).expect("read scalar Int LLVM IR");
     let fibonacci = llvm_native_function(&llvm, "scalar_int_fibonacci");
+    let assumed_fibonacci = llvm_assumed_native_function(&llvm, "scalar_int_fibonacci");
     assert!(
         fibonacci
             .lines()
@@ -531,10 +541,21 @@ pub fn main() Int {
             .is_some_and(|line| line.contains("i64 %0, ptr %1")),
         "{fibonacci}"
     );
-    assert!(
-        fibonacci.contains("call { i32, i64 } @loom.native.fn.0.scalar_int_fibonacci"),
+    assert_eq!(
+        fibonacci
+            .matches("call { i32, i64 } @loom.native.fn.0.scalar_int_fibonacci")
+            .count(),
+        2,
         "{fibonacci}"
     );
+    assert_eq!(
+        fibonacci
+            .matches("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci")
+            .count(),
+        1,
+        "{fibonacci}"
+    );
+    assert!(fibonacci.contains("icmp ule i64 %0, 92"), "{fibonacci}");
     assert!(!fibonacci.contains("%loom.ArgNode"), "{fibonacci}");
     assert!(
         !fibonacci.contains("llvm.ssub.with.overflow.i64"),
@@ -544,6 +565,38 @@ pub fn main() Int {
     assert!(
         fibonacci.contains("llvm.sadd.with.overflow.i64"),
         "{fibonacci}"
+    );
+    assert!(
+        assumed_fibonacci
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("i64 %0") && !line.contains("ptr")),
+        "{assumed_fibonacci}"
+    );
+    assert_eq!(
+        assumed_fibonacci
+            .matches("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci")
+            .count(),
+        2,
+        "{assumed_fibonacci}"
+    );
+    assert_eq!(
+        assumed_fibonacci.matches("sub nsw i64").count(),
+        2,
+        "{assumed_fibonacci}"
+    );
+    assert_eq!(
+        assumed_fibonacci.matches("add nsw i64").count(),
+        1,
+        "{assumed_fibonacci}"
+    );
+    assert!(
+        !assumed_fibonacci.contains("with.overflow"),
+        "{assumed_fibonacci}"
+    );
+    assert!(
+        assumed_fibonacci.contains("call void @llvm.assume(i1 %assumed.domain)"),
+        "{assumed_fibonacci}"
     );
     let terminal_branches = fibonacci
         .lines()
@@ -571,6 +624,11 @@ pub fn main() Int {
         "{llvm}"
     );
     let wrapper = llvm_function(&llvm, "scalar_int_main");
+    let native_main = llvm_native_function(&llvm, "scalar_int_main");
+    assert!(
+        native_main.contains("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci"),
+        "{native_main}"
+    );
     let wrapper_status = wrapper
         .lines()
         .find(|line| line.contains("br i1 %integer.call.ok"))
@@ -632,6 +690,78 @@ pub fn main() Int {
     let output = Command::new(overflow_executable)
         .output()
         .expect("run scalar Int fault executable");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("IntegerOverflow")
+            || String::from_utf8_lossy(&output.stderr).contains("IntegerOverflow"),
+        "{output:?}"
+    );
+
+    let recursive_overflow_source = r"module scalar_recursive_fault
+
+fn amplified(value Int) Int {
+    if value < 1 {
+        1
+    } else {
+        amplified(value - 1) * 2000000
+    }
+}
+
+pub fn main() Int {
+    amplified(4)
+}
+";
+    let recursive_overflow_project =
+        tempfile::tempdir().expect("create recursive scalar Int fault project");
+    std::fs::write(
+        recursive_overflow_project.path().join("main.loom"),
+        recursive_overflow_source,
+    )
+    .expect("write recursive scalar Int fault source");
+    let snapshot = AnalysisHost::new(recursive_overflow_project.path())
+        .expect("load recursive scalar Int fault project")
+        .snapshot()
+        .expect("analyze recursive scalar Int fault project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let recursive_overflow_executable = recursive_overflow_project.path().join("program");
+    let recursive_overflow_ir = recursive_overflow_project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(recursive_overflow_ir.clone());
+    emit_native(
+        snapshot
+            .executable()
+            .expect("lower recursive scalar Int fault MIR"),
+        &recursive_overflow_executable,
+        &options,
+    )
+    .expect("emit recursive scalar Int fault executable");
+    let recursive_llvm =
+        std::fs::read_to_string(recursive_overflow_ir).expect("read recursive overflow LLVM IR");
+    let amplified = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_amplified");
+    assert!(amplified.contains("icmp ule i64 %0, 3"), "{amplified}");
+    assert_eq!(
+        amplified
+            .matches("call { i32, i64 } @loom.native.fn.0.scalar_recursive_fault_amplified")
+            .count(),
+        1,
+        "{amplified}"
+    );
+    assert_eq!(
+        amplified
+            .matches("call i64 @loom.native.assumed.fn.0.scalar_recursive_fault_amplified",)
+            .count(),
+        1,
+        "{amplified}"
+    );
+    let recursive_main = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_main");
+    assert!(
+        recursive_main
+            .contains("call { i32, i64 } @loom.native.fn.0.scalar_recursive_fault_amplified"),
+        "{recursive_main}"
+    );
+    let output = Command::new(recursive_overflow_executable)
+        .output()
+        .expect("run recursive scalar Int fault executable");
     assert!(!output.status.success(), "{output:?}");
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("IntegerOverflow")
@@ -2739,6 +2869,24 @@ fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
             })
         })
         .unwrap_or_else(|| panic!("missing native LLVM function containing `{symbol_suffix}`"));
+    let rest = &ir[start + marker.len()..];
+    let end = rest.find("\ndefine ").unwrap_or(rest.len());
+    &ir[start..start + marker.len() + end]
+}
+
+fn llvm_assumed_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
+    let marker = "define internal ";
+    let start = ir
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .find(|index| {
+            ir[*index..].lines().next().is_some_and(|line| {
+                line.contains("@loom.native.assumed.fn.") && line.contains(symbol_suffix)
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!("missing assumed native LLVM function containing `{symbol_suffix}`")
+        });
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
