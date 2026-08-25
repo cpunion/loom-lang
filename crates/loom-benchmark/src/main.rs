@@ -26,28 +26,28 @@ const CASES: &[CaseSpec] = &[
     CaseSpec {
         name: "int_lcg",
         description: "bounded Int arithmetic and a counted loop",
-        standard_scale: 10_000_000,
+        standard_scale: 2_000_000,
         quick_scale: 10_000,
         checksum: lcg_final_checksum,
     },
     CaseSpec {
         name: "record_method",
         description: "mutable record method calls with a bounded periodic value",
-        standard_scale: 10_000_000,
+        standard_scale: 500_000,
         quick_scale: 10_000,
         checksum: list_checksum,
     },
     CaseSpec {
         name: "list_build_scan",
         description: "grow an Int list and scan it by index",
-        standard_scale: 2_000_000,
+        standard_scale: 10_000,
         quick_scale: 1_000,
         checksum: list_checksum,
     },
     CaseSpec {
         name: "fib_recursive",
         description: "non-tail recursive calls over Int",
-        standard_scale: 38,
+        standard_scale: 32,
         quick_scale: 20,
         checksum: fib_checksum,
     },
@@ -900,9 +900,10 @@ mod tests {
 
     #[test]
     fn standard_checksums_are_stable() {
-        assert_eq!(lcg_final_checksum(10_000_000), Ok(893_153_735));
-        assert_eq!(list_checksum(2_000_000), Ok(1_022_942_656));
-        assert_eq!(fib_checksum(38), Ok(39_088_169));
+        assert_eq!(lcg_final_checksum(2_000_000), Ok(24_123_260));
+        assert_eq!(list_checksum(500_000), Ok(255_644_016));
+        assert_eq!(list_checksum(10_000), Ok(5_020_920));
+        assert_eq!(fib_checksum(32), Ok(2_178_309));
     }
 
     #[test]

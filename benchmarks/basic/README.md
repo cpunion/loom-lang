@@ -8,14 +8,16 @@
 
 | case | 默认规模 | 主要路径 | 可观察 checksum |
 |---|---:|---|---|
-| `int_lcg` | 10,000,000 | 有界 `Int` 乘除和循环 | 最终 LCG state |
-| `record_method` | 10,000,000 | mutable record method 与周期整数累计 | `total` 和 `calls` |
-| `list_build_scan` | 2,000,000 | 从空 List 几何增长，再逐项 checked get | 元素和与长度 |
-| `fib_recursive` | 38 | 非尾递归函数调用 | Fibonacci 值 |
+| `int_lcg` | 2,000,000 | 有界 `Int` 乘除和循环 | 最终 LCG state |
+| `record_method` | 500,000 | mutable record method 与周期整数累计 | `total` 和 `calls` |
+| `list_build_scan` | 10,000 | 从空 List 几何增长，再逐项 checked get | 元素和与长度 |
+| `fib_recursive` | 32 | 非尾递归函数调用 | Fibonacci 值 |
 
 所有数值都落在 signed 64-bit 范围内。Loom 和 Rust 保留 checked integer 行为；C、C++ 和 Go 的固定规模也不会溢出。List 用例不预留容量，五种实现都从空容器开始；它同时测量容器增长、元素写入和边界检查，不把结果解释为纯内存带宽。
 
 Text 拼接和 `dyn` 分派没有放入 v1：各语言的字符串表示、分配策略、虚调用去虚化条件并不天然等价。它们应在 ABI/layout 优化阶段用单独、明确语义的 case 加入。
+
+默认规模按当前 Loom 实现校准，使标准矩阵能在开发机上有界完成；它们不是成熟实现的吞吐上限。尤其 `list_build_scan` 的规模刻意较小，当前通用 `Value`/List 路径会成为主导热点。每个 case 内五种语言仍使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
 
 ## 运行
 
