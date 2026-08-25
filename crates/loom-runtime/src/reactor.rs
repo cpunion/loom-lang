@@ -96,12 +96,9 @@ pub(crate) struct WorkerMailbox {
 }
 
 pub struct LoomExecutor {
-    /// Stable runtime borrowed for this executor's entire lifetime. Legacy
-    /// executors retain ownership in `owned_runtime`; v1 executors borrow a
-    /// separately managed runtime whose attachment marker prevents early
-    /// destruction or a second scheduler.
+    /// Stable runtime borrowed for this executor's entire lifetime. Its
+    /// attachment marker prevents early destruction or a second scheduler.
     pub(crate) runtime: NonNull<LoomRuntime>,
-    owned_runtime: Option<Box<LoomRuntime>>,
     attached_to_runtime: bool,
     /// OS readiness is absent for synchronous roots and for async work that
     /// completes without suspending on a wait source.
@@ -123,7 +120,10 @@ pub struct LoomExecutor {
 /// caller's descriptor cannot invalidate a live registration.
 pub struct WaitSet {
     id: u64,
+    // Field order is intentional: the executor detaches before its runtime is
+    // dropped. WaitSet owns both objects; LoomExecutor itself owns neither.
     executor: Box<LoomExecutor>,
+    _runtime: Box<LoomRuntime>,
     descriptors: BTreeMap<u64, OwnedFd>,
 }
 
@@ -143,10 +143,9 @@ pub struct WaitEvent {
 }
 
 impl LoomExecutor {
-    fn new(runtime: NonNull<LoomRuntime>, owned_runtime: Option<Box<LoomRuntime>>) -> Self {
+    fn new(runtime: NonNull<LoomRuntime>) -> Self {
         Self {
             runtime,
-            owned_runtime,
             attached_to_runtime: false,
             reactor: None,
             tasks: Vec::new(),
@@ -160,22 +159,9 @@ impl LoomExecutor {
         }
     }
 
-    fn boxed_with_owned_runtime() -> Box<Self> {
-        let mut runtime = Box::new(LoomRuntime::new());
-        let runtime_pointer = NonNull::from(&mut *runtime);
-        let mut executor = Box::new(Self::new(runtime_pointer, Some(runtime)));
-        let executor_pointer = (&raw mut *executor).cast::<c_void>();
-        // The executor is boxed before publishing either side of the
-        // relationship, so both addresses remain stable until Drop detaches.
-        let attached = unsafe { (*runtime_pointer.as_ptr()).try_attach_executor(executor_pointer) };
-        debug_assert!(attached);
-        executor.attached_to_runtime = attached;
-        executor
-    }
-
     unsafe fn boxed_for_runtime(runtime: *mut LoomRuntime) -> Option<Box<Self>> {
         let runtime_pointer = NonNull::new(runtime)?;
-        let mut executor = Box::new(Self::new(runtime_pointer, None));
+        let mut executor = Box::new(Self::new(runtime_pointer));
         let executor_pointer = (&raw mut *executor).cast::<c_void>();
         // SAFETY: callers provide a live, uniquely managed LoomRuntime. The
         // marker is updated before the executor pointer is returned.
@@ -232,13 +218,10 @@ impl Drop for LoomExecutor {
             return;
         }
         let executor = (&raw mut *self).cast::<c_void>();
-        // SAFETY: the runtime must outlive a borrowed executor. For a legacy
-        // executor it is retained by owned_runtime until after this Drop body.
+        // SAFETY: the ABI requires the explicitly managed runtime to outlive
+        // its borrowed executor.
         unsafe { (*self.runtime.as_ptr()).detach_executor(executor) };
         self.attached_to_runtime = false;
-        // Read the field so its ownership role remains explicit even though
-        // Rust drops it automatically after this method returns.
-        let _owns_runtime = self.owned_runtime.is_some();
     }
 }
 
@@ -266,11 +249,21 @@ impl WaitSet {
         let id = NEXT_WAIT_SET_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("Loom wait set identity space was exhausted"))?;
-        let mut executor = LoomExecutor::boxed_with_owned_runtime();
+        let mut runtime = Box::new(LoomRuntime::new());
+        let runtime_pointer = &raw mut *runtime;
+        // SAFETY: WaitSet retains the boxed runtime after the executor and its
+        // field order guarantees that the executor detaches first.
+        let Some(mut executor) = (unsafe { LoomExecutor::boxed_for_runtime(runtime_pointer) })
+        else {
+            return Err(io::Error::other(
+                "fresh Loom runtime rejected its executor attachment",
+            ));
+        };
         executor.ensure_reactor()?;
         Ok(Self {
             id,
             executor,
+            _runtime: runtime,
             descriptors: BTreeMap::new(),
         })
     }
@@ -519,11 +512,6 @@ pub extern "C" fn wait_now_ns() -> u64 {
     now_ns()
 }
 
-#[unsafe(export_name = "loom_executor_create")]
-pub extern "C" fn executor_create() -> *mut LoomExecutor {
-    Box::into_raw(LoomExecutor::boxed_with_owned_runtime())
-}
-
 #[unsafe(export_name = "loom_executor_create_for_runtime_v1")]
 pub unsafe extern "C" fn executor_create_for_runtime_v1(
     runtime: *mut LoomRuntime,
@@ -532,21 +520,12 @@ pub unsafe extern "C" fn executor_create_for_runtime_v1(
     unsafe { LoomExecutor::boxed_for_runtime(runtime) }.map_or(ptr::null_mut(), Box::into_raw)
 }
 
-#[unsafe(export_name = "loom_executor_runtime_v1")]
-pub unsafe extern "C" fn executor_runtime_v1(executor: *mut LoomExecutor) -> *mut LoomRuntime {
-    if executor.is_null() {
-        ptr::null_mut()
-    } else {
-        // SAFETY: the pointer was checked and is borrowed only for this read.
-        unsafe { (*executor).runtime_pointer() }
-    }
-}
-
 #[unsafe(export_name = "loom_executor_destroy")]
 pub unsafe extern "C" fn executor_destroy(executor: *mut LoomExecutor) {
     if !executor.is_null() {
-        // SAFETY: ownership of this pointer was returned by executor_create and
-        // the ABI requires exactly one matching destroy call.
+        // SAFETY: ownership of this pointer was returned by
+        // executor_create_for_runtime_v1 and the ABI requires exactly one
+        // matching destroy call before destroying the attached runtime.
         drop(unsafe { Box::from_raw(executor) });
     }
 }
@@ -844,26 +823,30 @@ mod wait_set_tests {
 
     #[test]
     fn synchronous_heap_use_does_not_initialize_async_resources() {
-        let executor = executor_create();
+        let runtime = crate::runtime::runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         unsafe {
-            assert!((*executor).owned_runtime.is_some());
-            assert_eq!(executor_runtime_v1(executor), (*executor).runtime_pointer());
+            assert_eq!((*executor).runtime_pointer(), runtime);
             assert!((*executor).reactor.is_none());
             assert!((*executor).worker.is_none());
-            assert_eq!(crate::gc::activate_executor(executor), WAIT_OK);
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
             assert!(!crate::gc::allocate_value().is_null());
             assert!(!crate::gc::allocate_value_node().is_null());
-            assert_eq!(crate::gc::deactivate_executor(executor), WAIT_OK);
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
             assert!((*executor).reactor.is_none());
             assert!((*executor).worker.is_none());
             executor_destroy(executor);
+            assert_eq!(crate::runtime::runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn first_registration_initializes_one_reactor_but_no_worker_mailbox() {
-        let executor = executor_create();
+        let runtime = crate::runtime::runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let source = LoomWaitSource {
             abi_version: WAIT_ABI_VERSION,
@@ -893,6 +876,7 @@ mod wait_set_tests {
             assert_eq!(executor_cancel(executor, &raw const first), WAIT_OK);
             assert_eq!(executor_cancel(executor, &raw const second), WAIT_OK);
             executor_destroy(executor);
+            assert_eq!(crate::runtime::runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 

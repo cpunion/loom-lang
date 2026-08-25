@@ -137,26 +137,6 @@ pub unsafe extern "C" fn deactivate_runtime_v1(runtime: *mut LoomRuntime) -> i32
     crate::WAIT_OK
 }
 
-/// Activates an executor's attached runtime heap for legacy generated code.
-/// Scheduler resumes nest this activation on the same thread.
-#[unsafe(export_name = "loom_gc_activate_executor")]
-pub unsafe extern "C" fn activate_executor(executor: *mut LoomExecutor) -> i32 {
-    if executor.is_null() {
-        return crate::WAIT_INVALID_ARGUMENT;
-    }
-    // SAFETY: the executor was checked and retains its attached runtime.
-    unsafe { activate_runtime_v1((*executor).runtime_pointer()) }
-}
-
-#[unsafe(export_name = "loom_gc_deactivate_executor")]
-pub unsafe extern "C" fn deactivate_executor(executor: *mut LoomExecutor) -> i32 {
-    if executor.is_null() {
-        return crate::WAIT_INVALID_ARGUMENT;
-    }
-    // SAFETY: the executor was checked and retains its attached runtime.
-    unsafe { deactivate_runtime_v1((*executor).runtime_pointer()) }
-}
-
 #[unsafe(export_name = "loom_gc_alloc_value")]
 pub extern "C" fn allocate_value() -> *mut c_void {
     let mut allocation = Box::new(ValueSlot::default());

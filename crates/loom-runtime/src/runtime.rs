@@ -76,41 +76,24 @@ pub unsafe extern "C" fn runtime_destroy_v1(runtime: *mut LoomRuntime) -> i32 {
     WAIT_OK
 }
 
-/// Returns the runtime's opaque heap identity for compiler/runtime plumbing.
-/// Source programs cannot observe or dereference this pointer.
-#[unsafe(export_name = "loom_runtime_heap_v1")]
-pub unsafe extern "C" fn runtime_heap_v1(runtime: *mut LoomRuntime) -> *mut c_void {
-    if runtime.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: the caller supplies a live runtime and receives only an opaque
-    // identity; the heap remains owned by that runtime.
-    unsafe { (&raw mut (*runtime).heap).cast::<c_void>() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gc::{allocate_value, allocate_value_node};
-    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy, executor_runtime_v1};
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
 
     #[test]
     fn null_runtime_operations_fail_without_side_effects() {
         unsafe {
             assert_eq!(runtime_destroy_v1(ptr::null_mut()), WAIT_INVALID_ARGUMENT);
-            assert!(runtime_heap_v1(ptr::null_mut()).is_null());
         }
     }
 
     #[test]
-    fn detached_runtime_exposes_a_stable_heap_identity() {
+    fn detached_runtime_can_be_destroyed() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         unsafe {
-            let first = runtime_heap_v1(runtime);
-            let second = runtime_heap_v1(runtime);
-            assert!(!first.is_null());
-            assert_eq!(first, second);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
@@ -138,7 +121,7 @@ mod tests {
         unsafe {
             let executor = executor_create_for_runtime_v1(runtime);
             assert!(!executor.is_null());
-            assert_eq!(executor_runtime_v1(executor), runtime);
+            assert_eq!((*executor).runtime_pointer(), runtime);
             assert!(executor_create_for_runtime_v1(runtime).is_null());
             assert_eq!(runtime_destroy_v1(runtime), WAIT_INVALID_ARGUMENT);
 

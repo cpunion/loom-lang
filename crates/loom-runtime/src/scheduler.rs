@@ -2163,48 +2163,11 @@ pub unsafe extern "C" fn context_raise_fault_v1(
     unsafe { raise_fault_for_task_or_root(active_task, arguments) }
 }
 
-/// Records a failure on the task currently executing in `executor`. When no
-/// task is active this is a synchronous executable boundary, so the supplied
-/// display text is emitted immediately instead.
-#[unsafe(export_name = "loom_executor_raise_fault")]
-pub unsafe extern "C" fn executor_raise_fault(
-    executor: *mut LoomExecutor,
-    code: *const u8,
-    code_length: u64,
-    message: *const u8,
-    message_length: u64,
-    display: *const u8,
-    display_length: u64,
-    detail: *const u8,
-    detail_length: u64,
-) -> i32 {
-    let active_task = if executor.is_null() {
-        ptr::null_mut()
-    } else {
-        unsafe { (*executor).active_task }
-    };
-    unsafe {
-        raise_fault_for_task_or_root(
-            active_task,
-            FaultArguments {
-                code,
-                code_length,
-                message,
-                message_length,
-                display,
-                display_length,
-                detail,
-                detail_length,
-            },
-        )
-    }
-}
-
 #[cfg(test)]
 mod fault_context_tests {
     use super::*;
     use crate::gc::{activate_runtime_v1, deactivate_runtime_v1, enter_executor, leave_executor};
-    use crate::reactor::{executor_create, executor_create_for_runtime_v1, executor_destroy};
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
     use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
 
     const CODE: &[u8] = b"ExampleFault";
@@ -2223,22 +2186,6 @@ mod fault_context_tests {
         unsafe {
             context_raise_fault_v1(
                 context,
-                CODE.as_ptr(),
-                CODE.len() as u64,
-                MESSAGE.as_ptr(),
-                MESSAGE.len() as u64,
-                DISPLAY.as_ptr(),
-                DISPLAY.len() as u64,
-                DETAIL.as_ptr(),
-                DETAIL.len() as u64,
-            )
-        }
-    }
-
-    unsafe fn raise_legacy(executor: *mut LoomExecutor) -> i32 {
-        unsafe {
-            executor_raise_fault(
-                executor,
                 CODE.as_ptr(),
                 CODE.len() as u64,
                 MESSAGE.as_ptr(),
@@ -2324,23 +2271,6 @@ mod fault_context_tests {
             executor_destroy(second_executor);
             assert_eq!(runtime_destroy_v1(first), WAIT_OK);
             assert_eq!(runtime_destroy_v1(second), WAIT_OK);
-        }
-    }
-
-    #[test]
-    fn legacy_executor_fault_abi_still_records_on_the_active_task() {
-        let executor = executor_create();
-        assert!(!executor.is_null());
-        unsafe {
-            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
-            assert!(!task.is_null());
-            (*executor).active_task = task;
-            assert_eq!(raise_legacy(executor), WAIT_OK);
-            assert_eq!((*task).fault_code, "ExampleFault");
-            assert_eq!((*task).fault_message, "example message");
-            assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
-            (*executor).active_task = ptr::null_mut();
-            executor_destroy(executor);
         }
     }
 }
@@ -3079,7 +3009,8 @@ mod resource_ownership_tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
-    use crate::reactor::{executor_create, executor_destroy};
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
 
     unsafe extern "C" fn complete_fixture(
         _task: *mut LoomTask,
@@ -3101,7 +3032,9 @@ mod resource_ownership_tests {
 
     #[test]
     fn pending_io_task_owns_a_duplicate_and_cancellation_closes_it() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let (socket, mut peer) = UnixStream::pair().expect("create socket pair");
         peer.set_nonblocking(true).expect("make peer nonblocking");
@@ -3122,12 +3055,15 @@ mod resource_ownership_tests {
             assert_eq!(executor_run(executor, task), TASK_CANCELLED);
             assert_peer_closed(&mut peer);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn join_transfers_the_winner_and_reaps_unconsumed_resources() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let (winner_socket, mut winner_peer) = UnixStream::pair().expect("create winner pair");
         let (loser_socket, mut loser_peer) = UnixStream::pair().expect("create loser pair");
@@ -3180,12 +3116,15 @@ mod resource_ownership_tests {
             reap_retired_tasks(&mut *executor, parent);
             assert_peer_closed(&mut loser_peer);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn aggregate_join_transfers_every_resource_to_the_awaiting_task() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let (left_socket, mut left_peer) = UnixStream::pair().expect("create left pair");
         let (right_socket, mut right_peer) = UnixStream::pair().expect("create right pair");
@@ -3244,6 +3183,7 @@ mod resource_ownership_tests {
             assert_peer_closed(&mut left_peer);
             assert_peer_closed(&mut right_peer);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 }

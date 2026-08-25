@@ -28,25 +28,25 @@ mod standard;
 mod text;
 mod value;
 
-pub use gc::{activate_executor, activate_runtime_v1, deactivate_executor, deactivate_runtime_v1};
+pub use gc::{activate_runtime_v1, deactivate_runtime_v1};
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
 
 pub use reactor::{
     LoomReadyNotification, LoomRegistration, LoomWaitSource, WaitEvent, WaitSet, WaitToken,
-    executor_cancel, executor_create, executor_create_for_runtime_v1, executor_destroy,
-    executor_last_os_error, executor_notify_completion, executor_pop_ready, executor_register,
-    executor_runtime_v1, executor_wait, wait_fd_once, wait_now_ns,
+    executor_cancel, executor_create_for_runtime_v1, executor_destroy, executor_last_os_error,
+    executor_notify_completion, executor_pop_ready, executor_register, executor_wait, wait_fd_once,
+    wait_now_ns,
 };
-pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1, runtime_heap_v1};
+pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1};
 pub use scheduler::{
     LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,
     LoomTraceVisitor, context_raise_fault_v1, executor_gc_collections, executor_gc_live_objects,
-    executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_raise_fault,
-    executor_run, executor_tasks_reclaimed, file_try_create, file_try_open_read,
-    file_try_read_text, file_try_write_text, join_add_list, join_add_task, join_create, join_task,
-    socket_try_connect, socket_try_read_text, socket_try_write_text, task_add_join_child,
-    task_cancel, task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
+    executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_run,
+    executor_tasks_reclaimed, file_try_create, file_try_open_read, file_try_read_text,
+    file_try_write_text, join_add_list, join_add_task, join_create, join_task, socket_try_connect,
+    socket_try_read_text, socket_try_write_text, task_add_join_child, task_cancel,
+    task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
     task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
     task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
     task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
@@ -250,7 +250,9 @@ mod tests {
 
     #[test]
     fn real_completion_timer_and_fd_are_one_shot() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let mut frame = 1_i32;
         let frame_pointer = (&raw mut frame).cast::<c_void>();
@@ -325,13 +327,16 @@ mod tests {
             assert_ne!(ready.events & READY_READABLE, 0);
 
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn moving_heap_rewrites_roots_and_reclaims_unreachable_values() {
         VALUE_RELOCATED.store(false, Ordering::SeqCst);
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let task = unsafe { task_spawn(executor, Some(gc_fixture_resume), 1, 0) };
         assert!(!task.is_null());
@@ -343,7 +348,10 @@ mod tests {
         // scheduler safepoint proves the survivor can be reclaimed too.
         unsafe { gc::collect(&mut *executor) };
         assert_eq!(unsafe { executor_gc_live_objects(executor) }, 0);
-        unsafe { executor_destroy(executor) };
+        unsafe {
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
     }
 
     #[test]
@@ -351,8 +359,7 @@ mod tests {
         VALUE_RELOCATED.store(false, Ordering::SeqCst);
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
-        let heap = unsafe { runtime_heap_v1(runtime) };
-        assert!(!heap.is_null());
+        let heap = unsafe { &raw mut (*runtime).heap };
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let task = unsafe { task_spawn(executor, Some(gc_fixture_resume), 1, 0) };
@@ -365,7 +372,7 @@ mod tests {
         unsafe {
             gc::collect(&mut *executor);
             assert_eq!(executor_gc_live_objects(executor), 0);
-            assert_eq!(runtime_heap_v1(runtime), heap);
+            assert_eq!(&raw mut (*runtime).heap, heap);
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -373,7 +380,9 @@ mod tests {
 
     #[test]
     fn moving_heap_rewrites_managed_text_and_bytes_as_whole_objects() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let descriptor = LoomCoroutineDescriptor {
             abi_version: COROUTINE_ABI_VERSION,
@@ -428,12 +437,15 @@ mod tests {
             gc::collect(&mut *executor);
             assert_eq!(executor_gc_live_objects(executor), 0);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn longer_aggregate_view_marks_the_tail_of_an_already_seen_head() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let bitmap = [0b11_u64];
         let descriptor = LoomCoroutineDescriptor {
@@ -484,13 +496,16 @@ mod tests {
             gc::collect(&mut *executor);
             assert_eq!(executor_gc_live_objects(executor), 0);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     #[allow(clippy::too_many_lines)]
     fn list_indexes_are_head_local_and_rebuild_after_heap_relocation() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let bitmap = [0b11_u64];
         let descriptor = LoomCoroutineDescriptor {
@@ -608,12 +623,15 @@ mod tests {
             assert!((*executor).heap().list_node_indexes.is_empty());
             assert_eq!(executor_gc_live_objects(executor), 0);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn task_witness_clone_owns_conditional_proof_tree() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         unsafe {
             let task = task_spawn(executor, Some(completed_child_resume), 1, 0);
@@ -641,13 +659,16 @@ mod tests {
             assert_eq!(nested, &[0, 0x11, 0x12]);
             assert!((*node).next.is_null());
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn coroutine_descriptor_drives_cancel_and_precise_gc_roots() {
         DESCRIPTOR_CANCELLED.store(false, Ordering::SeqCst);
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let bitmap = [1_u64];
         let descriptor = LoomCoroutineDescriptor {
@@ -683,20 +704,28 @@ mod tests {
             assert_eq!(executor_run(executor, task), TASK_CANCELLED);
             assert!(DESCRIPTOR_CANCELLED.load(Ordering::SeqCst));
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
 
         let incompatible = LoomCoroutineDescriptor {
             abi_version: COROUTINE_ABI_VERSION + 1,
             ..descriptor
         };
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(unsafe { task_spawn_descriptor(executor, &raw const incompatible) }.is_null());
-        unsafe { executor_destroy(executor) };
+        unsafe {
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
     }
 
     #[test]
     fn consumed_task_batches_are_reclaimed_at_the_next_safepoint() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         unsafe {
             let batch = task_spawn(executor, Some(task_batch_resume), 2, 0);
@@ -711,12 +740,15 @@ mod tests {
             assert!(executor_tasks_reclaimed(executor) >= TASK_BATCH_SIZE as u64);
             assert!(executor_live_tasks(executor) <= 2);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn blocking_worker_does_not_delay_timer_or_cancellation() {
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let started = std::time::Instant::now();
         unsafe {
@@ -725,13 +757,16 @@ mod tests {
             assert_eq!(executor_run(executor, root), TASK_COMPLETED);
             assert!(started.elapsed() < std::time::Duration::from_millis(100));
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
     #[test]
     fn many_one_shot_completion_registrations_drain_exactly_once() {
         const COUNT: usize = 512;
-        let executor = executor_create();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         let completion = source(WAIT_SOURCE_COMPLETION);
         let mut frames = (0..COUNT)
@@ -777,6 +812,7 @@ mod tests {
             let mut empty = LoomReadyNotification::default();
             assert_eq!(executor_pop_ready(executor, &raw mut empty), 0);
             executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 }
