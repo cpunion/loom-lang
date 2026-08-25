@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -87,6 +87,239 @@ fn needs_parameter_snapshots(function: &Function) -> bool {
     function.call_plan.receiver_invariant.is_some()
         || !function.call_plan.requires.is_empty()
         || !function.call_plan.ensures.is_empty()
+}
+
+const MAX_STACK_RECORD_FIELDS: usize = 16;
+const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
+
+// Safety depends on the current runtime boundary: synchronous generated code has no GC
+// safepoint, and checked MIR gives InOut/view carriers call-scoped lifetimes. Copies that can
+// outlive this frame go through `loom.runtime.clone` and receive managed nodes. If allocation
+// becomes a safepoint, GC becomes concurrent, or FFI can retain a source address, this fast path
+// must gain stack-root metadata or be disabled.
+fn is_stack_record_initializer(expression: &Expr, expected: TypeId) -> bool {
+    match &expression.kind {
+        ExprKind::Record {
+            ty,
+            construction: ConstructionMode::Plain | ConstructionMode::Proven,
+            ..
+        } => *ty == expected,
+        ExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_some_and(|tail| is_stack_record_initializer(tail, expected)),
+        _ => false,
+    }
+}
+
+fn stack_record_candidates(program: &Program, function: &Function) -> BTreeMap<LocalId, usize> {
+    if function.is_async {
+        return BTreeMap::new();
+    }
+    let eligible = function
+        .locals
+        .iter()
+        .filter_map(|local| {
+            let Type::Nominal(id, arguments) = &local.ty else {
+                return None;
+            };
+            if !arguments.is_empty() {
+                return None;
+            }
+            let definition = program.type_def(*id)?;
+            if definition.type_parameters != 0 {
+                return None;
+            }
+            let TypeDefKind::Record { fields, invariant } = &definition.kind else {
+                return None;
+            };
+            if invariant.is_some()
+                || fields.len() > MAX_STACK_RECORD_FIELDS
+                || !fields.iter().all(|field| {
+                    matches!(field.ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
+                })
+            {
+                return None;
+            }
+            Some((local.id, (*id, fields.len())))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if eligible.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut initialized = BTreeMap::<LocalId, usize>::new();
+    let mut forbidden = BTreeSet::new();
+    scan_stack_record_block(&function.body, &eligible, &mut initialized, &mut forbidden);
+    let mut total_nodes = 0_usize;
+    eligible
+        .into_iter()
+        .filter_map(|(local, (_, fields))| {
+            if initialized.get(&local) != Some(&1) || forbidden.contains(&local) {
+                return None;
+            }
+            let next_total = total_nodes.checked_add(fields)?;
+            if next_total > MAX_STACK_RECORD_NODES_PER_FUNCTION {
+                return None;
+            }
+            total_nodes = next_total;
+            Some((local, fields))
+        })
+        .collect()
+}
+
+fn scan_stack_record_block(
+    block: &Block,
+    eligible: &BTreeMap<LocalId, (TypeId, usize)>,
+    initialized: &mut BTreeMap<LocalId, usize>,
+    forbidden: &mut BTreeSet<LocalId>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Let { local, value } => {
+                if let Some((expected, _)) = eligible.get(local) {
+                    if is_stack_record_initializer(value, *expected) {
+                        *initialized.entry(*local).or_default() += 1;
+                    } else {
+                        forbidden.insert(*local);
+                    }
+                }
+                scan_stack_record_expr(value, eligible, initialized, forbidden);
+            }
+            StatementKind::LetTuple { locals, value } => {
+                forbidden.extend(
+                    locals
+                        .iter()
+                        .copied()
+                        .filter(|local| eligible.contains_key(local)),
+                );
+                scan_stack_record_expr(value, eligible, initialized, forbidden);
+            }
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                scan_stack_record_expr(start, eligible, initialized, forbidden);
+                scan_stack_record_expr(end, eligible, initialized, forbidden);
+                scan_stack_record_block(body, eligible, initialized, forbidden);
+            }
+            StatementKind::Assign { place, value } => {
+                if place.projection.is_empty() && eligible.contains_key(&place.local) {
+                    forbidden.insert(place.local);
+                }
+                scan_stack_record_expr(value, eligible, initialized, forbidden);
+            }
+            StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
+                scan_stack_record_expr(condition, eligible, initialized, forbidden);
+            }
+            StatementKind::Defer(cleanup) => {
+                scan_stack_record_block(cleanup, eligible, initialized, forbidden);
+            }
+            StatementKind::Return(value) => {
+                if let Some(value) = value {
+                    scan_stack_record_expr(value, eligible, initialized, forbidden);
+                }
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        scan_stack_record_expr(tail, eligible, initialized, forbidden);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn scan_stack_record_expr(
+    expression: &Expr,
+    eligible: &BTreeMap<LocalId, (TypeId, usize)>,
+    initialized: &mut BTreeMap<LocalId, usize>,
+    forbidden: &mut BTreeSet<LocalId>,
+) {
+    match &expression.kind {
+        ExprKind::Constant(_) | ExprKind::Copy(_) => {}
+        ExprKind::Move(place) => {
+            if eligible.contains_key(&place.local) {
+                forbidden.insert(place.local);
+            }
+        }
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => {
+            for value in values {
+                scan_stack_record_expr(value, eligible, initialized, forbidden);
+            }
+        }
+        ExprKind::Unary(_, value)
+        | ExprKind::Unrefine(value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::Await { task: value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        } => scan_stack_record_expr(value, eligible, initialized, forbidden),
+        ExprKind::WaitFd { descriptor, .. } => {
+            scan_stack_record_expr(descriptor, eligible, initialized, forbidden);
+        }
+        ExprKind::Binary(_, left, right) => {
+            scan_stack_record_expr(left, eligible, initialized, forbidden);
+            scan_stack_record_expr(right, eligible, initialized, forbidden);
+        }
+        ExprKind::Block(block) => {
+            scan_stack_record_block(block, eligible, initialized, forbidden);
+        }
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            scan_stack_record_expr(condition, eligible, initialized, forbidden);
+            scan_stack_record_block(then_branch, eligible, initialized, forbidden);
+            scan_stack_record_block(else_branch, eligible, initialized, forbidden);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            scan_stack_record_expr(scrutinee, eligible, initialized, forbidden);
+            for arm in arms {
+                scan_stack_record_expr(&arm.value, eligible, initialized, forbidden);
+            }
+        }
+        ExprKind::Record { fields, .. } => {
+            for field in fields {
+                scan_stack_record_expr(field, eligible, initialized, forbidden);
+            }
+        }
+        ExprKind::Variant { payload, .. } => {
+            for value in payload {
+                scan_stack_record_expr(value, eligible, initialized, forbidden);
+            }
+        }
+        ExprKind::Call { arguments, .. } => {
+            for argument in arguments {
+                match argument {
+                    CallArgument::Value(value) => {
+                        scan_stack_record_expr(value, eligible, initialized, forbidden);
+                    }
+                    CallArgument::InOut(_) => {
+                        // Checked MIR makes an InOut loan call-scoped. Callees can mutate the
+                        // value, but every observable escape is a deep value copy, so the
+                        // backing nodes cannot outlive this synchronous frame.
+                    }
+                }
+            }
+        }
+        ExprKind::MakeView {
+            value, writeback, ..
+        } => {
+            scan_stack_record_expr(value, eligible, initialized, forbidden);
+            if let Some(place) = writeback
+                && eligible.contains_key(&place.local)
+            {
+                forbidden.insert(place.local);
+            }
+        }
+        ExprKind::ReborrowView { owner, .. } => {
+            if eligible.contains_key(&owner.local) {
+                forbidden.insert(owner.local);
+            }
+        }
+    }
 }
 
 impl Emitter {
@@ -3855,6 +4088,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     loop_depth: Cell<u32>,
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     locals: BTreeMap<LocalId, PointerValue<'ctx>>,
+    stack_record_nodes: BTreeMap<LocalId, Vec<PointerValue<'ctx>>>,
     old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
     body_done: inkwell::basic_block::BasicBlock<'ctx>,
     cleanups: RefCell<Vec<Block>>,
@@ -3919,6 +4153,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .builder
             .build_store(output, backend.value_type.const_zero())
             .map_err(builder_error)?;
+        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
         let mut old_parameters = BTreeMap::new();
         if needs_parameter_snapshots(source) {
             let clone = backend
@@ -3971,6 +4206,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             loop_depth: Cell::new(0),
             resume_blocks: BTreeMap::new(),
             locals,
+            stack_record_nodes,
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4057,6 +4293,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .map_err(builder_error)?;
             locals.insert(local.id, pointer);
         }
+        let stack_record_nodes = Self::allocate_stack_record_nodes(backend, source)?;
 
         let mut old_parameters = BTreeMap::new();
         if needs_parameter_snapshots(source) {
@@ -4093,6 +4330,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             loop_depth: Cell::new(0),
             resume_blocks: BTreeMap::new(),
             locals,
+            stack_record_nodes,
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4100,6 +4338,45 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
             unwind_status: Cell::new(None),
         })
+    }
+
+    fn allocate_stack_record_nodes(
+        backend: &'backend Backend<'ctx, 'program>,
+        source: &Function,
+    ) -> Result<BTreeMap<LocalId, Vec<PointerValue<'ctx>>>, CodegenError> {
+        let mut storage = BTreeMap::new();
+        let candidates = stack_record_candidates(backend.program, source);
+        for (local, field_count) in candidates {
+            let mut nodes = Vec::with_capacity(field_count);
+            for field in 0..field_count {
+                let node = backend
+                    .builder
+                    .build_alloca(
+                        backend.value_node_type,
+                        &format!("record.local.{}.field.{field}", local.0),
+                    )
+                    .map_err(builder_error)?;
+                backend
+                    .builder
+                    .build_store(node, backend.value_node_type.const_zero())
+                    .map_err(builder_error)?;
+                nodes.push(node);
+            }
+            for (index, node) in nodes.iter().copied().enumerate() {
+                let next = nodes
+                    .get(index + 1)
+                    .copied()
+                    .unwrap_or_else(|| backend.ptr_type.const_null());
+                backend.store_pointer_field(
+                    backend.value_node_type,
+                    node,
+                    VALUE_NODE_FIELD_NEXT,
+                    next,
+                )?;
+            }
+            storage.insert(local, nodes);
+        }
+        Ok(storage)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4267,6 +4544,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             loop_depth: Cell::new(0),
             resume_blocks,
             locals,
+            stack_record_nodes: BTreeMap::new(),
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
@@ -4616,7 +4894,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         match &statement.kind {
             StatementKind::Let { local, value } => {
                 let destination = self.local(*local)?;
-                self.emit_expr(value, destination)
+                if let Some(nodes) = self.stack_record_nodes.get(local) {
+                    self.emit_stack_record_initializer(value, destination, nodes)
+                } else {
+                    self.emit_expr(value, destination)
+                }
             }
             StatementKind::LetTuple { locals, value } => {
                 let tuple = self.alloc_value("tuple.binding");
@@ -6549,6 +6831,76 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         construction: ConstructionMode,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
+        self.emit_record_with_nodes(ty, fields, construction, destination, None)
+    }
+
+    fn emit_stack_record_initializer(
+        &self,
+        expression: &Expr,
+        destination: PointerValue<'ctx>,
+        nodes: &[PointerValue<'ctx>],
+    ) -> Result<bool, CodegenError> {
+        self.backend.set_debug_location(
+            self.function,
+            expression.span.file.0,
+            expression.span.range.start,
+        );
+        match &expression.kind {
+            ExprKind::Record {
+                ty,
+                fields,
+                construction,
+                ..
+            } => self.emit_record_with_nodes(*ty, fields, *construction, destination, Some(nodes)),
+            ExprKind::Block(block) => self.emit_block_with_record_nodes(block, destination, nodes),
+            _ => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record candidate does not have a record initializer",
+            )),
+        }
+    }
+
+    fn emit_block_with_record_nodes(
+        &self,
+        block: &Block,
+        destination: PointerValue<'ctx>,
+        nodes: &[PointerValue<'ctx>],
+    ) -> Result<bool, CodegenError> {
+        self.backend
+            .set_debug_location(self.function, block.span.file.0, block.span.range.start);
+        let cleanup_base = self.cleanups.borrow().len();
+        for statement in &block.statements {
+            if let StatementKind::Defer(cleanup) = &statement.kind {
+                self.cleanups.borrow_mut().push(cleanup.clone());
+                continue;
+            }
+            if !self.emit_statement(statement)? {
+                self.cleanups.borrow_mut().truncate(cleanup_base);
+                return Ok(false);
+            }
+        }
+        let tail = block.tail.as_deref().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record initializer block has no tail expression",
+            )
+        })?;
+        let continues = self.emit_stack_record_initializer(tail, destination, nodes)?;
+        if continues {
+            self.emit_cleanups_from(cleanup_base)?;
+        }
+        self.cleanups.borrow_mut().truncate(cleanup_base);
+        Ok(continues)
+    }
+
+    fn emit_record_with_nodes(
+        &self,
+        ty: TypeId,
+        fields: &[Expr],
+        construction: ConstructionMode,
+        destination: PointerValue<'ctx>,
+        nodes: Option<&[PointerValue<'ctx>]>,
+    ) -> Result<bool, CodegenError> {
         let record = if construction == ConstructionMode::Runtime {
             self.alloc_value("record.candidate")
         } else {
@@ -6570,7 +6922,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_AUX,
             self.backend.tag(values.len() as u64),
         )?;
-        let head = self.build_value_nodes(&values)?;
+        let head = if let Some(nodes) = nodes {
+            self.populate_value_nodes(nodes, &values)?
+        } else {
+            self.build_value_nodes(&values)?
+        };
         self.backend.store_pointer_field(
             self.backend.value_type,
             record,
@@ -6962,6 +7318,42 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             head = node;
         }
         Ok(head)
+    }
+
+    fn populate_value_nodes(
+        &self,
+        nodes: &[PointerValue<'ctx>],
+        values: &[PointerValue<'ctx>],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        if nodes.len() != values.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record field storage does not match its value count",
+            ));
+        }
+        for (index, (node, value)) in nodes.iter().zip(values).enumerate() {
+            let node_value = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                *node,
+                VALUE_NODE_FIELD_VALUE,
+                "record.field.value",
+            )?;
+            self.shallow_copy(node_value, *value)?;
+            let next = nodes
+                .get(index + 1)
+                .copied()
+                .unwrap_or_else(|| self.backend.ptr_type.const_null());
+            self.backend.store_pointer_field(
+                self.backend.value_node_type,
+                *node,
+                VALUE_NODE_FIELD_NEXT,
+                next,
+            )?;
+        }
+        Ok(nodes
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.backend.ptr_type.const_null()))
     }
 
     fn emit_match(

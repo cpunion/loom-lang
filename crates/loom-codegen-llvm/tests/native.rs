@@ -401,6 +401,17 @@ pub fn main() Unit {
     assert counter.calls == 100000
     let nested = nestedLoops(100)
     assert nested == 10000
+    var original = Counter { total = 0, calls = 0 }
+    var copied = original
+    copied.add(7)
+    let originalTotal = original.total
+    let originalCalls = original.calls
+    let copiedTotal = copied.total
+    let copiedCalls = copied.calls
+    assert originalTotal == 0
+    assert originalCalls == 0
+    assert copiedTotal == 7
+    assert copiedCalls == 1
     Unit
 }
 ";
@@ -449,6 +460,12 @@ pub fn main() Unit {
     assert!(add.contains("copy.scalar"), "{add}");
     assert!(add.contains("assign.scalar"), "{add}");
     assert!(!add.contains("move = load %loom.Value"), "{add}");
+    let record_method = llvm_function(&llvm, "stack_loop_recordMethod");
+    assert!(record_method.contains("record.local"), "{record_method}");
+    assert!(
+        !record_method.contains("@loom_gc_alloc_value_node"),
+        "{record_method}"
+    );
 
     let executable = project.path().join("release-program");
     let release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
