@@ -5472,6 +5472,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ExprKind::Tuple(elements) => self.emit_tuple(elements, destination),
             ExprKind::List(elements) => self.emit_list(elements, destination),
             ExprKind::Copy(place) => {
+                if place.projection.is_empty() && self.stack_record_nodes.contains_key(&place.local)
+                {
+                    self.emit_stack_record_copy(place.local, destination)?;
+                    return Ok(true);
+                }
                 let source = self.place(place)?;
                 if expression.ty == Type::Int {
                     let scalar = self.backend.load_i64_field(
@@ -7212,6 +7217,73 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         self.emit_record_with_nodes(ty, fields, construction, destination, None)
+    }
+
+    fn emit_stack_record_copy(
+        &self,
+        local: LocalId,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Type::Nominal(ty, arguments) = self.local_type(local).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidLocalReference",
+                format!("local #{} has no static type", local.0),
+            )
+        })?
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record copy source is not nominal",
+            ));
+        };
+        if !arguments.is_empty() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record copy source has generic arguments",
+            ));
+        }
+        let nodes = self.stack_record_nodes.get(&local).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "stack record copy source has no private nodes",
+            )
+        })?;
+        let values = nodes
+            .iter()
+            .copied()
+            .map(|node| {
+                self.backend.struct_pointer(
+                    self.backend.value_node_type,
+                    node,
+                    VALUE_NODE_FIELD_VALUE,
+                    "record.copy.field",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // The stack-record proof restricts these nodes to primitive fields. Materialize an
+        // independent managed chain directly instead of passing the source header through the
+        // universal clone helper: that remains a deep value copy, while keeping the private
+        // source addresses nonescaping so LLVM can promote hot mutable fields to SSA.
+        self.initialize(destination, VALUE_TAG_RECORD)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_NOMINAL,
+            self.backend.tag(u64::from(ty.0)),
+        )?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.tag(values.len() as u64),
+        )?;
+        let head = self.build_value_nodes(&values)?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
+        )
     }
 
     fn emit_stack_record_initializer(

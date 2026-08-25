@@ -660,13 +660,60 @@ pub fn main() Unit {
     let record_method = llvm_function(&llvm, "stack_loop_recordMethod");
     assert!(record_method.contains("record.local"), "{record_method}");
     assert!(
-        !record_method.contains("@loom_gc_alloc_value_node"),
+        record_method.contains("record.copy.field"),
         "{record_method}"
+    );
+    assert!(
+        !record_method.contains("@loom.runtime.clone"),
+        "{record_method}"
+    );
+    assert_eq!(
+        record_method
+            .matches("call ptr @loom_gc_alloc_value_node")
+            .count(),
+        2,
+        "the two managed result fields are materialized once after the loop: {record_method}"
+    );
+    let loop_exit = record_method
+        .find("range.exit")
+        .expect("record method has a loop exit");
+    let first_materialization = record_method
+        .find("call ptr @loom_gc_alloc_value_node")
+        .expect("record result is materialized");
+    assert!(loop_exit < first_materialization, "{record_method}");
+    let main = llvm_function(&llvm, "stack_loop_main");
+    assert!(
+        main.contains("record.copy.field"),
+        "the original-to-copy path must use independent managed fields: {main}"
     );
 
     let executable = project.path().join("release-program");
-    let release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    let release_ir = project.path().join("release.ll");
+    let mut release = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    release.emit_ir = Some(release_ir.clone());
     emit_native(program, &executable, &release).expect("emit release loop executable");
+    let release_llvm = std::fs::read_to_string(release_ir).expect("read release loop IR");
+    let periodic = release_llvm
+        .find(", 1023")
+        .expect("record loop retains the periodic mask");
+    let loop_start = release_llvm[..periodic]
+        .rfind("\nrange.iteration")
+        .expect("locate record loop header");
+    let loop_backedge = release_llvm[periodic..]
+        .find("label %range.iteration")
+        .map(|offset| periodic + offset)
+        .expect("locate record loop backedge");
+    let hot_loop = &release_llvm[loop_start..loop_backedge];
+    assert_eq!(
+        hot_loop
+            .matches("call { i64, i1 } @llvm.sadd.with.overflow.i64")
+            .count(),
+        1,
+        "the hot loop keeps the required checked total update only: {hot_loop}"
+    );
+    assert!(!hot_loop.contains("load i64"), "{hot_loop}");
+    assert!(!hot_loop.contains("store i64"), "{hot_loop}");
+    assert!(!hot_loop.contains("node.next"), "{hot_loop}");
     let output = Command::new(executable)
         .output()
         .expect("run release loop executable");
