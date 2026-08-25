@@ -1792,6 +1792,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_task_clone_witness(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_clone_witness")
+            .unwrap_or_else(|| {
+                let function_type = self.ptr_type.fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_task_clone_witness", function_type, None)
+            })
+    }
+
     fn native_task_from_wait_source(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_task_from_wait_source")
@@ -1901,6 +1918,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 let function_type = self.context.i32_type().fn_type(
                     &[
                         self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
                         self.ptr_type.into(),
                         self.i64_type.into(),
                         self.ptr_type.into(),
@@ -2079,6 +2098,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         code: &str,
         message: &str,
         display: &str,
+        detail: &str,
     ) -> Result<(), CodegenError> {
         let code_data = self
             .builder
@@ -2092,6 +2112,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .builder
             .build_global_string_ptr(display, &self.unique("fault.display"))
             .map_err(builder_error)?;
+        let detail_data = self
+            .builder
+            .build_global_string_ptr(detail, &self.unique("fault.detail"))
+            .map_err(builder_error)?;
         self.builder
             .build_call(
                 self.native_executor_raise_fault(),
@@ -2103,6 +2127,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     self.i64_type.const_int(message.len() as u64, false).into(),
                     display_data.as_pointer_value().into(),
                     self.i64_type.const_int(display.len() as u64, false).into(),
+                    detail_data.as_pointer_value().into(),
+                    self.i64_type.const_int(detail.len() as u64, false).into(),
                 ],
                 "fault.raise",
             )
@@ -2247,6 +2273,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "task.argument.next",
             )?;
         }
+        let witness_field_count = u64::try_from(self.program.requirements.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many requirements"))?;
         for index in 0..source.witness_params.len() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many task witnesses"))?;
@@ -2255,6 +2285,16 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 witness_argument,
                 WITNESS_NODE_FIELD_VALUE,
                 "task.witness",
+            )?;
+            let witness = call_pointer(
+                &self.builder,
+                self.native_task_clone_witness(),
+                &[
+                    task.into(),
+                    witness.into(),
+                    self.i64_type.const_int(witness_field_count, false).into(),
+                ],
+                "task.witness.clone",
             )?;
             let slot = call_pointer(
                 &self.builder,
@@ -3382,10 +3422,34 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_conditional_branch(accepted, pass, fail)
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(fail);
-        self.record_or_print_fault(
+        let message = format!("contract `{}` was not satisfied", contract.code);
+        let category_name = match category {
+            "PreconditionFault" => "precondition",
+            "PostconditionFault" => "postcondition",
+            "InvariantFault" => "invariant",
+            _ => "assertion",
+        };
+        let blame_span = if category == "PreconditionFault" {
+            self.source.span
+        } else {
+            contract.span
+        };
+        let detail = serde_json::to_string(&serde_json::json!({
+            "channel": "contract",
+            "fault": {
+                "code": category,
+                "category": category_name,
+                "message": message,
+                "contractSpan": contract.span,
+                "blameSpan": blame_span,
+            },
+        }))
+        .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+        self.record_or_print_fault_with_detail(
             category,
-            &format!("contract `{}` was not satisfied", contract.code),
+            &message,
             &format!("{category}: {}", contract.code),
+            &detail,
         )?;
         self.emit_all_cleanups()?;
         self.backend
@@ -3588,10 +3652,22 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .build_conditional_branch(accepted, pass, fail)
                     .map_err(builder_error)?;
                 self.backend.builder.position_at_end(fail);
-                self.record_or_print_fault(
+                let detail = serde_json::to_string(&serde_json::json!({
+                    "channel": "contract",
+                    "fault": {
+                        "code": "AssertionFault",
+                        "category": "assertion",
+                        "message": "assertion was not satisfied",
+                        "contractSpan": statement.span,
+                        "blameSpan": statement.span,
+                    },
+                }))
+                .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+                self.record_or_print_fault_with_detail(
                     "AssertionFault",
                     "assertion was not satisfied",
                     "AssertionFault",
+                    &detail,
                 )?;
                 self.emit_all_cleanups()?;
                 self.backend
@@ -5333,8 +5409,27 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         message: &str,
         synchronous_display: &str,
     ) -> Result<(), CodegenError> {
+        let detail = serde_json::to_string(&serde_json::json!({
+            "channel": "runtime",
+            "fault": {
+                "code": code,
+                "message": message,
+                "span": self.source.span,
+            },
+        }))
+        .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+        self.record_or_print_fault_with_detail(code, message, synchronous_display, &detail)
+    }
+
+    fn record_or_print_fault_with_detail(
+        &self,
+        code: &str,
+        message: &str,
+        synchronous_display: &str,
+        detail: &str,
+    ) -> Result<(), CodegenError> {
         self.backend
-            .raise_fault(self.executor, code, message, synchronous_display)
+            .raise_fault(self.executor, code, message, synchronous_display, detail)
     }
 
     fn failure_status(&self) -> IntValue<'ctx> {

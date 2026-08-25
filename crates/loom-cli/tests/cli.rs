@@ -75,6 +75,13 @@ fn cache_key(output: &[u8], layer: &str) -> Option<String> {
     })
 }
 
+fn json_record(output: &[u8], category: &str) -> Option<serde_json::Value> {
+    String::from_utf8_lossy(output).lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        (value.get("category")?.as_str()? == category).then_some(value)
+    })
+}
+
 #[test]
 fn check_reports_source_errors_before_pipeline_incompleteness() {
     let project = TestProject::new("fn broken(");
@@ -87,6 +94,39 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
     assert!(stdout.contains("MissingModuleDeclaration"), "{stdout}");
     assert!(!stdout.contains("CompilerPipelineIncomplete"), "{stdout}");
+}
+
+#[test]
+fn native_and_interpreter_failures_share_the_structured_json_schema() {
+    let project = TestProject::new(
+        "module fault_parity\n\npub fn main() Unit {\n    assert false\n    Unit\n}\n",
+    );
+    let failures = ["interpreter", "llvm"].map(|backend| {
+        let output = loomc()
+            .args(["--json", "--no-cache", "--backend", backend, "run"])
+            .arg(&project.0)
+            .output()
+            .expect("run failing Loom program");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{backend}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let record = json_record(&output.stdout, "run_failure").unwrap_or_else(|| {
+            panic!(
+                "{backend} did not emit run_failure: {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+        assert_eq!(
+            record.get("entry").and_then(serde_json::Value::as_str),
+            Some("main")
+        );
+        record["failure"].clone()
+    });
+    assert_eq!(failures[0], failures[1]);
 }
 
 #[test]

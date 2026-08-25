@@ -36,10 +36,10 @@ pub use scheduler::{
     LoomJoinSpec, LoomTask, executor_gc_collections, executor_gc_live_objects,
     executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_raise_fault,
     executor_run, executor_tasks_reclaimed, join_add_list, join_add_task, join_create, join_task,
-    task_add_join_child, task_cancel, task_from_wait_source, task_is_cancelled, task_join_count,
-    task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
-    task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
-    task_suspend_join, task_suspend_value, task_suspend_wait, task_write_join_result,
+    task_add_join_child, task_cancel, task_clone_witness, task_from_wait_source, task_is_cancelled,
+    task_join_count, task_join_result, task_join_result_step, task_join_step, task_join_winner,
+    task_prepare_join, task_report_fault, task_result, task_set_fault, task_set_state, task_slot,
+    task_spawn, task_suspend_join, task_suspend_value, task_suspend_wait, task_write_join_result,
 };
 
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -143,6 +143,12 @@ mod tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
+    }
+
+    #[repr(C)]
+    struct TestWitnessNode {
+        value: *mut c_void,
+        next: *mut TestWitnessNode,
     }
 
     unsafe extern "C" fn task_batch_resume(
@@ -322,6 +328,39 @@ mod tests {
         unsafe { gc::collect(&mut *executor) };
         assert_eq!(unsafe { executor_gc_live_objects(executor) }, 0);
         unsafe { executor_destroy(executor) };
+    }
+
+    #[test]
+    fn task_witness_clone_owns_conditional_proof_tree() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        unsafe {
+            let task = task_spawn(executor, Some(completed_child_resume), 1, 0);
+            assert!(!task.is_null());
+            let mut prerequisite = vec![0_usize, 0x11, 0x12].into_boxed_slice();
+            let mut prerequisite_node = Box::new(TestWitnessNode {
+                value: prerequisite.as_mut_ptr().cast(),
+                next: std::ptr::null_mut(),
+            });
+            let mut applied =
+                vec![(&raw mut *prerequisite_node) as usize, 0x21, 0x22].into_boxed_slice();
+            let cloned = task_clone_witness(task, applied.as_ptr().cast(), 3).cast::<usize>();
+            assert!(!cloned.is_null());
+            assert_ne!(cloned, applied.as_mut_ptr());
+
+            applied.fill(0);
+            prerequisite.fill(0);
+            prerequisite_node.value = std::ptr::null_mut();
+
+            let cloned_fields = std::slice::from_raw_parts(cloned, 3);
+            assert_eq!(&cloned_fields[1..], &[0x21, 0x22]);
+            let node = cloned_fields[0] as *const TestWitnessNode;
+            assert!(!node.is_null());
+            let nested = std::slice::from_raw_parts((*node).value.cast::<usize>(), 3);
+            assert_eq!(nested, &[0, 0x11, 0x12]);
+            assert!((*node).next.is_null());
+            executor_destroy(executor);
+        }
     }
 
     #[test]

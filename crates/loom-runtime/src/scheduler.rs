@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::ffi::c_void;
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
@@ -39,12 +41,71 @@ const TASK_FAULT_CODE: &[u8] = b"TaskFault";
 const TASK_FAULT_MESSAGE: &[u8] = b"task execution failed";
 const FILE_TYPE: u64 = 9;
 const SOCKET_TYPE: u64 = 10;
+const FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
+const FAULT_FORMAT_JSON: &str = "json";
+const FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;
 const JOIN_RESULT_OUTCOME: u32 = 3;
 const JOIN_RESULT_OUTCOME_TUPLE: u32 = 4;
 const JOIN_RESULT_OUTCOME_LIST: u32 = 5;
+
+fn json_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            control if control <= '\u{1f}' => {
+                write!(output, "\\u{:04x}", u32::from(control))
+                    .expect("writing into String cannot fail");
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
+}
+
+fn default_failure_json(code: &str, message: &str) -> String {
+    let is_defect = code.starts_with("LOOM_RUNTIME_");
+    let code = json_string(code);
+    let message = json_string(message);
+    let span = r#"{"file":0,"range":{"start":0,"end":0}}"#;
+    if is_defect {
+        format!(
+            r#"{{"channel":"defect","defect":{{"code":"InterpreterDefect","message":{message},"span":{span}}}}}"#
+        )
+    } else {
+        format!(
+            r#"{{"channel":"runtime","fault":{{"code":{code},"message":{message},"span":{span}}}}}"#
+        )
+    }
+}
+
+fn machine_faults_requested() -> bool {
+    std::env::var(FAULT_FORMAT_ENV).is_ok_and(|value| value == FAULT_FORMAT_JSON)
+}
+
+fn report_fault(detail: &str, code: &str, message: &str, human: &str) {
+    if machine_faults_requested() {
+        let detail = if detail.is_empty() {
+            default_failure_json(code, message)
+        } else {
+            detail.to_owned()
+        };
+        eprintln!("{FAULT_JSON_PREFIX}{detail}");
+    } else {
+        println!("{human}");
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -59,6 +120,12 @@ pub(crate) struct ValueNode {
 }
 
 pub type LoomTaskResume = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
+
+#[repr(C)]
+struct RuntimeWitnessNode {
+    value: *mut c_void,
+    next: *mut RuntimeWitnessNode,
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TaskStatus {
@@ -173,6 +240,10 @@ pub struct LoomTask {
     blocking_result: Option<BlockingResult>,
     fault_code: String,
     fault_message: String,
+    fault_detail: String,
+    witness_values: Vec<Box<[usize]>>,
+    witness_nodes: Vec<Box<RuntimeWitnessNode>>,
+    witness_clones: BTreeMap<usize, usize>,
 }
 
 pub struct LoomJoinSpec {
@@ -931,6 +1002,7 @@ unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
         unsafe {
             (*task).fault_code = code.into();
             (*task).fault_message = message.into();
+            (*task).fault_detail.clear();
         }
     }
     TASK_FAULTED
@@ -981,6 +1053,10 @@ pub unsafe extern "C" fn task_spawn(
         blocking_result: None,
         fault_code: "TaskFault".into(),
         fault_message: "task execution failed".into(),
+        fault_detail: String::new(),
+        witness_values: Vec::new(),
+        witness_nodes: Vec::new(),
+        witness_clones: BTreeMap::new(),
     });
     let pointer = &raw mut *task;
     executor_ref.tasks.push(task);
@@ -989,6 +1065,65 @@ pub unsafe extern "C" fn task_spawn(
     }
     unsafe { enqueue_task(executor_ref, pointer) };
     pointer
+}
+
+unsafe fn clone_witness_tree(
+    task: &mut LoomTask,
+    source: *const c_void,
+    field_count: usize,
+) -> *mut c_void {
+    if source.is_null() {
+        return ptr::null_mut();
+    }
+    if let Some(cloned) = task.witness_clones.get(&(source as usize)).copied() {
+        return cloned as *mut c_void;
+    }
+    let fields = unsafe { slice::from_raw_parts(source.cast::<usize>(), field_count) };
+    let mut cloned = fields.to_vec().into_boxed_slice();
+    cloned[0] = 0;
+    let cloned_pointer = cloned.as_mut_ptr().cast::<c_void>();
+    task.witness_values.push(cloned);
+    task.witness_clones
+        .insert(source as usize, cloned_pointer as usize);
+    let arguments =
+        unsafe { clone_witness_nodes(task, fields[0] as *const RuntimeWitnessNode, field_count) };
+    unsafe { *cloned_pointer.cast::<usize>() = arguments as usize };
+    cloned_pointer
+}
+
+unsafe fn clone_witness_nodes(
+    task: &mut LoomTask,
+    source: *const RuntimeWitnessNode,
+    field_count: usize,
+) -> *mut RuntimeWitnessNode {
+    if source.is_null() {
+        return ptr::null_mut();
+    }
+    let value = unsafe { clone_witness_tree(task, (*source).value, field_count) };
+    let next = unsafe { clone_witness_nodes(task, (*source).next, field_count) };
+    let mut node = Box::new(RuntimeWitnessNode { value, next });
+    let pointer = &raw mut *node;
+    task.witness_nodes.push(node);
+    pointer
+}
+
+/// Deep-clones a compiler witness and its prerequisite proof tree into task
+/// lifetime storage. Applied witnesses may originate in a caller stack frame,
+/// while the coroutine can outlive that frame after its first suspension.
+#[unsafe(export_name = "loom_task_clone_witness")]
+pub unsafe extern "C" fn task_clone_witness(
+    task: *mut LoomTask,
+    source: *const c_void,
+    field_count: u64,
+) -> *mut c_void {
+    const MAX_WITNESS_FIELDS: usize = 1 << 20;
+    let Ok(field_count) = usize::try_from(field_count) else {
+        return ptr::null_mut();
+    };
+    if task.is_null() || source.is_null() || field_count == 0 || field_count > MAX_WITNESS_FIELDS {
+        return ptr::null_mut();
+    }
+    unsafe { clone_witness_tree(&mut *task, source, field_count) }
 }
 
 unsafe fn spawn_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
@@ -1288,6 +1423,7 @@ pub unsafe extern "C" fn task_set_fault(
     unsafe {
         (*task).fault_code = code;
         (*task).fault_message = message;
+        (*task).fault_detail.clear();
     }
     WAIT_OK
 }
@@ -1310,7 +1446,12 @@ pub unsafe extern "C" fn task_report_fault(task: *const LoomTask) -> i32 {
     } else {
         &task.fault_message
     };
-    println!("{code}: {message}");
+    report_fault(
+        &task.fault_detail,
+        code,
+        message,
+        &format!("{code}: {message}"),
+    );
     WAIT_OK
 }
 
@@ -1326,6 +1467,8 @@ pub unsafe extern "C" fn executor_raise_fault(
     message_length: u64,
     display: *const u8,
     display_length: u64,
+    detail: *const u8,
+    detail_length: u64,
 ) -> i32 {
     let active_task = if executor.is_null() {
         ptr::null_mut()
@@ -1333,12 +1476,26 @@ pub unsafe extern "C" fn executor_raise_fault(
         unsafe { (*executor).active_task }
     };
     if !active_task.is_null() {
-        return unsafe { task_set_fault(active_task, code, code_length, message, message_length) };
+        let status =
+            unsafe { task_set_fault(active_task, code, code_length, message, message_length) };
+        if status != WAIT_OK {
+            return status;
+        }
+        let Some(detail) = (unsafe { copy_text(detail, detail_length) }) else {
+            return WAIT_INVALID_ARGUMENT;
+        };
+        unsafe { (*active_task).fault_detail = detail };
+        return WAIT_OK;
     }
-    let Some(display) = (unsafe { copy_text(display, display_length) }) else {
+    let (Some(code), Some(message), Some(display), Some(detail)) = (
+        unsafe { copy_text(code, code_length) },
+        unsafe { copy_text(message, message_length) },
+        unsafe { copy_text(display, display_length) },
+        unsafe { copy_text(detail, detail_length) },
+    ) else {
         return WAIT_INVALID_ARGUMENT;
     };
-    println!("{display}");
+    report_fault(&detail, &code, &message, &display);
     WAIT_OK
 }
 

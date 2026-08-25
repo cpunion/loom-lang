@@ -27,6 +27,8 @@ const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--relea
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
 const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
+const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
+const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 #[cfg(target_os = "macos")]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(target_os = "macos"))]
@@ -887,7 +889,7 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             stdout,
         )? {
             Ok(true) => {
-                return execute_native_with_options(options, &executable, stdout, stderr);
+                return execute_native_with_options(options, &executable, None, stdout, stderr);
             }
             Ok(false) => {}
             Err(message) => {
@@ -913,7 +915,7 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             return Ok(EXIT_DEFECT);
         }
         store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
-        return execute_native_with_options(options, &executable, stdout, stderr);
+        return execute_native_with_options(options, &executable, None, stdout, stderr);
     }
     let results = match compilation.run_tests() {
         Ok(results) => results,
@@ -999,7 +1001,13 @@ fn run_program(
                 stdout,
             )? {
                 Ok(true) => {
-                    return execute_native_with_options(options, &executable, stdout, stderr);
+                    return execute_native_with_options(
+                        options,
+                        &executable,
+                        Some(&entry),
+                        stdout,
+                        stderr,
+                    );
                 }
                 Ok(false) => {}
                 Err(message) => {
@@ -1029,7 +1037,7 @@ fn run_program(
                 });
             }
             store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
-            execute_native_with_options(options, &executable, stdout, stderr)
+            execute_native_with_options(options, &executable, Some(&entry), stdout, stderr)
         }
         Backend::Interpreter => invoke_program(
             program,
@@ -1199,7 +1207,7 @@ fn run_artifact(
         return Ok(EXIT_USAGE);
     }
     if options.backend == Backend::Llvm {
-        return execute_native_with_options(options, artifact, stdout, stderr);
+        return execute_native_with_options(options, artifact, None, stdout, stderr);
     }
     let json_output = options.json;
     let bytes = match std::fs::read(artifact) {
@@ -1242,6 +1250,7 @@ fn run_artifact(
 fn execute_native_with_options(
     options: &Options,
     executable: &Path,
+    entry: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
@@ -1249,6 +1258,7 @@ fn execute_native_with_options(
         options.json,
         executable,
         &options.program_arguments,
+        entry,
         stdout,
         stderr,
     )
@@ -1258,10 +1268,16 @@ fn execute_native(
     json_output: bool,
     executable: &Path,
     arguments: &[String],
+    entry: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
-    let output = match ProcessCommand::new(executable).args(arguments).output() {
+    let mut command = ProcessCommand::new(executable);
+    command.args(arguments);
+    if json_output {
+        command.env(NATIVE_FAULT_FORMAT_ENV, "json");
+    }
+    let output = match command.output() {
         Ok(output) => output,
         Err(error) => {
             emit_tool_error(
@@ -1275,6 +1291,19 @@ fn execute_native(
         }
     };
     if json_output {
+        let (failure, child_stderr) = extract_native_failure(&output.stderr);
+        if let Some(failure) = failure {
+            write_json_line(
+                stdout,
+                &json!({
+                    "schema_version": 1,
+                    "category": "run_failure",
+                    "entry": entry,
+                    "failure": failure,
+                }),
+            )?;
+            return Ok(EXIT_FAILURE);
+        }
         write_json_line(
             stdout,
             &json!({
@@ -1283,7 +1312,7 @@ fn execute_native(
                 "status": if output.status.success() { "ok" } else { "failed" },
                 "exit_code": output.status.code(),
                 "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
+                "stderr": child_stderr,
             }),
         )?;
     } else {
@@ -1295,6 +1324,24 @@ fn execute_native(
     } else {
         EXIT_FAILURE
     })
+}
+
+fn extract_native_failure(stderr: &[u8]) -> (Option<Value>, String) {
+    let text = String::from_utf8_lossy(stderr);
+    let mut failure = None;
+    let mut retained = String::new();
+    for line in text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let parsed = content
+            .strip_prefix(NATIVE_FAULT_JSON_PREFIX)
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+        if let Some(parsed) = parsed {
+            failure = Some(parsed);
+        } else {
+            retained.push_str(line);
+        }
+    }
+    (failure, retained)
 }
 
 fn invoke_program(
