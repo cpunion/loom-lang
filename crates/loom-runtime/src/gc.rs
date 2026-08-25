@@ -17,6 +17,7 @@ use loom_runtime_abi::{
 };
 
 use crate::reactor::LoomExecutor;
+use crate::runtime::LoomRuntime;
 use crate::scheduler::{LoomTask, ValueNode, ValueSlot, trace_task_roots};
 use crate::text;
 
@@ -50,75 +51,111 @@ pub(crate) struct LoomHeap {
 }
 
 thread_local! {
-    static ACTIVE_EXECUTOR: Cell<*mut LoomExecutor> = const { Cell::new(ptr::null_mut()) };
+    static ACTIVE_RUNTIME: Cell<*mut LoomRuntime> = const { Cell::new(ptr::null_mut()) };
     static ACTIVE_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-pub(crate) fn enter_executor(executor: *mut LoomExecutor) {
-    ACTIVE_EXECUTOR.with(|active| {
+fn enter_runtime(runtime: *mut LoomRuntime) {
+    ACTIVE_RUNTIME.with(|active| {
         let current = active.get();
-        debug_assert!(current.is_null() || current == executor);
+        debug_assert!(current.is_null() || current == runtime);
         if current.is_null() {
-            active.set(executor);
+            active.set(runtime);
         }
     });
     ACTIVE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
 }
 
-pub(crate) fn leave_executor() {
+fn leave_runtime() {
     ACTIVE_DEPTH.with(|depth| {
         let current = depth.get();
         debug_assert!(current > 0);
         let remaining = current.saturating_sub(1);
         depth.set(remaining);
         if remaining == 0 {
-            ACTIVE_EXECUTOR.with(|active| active.set(ptr::null_mut()));
+            ACTIVE_RUNTIME.with(|active| active.set(ptr::null_mut()));
         }
     });
 }
 
-/// Activates an executor-owned heap for synchronous generated code. Scheduler
-/// resumes nest this activation while running an async root on the same thread.
+pub(crate) fn runtime_is_active(runtime: *mut LoomRuntime) -> bool {
+    !runtime.is_null()
+        && ACTIVE_RUNTIME.with(|active| active.get() == runtime)
+        && ACTIVE_DEPTH.with(|depth| depth.get() != 0)
+}
+
+pub(crate) fn enter_executor(executor: *mut LoomExecutor) {
+    debug_assert!(!executor.is_null());
+    // SAFETY: scheduler callers hold a live executor for the generated-code
+    // interval, and its runtime attachment remains valid until executor Drop.
+    enter_runtime(unsafe { (*executor).runtime_pointer() });
+}
+
+pub(crate) fn leave_executor() {
+    leave_runtime();
+}
+
+/// Activates a standalone runtime heap for synchronous generated code.
+#[unsafe(export_name = "loom_runtime_activate_v1")]
+pub unsafe extern "C" fn activate_runtime_v1(runtime: *mut LoomRuntime) -> i32 {
+    if runtime.is_null() {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    let compatible = ACTIVE_RUNTIME.with(|active| {
+        let current = active.get();
+        current.is_null() || current == runtime
+    });
+    if !compatible {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    enter_runtime(runtime);
+    crate::WAIT_OK
+}
+
+#[unsafe(export_name = "loom_runtime_deactivate_v1")]
+pub unsafe extern "C" fn deactivate_runtime_v1(runtime: *mut LoomRuntime) -> i32 {
+    if runtime.is_null()
+        || !ACTIVE_RUNTIME.with(|active| active.get() == runtime)
+        || ACTIVE_DEPTH.with(|depth| depth.get() == 0)
+    {
+        return crate::WAIT_INVALID_ARGUMENT;
+    }
+    leave_runtime();
+    crate::WAIT_OK
+}
+
+/// Activates an executor's attached runtime heap for legacy generated code.
+/// Scheduler resumes nest this activation on the same thread.
 #[unsafe(export_name = "loom_gc_activate_executor")]
 pub unsafe extern "C" fn activate_executor(executor: *mut LoomExecutor) -> i32 {
     if executor.is_null() {
         return crate::WAIT_INVALID_ARGUMENT;
     }
-    let compatible = ACTIVE_EXECUTOR.with(|active| {
-        let current = active.get();
-        current.is_null() || current == executor
-    });
-    if !compatible {
-        return crate::WAIT_INVALID_ARGUMENT;
-    }
-    enter_executor(executor);
-    crate::WAIT_OK
+    // SAFETY: the executor was checked and retains its attached runtime.
+    unsafe { activate_runtime_v1((*executor).runtime_pointer()) }
 }
 
 #[unsafe(export_name = "loom_gc_deactivate_executor")]
 pub unsafe extern "C" fn deactivate_executor(executor: *mut LoomExecutor) -> i32 {
-    if executor.is_null()
-        || !ACTIVE_EXECUTOR.with(|active| active.get() == executor)
-        || ACTIVE_DEPTH.with(|depth| depth.get() == 0)
-    {
+    if executor.is_null() {
         return crate::WAIT_INVALID_ARGUMENT;
     }
-    leave_executor();
-    crate::WAIT_OK
+    // SAFETY: the executor was checked and retains its attached runtime.
+    unsafe { deactivate_runtime_v1((*executor).runtime_pointer()) }
 }
 
 #[unsafe(export_name = "loom_gc_alloc_value")]
 pub extern "C" fn allocate_value() -> *mut c_void {
     let mut allocation = Box::new(ValueSlot::default());
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             let _ = Box::into_raw(allocation);
         } else {
-            // SAFETY: ACTIVE_EXECUTOR is set only around its single-threaded
-            // resume call and the scheduler holds no Rust reference then.
-            unsafe { (*executor).heap.values.push(allocation) };
+            // SAFETY: ACTIVE_RUNTIME is set only around a single-threaded
+            // generated-code interval and collection cannot run during it.
+            unsafe { (*runtime).heap.values.push(allocation) };
         }
     });
     pointer
@@ -131,27 +168,27 @@ pub extern "C" fn allocate_value_node() -> *mut c_void {
         next: ptr::null_mut(),
     });
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             let _ = Box::into_raw(allocation);
         } else {
             // SAFETY: see allocate_value.
-            unsafe { (*executor).heap.nodes.push(allocation) };
+            unsafe { (*runtime).heap.nodes.push(allocation) };
         }
     });
     pointer
 }
 
 fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> *mut c_void {
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             let _ = Box::into_raw(allocation);
         } else {
             // SAFETY: see allocate_value. Sequence objects are immutable after
             // publication and collection runs only at generated safepoints.
-            unsafe { (*executor).heap.sequences.push(allocation) };
+            unsafe { (*runtime).heap.sequences.push(allocation) };
         }
     });
     object
@@ -215,8 +252,8 @@ unsafe fn list_node_at(mut node: *mut ValueNode, index: usize) -> Option<*mut Va
     (!node.is_null()).then_some(node)
 }
 
-fn has_active_executor() -> bool {
-    ACTIVE_EXECUTOR.with(|active| !active.get().is_null())
+fn has_active_runtime() -> bool {
+    ACTIVE_RUNTIME.with(|active| !active.get().is_null())
 }
 
 fn cached_list_node(head: *mut ValueNode, count: u64, index: usize) -> Option<*mut ValueNode> {
@@ -224,16 +261,16 @@ fn cached_list_node(head: *mut ValueNode, count: u64, index: usize) -> Option<*m
         return None;
     }
     let count = usize::try_from(count).ok()?;
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             return None;
         }
-        // SAFETY: ACTIVE_EXECUTOR is installed only for its single-threaded
+        // SAFETY: ACTIVE_RUNTIME is installed only for its single-threaded
         // generated-code interval. We copy one raw node pointer and do not
         // retain a Rust borrow across any runtime allocation.
         unsafe {
-            (*executor)
+            (*runtime)
                 .heap
                 .list_node_indexes
                 .get(&(head as usize))
@@ -249,14 +286,14 @@ fn cached_list_tail(head: *mut ValueNode, count: u64) -> Option<*mut ValueNode> 
     if head.is_null() {
         return None;
     }
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             return None;
         }
         // SAFETY: see cached_list_node.
         unsafe {
-            (*executor)
+            (*runtime)
                 .heap
                 .list_node_indexes
                 .get(&(head as usize))
@@ -271,14 +308,14 @@ fn cache_list_chain(head: *mut ValueNode, count: u64, nodes: Vec<*mut ValueNode>
     if head.is_null() {
         return;
     }
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if !executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if !runtime.is_null() {
             // SAFETY: see cached_list_node. This derived index owns no nodes
             // and is discarded before the collector can relocate them.
             unsafe {
                 let tail = nodes.last().copied().unwrap_or(ptr::null_mut());
-                (*executor).heap.list_node_indexes.insert(
+                (*runtime).heap.list_node_indexes.insert(
                     head as usize,
                     ListNodeIndex {
                         length: count,
@@ -295,12 +332,12 @@ fn cache_list_tail(head: *mut ValueNode, count: u64, tail: *mut ValueNode) {
     if head.is_null() || tail.is_null() {
         return;
     }
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if !executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if !runtime.is_null() {
             // SAFETY: see cache_list_chain.
             unsafe {
-                (*executor).heap.list_node_indexes.insert(
+                (*runtime).heap.list_node_indexes.insert(
                     head as usize,
                     ListNodeIndex {
                         length: count,
@@ -314,15 +351,15 @@ fn cache_list_tail(head: *mut ValueNode, count: u64, tail: *mut ValueNode) {
 }
 
 fn append_cached_list_node(head: *mut ValueNode, count: u64, node: *mut ValueNode) -> bool {
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             return false;
         }
         // SAFETY: see cached_list_node. list_add is the only native chain
         // mutator and updates this index in the same call as the next link.
         unsafe {
-            let Some(entry) = (*executor).heap.list_node_indexes.get_mut(&(head as usize)) else {
+            let Some(entry) = (*runtime).heap.list_node_indexes.get_mut(&(head as usize)) else {
                 return false;
             };
             if entry.length != count {
@@ -391,7 +428,7 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
         let Some(tail) = tail else {
             return 1;
         };
-        // SAFETY: the checked chain walk or executor-local index selected the
+        // SAFETY: the checked chain walk or runtime-local index selected the
         // final node in this List's runtime-owned chain.
         unsafe {
             (*tail).next = node;
@@ -419,7 +456,7 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
     }
     let head = list.words[VALUE_WORD_DATA] as *mut ValueNode;
     let index = usize::try_from(index).unwrap_or_else(|_| unreachable!());
-    let node = if !has_active_executor() {
+    let node = if !has_active_runtime() {
         let Some(node) = (unsafe { list_node_at(head, index) }) else {
             return ptr::null();
         };
@@ -443,19 +480,19 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
 }
 
 /// Witness argument lists are immutable compiler metadata. They are kept in a
-/// non-moving executor arena because generated call sites can hold their raw
+/// non-moving runtime arena because generated call sites can hold their raw
 /// address transiently; they never contain user heap values.
 #[unsafe(export_name = "loom_gc_alloc_witness_node")]
 pub extern "C" fn allocate_witness_node() -> *mut c_void {
     let mut allocation = Box::new([0_usize; 2]);
     let pointer = (&raw mut *allocation).cast::<c_void>();
-    ACTIVE_EXECUTOR.with(|active| {
-        let executor = active.get();
-        if executor.is_null() {
+    ACTIVE_RUNTIME.with(|active| {
+        let runtime = active.get();
+        if runtime.is_null() {
             let _ = Box::into_raw(allocation);
         } else {
             // SAFETY: see allocate_value.
-            unsafe { (*executor).heap.metadata_nodes.push(allocation) };
+            unsafe { (*runtime).heap.metadata_nodes.push(allocation) };
         }
     });
     pointer
@@ -642,7 +679,11 @@ unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
 }
 
 pub(crate) fn collect(executor: &mut LoomExecutor) {
-    collect_heap(&mut executor.heap, &mut executor.tasks);
+    let runtime = executor.runtime_pointer();
+    // SAFETY: the attached runtime and executor are separate stable
+    // allocations. The scheduler owns `&mut executor` at this safepoint, so
+    // no generated code can access the heap while its task roots are traced.
+    unsafe { collect_heap(&mut (*runtime).heap, &mut executor.tasks) };
 }
 
 fn collect_heap(heap: &mut LoomHeap, tasks: &mut [Box<LoomTask>]) {

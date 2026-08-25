@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use polling::{Event, Events, Poller};
 
-use crate::gc::LoomHeap;
+use crate::runtime::LoomRuntime;
 use crate::scheduler::{LoomJoinSpec, LoomTask, WorkerCompletion};
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
@@ -96,6 +96,13 @@ pub(crate) struct WorkerMailbox {
 }
 
 pub struct LoomExecutor {
+    /// Stable runtime borrowed for this executor's entire lifetime. Legacy
+    /// executors retain ownership in `owned_runtime`; v1 executors borrow a
+    /// separately managed runtime whose attachment marker prevents early
+    /// destruction or a second scheduler.
+    pub(crate) runtime: NonNull<LoomRuntime>,
+    owned_runtime: Option<Box<LoomRuntime>>,
+    attached_to_runtime: bool,
     /// OS readiness is absent for synchronous roots and for async work that
     /// completes without suspending on a wait source.
     pub(crate) reactor: Option<Reactor>,
@@ -104,7 +111,6 @@ pub struct LoomExecutor {
     pub(crate) runnable: VecDeque<*mut LoomTask>,
     pub(crate) active_task: *mut LoomTask,
     pub(crate) join_specs: Vec<Box<LoomJoinSpec>>,
-    pub(crate) heap: LoomHeap,
     pub(crate) tasks_reclaimed: u64,
     /// The worker mailbox is needed only by blocking file/socket operations.
     pub(crate) worker: Option<WorkerMailbox>,
@@ -137,19 +143,63 @@ pub struct WaitEvent {
 }
 
 impl LoomExecutor {
-    fn new() -> Self {
+    fn new(runtime: NonNull<LoomRuntime>, owned_runtime: Option<Box<LoomRuntime>>) -> Self {
         Self {
+            runtime,
+            owned_runtime,
+            attached_to_runtime: false,
             reactor: None,
             tasks: Vec::new(),
             retired_tasks: Vec::new(),
             runnable: VecDeque::new(),
             active_task: ptr::null_mut(),
             join_specs: Vec::new(),
-            heap: LoomHeap::default(),
             tasks_reclaimed: 0,
             worker: None,
             reactor_init_os_error: 0,
         }
+    }
+
+    fn boxed_with_owned_runtime() -> Box<Self> {
+        let mut runtime = Box::new(LoomRuntime::new());
+        let runtime_pointer = NonNull::from(&mut *runtime);
+        let mut executor = Box::new(Self::new(runtime_pointer, Some(runtime)));
+        let executor_pointer = (&raw mut *executor).cast::<c_void>();
+        // The executor is boxed before publishing either side of the
+        // relationship, so both addresses remain stable until Drop detaches.
+        let attached = unsafe { (*runtime_pointer.as_ptr()).try_attach_executor(executor_pointer) };
+        debug_assert!(attached);
+        executor.attached_to_runtime = attached;
+        executor
+    }
+
+    unsafe fn boxed_for_runtime(runtime: *mut LoomRuntime) -> Option<Box<Self>> {
+        let runtime_pointer = NonNull::new(runtime)?;
+        let mut executor = Box::new(Self::new(runtime_pointer, None));
+        let executor_pointer = (&raw mut *executor).cast::<c_void>();
+        // SAFETY: callers provide a live, uniquely managed LoomRuntime. The
+        // marker is updated before the executor pointer is returned.
+        if !unsafe { (*runtime).try_attach_executor(executor_pointer) } {
+            return None;
+        }
+        executor.attached_to_runtime = true;
+        Some(executor)
+    }
+
+    pub(crate) fn runtime_pointer(&self) -> *mut LoomRuntime {
+        self.runtime.as_ptr()
+    }
+
+    pub(crate) fn heap(&self) -> &crate::gc::LoomHeap {
+        // SAFETY: attachment keeps the runtime live, and shared executor
+        // access only requests shared heap access.
+        unsafe { &(*self.runtime.as_ptr()).heap }
+    }
+
+    pub(crate) fn heap_mut(&mut self) -> &mut crate::gc::LoomHeap {
+        // SAFETY: the executor is the only allowed attachment and `&mut self`
+        // serializes mutation of its runtime heap.
+        unsafe { &mut (*self.runtime.as_ptr()).heap }
     }
 
     fn ensure_reactor(&mut self) -> io::Result<&mut Reactor> {
@@ -173,6 +223,22 @@ impl LoomExecutor {
             let (sender, receiver) = mpsc::channel();
             WorkerMailbox { sender, receiver }
         })
+    }
+}
+
+impl Drop for LoomExecutor {
+    fn drop(&mut self) {
+        if !self.attached_to_runtime {
+            return;
+        }
+        let executor = (&raw mut *self).cast::<c_void>();
+        // SAFETY: the runtime must outlive a borrowed executor. For a legacy
+        // executor it is retained by owned_runtime until after this Drop body.
+        unsafe { (*self.runtime.as_ptr()).detach_executor(executor) };
+        self.attached_to_runtime = false;
+        // Read the field so its ownership role remains explicit even though
+        // Rust drops it automatically after this method returns.
+        let _owns_runtime = self.owned_runtime.is_some();
     }
 }
 
@@ -200,11 +266,11 @@ impl WaitSet {
         let id = NEXT_WAIT_SET_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("Loom wait set identity space was exhausted"))?;
-        let mut executor = LoomExecutor::new();
+        let mut executor = LoomExecutor::boxed_with_owned_runtime();
         executor.ensure_reactor()?;
         Ok(Self {
             id,
-            executor: Box::new(executor),
+            executor,
             descriptors: BTreeMap::new(),
         })
     }
@@ -455,7 +521,25 @@ pub extern "C" fn wait_now_ns() -> u64 {
 
 #[unsafe(export_name = "loom_executor_create")]
 pub extern "C" fn executor_create() -> *mut LoomExecutor {
-    Box::into_raw(Box::new(LoomExecutor::new()))
+    Box::into_raw(LoomExecutor::boxed_with_owned_runtime())
+}
+
+#[unsafe(export_name = "loom_executor_create_for_runtime_v1")]
+pub unsafe extern "C" fn executor_create_for_runtime_v1(
+    runtime: *mut LoomRuntime,
+) -> *mut LoomExecutor {
+    // SAFETY: the runtime lifetime/ownership contract is part of this v1 ABI.
+    unsafe { LoomExecutor::boxed_for_runtime(runtime) }.map_or(ptr::null_mut(), Box::into_raw)
+}
+
+#[unsafe(export_name = "loom_executor_runtime_v1")]
+pub unsafe extern "C" fn executor_runtime_v1(executor: *mut LoomExecutor) -> *mut LoomRuntime {
+    if executor.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: the pointer was checked and is borrowed only for this read.
+        unsafe { (*executor).runtime_pointer() }
+    }
 }
 
 #[unsafe(export_name = "loom_executor_destroy")]
@@ -763,6 +847,8 @@ mod wait_set_tests {
         let executor = executor_create();
         assert!(!executor.is_null());
         unsafe {
+            assert!((*executor).owned_runtime.is_some());
+            assert_eq!(executor_runtime_v1(executor), (*executor).runtime_pointer());
             assert!((*executor).reactor.is_none());
             assert!((*executor).worker.is_none());
             assert_eq!(crate::gc::activate_executor(executor), WAIT_OK);

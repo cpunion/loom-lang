@@ -22,21 +22,23 @@ mod int;
 mod int_list;
 mod process;
 mod reactor;
+mod runtime;
 mod scheduler;
 mod standard;
 mod text;
 mod value;
 
-pub use gc::{activate_executor, deactivate_executor};
+pub use gc::{activate_executor, activate_runtime_v1, deactivate_executor, deactivate_runtime_v1};
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
 
 pub use reactor::{
     LoomReadyNotification, LoomRegistration, LoomWaitSource, WaitEvent, WaitSet, WaitToken,
-    executor_cancel, executor_create, executor_destroy, executor_last_os_error,
-    executor_notify_completion, executor_pop_ready, executor_register, executor_wait, wait_fd_once,
-    wait_now_ns,
+    executor_cancel, executor_create, executor_create_for_runtime_v1, executor_destroy,
+    executor_last_os_error, executor_notify_completion, executor_pop_ready, executor_register,
+    executor_runtime_v1, executor_wait, wait_fd_once, wait_now_ns,
 };
+pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1, runtime_heap_v1};
 pub use scheduler::{
     LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,
     LoomTraceVisitor, executor_gc_collections, executor_gc_live_objects, executor_gc_reclaimed,
@@ -345,6 +347,31 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_executor_collects_into_its_runtime_heap_and_reports_stats() {
+        VALUE_RELOCATED.store(false, Ordering::SeqCst);
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let heap = unsafe { runtime_heap_v1(runtime) };
+        assert!(!heap.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let task = unsafe { task_spawn(executor, Some(gc_fixture_resume), 1, 0) };
+        assert!(!task.is_null());
+        assert_eq!(unsafe { executor_run(executor, task) }, TASK_COMPLETED);
+        assert!(VALUE_RELOCATED.load(Ordering::SeqCst));
+        assert!(unsafe { executor_gc_collections(executor) } >= 1);
+        assert!(unsafe { executor_gc_relocations(executor) } >= 1);
+        assert!(unsafe { executor_gc_reclaimed(executor) } >= 1);
+        unsafe {
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 0);
+            assert_eq!(runtime_heap_v1(runtime), heap);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
     fn moving_heap_rewrites_managed_text_and_bytes_as_whole_objects() {
         let executor = executor_create();
         assert!(!executor.is_null());
@@ -498,10 +525,10 @@ mod tests {
                 (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
                 (*copied).words[loom_runtime_abi::VALUE_WORD_DATA],
             );
-            assert_eq!((*executor).heap.list_node_indexes.len(), 2);
+            assert_eq!((*executor).heap().list_node_indexes.len(), 2);
             assert!(
                 (*executor)
-                    .heap
+                    .heap()
                     .list_node_indexes
                     .values()
                     .all(|entry| entry.length == 128 && entry.nodes.is_none())
@@ -518,7 +545,7 @@ mod tests {
             }
             assert!(
                 (*executor)
-                    .heap
+                    .heap()
                     .list_node_indexes
                     .values()
                     .all(|entry| { entry.nodes.as_ref().is_some_and(|nodes| nodes.len() == 128) })
@@ -528,7 +555,7 @@ mod tests {
             let old_source_head = (*source).words[loom_runtime_abi::VALUE_WORD_DATA];
             let old_copied_head = (*copied).words[loom_runtime_abi::VALUE_WORD_DATA];
             gc::collect(&mut *executor);
-            assert!((*executor).heap.list_node_indexes.is_empty());
+            assert!((*executor).heap().list_node_indexes.is_empty());
             assert_ne!(
                 (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
                 old_source_head,
@@ -549,7 +576,7 @@ mod tests {
                 (*first_copied).words[loom_runtime_abi::VALUE_WORD_SCALAR],
                 0,
             );
-            assert_eq!((*executor).heap.list_node_indexes.len(), 2);
+            assert_eq!((*executor).heap().list_node_indexes.len(), 2);
             let mut extra = scheduler::ValueSlot::default();
             extra.words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
             extra.words[loom_runtime_abi::VALUE_WORD_SCALAR] = 999;
@@ -562,7 +589,7 @@ mod tests {
             );
             assert_eq!(
                 (*executor)
-                    .heap
+                    .heap()
                     .list_node_indexes
                     .get(
                         &usize::try_from((*copied).words[loom_runtime_abi::VALUE_WORD_DATA],)
@@ -578,7 +605,7 @@ mod tests {
             source.write(scheduler::ValueSlot::default());
             copied.write(scheduler::ValueSlot::default());
             gc::collect(&mut *executor);
-            assert!((*executor).heap.list_node_indexes.is_empty());
+            assert!((*executor).heap().list_node_indexes.is_empty());
             assert_eq!(executor_gc_live_objects(executor), 0);
             executor_destroy(executor);
         }

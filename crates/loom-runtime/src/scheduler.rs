@@ -672,13 +672,18 @@ unsafe fn drain_worker_completions(executor: *mut LoomExecutor) {
 }
 
 fn move_task_frames(executor: &mut LoomExecutor) {
+    let mut relocations = 0_u64;
     for task in &mut executor.tasks {
         let pointer = (&raw mut **task).cast::<LoomTask>();
         if pointer == executor.active_task || task.slots.is_empty() {
             continue;
         }
         task.slots = task.slots.to_vec().into_boxed_slice();
-        executor.heap.relocations = executor.heap.relocations.saturating_add(1);
+        relocations = relocations.saturating_add(1);
+    }
+    if relocations != 0 {
+        let heap = executor.heap_mut();
+        heap.relocations = heap.relocations.saturating_add(relocations);
     }
 }
 
@@ -2759,7 +2764,7 @@ pub unsafe extern "C" fn executor_gc_collections(executor: *const LoomExecutor) 
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).heap.collections }
+        unsafe { (*executor).heap().collections }
     }
 }
 
@@ -2768,7 +2773,7 @@ pub unsafe extern "C" fn executor_gc_relocations(executor: *const LoomExecutor) 
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).heap.relocations }
+        unsafe { (*executor).heap().relocations }
     }
 }
 
@@ -2777,7 +2782,7 @@ pub unsafe extern "C" fn executor_gc_reclaimed(executor: *const LoomExecutor) ->
     if executor.is_null() {
         0
     } else {
-        unsafe { (*executor).heap.reclaimed }
+        unsafe { (*executor).heap().reclaimed }
     }
 }
 
@@ -2787,9 +2792,10 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         0
     } else {
         let executor = unsafe { &*executor };
-        (executor.heap.values.len() as u64)
-            .saturating_add(executor.heap.nodes.len() as u64)
-            .saturating_add(executor.heap.sequences.len() as u64)
+        let heap = executor.heap();
+        (heap.values.len() as u64)
+            .saturating_add(heap.nodes.len() as u64)
+            .saturating_add(heap.sequences.len() as u64)
     }
 }
 
