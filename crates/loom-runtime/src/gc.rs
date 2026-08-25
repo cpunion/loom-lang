@@ -84,6 +84,19 @@ pub(crate) fn runtime_is_active(runtime: *mut LoomRuntime) -> bool {
         && ACTIVE_DEPTH.with(|depth| depth.get() != 0)
 }
 
+/// Returns the runtime installed for the current generated-code interval.
+///
+/// This is an internal routing identity, not a general-purpose way to access
+/// the heap. A null result means that generated code has no active runtime on
+/// this thread.
+pub(crate) fn active_runtime_pointer() -> *mut LoomRuntime {
+    if ACTIVE_DEPTH.with(|depth| depth.get() == 0) {
+        ptr::null_mut()
+    } else {
+        ACTIVE_RUNTIME.with(Cell::get)
+    }
+}
+
 pub(crate) fn enter_executor(executor: *mut LoomExecutor) {
     debug_assert!(!executor.is_null());
     // SAFETY: scheduler callers hold a live executor for the generated-code

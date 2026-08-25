@@ -15,7 +15,7 @@ use loom_runtime_abi::{
     VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
-use crate::gc::{collect, enter_executor, leave_executor};
+use crate::gc::{active_runtime_pointer, collect, enter_executor, leave_executor};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
@@ -2046,6 +2046,123 @@ pub unsafe extern "C" fn task_report_fault(task: *const LoomTask) -> i32 {
     WAIT_OK
 }
 
+#[derive(Clone, Copy)]
+struct FaultArguments {
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+    display: *const u8,
+    display_length: u64,
+    detail: *const u8,
+    detail_length: u64,
+}
+
+unsafe fn raise_fault_for_task_or_root(
+    active_task: *mut LoomTask,
+    arguments: FaultArguments,
+) -> i32 {
+    if !active_task.is_null() {
+        let status = unsafe {
+            task_set_fault(
+                active_task,
+                arguments.code,
+                arguments.code_length,
+                arguments.message,
+                arguments.message_length,
+            )
+        };
+        if status != WAIT_OK {
+            return status;
+        }
+        let Some(detail) = (unsafe { copy_text(arguments.detail, arguments.detail_length) }) else {
+            return WAIT_INVALID_ARGUMENT;
+        };
+        // SAFETY: the non-null task is owned by the validated executor (or by
+        // the legacy ABI caller) and remains live throughout this call.
+        unsafe { (*active_task).fault_detail = detail };
+        return WAIT_OK;
+    }
+
+    let (Some(code), Some(message), Some(display), Some(detail)) = (
+        unsafe { copy_text(arguments.code, arguments.code_length) },
+        unsafe { copy_text(arguments.message, arguments.message_length) },
+        unsafe { copy_text(arguments.display, arguments.display_length) },
+        unsafe { copy_text(arguments.detail, arguments.detail_length) },
+    ) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    report_fault(&detail, &code, &message, &display);
+    WAIT_OK
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FaultContextTarget {
+    Root,
+    Executor(*mut LoomExecutor),
+}
+
+fn resolve_fault_context(context: *mut c_void) -> Option<FaultContextTarget> {
+    if context.is_null() {
+        return None;
+    }
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return None;
+    }
+    if context == runtime.cast::<c_void>() {
+        return Some(FaultContextTarget::Root);
+    }
+    // SAFETY: ACTIVE_RUNTIME contains only the stable runtime installed by
+    // runtime/executor activation. The candidate context is compared as an
+    // opaque identity and is not dereferenced here.
+    if unsafe { (*runtime).is_attached_executor(context) } {
+        Some(FaultContextTarget::Executor(context.cast()))
+    } else {
+        None
+    }
+}
+
+/// Routes a generated-code fault through the currently active runtime.
+///
+/// A standalone runtime context is a synchronous executable boundary. An
+/// attached executor context records the fault on its active task; when it has
+/// no active task, it is also a synchronous boundary. No unvalidated context
+/// pointer is dereferenced.
+#[unsafe(export_name = "loom_context_raise_fault_v1")]
+pub unsafe extern "C" fn context_raise_fault_v1(
+    context: *mut c_void,
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+    display: *const u8,
+    display_length: u64,
+    detail: *const u8,
+    detail_length: u64,
+) -> i32 {
+    let arguments = FaultArguments {
+        code,
+        code_length,
+        message,
+        message_length,
+        display,
+        display_length,
+        detail,
+        detail_length,
+    };
+    let active_task = match resolve_fault_context(context) {
+        Some(FaultContextTarget::Root) => ptr::null_mut(),
+        Some(FaultContextTarget::Executor(executor)) => {
+            // SAFETY: resolution matched the candidate against the active
+            // runtime's live attachment before converting it to an executor.
+            unsafe { (*executor).active_task }
+        }
+        None => return WAIT_INVALID_ARGUMENT,
+    };
+    unsafe { raise_fault_for_task_or_root(active_task, arguments) }
+}
+
 /// Records a failure on the task currently executing in `executor`. When no
 /// task is active this is a synchronous executable boundary, so the supplied
 /// display text is emitted immediately instead.
@@ -2066,28 +2183,166 @@ pub unsafe extern "C" fn executor_raise_fault(
     } else {
         unsafe { (*executor).active_task }
     };
-    if !active_task.is_null() {
-        let status =
-            unsafe { task_set_fault(active_task, code, code_length, message, message_length) };
-        if status != WAIT_OK {
-            return status;
-        }
-        let Some(detail) = (unsafe { copy_text(detail, detail_length) }) else {
-            return WAIT_INVALID_ARGUMENT;
-        };
-        unsafe { (*active_task).fault_detail = detail };
-        return WAIT_OK;
+    unsafe {
+        raise_fault_for_task_or_root(
+            active_task,
+            FaultArguments {
+                code,
+                code_length,
+                message,
+                message_length,
+                display,
+                display_length,
+                detail,
+                detail_length,
+            },
+        )
     }
-    let (Some(code), Some(message), Some(display), Some(detail)) = (
-        unsafe { copy_text(code, code_length) },
-        unsafe { copy_text(message, message_length) },
-        unsafe { copy_text(display, display_length) },
-        unsafe { copy_text(detail, detail_length) },
-    ) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    report_fault(&detail, &code, &message, &display);
-    WAIT_OK
+}
+
+#[cfg(test)]
+mod fault_context_tests {
+    use super::*;
+    use crate::gc::{activate_runtime_v1, deactivate_runtime_v1, enter_executor, leave_executor};
+    use crate::reactor::{executor_create, executor_create_for_runtime_v1, executor_destroy};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+
+    const CODE: &[u8] = b"ExampleFault";
+    const MESSAGE: &[u8] = b"example message";
+    const DISPLAY: &[u8] = b"example display";
+    const DETAIL: &[u8] = br#"{"channel":"runtime"}"#;
+
+    unsafe extern "C" fn completed_fixture(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        TASK_COMPLETED
+    }
+
+    unsafe fn raise_context(context: *mut c_void) -> i32 {
+        unsafe {
+            context_raise_fault_v1(
+                context,
+                CODE.as_ptr(),
+                CODE.len() as u64,
+                MESSAGE.as_ptr(),
+                MESSAGE.len() as u64,
+                DISPLAY.as_ptr(),
+                DISPLAY.len() as u64,
+                DETAIL.as_ptr(),
+                DETAIL.len() as u64,
+            )
+        }
+    }
+
+    unsafe fn raise_legacy(executor: *mut LoomExecutor) -> i32 {
+        unsafe {
+            executor_raise_fault(
+                executor,
+                CODE.as_ptr(),
+                CODE.len() as u64,
+                MESSAGE.as_ptr(),
+                MESSAGE.len() as u64,
+                DISPLAY.as_ptr(),
+                DISPLAY.len() as u64,
+                DETAIL.as_ptr(),
+                DETAIL.len() as u64,
+            )
+        }
+    }
+
+    #[test]
+    fn standalone_runtime_context_routes_to_the_root_boundary() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(
+                resolve_fault_context(runtime.cast()),
+                Some(FaultContextTarget::Root),
+            );
+            assert_eq!(raise_context(runtime.cast()), WAIT_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn attached_executor_context_records_on_the_active_task() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            let executor = executor_create_for_runtime_v1(runtime);
+            assert!(!executor.is_null());
+            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            assert!(!task.is_null());
+
+            (*executor).active_task = task;
+            enter_executor(executor);
+            assert_eq!(
+                resolve_fault_context(executor.cast()),
+                Some(FaultContextTarget::Executor(executor)),
+            );
+            assert_eq!(raise_context(executor.cast()), WAIT_OK);
+            assert_eq!((*task).fault_code, "ExampleFault");
+            assert_eq!((*task).fault_message, "example message");
+            assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn inactive_and_cross_runtime_contexts_are_rejected_without_dereferencing_them() {
+        let first = runtime_create_v1();
+        let second = runtime_create_v1();
+        assert!(!first.is_null() && !second.is_null());
+        unsafe {
+            let first_executor = executor_create_for_runtime_v1(first);
+            let second_executor = executor_create_for_runtime_v1(second);
+            assert!(!first_executor.is_null() && !second_executor.is_null());
+
+            assert_eq!(raise_context(first.cast()), WAIT_INVALID_ARGUMENT);
+            assert_eq!(activate_runtime_v1(first), WAIT_OK);
+            assert_eq!(
+                resolve_fault_context(first_executor.cast()),
+                Some(FaultContextTarget::Executor(first_executor)),
+            );
+            assert_eq!(raise_context(ptr::null_mut()), WAIT_INVALID_ARGUMENT);
+            assert_eq!(raise_context(second.cast()), WAIT_INVALID_ARGUMENT);
+            assert_eq!(raise_context(second_executor.cast()), WAIT_INVALID_ARGUMENT);
+            assert_eq!(
+                raise_context(std::ptr::dangling_mut::<c_void>()),
+                WAIT_INVALID_ARGUMENT,
+            );
+            assert_eq!(deactivate_runtime_v1(first), WAIT_OK);
+
+            executor_destroy(first_executor);
+            executor_destroy(second_executor);
+            assert_eq!(runtime_destroy_v1(first), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(second), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn legacy_executor_fault_abi_still_records_on_the_active_task() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        unsafe {
+            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            assert!(!task.is_null());
+            (*executor).active_task = task;
+            assert_eq!(raise_legacy(executor), WAIT_OK);
+            assert_eq!((*task).fault_code, "ExampleFault");
+            assert_eq!((*task).fault_message, "example message");
+            assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
+            (*executor).active_task = ptr::null_mut();
+            executor_destroy(executor);
+        }
+    }
 }
 
 #[unsafe(export_name = "loom_task_prepare_join")]

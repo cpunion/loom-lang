@@ -41,6 +41,12 @@ impl LoomRuntime {
         }
     }
 
+    /// Checks the opaque identity of the one executor attached to this
+    /// runtime without dereferencing the candidate pointer.
+    pub(crate) fn is_attached_executor(&self, executor: *mut c_void) -> bool {
+        !executor.is_null() && self.attached_executor == executor
+    }
+
     fn has_attached_executor(&self) -> bool {
         !self.attached_executor.is_null()
     }

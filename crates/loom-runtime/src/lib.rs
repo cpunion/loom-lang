@@ -41,12 +41,12 @@ pub use reactor::{
 pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1, runtime_heap_v1};
 pub use scheduler::{
     LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,
-    LoomTraceVisitor, executor_gc_collections, executor_gc_live_objects, executor_gc_reclaimed,
-    executor_gc_relocations, executor_live_tasks, executor_raise_fault, executor_run,
-    executor_tasks_reclaimed, file_try_create, file_try_open_read, file_try_read_text,
-    file_try_write_text, join_add_list, join_add_task, join_create, join_task, socket_try_connect,
-    socket_try_read_text, socket_try_write_text, task_add_join_child, task_cancel,
-    task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
+    LoomTraceVisitor, context_raise_fault_v1, executor_gc_collections, executor_gc_live_objects,
+    executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_raise_fault,
+    executor_run, executor_tasks_reclaimed, file_try_create, file_try_open_read,
+    file_try_read_text, file_try_write_text, join_add_list, join_add_task, join_create, join_task,
+    socket_try_connect, socket_try_read_text, socket_try_write_text, task_add_join_child,
+    task_cancel, task_clone_witness, task_from_wait_source, task_is_cancelled, task_join_count,
     task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
     task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
     task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
