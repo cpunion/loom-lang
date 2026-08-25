@@ -7,9 +7,9 @@ use loom_codegen_llvm::{EmitOptions, Roots, analyze_reachability, native_object_
 use loom_driver::AnalysisHost;
 use loom_mir::{
     Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef, ConceptId, Constant, Expr,
-    ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, Statement, StatementKind, Type, Witness, WitnessId, WitnessRef,
-    decode_interpreted_artifact, encode_interpreted_artifact,
+    ExprId, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program, Receiver,
+    RequirementDef, RequirementId, RequirementType, Statement, StatementKind, Type, Witness,
+    WitnessId, WitnessRef, decode_interpreted_artifact, encode_interpreted_artifact,
 };
 
 #[test]
@@ -108,6 +108,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     let live_view = make_view(
         WitnessId(0),
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Constant(Constant::Int(7)),
             ty: Type::Int,
             span: Default::default(),
@@ -117,6 +118,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     let independently_live_view = make_view(
         WitnessId(1),
         Expr {
+            id: ExprId::UNASSIGNED,
             kind: ExprKind::Constant(Constant::Text("unused receiver".into())),
             ty: Type::Text,
             span: Default::default(),
@@ -124,12 +126,14 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
         view_ty.clone(),
     );
     let dynamic_call = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Dynamic {
                 requirement: RequirementId(0),
             },
             type_arguments: Vec::new(),
             arguments: vec![CallArgument::Value(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Copy(Place::local(LocalId(0))),
                 ty: view_ty.clone(),
                 span: Default::default(),
@@ -177,6 +181,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
                     },
                 ],
                 tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Constant(Constant::Unit),
                     ty: Type::Unit,
                     span: Default::default(),
@@ -260,12 +265,14 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
     live.body.statements = vec![
         Statement {
             kind: StatementKind::Evaluate(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
                     target: CallTarget::Builtin(Builtin::TextMapInsert),
                     type_arguments: Vec::new(),
                     arguments: vec![
                         CallArgument::Value(builtin_call(Builtin::TextMapNew, Vec::new())),
                         CallArgument::Value(Expr {
+                            id: ExprId::UNASSIGNED,
                             kind: ExprKind::Constant(Constant::Text("live".into())),
                             ty: Type::Text,
                             span: Default::default(),
@@ -273,6 +280,7 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
                         CallArgument::Value(make_view(
                             WitnessId(0),
                             Expr {
+                                id: ExprId::UNASSIGNED,
                                 kind: ExprKind::Constant(Constant::Int(7)),
                                 ty: Type::Int,
                                 span: Default::default(),
@@ -291,6 +299,7 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
             kind: StatementKind::Evaluate(builtin_call(
                 Builtin::LogInfo,
                 vec![Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Constant(Constant::Text("live".into())),
                     ty: Type::Text,
                     span: Default::default(),
@@ -305,6 +314,7 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
             kind: StatementKind::Evaluate(builtin_call(
                 Builtin::JsonParse,
                 vec![Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Constant(Constant::Text("null".into())),
                     ty: Type::Text,
                     span: Default::default(),
@@ -316,6 +326,7 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
             kind: StatementKind::Evaluate(make_view(
                 WitnessId(1),
                 Expr {
+                    id: ExprId::UNASSIGNED,
                     kind: ExprKind::Constant(Constant::Text("dead".into())),
                     ty: Type::Text,
                     span: Default::default(),
@@ -441,8 +452,10 @@ fn dead(text Text) Unit {
 
 fn root_function() -> Function {
     let view = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::MakeView {
             value: Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Copy(Place::local(LocalId(0))),
                 ty: Type::Int,
                 span: Default::default(),
@@ -460,6 +473,7 @@ fn root_function() -> Function {
         span: Default::default(),
     };
     let call = Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Dynamic {
                 requirement: RequirementId(0),
@@ -471,7 +485,7 @@ fn root_function() -> Function {
         ty: Type::Unit,
         span: Default::default(),
     };
-    Function {
+    let mut function = Function {
         id: FunctionId(0),
         name: "main".into(),
         span: Default::default(),
@@ -501,6 +515,7 @@ fn root_function() -> Function {
                 },
             ],
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Constant(Constant::Unit),
                 ty: Type::Unit,
                 span: Default::default(),
@@ -508,11 +523,16 @@ fn root_function() -> Function {
             span: Default::default(),
         },
         call_plan: CallPlan::default(),
-    }
+    };
+    function
+        .renumber_expr_ids()
+        .expect("renumber root-function expressions");
+    function
 }
 
 fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
     Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::MakeView {
             value: Box::new(value),
             writeback: None,
@@ -527,6 +547,7 @@ fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
 
 fn builtin_call(builtin: Builtin, arguments: Vec<Expr>) -> Expr {
     Expr {
+        id: ExprId::UNASSIGNED,
         kind: ExprKind::Call {
             target: CallTarget::Builtin(builtin),
             type_arguments: Vec::new(),
@@ -592,7 +613,7 @@ fn replace_json_value(
 }
 
 fn unit_function(id: FunctionId, name: &str) -> Function {
-    Function {
+    let mut function = Function {
         id,
         name: name.into(),
         span: Default::default(),
@@ -607,6 +628,7 @@ fn unit_function(id: FunctionId, name: &str) -> Function {
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
                 kind: ExprKind::Constant(Constant::Unit),
                 ty: Type::Unit,
                 span: Default::default(),
@@ -614,5 +636,9 @@ fn unit_function(id: FunctionId, name: &str) -> Function {
             span: Default::default(),
         },
         call_plan: CallPlan::default(),
-    }
+    };
+    function
+        .renumber_expr_ids()
+        .expect("renumber unit-function expressions");
+    function
 }

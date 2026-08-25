@@ -272,7 +272,7 @@ pub async fn main() Unit {
 }
 
 #[test]
-fn release_pipeline_folds_live_constants_and_eliminates_machine_dead_code() {
+fn range_plan_removes_proved_checks_before_abi_selection_and_release_folds_code() {
     let source = r"module optimize
 
 fn folded() Int {
@@ -317,11 +317,14 @@ pub fn main() Unit {
         .filter(|line| line.starts_with("define "))
         .collect::<Vec<_>>();
     assert!(
-        development.contains("define internal { i32, i64 } @loom.native.fn.0.optimize_folded"),
+        development.contains("define internal i64 @loom.native.fn.0.optimize_folded"),
         "{development_definitions:#?}"
     );
     assert!(!development.contains("optimize_unreachable"));
-    assert!(development.contains("llvm.sadd.with.overflow.i64"));
+    let folded = llvm_native_function(&development, "optimize_folded");
+    assert!(folded.contains("add nsw i64"), "{folded}");
+    assert!(!folded.contains("with.overflow"), "{folded}");
+    assert!(!folded.lines().next().unwrap_or_default().contains("ptr"));
     assert!(!release.contains("optimize_folded"));
     assert!(!release.contains("optimize_unreachable"));
     assert!(!release.contains("llvm.sadd.with.overflow.i64"));
@@ -383,9 +386,10 @@ pub fn main() Int {
     );
     assert!(!fibonacci.contains("%loom.ArgNode"), "{fibonacci}");
     assert!(
-        fibonacci.contains("llvm.ssub.with.overflow.i64"),
+        !fibonacci.contains("llvm.ssub.with.overflow.i64"),
         "{fibonacci}"
     );
+    assert_eq!(fibonacci.matches("sub nsw i64").count(), 2, "{fibonacci}");
     assert!(
         fibonacci.contains("llvm.sadd.with.overflow.i64"),
         "{fibonacci}"
@@ -397,7 +401,7 @@ pub fn main() Int {
                 && (line.contains("label %operation.fail") || line.contains("label %call.failure"))
         })
         .collect::<Vec<_>>();
-    assert!(terminal_branches.len() >= 5, "{fibonacci}");
+    assert!(terminal_branches.len() >= 3, "{fibonacci}");
     assert!(
         terminal_branches.iter().all(|line| line.contains("!prof")),
         "{terminal_branches:#?}"
@@ -774,6 +778,25 @@ pub fn main() Unit {
     assert!(add.contains("copy.scalar"), "{add}");
     assert!(add.contains("assign.scalar"), "{add}");
     assert!(!add.contains("move = load %loom.Value"), "{add}");
+    let modular_product = llvm_native_function(&llvm, "stack_loop_modularProduct");
+    assert!(
+        modular_product
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("define internal i64") && !line.contains("ptr")),
+        "{modular_product}"
+    );
+    assert!(
+        !modular_product.contains("with.overflow"),
+        "{modular_product}"
+    );
+    assert!(modular_product.contains("mul nsw i64"), "{modular_product}");
+    assert!(modular_product.contains("sdiv i64"), "{modular_product}");
+    let spin = llvm_native_function(&llvm, "stack_loop_spin");
+    assert!(
+        spin.contains("call i64 @loom.native.fn.1.stack_loop_modularProduct"),
+        "{spin}"
+    );
     let record_method = llvm_function(&llvm, "stack_loop_recordMethod");
     assert!(record_method.contains("record.local"), "{record_method}");
     assert!(
@@ -798,6 +821,13 @@ pub fn main() Unit {
         .find("call ptr @loom_gc_alloc_value_node")
         .expect("record result is materialized");
     assert!(loop_exit < first_materialization, "{record_method}");
+    let record_add = llvm_function(&llvm, "stack_loop_add");
+    assert_eq!(
+        record_add.matches("add nsw i64").count(),
+        2,
+        "both closed record recurrences must be proved before ABI selection: {record_add}"
+    );
+    assert!(!record_add.contains("with.overflow"), "{record_add}");
     let main = llvm_native_function(&llvm, "stack_loop_main");
     assert!(
         main.contains("record.copy.field"),
@@ -810,27 +840,17 @@ pub fn main() Unit {
     release.emit_ir = Some(release_ir.clone());
     emit_native(program, &executable, &release).expect("emit release loop executable");
     let release_llvm = std::fs::read_to_string(release_ir).expect("read release loop IR");
-    let periodic = release_llvm
-        .find(", 1023")
-        .expect("record loop retains the periodic mask");
-    let loop_start = release_llvm[..periodic]
-        .rfind("\nrange.iteration")
-        .expect("locate record loop header");
-    let loop_backedge = release_llvm[periodic..]
-        .find("label %range.iteration")
-        .map(|offset| periodic + offset)
-        .expect("locate record loop backedge");
-    let hot_loop = &release_llvm[loop_start..loop_backedge];
-    assert_eq!(
-        hot_loop
-            .matches("call { i64, i1 } @llvm.sadd.with.overflow.i64")
-            .count(),
-        1,
-        "the hot loop keeps the required checked total update only: {hot_loop}"
-    );
-    assert!(!hot_loop.contains("load i64"), "{hot_loop}");
-    assert!(!hot_loop.contains("store i64"), "{hot_loop}");
-    assert!(!hot_loop.contains("node.next"), "{hot_loop}");
+    if let Some(release_record_method) = llvm_any_function(&release_llvm, "stack_loop_recordMethod")
+    {
+        assert!(
+            !release_record_method.contains("with.overflow"),
+            "closed record recurrences must remain unchecked after optimization: {release_record_method}"
+        );
+        assert!(
+            !release_record_method.contains("node.next"),
+            "the optimized loop must not recover the universal record chain: {release_record_method}"
+        );
+    }
     let output = Command::new(executable)
         .output()
         .expect("run release loop executable");
@@ -1248,9 +1268,10 @@ pub fn faultMain() Unit {
             !scan.contains("int.list.get.none"),
             "a statically exhaustive get must not emit the unreachable None arm: {scan}"
         );
+        assert!(scan.contains("add nsw i64"), "{scan}");
         assert!(
-            scan.contains("llvm.sadd.with.overflow.i64"),
-            "bounds proof must not remove the independent checked checksum: {scan}"
+            !scan.contains("llvm.sadd.with.overflow.i64"),
+            "the independent range plan proves the completed scan checksum: {scan}"
         );
 
         if ir == &release_ir {
@@ -1600,6 +1621,21 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
     &ir[start..start + marker.len() + end]
 }
 
+fn llvm_any_function<'source>(ir: &'source str, symbol_suffix: &str) -> Option<&'source str> {
+    let start = ir
+        .match_indices("define ")
+        .map(|(index, _)| index)
+        .find(|index| {
+            ir[*index..]
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(symbol_suffix))
+        })?;
+    let rest = &ir[start + "define ".len()..];
+    let end = rest.find("\ndefine ").unwrap_or(rest.len());
+    Some(&ir[start..start + "define ".len() + end])
+}
+
 fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
     let marker = "define internal ";
     let start = ir
@@ -1682,16 +1718,19 @@ fn unit_program() -> Program {
         receiver: None,
         body: Block {
             statements: Vec::new(),
-            tail: Some(Box::new(Expr {
-                kind: ExprKind::Constant(Constant::Unit),
-                ty: Type::Unit,
-                span: Default::default(),
-            })),
+            tail: Some(Box::new(Expr::new(
+                ExprKind::Constant(Constant::Unit),
+                Type::Unit,
+                Default::default(),
+            ))),
             span: Default::default(),
         },
         call_plan: CallPlan::default(),
     });
     program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
+    program
+        .renumber_expr_ids()
+        .expect("renumber unit-program expressions");
     program
 }
 
@@ -2273,6 +2312,49 @@ fn native_int_is_checked_i64_even_after_llvm_optimization() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+#[test]
+fn deferred_integer_checks_use_cleanup_execution_order_not_registration_order() {
+    let source = r"module deferred_overflow
+
+pub fn main() Unit {
+    var value = 0
+    defer {
+        value = value * 9223372036854775807
+        Unit
+    }
+    defer {
+        value = 2
+        Unit
+    }
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create deferred overflow project");
+    std::fs::write(project.path().join("main.loom"), source)
+        .expect("write deferred overflow source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load deferred overflow project")
+        .snapshot()
+        .expect("analyze deferred overflow project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot
+        .executable()
+        .expect("lower deferred overflow executable MIR");
+    let executable = project.path().join("program");
+    emit_native(program, &executable, &EmitOptions::run("main"))
+        .expect("emit deferred overflow executable");
+    let output = Command::new(executable)
+        .output()
+        .expect("run deferred overflow executable");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("IntegerOverflow"),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 #[test]

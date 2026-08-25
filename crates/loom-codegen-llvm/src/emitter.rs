@@ -56,6 +56,7 @@ use crate::native_layout::{
     NativeEffectAbi, NativeLayout, NativePodRecord, NativeScalar, NativeSignature,
     NativeSignatureShape,
 };
+use crate::native_range::NativeIntRangePlan;
 use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
 use crate::requirements::RuntimeRequirementGraph;
 use crate::target::create_target_machine;
@@ -401,8 +402,17 @@ impl Emitter {
             create_target_machine(options.target_triple.as_deref(), options.optimization)?;
 
         let context = Context::create();
-        let requirements = RuntimeRequirementGraph::analyze(program, reachable)?;
-        let mut backend = Backend::new(&context, program, reachable, roots, options, requirements);
+        let int_ranges = NativeIntRangePlan::analyze(program, reachable, roots);
+        let requirements = RuntimeRequirementGraph::analyze(program, reachable, &int_ranges)?;
+        let mut backend = Backend::new(
+            &context,
+            program,
+            reachable,
+            roots,
+            options,
+            requirements,
+            int_ranges,
+        );
         backend.module.set_triple(&triple);
         backend
             .module
@@ -550,6 +560,7 @@ struct Backend<'ctx, 'program> {
     roots: &'program Roots,
     options: &'program EmitOptions,
     requirements: RuntimeRequirementGraph,
+    int_ranges: NativeIntRangePlan,
     debug: DebugState<'ctx>,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -724,6 +735,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         roots: &'program Roots,
         options: &'program EmitOptions,
         requirements: RuntimeRequirementGraph,
+        int_ranges: NativeIntRangePlan,
     ) -> Self {
         let module = context.create_module("loom.program");
         let builder = context.create_builder();
@@ -845,6 +857,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             roots,
             options,
             requirements,
+            int_ranges,
             debug,
             module,
             builder,
@@ -5093,7 +5106,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         .build_return(Some(&value.ok_or_else(|| {
                             CodegenError::new(
                                 "LlvmAbiDefect",
-                                "pure native return is missing its value",
+                                format!(
+                                    "pure native return from `{}` is missing its value",
+                                    self.source.name
+                                ),
                             )
                         })?))
                         .map_err(builder_error)?;
@@ -5919,10 +5935,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.shallow_copy(destination, source)?;
                 Ok(true)
             }
-            ExprKind::Unary(operator, value) => self.emit_unary(*operator, value, destination),
-            ExprKind::Binary(operator, left, right) => {
-                self.emit_binary(*operator, left, right, destination)
-            }
+            ExprKind::Unary(operator, value) => self.emit_unary(
+                *operator,
+                value,
+                destination,
+                self.backend.int_ranges.proves(self.source.id, expression),
+            ),
+            ExprKind::Binary(operator, left, right) => self.emit_binary(
+                *operator,
+                left,
+                right,
+                destination,
+                self.backend.int_ranges.proves(self.source.id, expression),
+            ),
             ExprKind::Block(block) => self.emit_block(block, destination),
             ExprKind::If {
                 condition,
@@ -6689,11 +6714,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
         let values = tasks
             .iter()
-            .map(|task| Expr {
-                kind: ExprKind::Constant(Constant::Unit),
-                ty: Type::Unit,
-                span: task.span,
-            })
+            .map(|task| Expr::new(ExprKind::Constant(Constant::Unit), Type::Unit, task.span))
             .collect::<Vec<_>>();
         self.emit_tuple(&values, destination)
     }
@@ -7130,6 +7151,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         operator: UnaryOp,
         expression: &Expr,
         destination: PointerValue<'ctx>,
+        proven: bool,
     ) -> Result<bool, CodegenError> {
         let value = self.alloc_value("unary");
         if !self.emit_expr(expression, value)? {
@@ -7159,22 +7181,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             UnaryOp::Negate => match self.numeric_kind(&expression.ty)? {
                 NumericKind::Int => {
                     let scalar = self.int_scalar(value)?;
-                    let overflow = self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            scalar,
-                            self.backend.signed_i64(i64::MIN),
-                            "negate.overflow",
-                        )
-                        .map_err(builder_error)?;
-                    self.fail_if(overflow, "IntegerOverflow")?;
-                    let result = self
-                        .backend
-                        .builder
-                        .build_int_sub(self.backend.i64_type.const_zero(), scalar, "negate")
-                        .map_err(builder_error)?;
+                    let result = if proven {
+                        self.backend
+                            .builder
+                            .build_int_nsw_neg(scalar, "negate")
+                            .map_err(builder_error)?
+                    } else {
+                        let overflow = self
+                            .backend
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                scalar,
+                                self.backend.signed_i64(i64::MIN),
+                                "negate.overflow",
+                            )
+                            .map_err(builder_error)?;
+                        self.fail_if(overflow, "IntegerOverflow")?;
+                        self.backend
+                            .builder
+                            .build_int_sub(self.backend.i64_type.const_zero(), scalar, "negate")
+                            .map_err(builder_error)?
+                    };
                     self.initialize(destination, VALUE_TAG_INT)?;
                     self.backend.store_i64_field(
                         self.backend.value_type,
@@ -7204,6 +7232,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         left: &Expr,
         right: &Expr,
         destination: PointerValue<'ctx>,
+        proven: bool,
     ) -> Result<bool, CodegenError> {
         if matches!(operator, BinaryOp::And | BinaryOp::Or) {
             return self.emit_logical(operator, left, right, destination);
@@ -7243,7 +7272,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     NumericKind::Int => {
                         let left = self.int_scalar(left_value)?;
                         let right = self.int_scalar(right_value)?;
-                        let result = self.emit_checked_integer(operator, left, right)?;
+                        let result = if proven {
+                            self.emit_proven_integer(operator, left, right)?
+                        } else {
+                            self.emit_checked_integer(operator, left, right)?
+                        };
                         self.initialize(destination, VALUE_TAG_INT)?;
                         self.backend.store_i64_field(
                             self.backend.value_type,
@@ -7482,6 +7515,25 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .into_int_value();
         self.fail_if(overflow, "IntegerOverflow")?;
         Ok(result)
+    }
+
+    fn emit_proven_integer(
+        &self,
+        operator: BinaryOp,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        match operator {
+            BinaryOp::Add => self.backend.builder.build_int_nsw_add(left, right, "add"),
+            BinaryOp::Subtract => self.backend.builder.build_int_nsw_sub(left, right, "sub"),
+            BinaryOp::Multiply => self.backend.builder.build_int_nsw_mul(left, right, "mul"),
+            BinaryOp::Divide => self
+                .backend
+                .builder
+                .build_int_signed_div(left, right, "division"),
+            _ => unreachable!(),
+        }
+        .map_err(builder_error)
     }
 
     fn fail_if(&self, condition: IntValue<'ctx>, code: &str) -> Result<(), CodegenError> {

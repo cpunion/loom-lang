@@ -816,11 +816,7 @@ mod tests {
     const OPTION: TypeId = TypeId(7);
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
-        Expr {
-            kind,
-            ty,
-            span: Default::default(),
-        }
+        Expr::new(kind, ty, Default::default())
     }
 
     fn function(statements: Vec<Statement>) -> Function {

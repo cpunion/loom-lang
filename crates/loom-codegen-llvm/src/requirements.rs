@@ -6,6 +6,7 @@ use loom_mir::{
 };
 
 use crate::native_layout::{NativeLayout, NativeSignatureShape};
+use crate::native_range::NativeIntRangePlan;
 use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
@@ -86,6 +87,7 @@ impl RuntimeRequirementGraph {
     pub(crate) fn analyze(
         program: &Program,
         reachable: &ReachableProgram,
+        int_ranges: &NativeIntRangePlan,
     ) -> Result<Self, CodegenError> {
         let mut local = BTreeMap::new();
         for id in &reachable.functions {
@@ -110,6 +112,7 @@ impl RuntimeRequirementGraph {
                 function,
                 &function.body,
                 &mut requirements,
+                int_ranges,
             )?;
             local.insert(*id, requirements);
         }
@@ -189,43 +192,44 @@ fn scan_block(
     function: &Function,
     block: &Block,
     output: &mut LocalRequirements,
+    int_ranges: &NativeIntRangePlan,
 ) -> Result<(), CodegenError> {
     for statement in &block.statements {
         match &statement.kind {
             StatementKind::Let { value, .. }
             | StatementKind::Assign { value, .. }
             | StatementKind::Evaluate(value) => {
-                scan_expr(program, reachable, function, value, output)?;
+                scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
             StatementKind::LetTuple { value, .. } => {
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_ALLOCATE);
-                scan_expr(program, reachable, function, value, output)?;
+                scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
-                scan_expr(program, reachable, function, start, output)?;
-                scan_expr(program, reachable, function, end, output)?;
-                scan_block(program, reachable, function, body, output)?;
+                scan_expr(program, reachable, function, start, output, int_ranges)?;
+                scan_expr(program, reachable, function, end, output, int_ranges)?;
+                scan_block(program, reachable, function, body, output, int_ranges)?;
             }
             StatementKind::Assert { condition } => {
                 output.requirements.include(RuntimeRequirements::MAY_FAULT);
-                scan_expr(program, reachable, function, condition, output)?;
+                scan_expr(program, reachable, function, condition, output, int_ranges)?;
             }
             StatementKind::Defer(cleanup) => {
-                scan_block(program, reachable, function, cleanup, output)?;
+                scan_block(program, reachable, function, cleanup, output, int_ranges)?;
             }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    scan_expr(program, reachable, function, value, output)?;
+                    scan_expr(program, reachable, function, value, output, int_ranges)?;
                 }
             }
         }
     }
     if let Some(tail) = &block.tail {
-        scan_expr(program, reachable, function, tail, output)?;
+        scan_expr(program, reachable, function, tail, output, int_ranges)?;
     }
     Ok(())
 }
@@ -237,6 +241,7 @@ fn scan_expr(
     function: &Function,
     expression: &Expr,
     output: &mut LocalRequirements,
+    int_ranges: &NativeIntRangePlan,
 ) -> Result<(), CodegenError> {
     match &expression.kind {
         ExprKind::Constant(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
@@ -255,22 +260,26 @@ fn scan_expr(
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
             for value in values {
-                scan_expr(program, reachable, function, value, output)?;
+                scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
         }
         ExprKind::Unary(operator, value) => {
-            scan_expr(program, reachable, function, value, output)?;
-            if *operator == UnaryOp::Negate && is_int_like(program, &value.ty) {
+            scan_expr(program, reachable, function, value, output, int_ranges)?;
+            if *operator == UnaryOp::Negate
+                && is_int_like(program, &value.ty)
+                && !int_ranges.proves(function.id, expression)
+            {
                 output.requirements.include(RuntimeRequirements::MAY_FAULT);
             }
         }
         ExprKind::Binary(operator, left, right) => {
-            scan_expr(program, reachable, function, left, output)?;
-            scan_expr(program, reachable, function, right, output)?;
+            scan_expr(program, reachable, function, left, output, int_ranges)?;
+            scan_expr(program, reachable, function, right, output, int_ranges)?;
             if matches!(
                 operator,
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
             ) && is_int_like(program, &left.ty)
+                && !int_ranges.proves(function.id, expression)
             {
                 output.requirements.include(RuntimeRequirements::MAY_FAULT);
             } else if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual) {
@@ -280,24 +289,40 @@ fn scan_expr(
                     .include(RuntimeRequirements::MAY_ALLOCATE);
             }
         }
-        ExprKind::Block(block) => scan_block(program, reachable, function, block, output)?,
+        ExprKind::Block(block) => {
+            scan_block(program, reachable, function, block, output, int_ranges)?;
+        }
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            scan_expr(program, reachable, function, condition, output)?;
-            scan_block(program, reachable, function, then_branch, output)?;
-            scan_block(program, reachable, function, else_branch, output)?;
+            scan_expr(program, reachable, function, condition, output, int_ranges)?;
+            scan_block(
+                program,
+                reachable,
+                function,
+                then_branch,
+                output,
+                int_ranges,
+            )?;
+            scan_block(
+                program,
+                reachable,
+                function,
+                else_branch,
+                output,
+                int_ranges,
+            )?;
         }
         ExprKind::Match { scrutinee, arms } => {
             // Pattern bindings are logical copies in the universal Value ABI.
             output
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
-            scan_expr(program, reachable, function, scrutinee, output)?;
+            scan_expr(program, reachable, function, scrutinee, output, int_ranges)?;
             for arm in arms {
-                scan_expr(program, reachable, function, &arm.value, output)?;
+                scan_expr(program, reachable, function, &arm.value, output, int_ranges)?;
             }
         }
         ExprKind::Record { fields, .. } => {
@@ -305,7 +330,7 @@ fn scan_expr(
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
             for field in fields {
-                scan_expr(program, reachable, function, field, output)?;
+                scan_expr(program, reachable, function, field, output, int_ranges)?;
             }
         }
         ExprKind::Variant { payload, .. } => {
@@ -313,7 +338,7 @@ fn scan_expr(
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
             for value in payload {
-                scan_expr(program, reachable, function, value, output)?;
+                scan_expr(program, reachable, function, value, output, int_ranges)?;
             }
         }
         ExprKind::Refine { value, .. }
@@ -322,14 +347,14 @@ fn scan_expr(
             output
                 .requirements
                 .include(RuntimeRequirements::MAY_ALLOCATE);
-            scan_expr(program, reachable, function, value, output)?;
+            scan_expr(program, reachable, function, value, output, int_ranges)?;
         }
         ExprKind::Call {
             target, arguments, ..
         } => {
             for argument in arguments {
                 if let CallArgument::Value(value) = argument {
-                    scan_expr(program, reachable, function, value, output)?;
+                    scan_expr(program, reachable, function, value, output, int_ranges)?;
                 }
             }
             match target {
@@ -389,20 +414,27 @@ fn scan_expr(
         }
         ExprKind::Await { task, .. } => {
             output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(program, reachable, function, task, output)?;
+            scan_expr(program, reachable, function, task, output, int_ranges)?;
         }
         ExprKind::Sleep { milliseconds } => {
             output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(program, reachable, function, milliseconds, output)?;
+            scan_expr(
+                program,
+                reachable,
+                function,
+                milliseconds,
+                output,
+                int_ranges,
+            )?;
         }
         ExprKind::WaitFd { descriptor, .. } => {
             output.requirements.include(RuntimeRequirements::ASYNC);
-            scan_expr(program, reachable, function, descriptor, output)?;
+            scan_expr(program, reachable, function, descriptor, output, int_ranges)?;
         }
         ExprKind::TaskJoin { arguments, .. } => {
             output.requirements.include(RuntimeRequirements::ASYNC);
             for argument in arguments {
-                scan_expr(program, reachable, function, argument, output)?;
+                scan_expr(program, reachable, function, argument, output, int_ranges)?;
             }
         }
     }
@@ -565,11 +597,7 @@ mod tests {
     }
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
-        Expr {
-            kind,
-            ty,
-            span: Default::default(),
-        }
+        Expr::new(kind, ty, Default::default())
     }
 
     #[test]
@@ -628,7 +656,12 @@ mod tests {
             builtins: BTreeSet::new(),
             witness_methods: BTreeMap::new(),
         };
-        let graph = RuntimeRequirementGraph::analyze(&program, &reachable).expect("requirements");
+        let graph = RuntimeRequirementGraph::analyze(
+            &program,
+            &reachable,
+            &crate::native_range::NativeIntRangePlan::default(),
+        )
+        .expect("requirements");
         assert!(
             crate::native_layout::NativeSignatureShape::for_supported_function(
                 &program.functions[0]
