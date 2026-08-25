@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "inkwell",
  "loom-driver",
+ "loom-interpreter",
  "loom-mir",
  "loom-runtime-abi",
  "serde",

@@ -109,7 +109,8 @@ pub struct CallableSignature {
     pub generics: Vec<GenericParam>,
     pub receiver: Option<Receiver>,
     pub parameters: Vec<Parameter>,
-    /// `None` is the source spelling for the permitted implicit `Unit` return.
+    /// `None` is the source spelling for a fixed implicit `Unit` return.
+    /// Later phases must not infer a return type from the body in this case.
     pub return_type: Option<TypeExpr>,
     pub contracts: Vec<Contract>,
     pub range: TextRange,

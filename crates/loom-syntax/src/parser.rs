@@ -187,13 +187,6 @@ impl SyntaxNesting {
 }
 
 impl CallableContext {
-    const fn allows_implicit_unit(self) -> bool {
-        matches!(
-            self,
-            Self::PrivateFunction | Self::Test | Self::PrivateMethod
-        )
-    }
-
     const fn is_method(self) -> bool {
         matches!(
             self,
@@ -581,13 +574,6 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-
-        if return_type.is_none() && !context.allows_implicit_unit() {
-            self.error_here(
-                "UnexpectedToken",
-                "this callable must spell its return type explicitly (use `Unit` when appropriate)",
-            );
-        }
 
         self.skip_separators();
         let contracts = self.parse_contracts();

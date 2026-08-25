@@ -17,6 +17,7 @@ tempfile.workspace = true
 
 [dev-dependencies]
 loom-driver.workspace = true
+loom-interpreter.workspace = true
 
 [lints]
 workspace = true

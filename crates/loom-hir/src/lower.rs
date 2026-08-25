@@ -1169,4 +1169,76 @@ mod tests {
             )
         }));
     }
+
+    #[test]
+    fn omitted_returns_remain_fixed_implicit_unit_markers() {
+        let parsed = parse_with_file(
+            FileId(0),
+            r"module returns
+
+record R {}
+
+pub fn omitted() { return }
+async fn omittedAsync() {}
+test fn omittedTest() { return }
+fn explicit() Unit { Unit }
+
+impl R {
+    pub method inherent(self) {}
+}
+
+concept C {
+    method required(self)
+}
+
+impl C for R {
+    method required(self) { return }
+}
+",
+        );
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+
+        let lowered = lower_files([SourceUnit {
+            file: FileId(0),
+            syntax: parsed.ast(),
+        }]);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+
+        let mut omitted_signatures = 0;
+        let mut explicit_signatures = 0;
+        for (_, definition) in lowered.program.definitions.iter() {
+            let signature = match &definition.kind {
+                DefinitionKind::Function(function) | DefinitionKind::Test(function) => {
+                    Some(&function.signature)
+                }
+                DefinitionKind::Method(method) => Some(&method.signature),
+                _ => None,
+            };
+            let Some(signature) = signature else {
+                continue;
+            };
+            if definition
+                .name
+                .as_ref()
+                .is_some_and(|name| name.as_str() == "explicit")
+            {
+                assert!(signature.return_ty.is_some());
+                explicit_signatures += 1;
+            } else {
+                assert!(signature.return_ty.is_none());
+                omitted_signatures += 1;
+            }
+        }
+        assert_eq!(omitted_signatures, 6);
+        assert_eq!(explicit_signatures, 1);
+        assert!(lowered.program.bodies.iter().any(|(_, body)| {
+            body.expressions
+                .values()
+                .any(|expression| matches!(expression, Expr::Return(None)))
+        }));
+    }
 }

@@ -215,6 +215,8 @@ pub struct CallableSignature {
     pub generic_params: Vec<GenericParamId>,
     pub receiver: Option<ReceiverKind>,
     pub params: Vec<ParamId>,
+    /// `None` denotes the source-level omitted return, which semantically is
+    /// always `Unit`; it is never a request for return-type inference.
     pub return_ty: Option<TypeRefId>,
     pub contracts: Contracts,
 }

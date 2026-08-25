@@ -262,21 +262,58 @@ fn requires_must_precede_ensures_but_both_are_retained() {
 }
 
 #[test]
-fn only_private_callables_and_tests_may_omit_unit() {
-    let private_and_test =
-        assert_clean("module returns\nfn private() { return }\ntest fn test_unit() { return }\n");
-    assert_eq!(private_and_test.ast().declarations.len(), 2);
+fn every_callable_may_omit_a_fixed_unit_return() {
+    let parsed = assert_clean(
+        r"module returns
+record R {}
 
-    let public = parse("module returns\npub fn public() { Unit }\n");
-    assert!(codes(&public).contains(&"UnexpectedToken"));
+fn private() { return }
+pub fn public() {}
+async fn asynchronous() { return }
+pub async fn publicAsynchronous() {}
+test fn testUnit() { return }
+test async fn asyncTestUnit() {}
+fn explicit() Unit { Unit }
+pub fn contracted(flag Bool)
+    requires flag
+    ensures true
+{
+    return
+}
 
-    let concept = parse("module returns\nconcept C { method missing(self) }\n");
-    assert!(codes(&concept).contains(&"UnexpectedToken"));
+impl R {
+    method privateMethod(self) {}
+    pub method publicMethod(self) { return }
+}
 
-    let conformance = parse(
-        "module returns\nrecord R {}\nconcept C { method run(self) Unit }\nimpl C for R { method run(self) { Unit } }\n",
+concept C {
+    method required(self)
+    static method requiredStatic()
+}
+
+impl C for R {
+    method required(self) {}
+    static method requiredStatic() { return }
+}
+",
     );
-    assert!(codes(&conformance).contains(&"UnexpectedToken"));
+    assert_eq!(parsed.ast().declarations.len(), 12);
+
+    let DeclKind::Function(private) = &parsed.ast().declarations[1].kind else {
+        panic!("expected private function");
+    };
+    assert!(private.signature.return_type.is_none());
+
+    let DeclKind::Function(explicit) = &parsed.ast().declarations[7].kind else {
+        panic!("expected explicit Unit function");
+    };
+    assert!(explicit.signature.return_type.is_some());
+
+    let DeclKind::Function(contracted) = &parsed.ast().declarations[8].kind else {
+        panic!("expected contracted function");
+    };
+    assert!(contracted.signature.return_type.is_none());
+    assert_eq!(contracted.signature.contracts.len(), 2);
 }
 
 #[test]
