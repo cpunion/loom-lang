@@ -66,6 +66,7 @@ Core 0.1 权威基线见 [最小语言核心规范](docs/02-language-design-base
 | root graph、LLVM、artifact、缓存边界 | [编译过程与 LLVM 后端](docs/07-compiler-pipeline-and-backends.md) |
 | GC、scoped/defer、Task、coroutine 与 join | [GC、词法清理与异步任务定案](docs/08-memory-cleanup-and-async.md) |
 | 优化、性能预算、fuzz 与受控任务证据 | [质量与受控证据](docs/09-quality-and-controlled-evidence.md) |
+| 安装、LLVM 19 探测、release 校验与回滚 | [安装与发布](docs/10-installation-and-release.md) |
 | 实现顺序与开放问题 | [核心能力分期](docs/04-capability-stages.md) |
 
 [历史设计草案](docs/draft/README.md)保存此前的声明式组合、AOP-like 与 desired-state/operator 方案；其中 [Checkout 对照实验](docs/draft/03-checkout-composition-experiment.md)及其 [fixture](docs/draft/04-checkout-composition-fixture.md) 均不是当前语言规范。
