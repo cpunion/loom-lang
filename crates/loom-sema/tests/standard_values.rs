@@ -116,3 +116,186 @@ fn incomplete(error PathError) Unit {
     );
     assert!(codes.contains(&"NonExhaustiveMatch"), "{diagnostics:#?}");
 }
+
+#[test]
+fn text_map_json_typed_io_and_logging_type_check() {
+    let diagnostics = analyze_source(
+        r#"
+module standard.resource
+
+import standard.file.try_open_read
+import standard.file.try_create
+import standard.file.try_open_read_path
+import standard.file.try_create_path
+import standard.net.try_connect
+import standard.json.parse_json
+import standard.json.format_json
+import standard.log.debug
+import standard.log.info
+import standard.log.warn
+import standard.log.error
+import standard.log.write
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+fn values(text Text) Unit {
+    let empty = TextMap[Text]()
+    let inserted = empty.insert("name", text)
+    let overwritten = inserted.insert("name", "loom")
+    let removed = overwritten.remove("absent")
+    let count = removed.length()
+    let present = removed.contains("name")
+    let value = removed.get("name")
+    assert removed == removed
+
+    let null = Json.Null
+    let boolean = Json.Bool(true)
+    let number = Json.Number(1.5)
+    let string = Json.Text(text)
+    let array = Json.Array([null, boolean])
+    let object = Json.Object(TextMap[Json]().insert("answer", number))
+    let parsed = parse_json("{\"answer\":42}")
+    let formatted = format_json(object)
+    let syntax = JsonError.InvalidSyntax(2)
+    let depth = JsonError.DepthLimit
+    let level = LogLevel.Info
+    debug("debug")
+    info("info")
+    warn("warn")
+    error("error")
+    write(level, "event", removed)
+    Unit
+}
+
+fn jsonValue(value Json) Unit {
+    match value {
+        Null => Unit
+        Bool(_) => Unit
+        Number(_) => Unit
+        Text(_) => Unit
+        Array(_) => Unit
+        Object(_) => Unit
+    }
+}
+
+fn jsonFailure(value JsonError) Unit {
+    match value {
+        InvalidSyntax(_) => Unit
+        NumberOutOfRange(_) => Unit
+        DepthLimit => Unit
+        NonFiniteNumber => Unit
+    }
+}
+
+fn ioFailure(error IoError) Unit {
+    let message = error.message()
+    match error.kind() {
+        NotFound => Unit
+        PermissionDenied => Unit
+        AlreadyExists => Unit
+        InvalidInput => Unit
+        ConnectionRefused => Unit
+        ConnectionReset => Unit
+        TimedOut => Unit
+        UnexpectedEof => Unit
+        Closed => Unit
+        Other => Unit
+    }
+}
+
+fn logLevel(level LogLevel) Unit {
+    match level {
+        Debug => Unit
+        Info => Unit
+        Warn => Unit
+        Error => Unit
+    }
+}
+
+async fn files(path Path) Result[Unit, IoError] {
+    scoped input = try_open_read_path(path).await?
+    let content = input.try_read_text().await?
+    scoped output = try_create_path(path).await?
+    output.try_write_text(content).await?
+    Ok(Unit)
+}
+
+async fn textFiles(path Text) Result[Unit, IoError] {
+    scoped input = try_open_read(path).await?
+    scoped output = try_create(path).await?
+    Ok(Unit)
+}
+
+async fn network(host Text, port Int) Result[Unit, IoError] {
+    scoped socket = try_connect(host, port).await?
+    socket.try_write_text("ping").await?
+    let response = socket.try_read_text().await?
+    Ok(Unit)
+}
+"#,
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn structured_standard_values_reject_wrong_shapes_and_open_matches() {
+    let diagnostics = analyze_source(
+        r#"
+module sample
+
+import standard.json.format_json
+import standard.log.write
+
+fn genericEquality[T](left TextMap[T], right TextMap[T]) Bool {
+    left == right
+}
+
+fn wrong(text Text) Unit {
+    let map = TextMap[Int]().insert(1, text)
+    let missing = Json.Null()
+    let badJson = Json.Bool(text)
+    let formatted = format_json(text)
+    write(LogLevel.Info, "event", TextMap[Int]())
+    Unit
+}
+
+fn incompleteJson(value Json) Unit {
+    match value {
+        Null => Unit
+        Bool(_) => Unit
+    }
+}
+
+fn incompleteIo(kind IoErrorKind) Unit {
+    match kind {
+        Other => Unit
+    }
+}
+"#,
+    );
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        codes.contains(&"InvalidGenericOperation"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        codes.iter().filter(|code| **code == "TypeMismatch").count() >= 4,
+        "{diagnostics:#?}"
+    );
+    assert!(
+        codes
+            .iter()
+            .filter(|code| **code == "NonExhaustiveMatch")
+            .count()
+            >= 2,
+        "{diagnostics:#?}"
+    );
+}

@@ -508,3 +508,131 @@ async fn pathFiles(path Path) Unit {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }
 }
+
+#[test]
+fn structured_standard_values_lower_to_checked_mir() {
+    let program = compile_and_validate(
+        r#"
+module standard.resource
+
+import standard.file.try_open_read_path
+import standard.file.try_create_path
+import standard.net.try_connect
+import standard.json.parse_json
+import standard.json.format_json
+import standard.log.debug
+import standard.log.info
+import standard.log.warn
+import standard.log.error
+import standard.log.write
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+fn values(text Text) Unit {
+    let fields = TextMap[Text]().insert("name", text).remove("absent")
+    let count = fields.length()
+    let present = fields.contains("name")
+    let value = fields.get("name")
+    let null = Json.Null
+    let boolean = Json.Bool(true)
+    let number = Json.Number(1.5)
+    let string = Json.Text(text)
+    let array = Json.Array([null, boolean])
+    let object = Json.Object(TextMap[Json]().insert("answer", number))
+    let parsed = parse_json("null")
+    let formatted = format_json(object)
+    let syntax = JsonError.InvalidSyntax(2)
+    let depth = JsonError.DepthLimit
+    debug("debug")
+    info("info")
+    warn("warn")
+    error("error")
+    write(LogLevel.Info, "event", fields)
+    Unit
+}
+
+fn jsonValue(value Json) Unit {
+    match value {
+        Null => Unit
+        Bool(_) => Unit
+        Number(_) => Unit
+        Text(_) => Unit
+        Array(_) => Unit
+        Object(_) => Unit
+    }
+}
+
+fn jsonFailure(value JsonError) Unit {
+    match value {
+        InvalidSyntax(_) => Unit
+        NumberOutOfRange(_) => Unit
+        DepthLimit => Unit
+        NonFiniteNumber => Unit
+    }
+}
+
+fn ioFailure(error IoError) Unit {
+    let message = error.message()
+    match error.kind() {
+        NotFound => Unit
+        PermissionDenied => Unit
+        AlreadyExists => Unit
+        InvalidInput => Unit
+        ConnectionRefused => Unit
+        ConnectionReset => Unit
+        TimedOut => Unit
+        UnexpectedEof => Unit
+        Closed => Unit
+        Other => Unit
+    }
+}
+
+async fn files(path Path) Result[Unit, IoError] {
+    scoped input = try_open_read_path(path).await?
+    let content = input.try_read_text().await?
+    scoped output = try_create_path(path).await?
+    output.try_write_text(content).await?
+    Ok(Unit)
+}
+
+async fn network(host Text, port Int) Result[Unit, IoError] {
+    scoped socket = try_connect(host, port).await?
+    socket.try_write_text("ping").await?
+    let response = socket.try_read_text().await?
+    Ok(Unit)
+}
+"#,
+    );
+    let debug = format!("{program:#?}");
+    for builtin in [
+        "TextMapNew",
+        "TextMapLength",
+        "TextMapContains",
+        "TextMapGet",
+        "TextMapInsert",
+        "TextMapRemove",
+        "JsonParse",
+        "JsonFormat",
+        "IoErrorKind",
+        "IoErrorMessage",
+        "FileTryOpenReadPath",
+        "FileTryCreatePath",
+        "FileTryReadText",
+        "FileTryWriteText",
+        "SocketTryConnect",
+        "SocketTryReadText",
+        "SocketTryWriteText",
+        "LogDebug",
+        "LogInfo",
+        "LogWarn",
+        "LogError",
+        "LogWrite",
+    ] {
+        assert!(debug.contains(builtin), "missing {builtin} in {debug}");
+    }
+}

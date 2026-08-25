@@ -623,6 +623,7 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             path: None,
             decode_text_error: None,
             path_error: None,
+            ..PreludeIds::default()
         },
         ..Program::default()
     };
@@ -657,6 +658,210 @@ fn text_get_rejects_a_non_integer_index_at_the_checked_boundary() {
                 span: span(),
             },
         )],
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
+}
+
+#[test]
+fn text_map_insert_rejects_a_wrong_value_type_at_the_checked_boundary() {
+    let map = TypeId(0);
+    let map_int = Type::Nominal(map, vec![Type::Int]);
+    let program = Program {
+        types: vec![TypeDef {
+            id: map,
+            name: "TextMap".to_owned(),
+            span: span(),
+            type_parameters: 1,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![function(
+            0,
+            vec![
+                local(0, map_int.clone(), false),
+                local(1, Type::Text, false),
+                local(2, Type::Text, false),
+            ],
+            Vec::new(),
+            map_int.clone(),
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::TextMapInsert),
+                        type_arguments: Vec::new(),
+                        arguments: vec![
+                            CallArgument::Value(copy(0, map_int.clone())),
+                            CallArgument::Value(copy(1, Type::Text)),
+                            CallArgument::Value(copy(2, Type::Text)),
+                        ],
+                        witnesses: Vec::new(),
+                    },
+                    ty: map_int,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            text_map: Some(map),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
+}
+
+#[test]
+fn text_map_equality_requires_value_equality_at_the_checked_boundary() {
+    let map = TypeId(0);
+    let file = TypeId(1);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let map_file = Type::Nominal(map, vec![file_ty]);
+    let program = Program {
+        types: vec![
+            TypeDef {
+                id: map,
+                name: "TextMap".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: file,
+                name: "File".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        functions: vec![function(
+            0,
+            vec![
+                local(0, map_file.clone(), false),
+                local(1, map_file.clone(), false),
+            ],
+            Vec::new(),
+            Type::Bool,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Binary(
+                        loom_mir::BinaryOp::Equal,
+                        Box::new(copy(0, map_file.clone())),
+                        Box::new(copy(1, map_file)),
+                    ),
+                    ty: Type::Bool,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            text_map: Some(map),
+            file: Some(file),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::ExpressionShape));
+}
+
+#[test]
+fn structured_log_write_requires_text_fields_at_the_checked_boundary() {
+    let map = TypeId(0);
+    let level = TypeId(1);
+    let map_int = Type::Nominal(map, vec![Type::Int]);
+    let level_ty = Type::Nominal(level, Vec::new());
+    let program = Program {
+        types: vec![
+            TypeDef {
+                id: map,
+                name: "TextMap".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: level,
+                name: "LogLevel".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Enum {
+                    variants: ["Debug", "Info", "Warn", "Error"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, name)| VariantDef {
+                            id: VariantId(u32::try_from(index).unwrap()),
+                            name: name.to_owned(),
+                            payload: Vec::new(),
+                            span: span(),
+                        })
+                        .collect(),
+                },
+            },
+        ],
+        functions: vec![function(
+            0,
+            vec![
+                local(0, level_ty.clone(), false),
+                local(1, Type::Text, false),
+                local(2, map_int.clone(), false),
+            ],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::LogWrite),
+                        type_arguments: Vec::new(),
+                        arguments: vec![
+                            CallArgument::Value(copy(0, level_ty)),
+                            CallArgument::Value(copy(1, Type::Text)),
+                            CallArgument::Value(copy(2, map_int)),
+                        ],
+                        witnesses: Vec::new(),
+                    },
+                    ty: Type::Unit,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            text_map: Some(map),
+            log_level: Some(level),
+            ..PreludeIds::default()
+        },
         ..Program::default()
     };
     assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
@@ -852,6 +1057,22 @@ fn artifact_rejects_version_mismatch_before_program_decode() {
             expected,
             found: 99
         } if expected == INTERPRETED_ARTIFACT_VERSION
+    ));
+}
+
+#[test]
+fn artifact_rejects_pre_structured_values_version_fourteen() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(14);
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 14 lacks structured standard value shapes");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected: 15,
+            found: 14
+        }
     ));
 }
 

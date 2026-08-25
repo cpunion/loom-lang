@@ -1646,38 +1646,9 @@ impl ContractLowerer<'_, '_> {
                         })
                     }
                     Resolution::Builtin(builtin) => {
-                        let (ty, variant) = match builtin {
-                            BuiltinValue::None => (OPTION_TYPE, VariantId(0)),
-                            BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
-                            BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
-                            BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-                            BuiltinValue::ParseFloatInvalidSyntax => {
-                                (PARSE_FLOAT_ERROR_TYPE, VariantId(0))
-                            }
-                            BuiltinValue::ParseFloatOutOfRange => {
-                                (PARSE_FLOAT_ERROR_TYPE, VariantId(1))
-                            }
-                            BuiltinValue::ParseIntInvalidSyntax => {
-                                (PARSE_INT_ERROR_TYPE, VariantId(0))
-                            }
-                            BuiltinValue::ParseIntOutOfRange => {
-                                (PARSE_INT_ERROR_TYPE, VariantId(1))
-                            }
-                            BuiltinValue::DecodeTextInvalidUtf8 => {
-                                (DECODE_TEXT_ERROR_TYPE, VariantId(0))
-                            }
-                            BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
-                            BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
-                            BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
-                            BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
-                            BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
-                            _ => {
-                                return Err(defect(
-                                    "non-variant builtin resolved as contract pattern",
-                                    span,
-                                ));
-                            }
-                        };
+                        let (ty, variant) = builtin_variant_id(builtin).ok_or_else(|| {
+                            defect("non-variant builtin resolved as contract pattern", span)
+                        })?;
                         Ok(Pattern::Variant {
                             ty,
                             variant,
@@ -3624,6 +3595,50 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
     })
 }
 
+fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
+    Some(match builtin {
+        BuiltinValue::None => (OPTION_TYPE, VariantId(0)),
+        BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
+        BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
+        BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
+        BuiltinValue::ParseFloatInvalidSyntax => (PARSE_FLOAT_ERROR_TYPE, VariantId(0)),
+        BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
+        BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
+        BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
+        BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
+        BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
+        BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
+        BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
+        BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
+        BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
+        BuiltinValue::JsonText => (JSON_TYPE, VariantId(3)),
+        BuiltinValue::JsonArray => (JSON_TYPE, VariantId(4)),
+        BuiltinValue::JsonObject => (JSON_TYPE, VariantId(5)),
+        BuiltinValue::JsonInvalidSyntax => (JSON_ERROR_TYPE, VariantId(0)),
+        BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
+        BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
+        BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
+        BuiltinValue::IoErrorNotFound => (IO_ERROR_KIND_TYPE, VariantId(0)),
+        BuiltinValue::IoErrorPermissionDenied => (IO_ERROR_KIND_TYPE, VariantId(1)),
+        BuiltinValue::IoErrorAlreadyExists => (IO_ERROR_KIND_TYPE, VariantId(2)),
+        BuiltinValue::IoErrorInvalidInput => (IO_ERROR_KIND_TYPE, VariantId(3)),
+        BuiltinValue::IoErrorConnectionRefused => (IO_ERROR_KIND_TYPE, VariantId(4)),
+        BuiltinValue::IoErrorConnectionReset => (IO_ERROR_KIND_TYPE, VariantId(5)),
+        BuiltinValue::IoErrorTimedOut => (IO_ERROR_KIND_TYPE, VariantId(6)),
+        BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
+        BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
+        BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
+        BuiltinValue::LogLevelDebug => (LOG_LEVEL_TYPE, VariantId(0)),
+        BuiltinValue::LogLevelInfo => (LOG_LEVEL_TYPE, VariantId(1)),
+        BuiltinValue::LogLevelWarn => (LOG_LEVEL_TYPE, VariantId(2)),
+        BuiltinValue::LogLevelError => (LOG_LEVEL_TYPE, VariantId(3)),
+        BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
+        BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
+        BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
+        _ => return None,
+    })
+}
+
 fn contract_parameter_indices(
     program: &HirProgram,
     owner: DefId,
@@ -4248,31 +4263,8 @@ fn lower_pattern(
                     })
                 }
                 Resolution::Builtin(builtin) => {
-                    let (ty, variant) = match builtin {
-                        BuiltinValue::None => (OPTION_TYPE, VariantId(0)),
-                        BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
-                        BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
-                        BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-                        BuiltinValue::ParseFloatInvalidSyntax => {
-                            (PARSE_FLOAT_ERROR_TYPE, VariantId(0))
-                        }
-                        BuiltinValue::ParseFloatOutOfRange => {
-                            (PARSE_FLOAT_ERROR_TYPE, VariantId(1))
-                        }
-                        BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
-                        BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
-                        BuiltinValue::DecodeTextInvalidUtf8 => {
-                            (DECODE_TEXT_ERROR_TYPE, VariantId(0))
-                        }
-                        BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
-                        BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
-                        BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
-                        BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
-                        BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
-                        _ => {
-                            return Err(defect("non-variant builtin resolved as a pattern", span));
-                        }
-                    };
+                    let (ty, variant) = builtin_variant_id(builtin)
+                        .ok_or_else(|| defect("non-variant builtin resolved as a pattern", span))?;
                     Ok(Pattern::Variant {
                         ty,
                         variant,

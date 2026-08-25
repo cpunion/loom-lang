@@ -745,6 +745,173 @@ impl<'program> Validator<'program> {
         if let Some(definition) = self
             .program
             .prelude
+            .text_map
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Record { fields, invariant: None }
+                    if definition.type_parameters == 1
+                        && fields.len() == 1
+                        && fields[0].name == "raw"
+                        && fields[0].ty == Type::Int
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::RecordShape,
+                    "prelude TextMap must be a unary generic { raw Int } record",
+                    definition.span,
+                    "prelude.text_map",
+                );
+            }
+        }
+        if let (Some(text_map), Some(definition)) = (
+            self.program.prelude.text_map,
+            self.program
+                .prelude
+                .json
+                .and_then(|id| self.program.type_def(id)),
+        ) {
+            let self_ty = Type::Nominal(definition.id, Vec::new());
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 0
+                        && variants.len() == 6
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "Null"
+                        && variants[0].payload.is_empty()
+                        && variants[1].id == VariantId(1)
+                        && variants[1].name == "Bool"
+                        && variants[1].payload == [Type::Bool]
+                        && variants[2].id == VariantId(2)
+                        && variants[2].name == "Number"
+                        && variants[2].payload == [Type::Float]
+                        && variants[3].id == VariantId(3)
+                        && variants[3].name == "Text"
+                        && variants[3].payload == [Type::Text]
+                        && variants[4].id == VariantId(4)
+                        && variants[4].name == "Array"
+                        && variants[4].payload == [Type::List(Box::new(self_ty.clone()))]
+                        && variants[5].id == VariantId(5)
+                        && variants[5].name == "Object"
+                        && variants[5].payload
+                            == [Type::Nominal(text_map, vec![self_ty])]
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude Json must use canonical Null/Bool/Number/Text/Array/Object variants",
+                    definition.span,
+                    "prelude.json",
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
+            .json_error
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 0
+                        && variants.len() == 4
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "InvalidSyntax"
+                        && variants[0].payload == [Type::Int]
+                        && variants[1].id == VariantId(1)
+                        && variants[1].name == "NumberOutOfRange"
+                        && variants[1].payload == [Type::Int]
+                        && variants[2].id == VariantId(2)
+                        && variants[2].name == "DepthLimit"
+                        && variants[2].payload.is_empty()
+                        && variants[3].id == VariantId(3)
+                        && variants[3].name == "NonFiniteNumber"
+                        && variants[3].payload.is_empty()
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude JsonError must use canonical offset/depth/non-finite variants",
+                    definition.span,
+                    "prelude.json_error",
+                );
+            }
+        }
+        if let (Some(kind), Some(definition)) = (
+            self.program.prelude.io_error_kind,
+            self.program
+                .prelude
+                .io_error
+                .and_then(|id| self.program.type_def(id)),
+        ) {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Record { fields, invariant: None }
+                    if definition.type_parameters == 0
+                        && fields.len() == 2
+                        && fields[0].name == "kind"
+                        && fields[0].ty == Type::Nominal(kind, Vec::new())
+                        && fields[1].name == "message"
+                        && fields[1].ty == Type::Text
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::RecordShape,
+                    "prelude IoError must be { kind IoErrorKind, message Text }",
+                    definition.span,
+                    "prelude.io_error",
+                );
+            }
+        }
+        for (name, id, variants) in [
+            (
+                "io_error_kind",
+                self.program.prelude.io_error_kind,
+                &[
+                    "NotFound",
+                    "PermissionDenied",
+                    "AlreadyExists",
+                    "InvalidInput",
+                    "ConnectionRefused",
+                    "ConnectionReset",
+                    "TimedOut",
+                    "UnexpectedEof",
+                    "Closed",
+                    "Other",
+                ][..],
+            ),
+            (
+                "log_level",
+                self.program.prelude.log_level,
+                &["Debug", "Info", "Warn", "Error"][..],
+            ),
+        ] {
+            let Some(definition) = id.and_then(|id| self.program.type_def(id)) else {
+                continue;
+            };
+            let valid = matches!(&definition.kind, TypeDefKind::Enum { variants: actual }
+            if definition.type_parameters == 0
+                && actual.len() == variants.len()
+                && actual.iter().zip(variants).enumerate().all(|(index, (variant, name))| {
+                    variant.id == VariantId(u32::try_from(index).unwrap_or(u32::MAX))
+                        && variant.name == *name
+                        && variant.payload.is_empty()
+                }));
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    format!("prelude {name} does not use its canonical closed variants"),
+                    definition.span,
+                    format!("prelude.{name}"),
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
             .constraint_error
             .and_then(|id| self.program.type_def(id))
             && (!matches!(definition.kind, TypeDefKind::Record { .. })
@@ -3291,8 +3458,13 @@ impl<'program> Validator<'program> {
             Type::Nominal(type_id, arguments) => {
                 if self.program.prelude.file == Some(*type_id)
                     || self.program.prelude.socket == Some(*type_id)
+                    || self.program.prelude.io_error == Some(*type_id)
                 {
                     return false;
+                }
+                if self.program.prelude.text_map == Some(*type_id) {
+                    return arguments.len() == 1
+                        && self.supports_value_equality_inner(&arguments[0], active, depth + 1);
                 }
                 if active.contains(ty) {
                     return true;
@@ -4504,17 +4676,19 @@ impl<'program> Validator<'program> {
             }
             Builtin::TextMapInsert
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
-                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+                    && types_compatible(&Type::Text, types[1].as_ref()?)
+                    && Self::nominal_builtin_type_argument(
+                        &types,
+                        0,
+                        self.program.prelude.text_map,
+                        0,
+                    )
+                    .is_some_and(|value| {
+                        types[2]
+                            .as_ref()
+                            .is_some_and(|actual| types_compatible(&value, actual))
+                    }) =>
             {
-                let value = Self::nominal_builtin_type_argument(
-                    &types,
-                    0,
-                    self.program.prelude.text_map,
-                    0,
-                )?;
-                if !types_compatible(&value, types[2].as_ref()?) {
-                    return None;
-                }
                 Some(types[0].clone()?)
             }
             Builtin::TextMapRemove
