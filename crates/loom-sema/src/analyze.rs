@@ -2023,6 +2023,21 @@ struct FlowState {
     borrows: Vec<ActiveBorrow>,
     proof_facts: ProofFacts,
     local_terms: BTreeMap<LocalId, ProofTerm>,
+    task_obligations: BTreeMap<TaskObligationOwner, TaskObligationState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum TaskObligationOwner {
+    Local(LocalId),
+    Param(ParamId),
+    SelfValue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskObligationState {
+    Live,
+    Consumed,
+    Conditional,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -2036,6 +2051,7 @@ struct BodyChecker<'a, 'program> {
     allow_dirty_self_projection: bool,
     checking_assignment_target: bool,
     checking_view_source: bool,
+    checking_discard_operand: bool,
     dynamic_coercion_mode: DynamicCoercionMode,
     regions: Vec<RegionId>,
     next_region: u32,
@@ -2045,7 +2061,7 @@ struct BodyChecker<'a, 'program> {
     pending_must_scope_locals: BTreeSet<LocalId>,
     transferred_must_scope_locals: BTreeSet<LocalId>,
     active_no_suspend: Vec<(LocalId, RegionId, Span)>,
-    task_local_uses: BTreeSet<LocalId>,
+    task_obligations: BTreeMap<TaskObligationOwner, TaskObligationState>,
     cleanup_depth: u32,
     allow_await_here: bool,
     checking_scoped_receiver: bool,
@@ -2070,6 +2086,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             allow_dirty_self_projection: false,
             checking_assignment_target: false,
             checking_view_source: false,
+            checking_discard_operand: false,
             dynamic_coercion_mode: DynamicCoercionMode::Owned,
             regions: vec![RegionId(0)],
             next_region: 1,
@@ -2079,7 +2096,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             pending_must_scope_locals: BTreeSet::new(),
             transferred_must_scope_locals: BTreeSet::new(),
             active_no_suspend: Vec::new(),
-            task_local_uses: BTreeSet::new(),
+            task_obligations: BTreeMap::new(),
             cleanup_depth: 0,
             allow_await_here: false,
             checking_scoped_receiver: false,
@@ -2091,12 +2108,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn check(&mut self) {
         self.seed_entry_proofs();
+        self.seed_task_obligations();
+        if self.environment.is_async
+            && self.has_task_obligation(self.environment.return_ty, &mut BTreeSet::new(), 0)
+        {
+            self.error(
+                "TaskAsyncResultUnsupported",
+                "an async callable cannot complete with a Task-carrying result before runtime reparenting is available",
+                self.body_span(),
+            );
+        }
         let root = self.source().root;
         self.check_expr(
             root,
             Some(self.environment.expected_root),
             ExpressionContext::Value,
         );
+        self.check_parameter_task_obligations();
         self.classify_contract_body();
     }
 
@@ -2246,6 +2274,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         let task = self.check_expr(value, None, ExpressionContext::Value);
+        self.consume_task_obligation(value);
         match self.types().data(task).clone() {
             TyData::Task(output) => output,
             TyData::Tuple(tasks) => {
@@ -2327,6 +2356,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .iter()
             .map(|argument| self.check_expr(*argument, None, ExpressionContext::Value))
             .collect::<Vec<_>>();
+        for argument in arguments {
+            self.consume_task_obligation(*argument);
+        }
 
         if let [argument] = argument_types.as_slice()
             && let TyData::List(element) = self.types().data(*argument).clone()
@@ -2438,6 +2470,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 expression,
             ),
         }
+        if self.has_task_obligation(operand, &mut BTreeSet::new(), 0) {
+            self.consume_task_obligation(value);
+        }
+        self.diagnose_task_obligations_at_possible_exit();
         ok
     }
 
@@ -2529,7 +2565,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             for scope in self.scopes.iter().rev() {
                 if let Some(local) = scope.get(name) {
                     let local = *local;
-                    if self.transferred_must_scope_locals.contains(&local) {
+                    if self.transferred_must_scope_locals.contains(&local)
+                        && !self.checking_discard_operand
+                    {
                         self.error_at(
                             "MustScopeAlreadyTransferred",
                             "this resource was already transferred into a scoped binding",
@@ -2540,7 +2578,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         if self.scoped_initializer == Some(expression) {
                             self.pending_must_scope_locals.remove(&local);
                             self.transferred_must_scope_locals.insert(local);
-                        } else {
+                        } else if !self.checking_discard_operand {
                             self.error_at(
                                 "MustScopeRequiresScoped",
                                 "a resource extracted from a wrapper must be moved directly into `scoped`",
@@ -2551,6 +2589,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     if self.scoped_locals.contains(&local)
                         && !self.checking_assignment_target
                         && !self.checking_scoped_receiver
+                        && !self.checking_discard_operand
                     {
                         self.error_at(
                             "ScopedValueCopy",
@@ -2567,9 +2606,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         .get(local)
                         .copied()
                         .unwrap_or_else(|| self.types().error());
-                    if !self.checking_assignment_target {
-                        self.task_local_uses.insert(local);
-                    }
                     let mutable = self.source().locals[local].mutable;
                     if mutable && self.environment.contract != ContractMode::None {
                         self.error_at(
@@ -2759,7 +2795,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         self.check_suspendable_expr(*value, expected, ExpressionContext::Value);
                     self.scoped_initializer = previous_initializer;
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
+                    self.consume_task_obligation(*value);
                     self.semantics.local_types.insert(*local, ty);
+                    self.register_task_local(*local, ty);
                     let term = self.proof_term(*value);
                     if term.is_known() {
                         self.local_terms.insert(*local, term);
@@ -2796,6 +2834,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 Statement::LetTuple { locals, value } => {
                     let ty = self.check_suspendable_expr(*value, None, ExpressionContext::Value);
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
+                    self.consume_task_obligation(*value);
                     let element_types = match self.types().data(ty).clone() {
                         TyData::Tuple(elements) if elements.len() == locals.len() => elements,
                         TyData::Tuple(elements) => {
@@ -2830,6 +2869,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         locals.iter().zip(element_types).zip(element_terms)
                     {
                         self.semantics.local_types.insert(*local, element_ty);
+                        self.register_task_local(*local, element_ty);
                         if term.is_known() {
                             self.local_terms.insert(*local, term);
                         }
@@ -2914,8 +2954,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
                 }
                 Statement::Discard(expression) => {
+                    let previous = self.checking_discard_operand;
+                    self.checking_discard_operand = true;
                     let ty =
                         self.check_suspendable_expr(*expression, None, ExpressionContext::Value);
+                    self.checking_discard_operand = previous;
                     if self.analyzer.typed.types.data(ty) == &TyData::Never {
                         diverges = true;
                     } else if self.is_error(ty) {
@@ -2926,18 +2969,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             "a value with a MustScope obligation cannot be discarded",
                             *expression,
                         );
+                        self.consume_task_obligation(*expression);
                     } else if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
                         self.error_at(
                             "UnawaitedAsyncCall",
                             "a Task cannot be discarded; it must be awaited, joined, or returned",
                             *expression,
                         );
+                        self.consume_task_obligation(*expression);
                     } else if self.has_unknown_discard_obligation(ty, &mut BTreeSet::new(), 0) {
                         self.error_at(
                             "CannotDiscardUnknownType",
                             "this type is not statically known to be free of Task or MustScope obligations",
                             *expression,
                         );
+                        self.consume_task_obligation(*expression);
                     }
                 }
                 Statement::Expr(expression) => {
@@ -2998,6 +3044,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         } else {
             self.types().builtin(BuiltinType::Unit)
         };
+        if let Some(tail) = tail
+            && self.may_have_task_obligation(tail_result)
+        {
+            // A block tail transfers its obligation to the block result even
+            // when the caller supplied no expected type. This must happen
+            // before closing the block scope or a local returned by the tail
+            // would be diagnosed as an implicit drop.
+            self.consume_task_obligation(tail);
+        }
         let result = if diverges {
             self.types().never()
         } else {
@@ -3006,28 +3061,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.borrows.retain(|borrow| borrow.region != region);
         self.active_no_suspend
             .retain(|(_, active_region, _)| *active_region != region);
-        let locals = self
-            .scopes
-            .last()
-            .into_iter()
-            .flat_map(BTreeMap::values)
-            .copied()
-            .collect::<Vec<_>>();
-        for local in locals {
-            let is_task = self
-                .semantics
-                .local_types
-                .get(local)
-                .copied()
-                .is_some_and(|ty| matches!(self.analyzer.typed.types.data(ty), TyData::Task(_)));
-            if is_task && !self.task_local_uses.contains(&local) {
-                self.error(
-                    "UnawaitedAsyncCall",
-                    "a stored Task must be awaited, joined, or returned before its lexical scope exits",
-                    self.local_span(local),
-                );
-            }
-        }
+        self.check_current_scope_task_obligations();
         self.regions.pop();
         self.scopes.pop();
         result
@@ -3211,7 +3245,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         right: ExprId,
     ) -> TyId {
         let left_ty = self.check_expr(left, None, ExpressionContext::Value);
+        let short_circuit_entry =
+            matches!(operator, BinaryOp::And | BinaryOp::Or).then(|| self.flow_state());
         let right_ty = self.check_expr(right, None, ExpressionContext::Value);
+        if let Some(entry) = short_circuit_entry {
+            let evaluated = self.flow_state();
+            self.join_flow_states([entry, evaluated]);
+        }
         let bool_ty = self.types().builtin(BuiltinType::Bool);
         match operator {
             BinaryOp::And | BinaryOp::Or => {
@@ -3439,6 +3479,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 target,
             );
         }
+        if self.has_task_obligation(target_ty, &mut BTreeSet::new(), 0) {
+            self.error_at(
+                "TaskAssignmentUnsupported",
+                "assigning over a Task-carrying place is unavailable before task transfer ownership is explicit",
+                target,
+            );
+            let owner = match &place.root {
+                PlaceRoot::Local(local) => TaskObligationOwner::Local(*local),
+                PlaceRoot::Param(parameter) => TaskObligationOwner::Param(*parameter),
+                PlaceRoot::SelfValue => TaskObligationOwner::SelfValue,
+            };
+            self.task_obligations
+                .insert(owner, TaskObligationState::Consumed);
+        }
         self.check_borrowed_place_use(&place, PlaceAccess::Write, target);
         if !place.projections.is_empty() && !matches!(place.root, PlaceRoot::SelfValue) {
             self.error_at(
@@ -3487,6 +3541,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let return_ty = self.environment.return_ty;
         if let Some(value) = value {
             self.check_suspendable_expr(value, Some(return_ty), ExpressionContext::Value);
+            if self.may_have_task_obligation(return_ty) {
+                self.consume_task_obligation(value);
+            }
         } else {
             let unit = self.types().builtin(BuiltinType::Unit);
             if return_ty != unit {
@@ -3497,6 +3554,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
         }
+        self.audit_task_obligations_at_exit();
         self.types().never()
     }
 
@@ -3579,6 +3637,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         context: ExpressionContext,
     ) -> TyId {
         let scrutinee_ty = self.check_expr(scrutinee, None, ExpressionContext::Value);
+        self.consume_task_obligation(scrutinee);
         let mut result = expected;
         let mut pattern_rows = Vec::new();
         let entry = self.flow_state();
@@ -3600,6 +3659,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 pattern_rows.push(vec![pattern]);
             }
             let arm_ty = self.check_expr(arm.value, result, context);
+            if self.may_have_task_obligation(arm_ty) {
+                // Each reachable arm transfers its value into the match
+                // result. Direct binding arms do not pass through a nested
+                // block, so consume them before auditing arm-local bindings.
+                self.consume_task_obligation(arm.value);
+            }
             let arm_locals = self
                 .scopes
                 .last()
@@ -3616,6 +3681,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     );
                 }
             }
+            self.check_current_scope_task_obligations();
             self.scopes.pop();
             if useful && !self.expression_diverges(arm.value) {
                 has_reachable_arm = true;
@@ -3654,6 +3720,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.error(
                         "MustScopeRequiresScoped",
                         "a pattern cannot discard a value containing a MustScope resource",
+                        self.pattern_span(pattern),
+                    );
+                }
+                if self.may_have_task_obligation(expected) {
+                    self.error(
+                        "TaskPatternDiscard",
+                        "a pattern cannot discard a value carrying a Task obligation",
                         self.pattern_span(pattern),
                     );
                 }
@@ -3773,6 +3846,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .pattern_resolutions
             .insert(pattern, Resolution::Local(local));
         self.semantics.local_types.insert(local, expected);
+        self.register_task_local(local, expected);
         if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
             self.pending_must_scope_locals.insert(local);
         }
@@ -3934,6 +4008,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         if let Some(message) = message {
             self.error_at("IllegalDynConversion", message, expression);
+            self.consume_task_obligation_with_type(expression, concrete);
             true
         } else {
             false
@@ -4143,6 +4218,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn local_span(&self, local: LocalId) -> Span {
         self.source().source_map.local(local).unwrap_or_default()
+    }
+
+    fn param_span(&self, parameter: ParamId) -> Span {
+        self.analyzer
+            .program
+            .source_map
+            .param(parameter)
+            .unwrap_or_default()
     }
 
     fn body_span(&self) -> Span {
@@ -5649,6 +5732,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     argument,
                 );
             }
+            let actual_has_task = self.has_task_obligation(actual, &mut BTreeSet::new(), 0);
+            if actual_has_task {
+                let declared_has_task =
+                    self.has_task_obligation(parameter_ty, &mut BTreeSet::new(), 0);
+                if signature.is_async {
+                    self.error_at(
+                        "TaskAsyncTransferUnsupported",
+                        "a Task-carrying value cannot cross an async call boundary before runtime reparenting is available",
+                        argument,
+                    );
+                } else if !declared_has_task {
+                    self.error_at(
+                        "TaskGenericTransferUnsupported",
+                        "a Task-carrying value cannot pass through an unconstrained generic parameter",
+                        argument,
+                    );
+                }
+                self.consume_task_obligation(argument);
+            }
             let previous_mode = self.dynamic_coercion_mode;
             if !signature.is_async
                 && matches!(
@@ -5663,6 +5765,20 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         let return_ty = self.types().substitute(signature.return_ty, &substitution);
         (return_ty, substitution)
+    }
+
+    fn transfer_task_receiver(&mut self, receiver: ExprId, receiver_ty: TyId, is_async: bool) {
+        if !self.has_task_obligation(receiver_ty, &mut BTreeSet::new(), 0) {
+            return;
+        }
+        if is_async {
+            self.error_at(
+                "TaskAsyncTransferUnsupported",
+                "a Task-carrying receiver cannot cross an async call boundary before runtime reparenting is available",
+                receiver,
+            );
+        }
+        self.consume_task_obligation(receiver);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5713,6 +5829,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         if let TyData::TextMap(value) = self.types().data(receiver_ty).clone()
             && let Some(result) = self.check_text_map_method_call(
                 expression,
+                receiver,
                 value,
                 method_name,
                 type_arguments,
@@ -5841,6 +5958,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             else {
                 return self.types().error();
             };
+            self.transfer_task_receiver(receiver, receiver_ty, signature.is_async);
             if signature.receiver == Some(ReceiverKind::Mutable)
                 && self
                     .semantics
@@ -5889,6 +6007,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         else {
             return self.types().error();
         };
+        self.transfer_task_receiver(receiver, receiver_ty, signature.is_async);
         if signature.receiver == Some(ReceiverKind::Mutable) {
             let mutable_place = self
                 .semantics
@@ -5956,6 +6075,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     ) -> Option<TyId> {
         let (builtin, receiver_passing, result) = match method_name.as_str() {
             "add" => {
+                self.require_live_task_owner(receiver);
                 if arguments.len() != 1 {
                     self.call_arity(expression, 1, arguments.len());
                 }
@@ -5967,6 +6087,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             "a value containing a MustScope resource cannot be stored in a List",
                             *argument,
                         );
+                    }
+                    if self.has_task_obligation(element, &mut BTreeSet::new(), 0) {
+                        self.consume_task_obligation(*argument);
                     }
                 }
                 if self
@@ -6000,8 +6123,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             "get" => {
                 let int = self.types().builtin(BuiltinType::Int);
                 self.check_fixed_arguments(expression, arguments, &[int]);
-                let result = self.types().intern(TyData::Option(element));
-                (BuiltinValue::ListGet, ReceiverPassing::Value, result)
+                if self.has_task_obligation(element, &mut BTreeSet::new(), 0) {
+                    self.error_at(
+                        "TaskContainerExtractionUnsupported",
+                        "List.get cannot extract a Task-carrying element before container ownership transfer is available",
+                        receiver,
+                    );
+                    self.consume_task_obligation(receiver);
+                    let result = self.types().error();
+                    (BuiltinValue::ListGet, ReceiverPassing::Value, result)
+                } else {
+                    let result = self.types().intern(TyData::Option(element));
+                    (BuiltinValue::ListGet, ReceiverPassing::Value, result)
+                }
             }
             _ => return None,
         };
@@ -6029,12 +6163,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn check_text_map_method_call(
         &mut self,
         expression: ExprId,
+        receiver: ExprId,
         value: TyId,
         method_name: &Name,
         type_arguments: &[TypeRefId],
         arguments: &[ExprId],
     ) -> Option<TyId> {
         let text = self.types().builtin(BuiltinType::Text);
+        let carries_task = self.has_task_obligation(value, &mut BTreeSet::new(), 0);
         let (builtin, parameters, result) = match method_name.as_str() {
             "length" => (
                 BuiltinValue::TextMapLength,
@@ -6071,6 +6207,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         self.check_fixed_arguments(expression, arguments, &parameters);
+        let result = if carries_task && matches!(method_name.as_str(), "get" | "insert" | "remove")
+        {
+            self.error_at(
+                "TaskContainerExtractionUnsupported",
+                "this TextMap operation cannot transfer Task-carrying values before container ownership transfer is available",
+                expression,
+            );
+            self.consume_task_obligation(receiver);
+            for argument in arguments {
+                self.consume_task_obligation(*argument);
+            }
+            self.types().error()
+        } else {
+            result
+        };
         self.finish_call_arguments(arguments);
         self.semantics.calls.insert(
             expression,
@@ -6908,6 +7059,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         if let Some(receiver) = receiver {
             self.reject_manual_scoped_dispose(requirement, receiver);
+            self.transfer_task_receiver(receiver, self_ty, signature.is_async);
         }
         let explicit = self.resolve_call_type_arguments(type_arguments);
         let (return_ty, substitution) = self.check_callable_arguments(
@@ -7656,6 +7808,231 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
+    fn may_have_task_obligation(&mut self, ty: TyId) -> bool {
+        self.has_task_obligation(ty, &mut BTreeSet::new(), 0)
+            || self.has_unknown_discard_obligation(ty, &mut BTreeSet::new(), 0)
+    }
+
+    fn seed_task_obligations(&mut self) {
+        let parameters = self
+            .environment
+            .params
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        for (parameter, ty) in parameters {
+            if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+                self.task_obligations.insert(
+                    TaskObligationOwner::Param(parameter),
+                    TaskObligationState::Live,
+                );
+            }
+        }
+        if let Some(self_ty) = self.environment.self_ty
+            && self.has_task_obligation(self_ty, &mut BTreeSet::new(), 0)
+        {
+            self.task_obligations
+                .insert(TaskObligationOwner::SelfValue, TaskObligationState::Live);
+        }
+    }
+
+    fn register_task_local(&mut self, local: LocalId, ty: TyId) {
+        if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+            self.task_obligations
+                .insert(TaskObligationOwner::Local(local), TaskObligationState::Live);
+        }
+    }
+
+    fn consume_task_owner(&mut self, owner: TaskObligationOwner, expression: ExprId) {
+        match self.task_obligations.get(&owner).copied() {
+            Some(TaskObligationState::Live) => {
+                self.task_obligations
+                    .insert(owner, TaskObligationState::Consumed);
+            }
+            Some(TaskObligationState::Consumed) => self.error_at(
+                "TaskAlreadyConsumed",
+                "this Task obligation was already consumed",
+                expression,
+            ),
+            Some(TaskObligationState::Conditional) => {
+                self.error_at(
+                    "TaskConditionallyConsumed",
+                    "this Task obligation was consumed on only some control-flow paths",
+                    expression,
+                );
+                self.task_obligations
+                    .insert(owner, TaskObligationState::Consumed);
+            }
+            None => {}
+        }
+    }
+
+    fn require_live_task_owner(&mut self, expression: ExprId) {
+        let Some(place) = self.semantics.expression_places.get(expression).cloned() else {
+            return;
+        };
+        if !place.projections.is_empty() {
+            return;
+        }
+        let owner = match place.root {
+            PlaceRoot::Local(local) => TaskObligationOwner::Local(local),
+            PlaceRoot::Param(parameter) => TaskObligationOwner::Param(parameter),
+            PlaceRoot::SelfValue => TaskObligationOwner::SelfValue,
+        };
+        match self.task_obligations.get(&owner).copied() {
+            Some(TaskObligationState::Consumed) => self.error_at(
+                "TaskAlreadyConsumed",
+                "this Task-carrying value was already consumed",
+                expression,
+            ),
+            Some(TaskObligationState::Conditional) => self.error_at(
+                "TaskConditionallyConsumed",
+                "this Task-carrying value is live on only some control-flow paths",
+                expression,
+            ),
+            Some(TaskObligationState::Live) | None => {}
+        }
+    }
+
+    fn consume_task_obligation(&mut self, expression: ExprId) {
+        let Some(ty) = self.semantics.expression_types.get(expression).copied() else {
+            return;
+        };
+        self.consume_task_obligation_with_type(expression, ty);
+    }
+
+    fn consume_task_obligation_with_type(&mut self, expression: ExprId, ty: TyId) {
+        if !self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+            return;
+        }
+        if let Some(place) = self.semantics.expression_places.get(expression).cloned() {
+            if !place.projections.is_empty() {
+                self.error_at(
+                    "TaskPartialExtractionUnsupported",
+                    "a Task-carrying field cannot be transferred separately before partial-place ownership is available",
+                    expression,
+                );
+                return;
+            }
+            let owner = match place.root {
+                PlaceRoot::Local(local) => TaskObligationOwner::Local(local),
+                PlaceRoot::Param(parameter) => TaskObligationOwner::Param(parameter),
+                PlaceRoot::SelfValue => TaskObligationOwner::SelfValue,
+            };
+            self.consume_task_owner(owner, expression);
+            return;
+        }
+        let source = self.source().expressions[expression].clone();
+        match source {
+            Expr::Tuple(elements) | Expr::List(elements) => {
+                for element in elements {
+                    self.consume_task_obligation(element);
+                }
+            }
+            Expr::RecordLiteral { fields, .. } => {
+                for field in fields {
+                    self.consume_task_obligation(field.value);
+                }
+            }
+            Expr::Call { arguments, .. }
+                if self.semantics.calls.get(expression).is_some_and(|call| {
+                    matches!(
+                        &call.target,
+                        CallTarget::EnumVariant(_)
+                            | CallTarget::Builtin(
+                                BuiltinValue::Some | BuiltinValue::Ok | BuiltinValue::Err
+                            )
+                    )
+                }) =>
+            {
+                for argument in arguments {
+                    self.consume_task_obligation(argument);
+                }
+            }
+            Expr::Propagate(value) => self.consume_task_obligation(value),
+            _ => {}
+        }
+    }
+
+    fn check_current_scope_task_obligations(&mut self) {
+        let locals = self
+            .scopes
+            .last()
+            .into_iter()
+            .flat_map(BTreeMap::values)
+            .copied()
+            .collect::<Vec<_>>();
+        for local in locals {
+            let owner = TaskObligationOwner::Local(local);
+            if matches!(
+                self.task_obligations.get(&owner),
+                Some(TaskObligationState::Live | TaskObligationState::Conditional)
+            ) {
+                self.report_unconsumed_task_owner(owner);
+            }
+            self.task_obligations.remove(&owner);
+        }
+    }
+
+    fn check_parameter_task_obligations(&mut self) {
+        let owners = self.task_obligations.keys().copied().collect::<Vec<_>>();
+        for owner in owners {
+            if matches!(owner, TaskObligationOwner::Local(_)) {
+                continue;
+            }
+            if matches!(
+                self.task_obligations.get(&owner),
+                Some(TaskObligationState::Live | TaskObligationState::Conditional)
+            ) {
+                self.report_unconsumed_task_owner(owner);
+            }
+        }
+    }
+
+    fn report_unconsumed_task_owner(&mut self, owner: TaskObligationOwner) {
+        let (message, span) = match owner {
+            TaskObligationOwner::Local(local) => (
+                "a stored Task obligation must be awaited, joined, or returned before its lexical scope exits",
+                self.local_span(local),
+            ),
+            TaskObligationOwner::Param(parameter) => (
+                "a Task parameter must be awaited, joined, or returned before the callable exits",
+                self.param_span(parameter),
+            ),
+            TaskObligationOwner::SelfValue => (
+                "a receiver carrying a Task obligation must be awaited, joined, or returned before the method exits",
+                self.body_span(),
+            ),
+        };
+        self.error("UnawaitedAsyncCall", message, span);
+    }
+
+    fn audit_task_obligations_at_exit(&mut self) {
+        let owners = self.task_obligations.keys().copied().collect::<Vec<_>>();
+        for owner in owners {
+            if matches!(
+                self.task_obligations.get(&owner),
+                Some(TaskObligationState::Live | TaskObligationState::Conditional)
+            ) {
+                self.report_unconsumed_task_owner(owner);
+                self.task_obligations
+                    .insert(owner, TaskObligationState::Consumed);
+            }
+        }
+    }
+
+    fn diagnose_task_obligations_at_possible_exit(&mut self) {
+        let owners = self.task_obligations.keys().copied().collect::<Vec<_>>();
+        for owner in owners {
+            if matches!(
+                self.task_obligations.get(&owner),
+                Some(TaskObligationState::Live | TaskObligationState::Conditional)
+            ) {
+                self.report_unconsumed_task_owner(owner);
+            }
+        }
+    }
+
     fn resolve_bound_witnesses(
         &mut self,
         signature: &CallableSignature,
@@ -8359,6 +8736,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             borrows: self.borrows.clone(),
             proof_facts: self.proof_facts.clone(),
             local_terms: self.local_terms.clone(),
+            task_obligations: self.task_obligations.clone(),
         }
     }
 
@@ -8378,6 +8756,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.borrows.clone_from(&state.borrows);
         self.proof_facts.clone_from(&state.proof_facts);
         self.local_terms.clone_from(&state.local_terms);
+        self.task_obligations.clone_from(&state.task_obligations);
     }
 
     fn join_flow_states(&mut self, states: impl IntoIterator<Item = FlowState>) {
@@ -8403,6 +8782,27 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             terms.retain(|local, term| state.local_terms.get(local) == Some(term));
         }
         self.local_terms = terms;
+        let owners = states
+            .iter()
+            .flat_map(|state| state.task_obligations.keys().copied())
+            .collect::<BTreeSet<_>>();
+        let mut obligations = BTreeMap::new();
+        for owner in owners {
+            let values = states
+                .iter()
+                .map(|state| state.task_obligations.get(&owner).copied())
+                .collect::<Vec<_>>();
+            let first = values.first().copied().flatten();
+            let state = if let Some(first) = first
+                && values.iter().all(|value| *value == Some(first))
+            {
+                first
+            } else {
+                TaskObligationState::Conditional
+            };
+            obligations.insert(owner, state);
+        }
+        self.task_obligations = obligations;
     }
 
     fn register_borrow(

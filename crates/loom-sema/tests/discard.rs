@@ -246,10 +246,6 @@ impl Label for File {
     method label(self) Text { "file" }
 }
 
-impl Label for TaskBox {
-    method label(self) Text { "task-box" }
-}
-
 impl Label for ResourceBox {
     method label(self) Text { "resource-box" }
 }
