@@ -90,6 +90,11 @@ pub enum Value {
     Text {
         value: String,
     },
+    /// Immutable UTF-8-independent byte storage. Unlike `Text`, indexing is
+    /// defined in bytes and the payload need not be valid UTF-8.
+    Bytes {
+        value: Vec<u8>,
+    },
     Record {
         ty: TypeId,
         fields: Vec<Value>,
@@ -198,6 +203,9 @@ impl Value {
             }
             Self::Text { value } => {
                 let _ = write!(output, "Text(bytes={})", value.len());
+            }
+            Self::Bytes { value } => {
+                let _ = write!(output, "Bytes(length={})", value.len());
             }
             Self::Record { ty, .. } => {
                 let _ = write!(output, "type#{}", ty.0);
@@ -2854,8 +2862,27 @@ impl<'program> Interpreter<'program> {
         }
         if matches!(
             builtin,
+            Builtin::TextLength
+                | Builtin::TextGet
+                | Builtin::TextConcat
+                | Builtin::TextContains
+                | Builtin::TextEncodeUtf8
+                | Builtin::BytesLength
+                | Builtin::BytesGet
+                | Builtin::BytesAppend
+                | Builtin::BytesDecodeUtf8
+                | Builtin::PathFromText
+                | Builtin::PathAsText
+                | Builtin::PathJoin
+        ) {
+            return self.eval_standard_value_builtin(builtin, arguments, span);
+        }
+        if matches!(
+            builtin,
             Builtin::FileOpenRead
                 | Builtin::FileCreate
+                | Builtin::FileOpenReadPath
+                | Builtin::FileCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
         ) {
@@ -3035,6 +3062,196 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn eval_standard_value_builtin(
+        &self,
+        builtin: Builtin,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        match (builtin, arguments) {
+            (Builtin::TextLength, [Value::Text { value }]) => Ok(Value::Int {
+                value: i64::try_from(value.chars().count()).map_err(|_| {
+                    self.runtime_fault("TextTooLarge", "Text length exceeds Int", span)
+                })?,
+            }),
+            (Builtin::TextGet, [Value::Text { value }, Value::Int { value: index }]) => {
+                let scalar = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| value.chars().nth(index))
+                    .map(|value| Value::Text {
+                        value: value.to_string(),
+                    });
+                self.option_value(scalar, span)
+            }
+            (Builtin::TextConcat, [Value::Text { value: left }, Value::Text { value: right }]) => {
+                let mut value = String::with_capacity(left.len().saturating_add(right.len()));
+                value.push_str(left);
+                value.push_str(right);
+                Ok(Value::Text { value })
+            }
+            (Builtin::TextContains, [Value::Text { value }, Value::Text { value: needle }]) => {
+                Ok(Value::Bool {
+                    value: value.contains(needle),
+                })
+            }
+            (Builtin::TextEncodeUtf8, [Value::Text { value }]) => {
+                self.bytes_value(value.as_bytes().to_vec(), span)
+            }
+            (Builtin::BytesLength, [bytes]) => Ok(Value::Int {
+                value: i64::try_from(self.bytes_payload(bytes, span)?.len()).map_err(|_| {
+                    self.runtime_fault("BytesTooLarge", "Bytes length exceeds Int", span)
+                })?,
+            }),
+            (Builtin::BytesGet, [bytes, Value::Int { value: index }]) => {
+                let byte = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| self.bytes_payload(bytes, span).ok()?.get(index))
+                    .map(|value| Value::Int {
+                        value: i64::from(*value),
+                    });
+                self.option_value(byte, span)
+            }
+            (Builtin::BytesAppend, [left, right]) => {
+                let left = self.bytes_payload(left, span)?;
+                let right = self.bytes_payload(right, span)?;
+                let mut value = Vec::with_capacity(left.len().saturating_add(right.len()));
+                value.extend_from_slice(left);
+                value.extend_from_slice(right);
+                self.bytes_value(value, span)
+            }
+            (Builtin::BytesDecodeUtf8, [bytes]) => {
+                match String::from_utf8(self.bytes_payload(bytes, span)?.to_vec()) {
+                    Ok(value) => self.result_value(true, Value::Text { value }, span),
+                    Err(_) => {
+                        let ty = self.program.prelude.decode_text_error.ok_or_else(|| {
+                            self.runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "prelude DecodeTextError type is missing",
+                                span,
+                            )
+                        })?;
+                        self.result_value(
+                            false,
+                            Value::Enum {
+                                ty,
+                                variant: VariantId(0),
+                                payload: Vec::new(),
+                            },
+                            span,
+                        )
+                    }
+                }
+            }
+            (Builtin::PathFromText, [Value::Text { value }]) => {
+                if value.as_bytes().contains(&0) {
+                    self.path_result_error(VariantId(0), span)
+                } else {
+                    self.result_value(true, self.path_value(value.clone(), span)?, span)
+                }
+            }
+            (Builtin::PathAsText, [path]) => Ok(Value::Text {
+                value: self.path_payload(path, span)?.to_owned(),
+            }),
+            (Builtin::PathJoin, [base, child]) => {
+                let base = self.path_payload(base, span)?;
+                let child = self.path_payload(child, span)?;
+                if child.starts_with('/') {
+                    return self.path_result_error(VariantId(1), span);
+                }
+                let value = if base.is_empty() {
+                    child.to_owned()
+                } else if base.ends_with('/') || child.is_empty() {
+                    format!("{base}{child}")
+                } else {
+                    format!("{base}/{child}")
+                };
+                self.result_value(true, self.path_value(value, span)?, span)
+            }
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn bytes_payload<'value>(
+        &self,
+        value: &'value Value,
+        span: Span,
+    ) -> Result<&'value [u8], ExecutionFailure> {
+        let Value::Record { ty, fields } = value else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        if self.program.prelude.bytes != Some(*ty) {
+            return Err(self.invalid_builtin_fault(span));
+        }
+        match fields.first() {
+            Some(Value::Bytes { value }) => Ok(value),
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn bytes_value(&self, value: Vec<u8>, span: Span) -> Result<Value, ExecutionFailure> {
+        let ty = self.program.prelude.bytes.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude Bytes type is missing",
+                span,
+            )
+        })?;
+        Ok(Value::Record {
+            ty,
+            fields: vec![Value::Bytes { value }],
+        })
+    }
+
+    fn path_payload<'value>(
+        &self,
+        value: &'value Value,
+        span: Span,
+    ) -> Result<&'value str, ExecutionFailure> {
+        let Value::Record { ty, fields } = value else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        if self.program.prelude.path != Some(*ty) {
+            return Err(self.invalid_builtin_fault(span));
+        }
+        match fields.first() {
+            Some(Value::Text { value }) => Ok(value),
+            _ => Err(self.invalid_builtin_fault(span)),
+        }
+    }
+
+    fn path_value(&self, value: String, span: Span) -> Result<Value, ExecutionFailure> {
+        let ty = self.program.prelude.path.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude Path type is missing",
+                span,
+            )
+        })?;
+        Ok(Value::Record {
+            ty,
+            fields: vec![Value::Text { value }],
+        })
+    }
+
+    fn path_result_error(&self, variant: VariantId, span: Span) -> Result<Value, ExecutionFailure> {
+        let ty = self.program.prelude.path_error.ok_or_else(|| {
+            self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "prelude PathError type is missing",
+                span,
+            )
+        })?;
+        self.result_value(
+            false,
+            Value::Enum {
+                ty,
+                variant,
+                payload: Vec::new(),
+            },
+            span,
+        )
+    }
+
     fn eval_file_builtin(
         &mut self,
         builtin: Builtin,
@@ -3052,6 +3269,22 @@ impl<'program> Interpreter<'program> {
             }
             (Builtin::FileCreate, [Value::Text { value: path }]) => {
                 let path = path.clone();
+                self.spawn_host_io_task(span, move || {
+                    std::fs::File::create(path)
+                        .map(HostIoValue::File)
+                        .map_err(|error| io_failure("FileCreateFault", &error, span))
+                })
+            }
+            (Builtin::FileOpenReadPath, [path]) => {
+                let path = self.path_payload(path, span)?.to_owned();
+                self.spawn_host_io_task(span, move || {
+                    std::fs::File::open(path)
+                        .map(HostIoValue::File)
+                        .map_err(|error| io_failure("FileOpenFault", &error, span))
+                })
+            }
+            (Builtin::FileCreatePath, [path]) => {
+                let path = self.path_payload(path, span)?.to_owned();
                 self.spawn_host_io_task(span, move || {
                     std::fs::File::create(path)
                         .map(HostIoValue::File)
@@ -4457,6 +4690,7 @@ fn semantic_equal(left: &Value, right: &Value) -> bool {
         (Value::Int { value: left }, Value::Int { value: right }) => left == right,
         (Value::Float { value: left }, Value::Float { value: right }) => left == right,
         (Value::Text { value: left }, Value::Text { value: right }) => left == right,
+        (Value::Bytes { value: left }, Value::Bytes { value: right }) => left == right,
         (Value::Tuple { elements: left }, Value::Tuple { elements: right })
         | (Value::List { elements: left }, Value::List { elements: right }) => {
             left.len() == right.len()
@@ -4686,5 +4920,163 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod standard_value_tests {
+    use super::*;
+    use loom_mir::{FieldDef, Type, TypeDef, VariantDef};
+
+    fn variant(id: u32, name: &str, payload: Vec<Type>) -> VariantDef {
+        VariantDef {
+            id: VariantId(id),
+            name: name.into(),
+            payload,
+            span: Span::default(),
+        }
+    }
+
+    fn standard_program() -> Program {
+        let mut types = Vec::new();
+        types.push(TypeDef {
+            id: TypeId(0),
+            name: "Option".into(),
+            span: Span::default(),
+            type_parameters: 1,
+            kind: TypeDefKind::Enum {
+                variants: vec![
+                    variant(0, "None", Vec::new()),
+                    variant(1, "Some", vec![Type::Parameter(0)]),
+                ],
+            },
+        });
+        types.push(TypeDef {
+            id: TypeId(1),
+            name: "Result".into(),
+            span: Span::default(),
+            type_parameters: 2,
+            kind: TypeDefKind::Enum {
+                variants: vec![
+                    variant(0, "Ok", vec![Type::Parameter(0)]),
+                    variant(1, "Err", vec![Type::Parameter(1)]),
+                ],
+            },
+        });
+        for index in 2..11 {
+            types.push(TypeDef {
+                id: TypeId(index),
+                name: format!("unused#{index}"),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: Vec::new(),
+                    invariant: None,
+                },
+            });
+        }
+        for (id, name) in [(11, "Bytes"), (12, "Path")] {
+            types.push(TypeDef {
+                id: TypeId(id),
+                name: name.into(),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "value".into(),
+                        ty: Type::Text,
+                        span: Span::default(),
+                    }],
+                    invariant: None,
+                },
+            });
+        }
+        types.push(TypeDef {
+            id: TypeId(13),
+            name: "DecodeTextError".into(),
+            span: Span::default(),
+            type_parameters: 0,
+            kind: TypeDefKind::Enum {
+                variants: vec![variant(0, "InvalidUtf8", Vec::new())],
+            },
+        });
+        types.push(TypeDef {
+            id: TypeId(14),
+            name: "PathError".into(),
+            span: Span::default(),
+            type_parameters: 0,
+            kind: TypeDefKind::Enum {
+                variants: vec![
+                    variant(0, "ContainsNul", Vec::new()),
+                    variant(1, "AbsoluteJoin", Vec::new()),
+                ],
+            },
+        });
+        Program {
+            types,
+            prelude: loom_mir::PreludeIds {
+                option: Some(TypeId(0)),
+                result: Some(TypeId(1)),
+                bytes: Some(TypeId(11)),
+                path: Some(TypeId(12)),
+                decode_text_error: Some(TypeId(13)),
+                path_error: Some(TypeId(14)),
+                ..loom_mir::PreludeIds::default()
+            },
+            ..Program::default()
+        }
+    }
+
+    #[test]
+    fn unicode_scalars_invalid_utf8_and_lexical_paths_match_the_language_rules() {
+        let program = standard_program();
+        let interpreter = Interpreter::new(&program);
+        let span = Span::default();
+        let text = Value::Text {
+            value: "a界🙂".into(),
+        };
+        assert_eq!(
+            interpreter
+                .eval_standard_value_builtin(Builtin::TextLength, std::slice::from_ref(&text), span)
+                .unwrap(),
+            Value::Int { value: 3 }
+        );
+        let scalar = interpreter
+            .eval_standard_value_builtin(Builtin::TextGet, &[text, Value::Int { value: 1 }], span)
+            .unwrap();
+        assert!(matches!(
+            scalar,
+            Value::Enum { variant: VariantId(1), payload, .. }
+                if payload == vec![Value::Text { value: "界".into() }]
+        ));
+
+        let invalid = Value::Record {
+            ty: TypeId(11),
+            fields: vec![Value::Bytes {
+                value: vec![0xff, 0xfe],
+            }],
+        };
+        let decoded = interpreter
+            .eval_standard_value_builtin(Builtin::BytesDecodeUtf8, &[invalid], span)
+            .unwrap();
+        assert!(matches!(
+            decoded,
+            Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
+                if matches!(payload.as_slice(), [Value::Enum {
+                    ty: TypeId(13), variant: VariantId(0), payload, ..
+                }] if payload.is_empty())
+        ));
+
+        let base = interpreter.path_value("root".into(), span).unwrap();
+        let child = interpreter.path_value("child/file".into(), span).unwrap();
+        let joined = interpreter
+            .eval_standard_value_builtin(Builtin::PathJoin, &[base, child], span)
+            .unwrap();
+        assert!(matches!(
+            joined,
+            Value::Enum { variant: VariantId(0), payload, .. }
+                if matches!(payload.as_slice(), [Value::Record { fields, .. }]
+                    if fields == &vec![Value::Text { value: "root/child/file".into() }])
+        ));
     }
 }

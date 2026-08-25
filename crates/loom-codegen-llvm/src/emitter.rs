@@ -1639,6 +1639,120 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_text_length(&self) -> FunctionValue<'ctx> {
+        self.native_data_length_output("loom_runtime_text_length")
+    }
+
+    fn native_text_get(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_text_get")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_text_get", function_type, None)
+            })
+    }
+
+    fn native_bytes_append(&self) -> FunctionValue<'ctx> {
+        self.native_two_data_output("loom_runtime_bytes_append")
+    }
+
+    fn native_text_contains(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_text_contains")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_text_contains", function_type, None)
+            })
+    }
+
+    fn native_bytes_get(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_runtime_bytes_get")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_runtime_bytes_get", function_type, None)
+            })
+    }
+
+    fn native_bytes_is_utf8(&self) -> FunctionValue<'ctx> {
+        self.native_data_length_predicate("loom_runtime_bytes_is_utf8")
+    }
+
+    fn native_path_contains_nul(&self) -> FunctionValue<'ctx> {
+        self.native_data_length_predicate("loom_runtime_path_contains_nul")
+    }
+
+    fn native_path_join(&self) -> FunctionValue<'ctx> {
+        self.native_two_data_output("loom_runtime_path_join")
+    }
+
+    fn native_data_length_output(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.context.i32_type().fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                    self.ptr_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
+    fn native_data_length_predicate(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self
+                .context
+                .i32_type()
+                .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
+    fn native_two_data_output(&self, name: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let function_type = self.context.i32_type().fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                    self.ptr_type.into(),
+                    self.i64_type.into(),
+                    self.ptr_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(name, function_type, None)
+        })
+    }
+
     fn native_value_summary(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_value_summary")
@@ -6709,10 +6823,29 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         if matches!(
             builtin,
+            Builtin::TextLength
+                | Builtin::TextGet
+                | Builtin::TextConcat
+                | Builtin::TextContains
+                | Builtin::TextEncodeUtf8
+                | Builtin::BytesLength
+                | Builtin::BytesGet
+                | Builtin::BytesAppend
+                | Builtin::BytesDecodeUtf8
+                | Builtin::PathFromText
+                | Builtin::PathAsText
+                | Builtin::PathJoin
+        ) {
+            return self.emit_standard_value_builtin(builtin, &values, destination);
+        }
+        if matches!(
+            builtin,
             Builtin::DurationMilliseconds
                 | Builtin::DurationAsMilliseconds
                 | Builtin::FileOpenRead
                 | Builtin::FileCreate
+                | Builtin::FileOpenReadPath
+                | Builtin::FileCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
                 | Builtin::FileClose
@@ -6803,6 +6936,444 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         )?;
         self.clone_value(destination, field)?;
         Ok(true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_standard_value_builtin(
+        &self,
+        builtin: Builtin,
+        values: &[PointerValue<'ctx>],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let option = self
+            .backend
+            .program
+            .prelude
+            .option
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Option is missing"))?;
+        let result = self
+            .backend
+            .program
+            .prelude
+            .result
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Result is missing"))?;
+        match (builtin, values) {
+            (Builtin::TextLength, [text]) => {
+                let (data, length) = self.text_parts(*text, "text.length")?;
+                let scalar = self
+                    .backend
+                    .builder
+                    .build_alloca(self.backend.i64_type, "text.scalar.count")
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_text_length(),
+                    &[data.into(), length.into(), scalar.into()],
+                    "text.length.status",
+                )?;
+                self.fail_on_standard_status(status, "TextRuntimeFault")?;
+                let scalar = self
+                    .backend
+                    .builder
+                    .build_load(self.backend.i64_type, scalar, "text.length.value")
+                    .map_err(builder_error)?
+                    .into_int_value();
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    scalar,
+                )?;
+                Ok(true)
+            }
+            (Builtin::TextGet, [text, index]) => {
+                let (data, length) = self.text_parts(*text, "text.get")?;
+                let index = self.int_scalar(*index)?;
+                let scalar = self.alloc_value("text.scalar");
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_text_get(),
+                    &[data.into(), length.into(), index.into(), scalar.into()],
+                    "text.get.status",
+                )?;
+                self.emit_option_from_status(status, scalar, option, destination, "text.get")?;
+                Ok(true)
+            }
+            (Builtin::TextConcat, [left, right]) => {
+                let (left_data, left_length) = self.text_parts(*left, "text.concat.left")?;
+                let (right_data, right_length) = self.text_parts(*right, "text.concat.right")?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_bytes_append(),
+                    &[
+                        left_data.into(),
+                        left_length.into(),
+                        right_data.into(),
+                        right_length.into(),
+                        destination.into(),
+                    ],
+                    "text.concat.status",
+                )?;
+                self.fail_on_standard_status(status, "TextRuntimeFault")?;
+                Ok(true)
+            }
+            (Builtin::TextContains, [text, needle]) => {
+                let (data, length) = self.text_parts(*text, "text.contains.value")?;
+                let (needle_data, needle_length) =
+                    self.text_parts(*needle, "text.contains.needle")?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_text_contains(),
+                    &[
+                        data.into(),
+                        length.into(),
+                        needle_data.into(),
+                        needle_length.into(),
+                    ],
+                    "text.contains.status",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "text.contains.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "TextRuntimeFault")?;
+                let contained = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "text.contains.value",
+                    )
+                    .map_err(builder_error)?;
+                self.store_bool(destination, contained)?;
+                Ok(true)
+            }
+            (Builtin::TextEncodeUtf8, [text]) => {
+                let bytes = self
+                    .backend
+                    .program
+                    .prelude
+                    .bytes
+                    .ok_or_else(|| CodegenError::new("InvalidPrelude", "Bytes is missing"))?;
+                self.emit_opaque_record(bytes, *text, destination)?;
+                Ok(true)
+            }
+            (Builtin::BytesLength, [bytes]) => {
+                let bytes = self.opaque_record_field(*bytes, "bytes.length.payload")?;
+                let (_, length) = self.text_parts(bytes, "bytes.length")?;
+                self.initialize(destination, VALUE_TAG_INT)?;
+                self.backend.store_i64_field(
+                    self.backend.value_type,
+                    destination,
+                    VALUE_FIELD_SCALAR,
+                    length,
+                )?;
+                Ok(true)
+            }
+            (Builtin::BytesGet, [bytes, index]) => {
+                let bytes = self.opaque_record_field(*bytes, "bytes.get.payload")?;
+                let (data, length) = self.text_parts(bytes, "bytes.get")?;
+                let index = self.int_scalar(*index)?;
+                let byte = self.alloc_value("bytes.item");
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_bytes_get(),
+                    &[data.into(), length.into(), index.into(), byte.into()],
+                    "bytes.get.status",
+                )?;
+                self.emit_option_from_status(status, byte, option, destination, "bytes.get")?;
+                Ok(true)
+            }
+            (Builtin::BytesAppend, [left, right]) => {
+                let left = self.opaque_record_field(*left, "bytes.append.left.payload")?;
+                let right = self.opaque_record_field(*right, "bytes.append.right.payload")?;
+                let (left_data, left_length) = self.text_parts(left, "bytes.append.left")?;
+                let (right_data, right_length) = self.text_parts(right, "bytes.append.right")?;
+                let payload = self.alloc_value("bytes.append.payload");
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_bytes_append(),
+                    &[
+                        left_data.into(),
+                        left_length.into(),
+                        right_data.into(),
+                        right_length.into(),
+                        payload.into(),
+                    ],
+                    "bytes.append.status",
+                )?;
+                self.fail_on_standard_status(status, "BytesRuntimeFault")?;
+                let bytes = self
+                    .backend
+                    .program
+                    .prelude
+                    .bytes
+                    .ok_or_else(|| CodegenError::new("InvalidPrelude", "Bytes is missing"))?;
+                self.emit_opaque_record(bytes, payload, destination)?;
+                Ok(true)
+            }
+            (Builtin::BytesDecodeUtf8, [bytes]) => {
+                let bytes = self.opaque_record_field(*bytes, "bytes.decode.payload")?;
+                let (data, length) = self.text_parts(bytes, "bytes.decode")?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_bytes_is_utf8(),
+                    &[data.into(), length.into()],
+                    "bytes.decode.status",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "bytes.decode.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "BytesRuntimeFault")?;
+                let valid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "bytes.decode.valid",
+                    )
+                    .map_err(builder_error)?;
+                let ok = self.append_block("bytes.decode.ok");
+                let error = self.append_block("bytes.decode.error");
+                let merge = self.append_block("bytes.decode.merge");
+                self.backend
+                    .builder
+                    .build_conditional_branch(valid, ok, error)
+                    .map_err(builder_error)?;
+                self.backend.builder.position_at_end(ok);
+                self.emit_variant_from_pointers(result, 0, &[bytes], destination)?;
+                self.backend.branch(merge)?;
+                self.backend.builder.position_at_end(error);
+                let error_value = self.alloc_value("decode.error");
+                let error_ty = self
+                    .backend
+                    .program
+                    .prelude
+                    .decode_text_error
+                    .ok_or_else(|| {
+                        CodegenError::new("InvalidPrelude", "DecodeTextError is missing")
+                    })?;
+                self.emit_variant_from_pointers(error_ty, 0, &[], error_value)?;
+                self.emit_variant_from_pointers(result, 1, &[error_value], destination)?;
+                self.backend.branch(merge)?;
+                self.backend.builder.position_at_end(merge);
+                Ok(true)
+            }
+            (Builtin::PathFromText, [text]) => {
+                let (data, length) = self.text_parts(*text, "path.from_text")?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_path_contains_nul(),
+                    &[data.into(), length.into()],
+                    "path.from_text.status",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "path.from_text.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "PathRuntimeFault")?;
+                let contains_nul = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "path.contains_nul",
+                    )
+                    .map_err(builder_error)?;
+                self.emit_path_result(
+                    contains_nul,
+                    *text,
+                    0,
+                    result,
+                    destination,
+                    "path.from_text",
+                )?;
+                Ok(true)
+            }
+            (Builtin::PathAsText, [path]) => {
+                let path = self.opaque_record_field(*path, "path.as_text.payload")?;
+                self.clone_value(destination, path)?;
+                Ok(true)
+            }
+            (Builtin::PathJoin, [base, child]) => {
+                let base = self.opaque_record_field(*base, "path.join.base.payload")?;
+                let child = self.opaque_record_field(*child, "path.join.child.payload")?;
+                let (base_data, base_length) = self.text_parts(base, "path.join.base")?;
+                let (child_data, child_length) = self.text_parts(child, "path.join.child")?;
+                let joined = self.alloc_value("path.join.payload");
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.native_path_join(),
+                    &[
+                        base_data.into(),
+                        base_length.into(),
+                        child_data.into(),
+                        child_length.into(),
+                        joined.into(),
+                    ],
+                    "path.join.status",
+                )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "path.join.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "PathRuntimeFault")?;
+                let absolute = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "path.join.absolute",
+                    )
+                    .map_err(builder_error)?;
+                self.emit_path_result(absolute, joined, 1, result, destination, "path.join")?;
+                Ok(true)
+            }
+            _ => Err(CodegenError::new(
+                "InvalidBuiltinCall",
+                "standard value builtin argument shape does not match checked MIR",
+            )),
+        }
+    }
+
+    fn fail_on_standard_status(
+        &self,
+        status: IntValue<'ctx>,
+        fault: &str,
+    ) -> Result<(), CodegenError> {
+        let invalid = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "standard.invalid",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(invalid, fault)
+    }
+
+    fn emit_option_from_status(
+        &self,
+        status: IntValue<'ctx>,
+        payload: PointerValue<'ctx>,
+        option: TypeId,
+        destination: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let invalid = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                &format!("{name}.invalid"),
+            )
+            .map_err(builder_error)?;
+        self.fail_if(invalid, "SequenceRuntimeFault")?;
+        let found = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                &format!("{name}.found"),
+            )
+            .map_err(builder_error)?;
+        let some = self.append_block(&format!("{name}.some"));
+        let none = self.append_block(&format!("{name}.none"));
+        let merge = self.append_block(&format!("{name}.merge"));
+        self.backend
+            .builder
+            .build_conditional_branch(found, some, none)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(some);
+        self.emit_variant_from_pointers(option, 1, &[payload], destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(none);
+        self.emit_variant_from_pointers(option, 0, &[], destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(merge);
+        Ok(())
+    }
+
+    fn emit_path_result(
+        &self,
+        is_error: IntValue<'ctx>,
+        payload: PointerValue<'ctx>,
+        error_variant: u32,
+        result: TypeId,
+        destination: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let ok = self.append_block(&format!("{name}.ok"));
+        let error = self.append_block(&format!("{name}.error"));
+        let merge = self.append_block(&format!("{name}.merge"));
+        self.backend
+            .builder
+            .build_conditional_branch(is_error, error, ok)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(ok);
+        let path = self.alloc_value(&format!("{name}.path"));
+        let path_ty = self
+            .backend
+            .program
+            .prelude
+            .path
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Path is missing"))?;
+        self.emit_opaque_record(path_ty, payload, path)?;
+        self.emit_variant_from_pointers(result, 0, &[path], destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(error);
+        let error_value = self.alloc_value(&format!("{name}.error.value"));
+        let error_ty = self
+            .backend
+            .program
+            .prelude
+            .path_error
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "PathError is missing"))?;
+        self.emit_variant_from_pointers(error_ty, error_variant, &[], error_value)?;
+        self.emit_variant_from_pointers(result, 1, &[error_value], destination)?;
+        self.backend.branch(merge)?;
+        self.backend.builder.position_at_end(merge);
+        Ok(())
     }
 
     fn emit_list_builtin(
@@ -7026,13 +7597,26 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.clone_value(destination, value)?;
                 Ok(true)
             }
-            (Builtin::FileOpenRead | Builtin::FileCreate, [path]) => {
-                let (data, length) = self.text_parts(*path, "file.path")?;
-                let function = if builtin == Builtin::FileOpenRead {
-                    self.backend.native_file_open_read()
+            (
+                Builtin::FileOpenRead
+                | Builtin::FileCreate
+                | Builtin::FileOpenReadPath
+                | Builtin::FileCreatePath,
+                [path],
+            ) => {
+                let path = if matches!(builtin, Builtin::FileOpenReadPath | Builtin::FileCreatePath)
+                {
+                    self.opaque_record_field(*path, "file.path.payload")?
                 } else {
-                    self.backend.native_file_create()
+                    *path
                 };
+                let (data, length) = self.text_parts(path, "file.path")?;
+                let function =
+                    if matches!(builtin, Builtin::FileOpenRead | Builtin::FileOpenReadPath) {
+                        self.backend.native_file_open_read()
+                    } else {
+                        self.backend.native_file_create()
+                    };
                 let task = call_pointer(
                     &self.backend.builder,
                     function,

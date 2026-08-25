@@ -22,6 +22,7 @@ mod int;
 mod process;
 mod reactor;
 mod scheduler;
+mod standard;
 mod value;
 
 pub use gc::{activate_executor, deactivate_executor};
@@ -42,6 +43,10 @@ pub use scheduler::{
     task_prepare_join, task_report_fault, task_result, task_set_fault, task_set_state, task_slot,
     task_spawn, task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
     task_trace_live_slots, task_write_join_result,
+};
+pub use standard::{
+    bytes_append, bytes_get, bytes_is_utf8, path_contains_nul, path_join, text_contains, text_get,
+    text_length,
 };
 
 pub use loom_runtime_abi::{
