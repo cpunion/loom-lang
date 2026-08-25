@@ -600,7 +600,7 @@ checker 还必须维护 compiler-private affine `TaskCarrier` flow。该名字�
 - 第一版不允许对 TaskCarrier place 做 assignment/overwrite，报告 `TaskAssignmentUnsupported`；无法精确转移 whole owner 的 field/projection 报 `TaskPartialExtractionUnsupported`；`List.get` 与 Task-carrying `TextMap` 的 `get/insert/remove` 报 `TaskContainerExtractionUnsupported`；
 - TaskCarrier 实参经未约束泛型参数传递报告 `TaskGenericTransferUnsupported`。这些边界必须静态拒绝，不得退化为运行时 best effort。
 
-当前 Task ABI 没有 reparent 操作，因此 TaskCarrier 实参/receiver 传入 async callable 报 `TaskAsyncTransferUnsupported`，async callable 的逻辑返回类型直接或递归包含 Task 报 `TaskAsyncResultUnsupported`。同步 callable 只有在声明参数/receiver 静态显式携带 Task 时才能承接该转移；未约束泛型不是隐式 escape hatch。实现不得把物理 pointer copy 当作结构化 parent 转移，也不得宣称存在源码 `Task.cancel`；现有取消只来自 parent unwind、join loser、fault 或 executor teardown。Task/MustScope/未知泛型 obligation 也不得经 `dyn` 擦除；适配点使用 `IllegalDynConversion` fail closed。
+当前 Task ABI 没有 reparent 操作，因此 TaskCarrier 实参/receiver 传入 async callable 报 `TaskAsyncTransferUnsupported`，async callable 的逻辑返回类型直接或递归包含 Task 报 `TaskAsyncResultUnsupported`；后者还必须在泛型 substitution 与 witness normalization 后按每个具体调用复查。同步 callable 只有在声明参数/receiver 静态显式携带 Task 时才能承接该转移：receiver 的“显式”以 inherent impl 或选中 conformance 的原始 target 为准，仅因泛型实例化才出现 Task 的 receiver 仍报 `TaskGenericTransferUnsupported`。未约束泛型不是隐式 escape hatch。实现不得把物理 pointer copy 当作结构化 parent 转移，也不得宣称存在源码 `Task.cancel`；现有取消只来自 parent unwind、join loser、fault 或 executor teardown。Task/MustScope/未知泛型 obligation 也不得经 `dyn` 擦除；适配点使用 `IllegalDynConversion` fail closed。
 
 ## 13. 实现关门
 

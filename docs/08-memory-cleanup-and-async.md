@@ -235,6 +235,8 @@ checker 以完整 binding/parameter/receiver 为 owner，内部记录 `Live`、`
 
 `List.add` 可以把完整 element obligation 转入 list，使该 list 成为 TaskCarrier；这仍是 whole-value 转移，不开放任意容器 extraction。普通读取、检查名字可见性或取得不转移 obligation 的信息不算消费。物理 Task pointer 即使可由 compiler-private ABI 读取，也不能据此复制 obligation。对同一 owner 重复 await/join/转移是静态错误；只在部分 `if`/`match`/loop 路径消费会形成 `Conditional` 并静态拒绝。wildcard 不得丢掉 Task payload。
 
+receiver 是否“静态显式”按 inherent impl 或选中 concrete conformance 的原始 target 判断；原始 target 已递归携带 Task 时可以承接，只有 substitution 后才从 `Box[T]`/`Self` 变成 TaskCarrier 时仍属于泛型边界并拒绝。async callable 的逻辑结果也在 substitution 与 witness normalization 后按具体调用复查，不能用泛型返回隐藏嵌套 Task。
+
 第一版不建立 partial-place ownership，因此以下形状 fail closed：
 
 - 对任何 TaskCarrier place 做 assignment/overwrite；这条第一版限制同时覆盖会丢失旧 `Live`/`Conditional` obligation 的情形；
