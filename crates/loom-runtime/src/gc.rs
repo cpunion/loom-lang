@@ -1,12 +1,13 @@
 //! Precise moving heap for compiler-generated Loom values.
 //!
-//! Collection runs only at compiler-known synchronous safepoints or between
-//! coroutine resume calls. Synchronous generated code publishes precise
-//! shadow-stack roots; every value live across `.await` is in a compiler-
-//! described Task slot. The runtime can therefore relocate objects without
-//! pinning or exposing addresses to source programs.
+//! Collection runs at compiler-known synchronous safepoints, managed
+//! allocation slowpaths, or between coroutine resume calls. Synchronous
+//! generated code publishes precise shadow-stack roots; every value live
+//! across `.await` is in a compiler-described Task slot. The runtime can
+//! therefore relocate objects without pinning or exposing addresses to source
+//! programs.
 
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -40,8 +41,8 @@ pub(crate) const MIN_GC_THRESHOLD_BYTES: usize = 64 * 1024;
 ///
 /// The heap is deliberately independent from the async reactor and scheduler:
 /// synchronous generated code needs managed allocation, but must not need an
-/// operating-system poller or worker-completion channel. Collection is driven
-/// by thresholded compiler or scheduler safepoint polls, never by allocation.
+/// operating-system poller or worker-completion channel. Compiler polls and
+/// allocation slowpaths share the same precise task/shadow-stack root set.
 #[derive(Default)]
 pub(crate) struct LoomHeap {
     pub(crate) values: Vec<Box<ValueSlot>>,
@@ -70,6 +71,11 @@ pub(crate) struct LoomHeap {
     /// always threshold-driven.
     #[cfg(test)]
     pub(crate) collect_on_every_poll: bool,
+    /// Deterministic stress mode which turns every managed allocator call
+    /// into a collection boundary. Unlike `collect_on_every_poll`, this also
+    /// covers runtime helpers which do not issue an explicit safepoint.
+    #[cfg(test)]
+    pub(crate) collect_before_every_allocation: bool,
 }
 
 thread_local! {
@@ -404,16 +410,203 @@ pub unsafe extern "C" fn root_pop_v1(frame: *mut LoomGcRootFrame) -> i32 {
     GC_OK
 }
 
+/// Short-lived precise handle scope for Rust runtime helpers.
+///
+/// Compiler frames point at LLVM allocas. Runtime helpers instead need a
+/// dynamically-sized set of address-stable slots for partially-built values
+/// and shallow copies of inputs. Every mutable field which the collector can
+/// rewrite is behind `UnsafeCell`; helper code accesses slots only by value so
+/// no Rust reference survives a managed allocation boundary.
+pub(crate) struct RuntimeRootScope {
+    roots: Box<[UnsafeCell<ValueSlot>]>,
+    _slots: Box<[*mut c_void]>,
+    _live_bitmaps: Box<[u64]>,
+    _descriptor: Box<LoomGcRootDescriptor>,
+    frame: Box<UnsafeCell<LoomGcRootFrame>>,
+    linked: bool,
+}
+
+impl RuntimeRootScope {
+    pub(crate) fn with_count(count: usize) -> Result<Self, i32> {
+        Self::from_values(vec![ValueSlot::default(); count])
+    }
+
+    pub(crate) fn from_values(values: Vec<ValueSlot>) -> Result<Self, i32> {
+        if values.is_empty() || active_runtime_pointer().is_null() {
+            return Err(GC_INVALID_ARGUMENT);
+        }
+        let roots = values
+            .into_iter()
+            .map(UnsafeCell::new)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let slots = roots
+            .iter()
+            .map(|root| root.get().cast::<c_void>())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let bitmap_words = roots.len().div_ceil(64);
+        let mut live_bitmaps = vec![u64::MAX; bitmap_words].into_boxed_slice();
+        let tail = roots.len() % 64;
+        if tail != 0 {
+            live_bitmaps[bitmap_words - 1] = (1_u64 << tail) - 1;
+        }
+        let descriptor = Box::new(LoomGcRootDescriptor {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            slot_count: roots.len() as u64,
+            state_count: 1,
+            live_bitmap_words: bitmap_words as u64,
+            live_bitmaps: live_bitmaps.as_ptr(),
+        });
+        let frame = Box::new(UnsafeCell::new(LoomGcRootFrame {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            state: 0,
+            descriptor: &raw const *descriptor,
+            slots: slots.as_ptr(),
+            previous: ptr::null_mut(),
+        }));
+        let mut scope = Self {
+            roots,
+            _slots: slots,
+            _live_bitmaps: live_bitmaps,
+            _descriptor: descriptor,
+            frame,
+            linked: false,
+        };
+        let status = unsafe { root_push_v1(scope.frame.get()) };
+        if status != GC_OK {
+            return Err(status);
+        }
+        scope.linked = true;
+        Ok(scope)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.roots.len()
+    }
+
+    pub(crate) fn read(&self, index: usize) -> ValueSlot {
+        assert!(index < self.roots.len(), "runtime root index is in bounds");
+        // SAFETY: roots live for the linked scope and ValueSlot is Copy. The
+        // active runtime is single-threaded, so collection cannot interleave
+        // with this individual load.
+        unsafe { self.roots[index].get().read() }
+    }
+
+    pub(crate) fn write(&self, index: usize, value: ValueSlot) {
+        assert!(index < self.roots.len(), "runtime root index is in bounds");
+        // SAFETY: see read. UnsafeCell explicitly permits collector rewrites
+        // through the same stable storage between helper operations.
+        unsafe { self.roots[index].get().write(value) };
+    }
+
+    pub(crate) fn pointer(&self, index: usize) -> *mut ValueSlot {
+        assert!(index < self.roots.len(), "runtime root index is in bounds");
+        self.roots[index].get()
+    }
+}
+
+impl Drop for RuntimeRootScope {
+    fn drop(&mut self) {
+        if self.linked {
+            let status = unsafe { root_pop_v1(self.frame.get()) };
+            if status != GC_OK {
+                std::process::abort();
+            }
+            self.linked = false;
+        }
+    }
+}
+
+fn aggregate_count_word(tag: u64) -> Option<usize> {
+    match tag {
+        VALUE_TAG_RECORD | VALUE_TAG_CONSTRAINT_ERROR | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
+            Some(VALUE_WORD_AUX)
+        }
+        VALUE_TAG_ENUM => Some(VALUE_WORD_SCALAR),
+        _ => None,
+    }
+}
+
+/// Incremental aggregate constructor which keeps its partial chain reachable
+/// and reloadable through a `RuntimeRootScope`.
+pub(crate) struct NodeStream<'scope> {
+    roots: &'scope RuntimeRootScope,
+    aggregate: usize,
+}
+
+impl<'scope> NodeStream<'scope> {
+    pub(crate) fn new(roots: &'scope RuntimeRootScope, aggregate: usize, value: ValueSlot) -> Self {
+        roots.write(aggregate, value);
+        Self { roots, aggregate }
+    }
+
+    pub(crate) fn prepend(&self, value: usize) -> i32 {
+        if value >= self.roots.len() {
+            return GC_INVALID_ARGUMENT;
+        }
+        let node = allocate_value_node().cast::<ValueNode>();
+        if node.is_null() {
+            return GC_INVALID_ARGUMENT;
+        }
+        // Allocation may have relocated every prior object. Reload both the
+        // child and partial aggregate only after it returns.
+        let child = self.roots.read(value);
+        let mut aggregate = self.roots.read(self.aggregate);
+        let Some(count_word) = aggregate_count_word(aggregate.words[VALUE_WORD_TAG]) else {
+            return GC_INVALID_ARGUMENT;
+        };
+        let count = aggregate.words[count_word];
+        unsafe {
+            (*node).value = child;
+            (*node).next = aggregate.words[VALUE_WORD_DATA] as *mut ValueNode;
+        }
+        aggregate.words[VALUE_WORD_DATA] = node as u64;
+        aggregate.words[count_word] = count
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
+        self.roots.write(self.aggregate, aggregate);
+        GC_OK
+    }
+}
+
+fn managed_allocation_slowpath(runtime: *mut LoomRuntime, incoming: usize) -> i32 {
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    // Do not borrow the heap across collection: an attached executor routes
+    // back to the same Runtime while tracing Task roots.
+    let should_collect = unsafe {
+        (*runtime).heap.allocation_charge.saturating_add(incoming)
+            >= (*runtime).heap.next_gc_threshold
+    };
+    #[cfg(test)]
+    let should_collect =
+        should_collect || unsafe { (*runtime).heap.collect_before_every_allocation };
+    if !should_collect {
+        return GC_OK;
+    }
+    // All runtime and compiler callers must publish stable roots before an
+    // allocator call. `force` is required because the projected charge, not
+    // only the current charge, selected this boundary.
+    unsafe { collect_active_runtime(runtime, true) }
+}
+
 #[unsafe(export_name = "loom_gc_alloc_value")]
 pub extern "C" fn allocate_value() -> *mut c_void {
     let runtime = active_runtime_pointer();
     if runtime.is_null() {
         return ptr::null_mut();
     }
+    if managed_allocation_slowpath(runtime, size_of::<ValueSlot>()) != GC_OK {
+        return ptr::null_mut();
+    }
     let mut allocation = Box::new(ValueSlot::default());
     let pointer = (&raw mut *allocation).cast::<c_void>();
     // SAFETY: ACTIVE_RUNTIME is set only around a single-threaded generated
-    // interval and allocation itself never invokes collection.
+    // interval. Collection completed before the heap borrow and fresh Box.
     unsafe {
         (*runtime).heap.values.push(allocation);
         (*runtime).heap.allocation_charge = (*runtime)
@@ -428,6 +621,9 @@ pub extern "C" fn allocate_value() -> *mut c_void {
 pub extern "C" fn allocate_value_node() -> *mut c_void {
     let runtime = active_runtime_pointer();
     if runtime.is_null() {
+        return ptr::null_mut();
+    }
+    if managed_allocation_slowpath(runtime, size_of::<ValueNode>()) != GC_OK {
         return ptr::null_mut();
     }
     let mut allocation = Box::new(ValueNode {
@@ -451,9 +647,14 @@ fn retain_sequence(allocation: Box<[u64]>, object: *mut c_void) -> Option<*mut c
     if runtime.is_null() {
         return None;
     }
-    // SAFETY: see allocate_value. Sequence objects are immutable after
-    // publication and collection runs only at generated safepoints.
     let charge = allocation.len().saturating_mul(size_of::<u64>());
+    // The complete sequence is staged in this Rust-owned Box before
+    // collection. Thus a source &[u8] borrowed from the moving heap has
+    // already been consumed and `object` is not yet part of the managed heap.
+    if managed_allocation_slowpath(runtime, charge) != GC_OK {
+        return None;
+    }
+    // SAFETY: see allocate_value. The staged object is immutable after adopt.
     unsafe {
         (*runtime).heap.sequences.push(allocation);
         (*runtime).heap.allocation_charge =
@@ -656,13 +857,26 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
     if list.is_null() || value.is_null() {
         return 1;
     }
-    // SAFETY: generated checked MIR provides live, aligned ValueSlot pointers.
-    let list = unsafe { &mut *list };
-    if list.words[0] != VALUE_TAG_LIST {
+    // Copy both inputs into runtime-owned stable roots before the allocator can
+    // move anything. The mutable destination itself is required by the ABI to
+    // be an address-stable compiler or Task slot.
+    let initial = unsafe { *list };
+    if initial.words[VALUE_WORD_TAG] != VALUE_TAG_LIST {
         return 1;
     }
-    let head = list.words[VALUE_WORD_DATA] as *mut ValueNode;
-    let count = list.words[VALUE_WORD_AUX];
+    let Ok(roots) = RuntimeRootScope::from_values(vec![initial, unsafe { *value }]) else {
+        return 1;
+    };
+    let node = allocate_value_node().cast::<ValueNode>();
+    if node.is_null() {
+        return 1;
+    }
+
+    // The allocation may have collected, invalidating every pre-call chain
+    // pointer and clearing the derived tail cache. Reload before validation.
+    let mut updated = roots.read(0);
+    let head = updated.words[VALUE_WORD_DATA] as *mut ValueNode;
+    let count = updated.words[VALUE_WORD_AUX];
     let new_count = count
         .checked_add(1)
         .unwrap_or_else(|| std::process::abort());
@@ -679,19 +893,14 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
         };
         Some(tail)
     };
-    let node = allocate_value_node().cast::<ValueNode>();
-    if node.is_null() {
-        return 1;
-    }
-    // SAFETY: allocate_value_node returns a fresh initialized ValueNode and
-    // `value` remains live for the duration of this call.
+    // No collection can occur between initializing this fresh node and
+    // publishing the matching List head/count.
     unsafe {
-        (*node).value = *value;
+        (*node).value = roots.read(1);
         (*node).next = ptr::null_mut();
     }
     if head.is_null() {
-        list.words[VALUE_WORD_DATA] = node as u64;
-        cache_list_tail(node, new_count, node);
+        updated.words[VALUE_WORD_DATA] = node as u64;
     } else {
         let Some(tail) = tail else {
             return 1;
@@ -701,49 +910,67 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
         unsafe {
             (*tail).next = node;
         }
-        if !append_cached_list_node(head, count, node) {
-            cache_list_tail(head, new_count, node);
-        }
     }
-    list.words[VALUE_WORD_AUX] = new_count;
+    updated.words[VALUE_WORD_AUX] = new_count;
+    // Publish the matching head/count immediately after linking. Cache
+    // maintenance below is Rust-only and cannot safepoint, but keeping this
+    // invariant tight makes future changes fail safe.
+    roots.write(0, updated);
+    if head.is_null() {
+        cache_list_tail(node, new_count, node);
+    } else if !append_cached_list_node(head, count, node) {
+        cache_list_tail(head, new_count, node);
+    }
+    unsafe { list.write(roots.read(0)) };
     0
 }
 
-/// Returns a borrowed pointer to a List element, or null when out of range.
+/// Returns `1` and copies a List element into stable caller storage, `0` when
+/// out of range, or `-1` for invalid ABI input.
 #[unsafe(export_name = "loom_runtime_list_get")]
-pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const ValueSlot {
-    if list.is_null() || index < 0 {
-        return ptr::null();
+pub unsafe extern "C" fn list_get(
+    list: *const ValueSlot,
+    index: i64,
+    output: *mut ValueSlot,
+) -> i32 {
+    if list.is_null() || output.is_null() {
+        return -1;
+    }
+    if index < 0 {
+        return 0;
     }
     // SAFETY: generated checked MIR provides a live, aligned ValueSlot pointer.
     let list = unsafe { &*list };
-    if list.words[VALUE_WORD_TAG] != VALUE_TAG_LIST
-        || index.cast_unsigned() >= list.words[VALUE_WORD_AUX]
-    {
-        return ptr::null();
+    if list.words[VALUE_WORD_TAG] != VALUE_TAG_LIST {
+        return -1;
+    }
+    if index.cast_unsigned() >= list.words[VALUE_WORD_AUX] {
+        return 0;
     }
     let head = list.words[VALUE_WORD_DATA] as *mut ValueNode;
     let index = usize::try_from(index).unwrap_or_else(|_| unreachable!());
     let node = if !has_active_runtime() {
         let Some(node) = (unsafe { list_node_at(head, index) }) else {
-            return ptr::null();
+            return -1;
         };
         node
     } else if let Some(node) = cached_list_node(head, list.words[VALUE_WORD_AUX], index) {
         node
     } else {
         let Some(nodes) = (unsafe { list_chain(head, list.words[VALUE_WORD_AUX]) }) else {
-            return ptr::null();
+            return -1;
         };
         let node = nodes[index];
         cache_list_chain(head, list.words[VALUE_WORD_AUX], nodes);
         node
     };
     if node.is_null() {
-        ptr::null()
+        -1
     } else {
-        // SAFETY: node is non-null and belongs to the live List chain.
-        unsafe { &raw const (*node).value }
+        // SAFETY: node is non-null and belongs to the live List chain. The
+        // stable caller slot closes the old borrowed-interior-pointer window.
+        unsafe { output.write((*node).value) };
+        1
     }
 }
 
@@ -852,31 +1079,6 @@ fn synthetic_list(head: *mut ValueNode, count: u64) -> ValueSlot {
     value.words[VALUE_WORD_AUX] = count;
     value.words[VALUE_WORD_DATA] = head as u64;
     value
-}
-
-/// Clone/build helpers poll before each managed allocation. The allocator
-/// itself remains no-GC in this migration stage, guaranteeing that its fresh
-/// pointer stays valid until the caller fully initializes and publishes it.
-fn poll_before_helper_allocation() -> i32 {
-    let runtime = active_runtime_pointer();
-    if runtime.is_null() {
-        return GC_INVALID_ARGUMENT;
-    }
-    // Unlike the public safepoint, the helper hot path can inspect the active
-    // heap budget directly. Avoid validating an arbitrarily deep explicit
-    // work-frame chain on every allocation while it remains below threshold.
-    // One fixed-size Value/ValueNode allocation may cross the threshold; the
-    // next helper allocation observes that debt before allocating again.
-    let should_collect =
-        unsafe { (*runtime).heap.allocation_charge >= (*runtime).heap.next_gc_threshold };
-    #[cfg(test)]
-    let should_collect = should_collect || unsafe { (*runtime).heap.collect_on_every_poll };
-    if !should_collect {
-        return GC_OK;
-    }
-    // SAFETY: helper frames have published all live Values before reaching
-    // this allocation boundary.
-    unsafe { collect_active_runtime(runtime, false) }
 }
 
 unsafe fn pop_clone_work(work: &mut CloneWork) -> i32 {
@@ -1045,10 +1247,6 @@ pub unsafe extern "C" fn clone_value_v1(output: *mut c_void, source: *const c_vo
                 }
             }
             ClonePhase::AwaitAggregateChild => {
-                let status = poll_before_helper_allocation();
-                if status != GC_OK {
-                    break status;
-                }
                 let node = allocate_value_node().cast::<ValueNode>();
                 if node.is_null() {
                     break GC_INVALID_ARGUMENT;
@@ -1082,10 +1280,6 @@ pub unsafe extern "C" fn clone_value_v1(output: *mut c_void, source: *const c_vo
                 work.phase = ClonePhase::Aggregate;
             }
             ClonePhase::AwaitBoxChild(kind) => {
-                let status = poll_before_helper_allocation();
-                if status != GC_OK {
-                    break status;
-                }
                 let boxed = allocate_value().cast::<ValueSlot>();
                 if boxed.is_null() {
                     break GC_INVALID_ARGUMENT;
@@ -1191,10 +1385,6 @@ pub unsafe extern "C" fn build_value_nodes_v1(
         // The caller contract makes this address stable across prior polls.
         // Copy it before the next allocation boundary.
         source_scratch = unsafe { *source };
-        status = poll_before_helper_allocation();
-        if status != GC_OK {
-            break;
-        }
         let node = allocate_value_node().cast::<ValueNode>();
         if node.is_null() {
             status = GC_INVALID_ARGUMENT;
@@ -1240,9 +1430,10 @@ pub unsafe extern "C" fn build_value_nodes_v1(
 /// non-moving, traced proof arena.
 ///
 /// The clone is not published until its complete prerequisite DAG has been
-/// validated. Allocation itself never collects; generated code must store the
-/// returned root in an initialized owned `dyn` value before its next
-/// safepoint.
+/// validated and copied into native staging storage. Its allocation slowpath
+/// may collect before the staged proof graph is adopted. Generated code must
+/// store the returned root in an initialized owned `dyn` value before its next
+/// safepoint or managed allocation.
 #[unsafe(export_name = "loom_gc_clone_witness_v1")]
 pub unsafe extern "C" fn clone_witness_v1(
     source: *const LoomWitnessInstance,
@@ -1255,6 +1446,9 @@ pub unsafe extern "C" fn clone_witness_v1(
         return ptr::null();
     };
     let charge = staged.allocation_bytes();
+    if managed_allocation_slowpath(runtime, charge) != GC_OK {
+        return ptr::null();
+    }
     // SAFETY: ACTIVE_RUNTIME is installed only around one generated-code
     // interval. Adopting stable Boxes cannot invalidate the staged root.
     let heap = unsafe { &mut (*runtime).heap };
@@ -1544,9 +1738,10 @@ fn collect_executor(executor: &mut LoomExecutor, force: bool) {
 
 /// Runs an explicit precise moving collection for the active Runtime.
 ///
-/// Allocation never invokes this entry point implicitly. The compiler must
-/// publish every live native `Value` in a pushed root frame before calling the
-/// safepoint; attached coroutine Task roots are traced in the same collection.
+/// Managed allocation slowpaths share this collector but do not call the
+/// exported symbol. The compiler must publish every live native `Value` in a
+/// pushed root frame before calling either this safepoint or a managed
+/// allocator; attached coroutine Task roots are traced in the same collection.
 #[unsafe(export_name = "loom_gc_safepoint_v1")]
 pub unsafe extern "C" fn safepoint_v1() -> i32 {
     let runtime = active_runtime_pointer();
@@ -2302,7 +2497,7 @@ mod tests {
                 (&raw const frame.roots[2]).cast(),
             ];
             let inner_before = frame.roots[0].words[VALUE_WORD_DATA];
-            (*runtime).heap.collect_on_every_poll = true;
+            (*runtime).heap.collect_before_every_allocation = true;
             assert_eq!(
                 build_value_nodes_v1(
                     (&raw mut frame.roots[3]).cast(),
@@ -2353,9 +2548,47 @@ mod tests {
                 Some(&b"moving text"[..])
             );
             assert_eq!(cloned[2].words[VALUE_WORD_SCALAR], 303);
-            (*runtime).heap.collect_on_every_poll = false;
+            (*runtime).heap.collect_before_every_allocation = false;
 
             assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn list_add_reloads_roots_and_tail_after_allocator_collection() {
+        let runtime = runtime_create_v1();
+        unsafe {
+            assert!(!runtime.is_null());
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let mut list = ValueSlot::default();
+            list.words[VALUE_WORD_TAG] = VALUE_TAG_LIST;
+            let roots = RuntimeRootScope::from_values(vec![list, ValueSlot::default()])
+                .expect("runtime root scope");
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            roots.write(1, text_value(b"first").expect("managed Text"));
+            assert_eq!(list_add(roots.pointer(0), roots.pointer(1)), 0);
+            let first_head = roots.read(0).words[VALUE_WORD_DATA];
+            roots.write(1, text_value("界🙂".as_bytes()).expect("managed Text"));
+            assert_ne!(roots.read(0).words[VALUE_WORD_DATA], first_head);
+            assert_eq!(list_add(roots.pointer(0), roots.pointer(1)), 0);
+            assert_eq!(roots.read(0).words[VALUE_WORD_AUX], 2);
+
+            assert_eq!(list_get(roots.pointer(0), 0, roots.pointer(1)), 1);
+            let first_address = roots.read(1).words[VALUE_WORD_DATA];
+            let _trigger = text_value(b"trigger").expect("managed Text");
+            assert_ne!(roots.read(1).words[VALUE_WORD_DATA], first_address);
+            assert_eq!(text::text_value_bytes(&roots.read(1)), Some(&b"first"[..]));
+
+            let mut second = ValueSlot::default();
+            assert_eq!(list_get(roots.pointer(0), 1, &raw mut second), 1);
+            assert_eq!(text::text_value_bytes(&second), Some("界🙂".as_bytes()));
+            assert!((*runtime).heap.collections >= 5);
+
+            (*runtime).heap.collect_before_every_allocation = false;
+            drop(roots);
             assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
             assert_eq!(runtime_destroy_v1(runtime), GC_OK);
         }
@@ -2369,14 +2602,13 @@ mod tests {
         unsafe {
             assert_eq!(activate_runtime_v1(runtime), GC_OK);
             assert_eq!(root_push_v1(frame.pointer()), GC_OK);
-            let mut source = integer(73);
+            frame.roots[0] = integer(73);
             for _ in 0..DEPTH {
                 let inner = allocate_value().cast::<ValueSlot>();
                 assert!(!inner.is_null());
-                inner.write(source);
-                source = indirect(inner);
+                inner.write(frame.roots[0]);
+                frame.roots[0] = indirect(inner);
             }
-            frame.roots[0] = source;
             // The first clone allocation forces a collection while all
             // explicit CloneWork frames and the deeply nested source graph are
             // live. Both clone and trace must remain native-stack bounded.

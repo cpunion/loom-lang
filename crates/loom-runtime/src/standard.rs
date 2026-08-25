@@ -8,14 +8,13 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::Write as _;
-use std::ptr;
 
 use loom_runtime_abi::{
-    VALUE_TAG_BOOL, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
+    GC_OK, VALUE_TAG_BOOL, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
     VALUE_TAG_RECORD, VALUE_TAG_TEXT,
 };
 
-use crate::gc::allocate_value_node;
+use crate::gc::{NodeStream, RuntimeRootScope};
 use crate::scheduler::{ValueNode, ValueSlot};
 use crate::{gc, text};
 
@@ -731,32 +730,39 @@ unsafe fn text_slot_bytes(value: &ValueSlot) -> Option<&[u8]> {
     unsafe { text::text_value_bytes(value) }
 }
 
-fn build_nodes(values: impl DoubleEndedIterator<Item = ValueSlot>) -> *mut ValueNode {
-    let mut next = ptr::null_mut();
-    for value in values.rev() {
-        let node = allocate_value_node().cast::<ValueNode>();
-        if node.is_null() {
+fn build_aggregate(mut aggregate: ValueSlot, values: Vec<ValueSlot>) -> ValueSlot {
+    let count_word = if aggregate.words[0] == VALUE_TAG_ENUM {
+        3
+    } else {
+        2
+    };
+    aggregate.words[count_word] = 0;
+    aggregate.words[4] = 0;
+    if values.is_empty() {
+        return aggregate;
+    }
+    let mut initial = Vec::with_capacity(values.len() + 1);
+    initial.push(aggregate);
+    initial.extend(values);
+    let roots = RuntimeRootScope::from_values(initial).unwrap_or_else(|_| std::process::abort());
+    let stream = NodeStream::new(&roots, 0, aggregate);
+    for index in (1..roots.len()).rev() {
+        if stream.prepend(index) != GC_OK {
             std::process::abort();
         }
-        // SAFETY: allocate_value_node returned a fresh runtime-owned node.
-        unsafe {
-            (*node).value = value;
-            (*node).next = next;
-        }
-        next = node;
     }
-    next
+    roots.read(0)
 }
 
 fn build_map(nominal: u64, entries: Vec<(ValueSlot, ValueSlot)>) -> ValueSlot {
-    let count = entries.len();
-    let values = entries.into_iter().flat_map(|(key, value)| [key, value]);
     let mut map = ValueSlot::default();
     map.words[0] = VALUE_TAG_RECORD;
     map.words[1] = nominal;
-    map.words[2] = (count as u64).saturating_mul(2);
-    map.words[4] = build_nodes(values) as u64;
-    map
+    let values = entries
+        .into_iter()
+        .flat_map(|(key, value)| [key, value])
+        .collect();
+    build_aggregate(map, values)
 }
 
 fn key_matches(slot: &ValueSlot, key: &[u8]) -> bool {
@@ -765,42 +771,48 @@ fn key_matches(slot: &ValueSlot, key: &[u8]) -> bool {
 }
 
 #[unsafe(export_name = "loom_runtime_text_map_get")]
+/// Returns `1` and copies the mapped value into stable caller storage, `0`
+/// when absent, or `-1` for invalid ABI input.
 pub unsafe extern "C" fn text_map_get(
     map: *const c_void,
     key: *const c_void,
     key_length: u64,
-) -> *const c_void {
+    output: *mut c_void,
+) -> i32 {
+    if output.is_null() {
+        return STANDARD_INVALID_ARGUMENT;
+    }
     let Some(key) = (unsafe { input_bytes(key, key_length) }) else {
-        return ptr::null();
+        return STANDARD_INVALID_ARGUMENT;
     };
     let map = map.cast::<ValueSlot>();
     if map.is_null()
         || unsafe { (*map).words[0] } != VALUE_TAG_RECORD
         || unsafe { (*map).words[2] } % 2 != 0
     {
-        return ptr::null();
+        return STANDARD_INVALID_ARGUMENT;
     }
     let mut node = unsafe { (*map).words[4] as *const ValueNode };
     for _ in 0..unsafe { (*map).words[2] / 2 } {
         if node.is_null() || !key_matches(unsafe { &(*node).value }, key) {
             if node.is_null() {
-                return ptr::null();
+                return STANDARD_INVALID_ARGUMENT;
             }
             node = unsafe { (*node).next };
             if node.is_null() {
-                return ptr::null();
+                return STANDARD_INVALID_ARGUMENT;
             }
             node = unsafe { (*node).next };
             continue;
         }
         let value = unsafe { (*node).next };
-        return if value.is_null() {
-            ptr::null()
-        } else {
-            unsafe { (&raw const (*value).value).cast() }
-        };
+        if value.is_null() {
+            return STANDARD_INVALID_ARGUMENT;
+        }
+        unsafe { output.cast::<ValueSlot>().write((*value).value) };
+        return 1;
     }
-    ptr::null()
+    0
 }
 
 #[unsafe(export_name = "loom_runtime_text_map_insert")]
@@ -835,7 +847,8 @@ pub unsafe extern "C" fn text_map_insert(
         let right = unsafe { text_slot_bytes(&right.0) }.unwrap_or_default();
         left.cmp(right)
     });
-    let result = build_map(unsafe { (*map).words[1] }, entries);
+    let nominal = unsafe { (*map).words[1] };
+    let result = build_map(nominal, entries);
     unsafe { output.cast::<ValueSlot>().write(result) };
     0
 }
@@ -858,7 +871,8 @@ pub unsafe extern "C" fn text_map_remove(
         return STANDARD_INVALID_ARGUMENT;
     };
     entries.retain(|(candidate, _)| !key_matches(candidate, key));
-    let result = build_map(unsafe { (*map).words[1] }, entries);
+    let nominal = unsafe { (*map).words[1] };
+    let result = build_map(nominal, entries);
     unsafe { output.cast::<ValueSlot>().write(result) };
     0
 }
@@ -875,14 +889,11 @@ fn text_value(value: &str) -> ValueSlot {
 }
 
 fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> ValueSlot {
-    let count = payload.len() as u64;
     let mut value = ValueSlot::default();
     value.words[0] = VALUE_TAG_ENUM;
     value.words[1] = nominal;
     value.words[2] = variant;
-    value.words[3] = count;
-    value.words[4] = build_nodes(payload.into_iter()) as u64;
-    value
+    build_aggregate(value, payload)
 }
 
 fn result_value(nominal: u64, ok: bool, payload: ValueSlot) -> ValueSlot {
@@ -904,22 +915,39 @@ fn json_slot(value: JsonNode, json_type: u64, text_map_type: u64) -> ValueSlot {
         ),
         JsonNode::Text(value) => enum_value(json_type, 3, vec![text_value(&value)]),
         JsonNode::Array(values) => {
-            let values = values
-                .into_iter()
-                .map(|value| json_slot(value, json_type, text_map_type))
-                .collect::<Vec<_>>();
             let mut list = ValueSlot::default();
             list.words[0] = VALUE_TAG_LIST;
-            list.words[2] = values.len() as u64;
-            list.words[4] = build_nodes(values.into_iter()) as u64;
-            enum_value(json_type, 4, vec![list])
+            let roots = RuntimeRootScope::from_values(vec![list, ValueSlot::default()])
+                .unwrap_or_else(|_| std::process::abort());
+            let stream = NodeStream::new(&roots, 0, list);
+            for value in values.into_iter().rev() {
+                roots.write(1, json_slot(value, json_type, text_map_type));
+                if stream.prepend(1) != GC_OK {
+                    std::process::abort();
+                }
+            }
+            enum_value(json_type, 4, vec![roots.read(0)])
         }
         JsonNode::Object(values) => {
-            let values = values
-                .into_iter()
-                .map(|(key, value)| (text_value(&key), json_slot(value, json_type, text_map_type)))
-                .collect();
-            enum_value(json_type, 5, vec![build_map(text_map_type, values)])
+            let mut map = ValueSlot::default();
+            map.words[0] = VALUE_TAG_RECORD;
+            map.words[1] = text_map_type;
+            let roots = RuntimeRootScope::from_values(vec![
+                map,
+                ValueSlot::default(),
+                ValueSlot::default(),
+            ])
+            .unwrap_or_else(|_| std::process::abort());
+            let stream = NodeStream::new(&roots, 0, map);
+            for (key, value) in values.into_iter().rev() {
+                roots.write(1, text_value(&key));
+                roots.write(2, json_slot(value, json_type, text_map_type));
+                // Prepend value first and key second to publish key,value order.
+                if stream.prepend(2) != GC_OK || stream.prepend(1) != GC_OK {
+                    std::process::abort();
+                }
+            }
+            enum_value(json_type, 5, vec![roots.read(0)])
         }
     }
 }
@@ -1146,6 +1174,8 @@ pub unsafe extern "C" fn log_write(
 
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
     use super::*;
 
     struct ActiveRuntime(*mut crate::runtime::LoomRuntime);
@@ -1227,6 +1257,176 @@ mod tests {
                 0,
             );
         }
+    }
+
+    #[test]
+    fn managed_sequence_and_map_builders_survive_every_allocator_collection() {
+        let runtime = ActiveRuntime::new();
+        let roots = RuntimeRootScope::with_count(7).expect("runtime root scope");
+        unsafe {
+            (*runtime.0).heap.collect_before_every_allocation = true;
+
+            roots.write(0, gc::byte_value("moving 界🙂".as_bytes()).unwrap());
+            let source = roots.read(0);
+            let source_bytes = text::value_bytes(&source).unwrap();
+            assert_eq!(
+                bytes_decode_utf8(
+                    source_bytes.as_ptr().cast(),
+                    source_bytes.len() as u64,
+                    roots.pointer(1).cast(),
+                ),
+                1,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(1)),
+                Some("moving 界🙂".as_bytes()),
+            );
+
+            roots.write(2, build_map(15, Vec::new()));
+            roots.write(3, text_value("key"));
+            roots.write(4, text_value("managed value"));
+            assert_eq!(
+                text_map_insert(
+                    roots.pointer(2).cast(),
+                    roots.pointer(3).cast(),
+                    roots.pointer(4).cast(),
+                    roots.pointer(5).cast(),
+                ),
+                0,
+            );
+            assert_eq!(
+                text_map_get(
+                    roots.pointer(5).cast(),
+                    b"key".as_ptr().cast(),
+                    3,
+                    roots.pointer(6).cast(),
+                ),
+                1,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(6)),
+                Some(&b"managed value"[..]),
+            );
+            let mapped_address = roots.read(6).words[loom_runtime_abi::VALUE_WORD_DATA];
+            let _trigger = gc::text_value(b"trigger").expect("managed Text");
+            assert_ne!(
+                roots.read(6).words[loom_runtime_abi::VALUE_WORD_DATA],
+                mapped_address,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(6)),
+                Some(&b"managed value"[..]),
+            );
+
+            assert_eq!(
+                text_map_remove(
+                    roots.pointer(5).cast(),
+                    b"key".as_ptr().cast(),
+                    3,
+                    roots.pointer(2).cast(),
+                ),
+                0,
+            );
+            assert_eq!(roots.read(2).words[2], 0);
+            assert!((*runtime.0).heap.collections >= 7);
+            (*runtime.0).heap.collect_before_every_allocation = false;
+        }
+        drop(roots);
+        drop(runtime);
+    }
+
+    #[test]
+    fn nested_json_survives_every_allocator_collection() {
+        let runtime = ActiveRuntime::new();
+        let roots = RuntimeRootScope::with_count(2).expect("runtime root scope");
+        let document = br#"{"items":["a","b"],"nested":{"key":"value"}}"#;
+        unsafe {
+            (*runtime.0).heap.collect_before_every_allocation = true;
+            assert_eq!(
+                json_parse(
+                    document.as_ptr().cast(),
+                    document.len() as u64,
+                    1,
+                    16,
+                    17,
+                    15,
+                    roots.pointer(0).cast(),
+                ),
+                0,
+            );
+            let parsed_result = roots.read(0);
+            let parsed_payload = node_values(
+                parsed_result.words[4] as *const ValueNode,
+                parsed_result.words[3],
+            )
+            .unwrap();
+            roots.write(0, parsed_payload[0]);
+            assert_eq!(
+                json_format(
+                    roots.pointer(0).cast(),
+                    1,
+                    16,
+                    17,
+                    15,
+                    roots.pointer(1).cast(),
+                ),
+                0,
+            );
+            let formatted_result = roots.read(1);
+            let formatted = node_values(
+                formatted_result.words[4] as *const ValueNode,
+                formatted_result.words[3],
+            )
+            .unwrap();
+            assert_eq!(text::text_value_bytes(&formatted[0]), Some(&document[..]));
+            assert!((*runtime.0).heap.collections > 10);
+            (*runtime.0).heap.collect_before_every_allocation = false;
+        }
+        drop(roots);
+        drop(runtime);
+    }
+
+    #[test]
+    fn text_get_stages_a_scalar_before_allocator_collection() {
+        let runtime = ActiveRuntime::new();
+        let roots = RuntimeRootScope::with_count(2).expect("runtime root scope");
+        unsafe {
+            (*runtime.0).heap.collect_before_every_allocation = true;
+            roots.write(0, gc::text_value("a界🙂".as_bytes()).unwrap());
+            let source_address = roots.read(0).words[loom_runtime_abi::VALUE_WORD_DATA];
+            let source = roots.read(0);
+            let source_bytes = text::value_bytes(&source).unwrap();
+            assert_eq!(
+                text_get(
+                    source_bytes.as_ptr().cast(),
+                    source_bytes.len() as u64,
+                    1,
+                    roots.pointer(1).cast(),
+                ),
+                1,
+            );
+            assert_ne!(
+                roots.read(0).words[loom_runtime_abi::VALUE_WORD_DATA],
+                source_address,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(1)),
+                Some("界".as_bytes())
+            );
+            let result_address = roots.read(1).words[loom_runtime_abi::VALUE_WORD_DATA];
+            let _trigger = gc::text_value(b"trigger").expect("managed Text");
+            assert_ne!(
+                roots.read(1).words[loom_runtime_abi::VALUE_WORD_DATA],
+                result_address,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(1)),
+                Some("界".as_bytes())
+            );
+            (*runtime.0).heap.collect_before_every_allocation = false;
+        }
+        drop(roots);
+        drop(runtime);
     }
 
     #[test]
@@ -1340,11 +1540,18 @@ mod tests {
                 ),
                 0,
             );
-            let found = text_map_get((&raw const inserted).cast(), b"key".as_ptr().cast(), 3)
-                .cast::<ValueSlot>();
-            assert!(!found.is_null());
-            assert_eq!((*found).words[0], VALUE_TAG_INT);
-            assert_eq!((*found).words[3], 42);
+            let mut found = ValueSlot::default();
+            assert_eq!(
+                text_map_get(
+                    (&raw const inserted).cast(),
+                    b"key".as_ptr().cast(),
+                    3,
+                    (&raw mut found).cast(),
+                ),
+                1,
+            );
+            assert_eq!(found.words[0], VALUE_TAG_INT);
+            assert_eq!(found.words[3], 42);
 
             let mut removed = ValueSlot::default();
             assert_eq!(

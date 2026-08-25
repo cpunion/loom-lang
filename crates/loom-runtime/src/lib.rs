@@ -612,14 +612,15 @@ mod tests {
                     .all(|entry| entry.length == 128 && entry.nodes.is_none())
             );
             for index in (0..128_i64).rev() {
-                let source_value = gc::list_get(source, index);
-                let copied_value = gc::list_get(copied, index);
-                assert!(!source_value.is_null() && !copied_value.is_null());
+                let mut source_value = scheduler::ValueSlot::default();
+                let mut copied_value = scheduler::ValueSlot::default();
+                assert_eq!(gc::list_get(source, index, &raw mut source_value), 1);
+                assert_eq!(gc::list_get(copied, index, &raw mut copied_value), 1);
                 assert_eq!(
-                    (*source_value).words[loom_runtime_abi::VALUE_WORD_SCALAR],
+                    source_value.words[loom_runtime_abi::VALUE_WORD_SCALAR],
                     index.cast_unsigned(),
                 );
-                assert_eq!((*source_value).words, (*copied_value).words);
+                assert_eq!(source_value.words, copied_value.words);
             }
             assert!(
                 (*executor)
@@ -644,16 +645,12 @@ mod tests {
             );
 
             gc::enter_executor(executor);
-            let last_source = gc::list_get(source, 127);
-            let first_copied = gc::list_get(copied, 0);
-            assert_eq!(
-                (*last_source).words[loom_runtime_abi::VALUE_WORD_SCALAR],
-                127,
-            );
-            assert_eq!(
-                (*first_copied).words[loom_runtime_abi::VALUE_WORD_SCALAR],
-                0,
-            );
+            let mut last_source = scheduler::ValueSlot::default();
+            let mut first_copied = scheduler::ValueSlot::default();
+            assert_eq!(gc::list_get(source, 127, &raw mut last_source), 1);
+            assert_eq!(gc::list_get(copied, 0, &raw mut first_copied), 1);
+            assert_eq!(last_source.words[loom_runtime_abi::VALUE_WORD_SCALAR], 127,);
+            assert_eq!(first_copied.words[loom_runtime_abi::VALUE_WORD_SCALAR], 0,);
             assert_eq!((*executor).heap().list_node_indexes.len(), 2);
             let mut extra = scheduler::ValueSlot::default();
             extra.words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
@@ -661,10 +658,9 @@ mod tests {
             assert_eq!(gc::list_add(copied, &raw const extra), 0);
             assert_eq!((*source).words[loom_runtime_abi::VALUE_WORD_AUX], 128);
             assert_eq!((*copied).words[loom_runtime_abi::VALUE_WORD_AUX], 129);
-            assert_eq!(
-                (*gc::list_get(copied, 128)).words[loom_runtime_abi::VALUE_WORD_SCALAR],
-                999,
-            );
+            let mut appended = scheduler::ValueSlot::default();
+            assert_eq!(gc::list_get(copied, 128, &raw mut appended), 1);
+            assert_eq!(appended.words[loom_runtime_abi::VALUE_WORD_SCALAR], 999,);
             assert_eq!(
                 (*executor)
                     .heap()
@@ -677,7 +673,8 @@ mod tests {
                     .map(Vec::len),
                 Some(129),
             );
-            assert!(gc::list_get(source, 128).is_null());
+            let mut missing = scheduler::ValueSlot::default();
+            assert_eq!(gc::list_get(source, 128, &raw mut missing), 0);
             gc::leave_executor();
 
             source.write(scheduler::ValueSlot::default());

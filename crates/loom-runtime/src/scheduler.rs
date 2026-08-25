@@ -14,7 +14,9 @@ use loom_runtime_abi::{
     VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
-use crate::gc::{active_runtime_pointer, enter_executor, leave_executor, poll};
+use crate::gc::{
+    NodeStream, RuntimeRootScope, active_runtime_pointer, enter_executor, leave_executor, poll,
+};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
@@ -1056,23 +1058,52 @@ unsafe fn resume_socket_write(
     }
 }
 
-unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: OwnedFd) -> i32 {
-    let node = crate::gc::allocate_value_node().cast::<ValueNode>();
-    if node.is_null() {
-        return unsafe { fail_message(task, "OutOfMemory", "resource result allocation failed") };
+fn build_runtime_aggregate(mut aggregate: ValueSlot, values: Vec<ValueSlot>) -> Option<ValueSlot> {
+    let count_word = if aggregate.words[0] == VALUE_TAG_ENUM {
+        3
+    } else {
+        2
+    };
+    aggregate.words[count_word] = 0;
+    aggregate.words[4] = 0;
+    if values.is_empty() {
+        return Some(aggregate);
     }
+    let mut initial = Vec::with_capacity(values.len() + 1);
+    initial.push(aggregate);
+    initial.extend(values);
+    let roots = RuntimeRootScope::from_values(initial).ok()?;
+    let stream = NodeStream::new(&roots, 0, aggregate);
+    for index in (1..roots.len()).rev() {
+        if stream.prepend(index) != crate::GC_OK {
+            return None;
+        }
+    }
+    Some(roots.read(0))
+}
+
+fn record_value(nominal: u64, fields: Vec<ValueSlot>) -> Option<ValueSlot> {
+    let mut record = ValueSlot::default();
+    record.words[0] = VALUE_TAG_RECORD;
+    record.words[1] = nominal;
+    build_runtime_aggregate(record, fields)
+}
+
+fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> Option<ValueSlot> {
+    let mut value = ValueSlot::default();
+    value.words[0] = VALUE_TAG_ENUM;
+    value.words[1] = nominal;
+    value.words[2] = variant;
+    build_runtime_aggregate(value, payload)
+}
+
+unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: OwnedFd) -> i32 {
     let mut raw = ValueSlot::default();
     raw.words[0] = 2;
     raw.words[3] = i64::from(descriptor.as_raw_fd()).cast_unsigned();
-    unsafe {
-        (*node).value = raw;
-        (*node).next = ptr::null_mut();
-    }
-    let mut result = ValueSlot::default();
-    result.words[0] = VALUE_TAG_RECORD;
-    result.words[1] = nominal;
-    result.words[2] = 1;
-    result.words[4] = node as u64;
+    let Some(result) = record_value(nominal, vec![raw]) else {
+        return unsafe { fail_message(task, "OutOfMemory", "resource result allocation failed") };
+    };
     unsafe { (*task).owned_result_resources.push(descriptor) };
     unsafe { store_io_success(task, result) }
 }
@@ -1098,13 +1129,9 @@ unsafe fn store_unit_result(task: *mut LoomTask) -> i32 {
 
 unsafe fn store_io_success(task: *mut LoomTask, value: ValueSlot) -> i32 {
     let result = if unsafe { (*task).io_fallible } {
-        let payload = retain_result_node(unsafe { &mut *(*task).executor }, value, ptr::null_mut());
-        let mut result = ValueSlot::default();
-        result.words[0] = VALUE_TAG_ENUM;
-        result.words[1] = RESULT_TYPE;
-        result.words[2] = 0;
-        result.words[3] = 1;
-        result.words[4] = payload as u64;
+        let Some(result) = enum_value(RESULT_TYPE, 0, vec![value]) else {
+            return unsafe { fail_message(task, "OutOfMemory", "Result allocation failed") };
+        };
         result
     } else {
         value
@@ -1173,21 +1200,12 @@ unsafe fn complete_io_error(task: *mut LoomTask, kind: u32, code: &str, message:
     kind_value.words[1] = IO_ERROR_KIND_TYPE;
     kind_value.words[2] = u64::from(kind);
     let message = text_value(message.as_bytes());
-    let message_node =
-        retain_result_node(unsafe { &mut *(*task).executor }, message, ptr::null_mut());
-    let kind_node = retain_result_node(unsafe { &mut *(*task).executor }, kind_value, message_node);
-    let mut error = ValueSlot::default();
-    error.words[0] = VALUE_TAG_RECORD;
-    error.words[1] = IO_ERROR_TYPE;
-    error.words[2] = 2;
-    error.words[4] = kind_node as u64;
-    let error_node = retain_result_node(unsafe { &mut *(*task).executor }, error, ptr::null_mut());
-    let mut result = ValueSlot::default();
-    result.words[0] = VALUE_TAG_ENUM;
-    result.words[1] = RESULT_TYPE;
-    result.words[2] = 1;
-    result.words[3] = 1;
-    result.words[4] = error_node as u64;
+    let Some(error) = record_value(IO_ERROR_TYPE, vec![kind_value, message]) else {
+        return unsafe { fail_message(task, "OutOfMemory", "I/O error allocation failed") };
+    };
+    let Some(result) = enum_value(RESULT_TYPE, 1, vec![error]) else {
+        return unsafe { fail_message(task, "OutOfMemory", "Result error allocation failed") };
+    };
     let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
     *slot = result;
     TASK_COMPLETED
@@ -2478,73 +2496,63 @@ unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut V
         return WAIT_INVALID_ARGUMENT;
     }
     let step = terminal_step(unsafe { (&(*parent).join_children)[index] });
-    let executor = unsafe { &mut *(*parent).executor };
-    let mut value = ValueSlot::default();
-    value.words[0] = VALUE_TAG_ENUM;
-    value.words[1] = TASK_OUTCOME_TYPE;
-    match step {
+    let value = match step {
         TASK_COMPLETED => {
             let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
             if result.is_null() {
                 return WAIT_INVALID_ARGUMENT;
             }
-            value.words[2] = TASK_OUTCOME_COMPLETED;
-            value.words[3] = 1;
-            value.words[4] =
-                retain_result_node(executor, unsafe { *result }, ptr::null_mut()) as u64;
+            let Some(value) = enum_value(
+                TASK_OUTCOME_TYPE,
+                TASK_OUTCOME_COMPLETED,
+                vec![unsafe { *result }],
+            ) else {
+                return WAIT_NO_MEMORY;
+            };
+            value
         }
-        TASK_CANCELLED => {
-            value.words[2] = TASK_OUTCOME_CANCELLED;
-        }
+        TASK_CANCELLED => enum_value(TASK_OUTCOME_TYPE, TASK_OUTCOME_CANCELLED, Vec::new())
+            .unwrap_or_else(|| unreachable!()),
         _ => {
-            let child = unsafe { &*(&(*parent).join_children)[index] };
-            let message_bytes = if child.fault_message.is_empty() {
-                TASK_FAULT_MESSAGE.as_bytes()
-            } else {
-                child.fault_message.as_bytes()
+            // Do not retain a Rust reference into a Task while managed
+            // allocation can cause the collector to traverse and rewrite Task
+            // slots. Own both strings before entering the first safepoint.
+            let (code, message) = {
+                let child = unsafe { &*(&(*parent).join_children)[index] };
+                let code = if child.fault_code.is_empty() {
+                    TASK_FAULT_CODE.to_owned()
+                } else {
+                    child.fault_code.clone()
+                };
+                let message = if child.fault_message.is_empty() {
+                    TASK_FAULT_MESSAGE.to_owned()
+                } else {
+                    child.fault_message.clone()
+                };
+                (code, message)
             };
-            let code_bytes = if child.fault_code.is_empty() {
-                TASK_FAULT_CODE.as_bytes()
-            } else {
-                child.fault_code.as_bytes()
+            let Ok(roots) = RuntimeRootScope::with_count(2) else {
+                return WAIT_NO_MEMORY;
             };
-            let message = text_value(message_bytes);
-            let message_node = retain_result_node(executor, message, ptr::null_mut());
-            let code = text_value(code_bytes);
-            let code_node = retain_result_node(executor, code, message_node);
-            let mut fault = ValueSlot::default();
-            fault.words[0] = VALUE_TAG_RECORD;
-            fault.words[1] = TASK_FAULT_TYPE;
-            fault.words[2] = 2;
-            fault.words[4] = code_node as u64;
-            let fault_node = retain_result_node(executor, fault, ptr::null_mut());
-            value.words[2] = TASK_OUTCOME_FAULTED;
-            value.words[3] = 1;
-            value.words[4] = fault_node as u64;
+            roots.write(0, text_value(code.as_bytes()));
+            roots.write(1, text_value(message.as_bytes()));
+            let Some(fault) = record_value(TASK_FAULT_TYPE, vec![roots.read(0), roots.read(1)])
+            else {
+                return WAIT_NO_MEMORY;
+            };
+            let Some(value) = enum_value(TASK_OUTCOME_TYPE, TASK_OUTCOME_FAULTED, vec![fault])
+            else {
+                return WAIT_NO_MEMORY;
+            };
+            value
         }
-    }
+    };
     unsafe { destination.write(value) };
     WAIT_OK
 }
 
 fn text_value(bytes: &[u8]) -> ValueSlot {
     crate::gc::text_value(bytes).unwrap_or_else(|| std::process::abort())
-}
-
-fn retain_result_node(
-    _executor: &mut LoomExecutor,
-    value: ValueSlot,
-    next: *mut ValueNode,
-) -> *mut ValueNode {
-    let node = crate::gc::allocate_value_node().cast::<ValueNode>();
-    if node.is_null() {
-        std::process::abort();
-    }
-    unsafe {
-        (*node).value = value;
-        (*node).next = next;
-    }
-    node
 }
 
 unsafe fn retire_join_children(parent: *mut LoomTask) {
@@ -2712,41 +2720,36 @@ pub unsafe extern "C" fn task_write_join_result(
         return WAIT_OK;
     }
 
-    let mut head = ptr::null_mut();
-    for index in (0..count).rev() {
-        let node = crate::gc::allocate_value_node().cast::<ValueNode>();
-        if node.is_null() {
-            return WAIT_NO_MEMORY;
-        }
-        unsafe {
-            (*node).value = ValueSlot::default();
-            (*node).next = head;
-        }
-        let status = if outcome {
-            unsafe { write_outcome(parent, index, &raw mut (*node).value) }
-        } else {
-            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
-            if result.is_null() {
-                WAIT_INVALID_ARGUMENT
-            } else {
-                unsafe { (*node).value = *result };
-                WAIT_OK
-            }
-        };
-        if status != WAIT_OK {
-            return status;
-        }
-        head = node;
-    }
     let mut result = ValueSlot::default();
     result.words[0] = if matches!(shape, JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_LIST) {
         VALUE_TAG_LIST
     } else {
         VALUE_TAG_TUPLE
     };
-    result.words[2] = count as u64;
-    result.words[4] = head as u64;
-    unsafe { destination.write(result) };
+    let Ok(roots) = RuntimeRootScope::from_values(vec![result, ValueSlot::default()]) else {
+        return WAIT_NO_MEMORY;
+    };
+    let stream = NodeStream::new(&roots, 0, result);
+    for index in (0..count).rev() {
+        let status = if outcome {
+            unsafe { write_outcome(parent, index, roots.pointer(1)) }
+        } else {
+            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
+            if result.is_null() {
+                WAIT_INVALID_ARGUMENT
+            } else {
+                roots.write(1, unsafe { *result });
+                WAIT_OK
+            }
+        };
+        if status != WAIT_OK {
+            return status;
+        }
+        if stream.prepend(1) != crate::GC_OK {
+            return WAIT_NO_MEMORY;
+        }
+    }
+    unsafe { destination.write(roots.read(0)) };
     for index in 0..count {
         unsafe { transfer_child_result_resources(parent, index) };
     }
@@ -3247,6 +3250,81 @@ mod resource_ownership_tests {
             );
             assert_peer_closed(&mut left_peer);
             assert_peer_closed(&mut right_peer);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn io_results_and_join_outcomes_survive_every_allocator_collection() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+
+        unsafe {
+            let parent = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let success = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let io_error = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let fault = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let cancelled = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(
+                !parent.is_null()
+                    && !success.is_null()
+                    && !io_error.is_null()
+                    && !fault.is_null()
+                    && !cancelled.is_null()
+            );
+            for child in [success, io_error, fault, cancelled] {
+                (*child).owner = parent;
+                (*parent).owned_children.push(child);
+                (*parent).join_children.push(child);
+            }
+            (*success).io_fallible = true;
+            (*io_error).io_fallible = true;
+            (*fault).fault_code = "FixtureFault".to_owned();
+            (*fault).fault_message = "managed failure message".to_owned();
+
+            crate::gc::enter_executor(executor);
+            (*runtime).heap.collect_before_every_allocation = true;
+            assert_eq!(
+                store_text_result(success, executor, b"managed success", "FixtureReadFault"),
+                TASK_COMPLETED,
+            );
+            (*success).status = TaskStatus::Completed;
+            assert_eq!(
+                complete_io_error(io_error, 3, "FixtureIoFault", "managed I/O error"),
+                TASK_COMPLETED,
+            );
+            (*io_error).status = TaskStatus::Completed;
+            (*fault).status = TaskStatus::Faulted;
+            (*cancelled).status = TaskStatus::Cancelled;
+
+            let destination = task_slot(parent, 0).cast::<ValueSlot>();
+            assert_eq!(
+                task_write_join_result(parent, destination.cast(), JOIN_RESULT_OUTCOME_TUPLE,),
+                WAIT_OK,
+            );
+            assert_eq!((*destination).words[0], VALUE_TAG_TUPLE);
+            assert_eq!((*destination).words[2], 4);
+            let mut node = (*destination).words[4] as *const ValueNode;
+            for variant in [
+                TASK_OUTCOME_COMPLETED,
+                TASK_OUTCOME_COMPLETED,
+                TASK_OUTCOME_FAULTED,
+                TASK_OUTCOME_CANCELLED,
+            ] {
+                assert!(!node.is_null());
+                assert_eq!((*node).value.words[0], VALUE_TAG_ENUM);
+                assert_eq!((*node).value.words[1], TASK_OUTCOME_TYPE);
+                assert_eq!((*node).value.words[2], variant);
+                node = (*node).next;
+            }
+            assert!(node.is_null());
+            assert!((*runtime).heap.collections > 10);
+            (*runtime).heap.collect_before_every_allocation = false;
+            crate::gc::leave_executor();
+
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }

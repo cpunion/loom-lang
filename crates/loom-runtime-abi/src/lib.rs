@@ -4,14 +4,14 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 6;
+pub const RUNTIME_ABI_VERSION: u32 = 7;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 3;
+pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v6/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -203,15 +203,15 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 6);
+        assert_eq!(RUNTIME_ABI_VERSION, 7);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(WITNESS_ABI_VERSION, 1);
-        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 3);
+        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v6/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3",
+            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 

@@ -1,13 +1,12 @@
 //! Process boundary used by compiler-known `standard.process` operations.
 
-use std::ffi::{CStr, c_char, c_void};
-use std::ptr;
+use std::ffi::{CStr, c_char};
 use std::slice;
 use std::sync::OnceLock;
 
-use crate::gc::allocate_value_node;
-use crate::scheduler::{ValueNode, ValueSlot};
-use loom_runtime_abi::VALUE_TAG_LIST;
+use crate::gc::{NodeStream, RuntimeRootScope};
+use crate::scheduler::ValueSlot;
+use loom_runtime_abi::{GC_OK, VALUE_TAG_LIST};
 
 static ARGUMENTS: OnceLock<Vec<String>> = OnceLock::new();
 
@@ -40,47 +39,121 @@ pub unsafe extern "C" fn process_arguments(output: *mut ValueSlot) -> i32 {
         return 1;
     }
     let arguments = ARGUMENTS.get().map_or(&[][..], Vec::as_slice);
-    let mut head = ptr::null_mut();
+    build_arguments(arguments, output)
+}
+
+fn build_arguments(arguments: &[String], output: *mut ValueSlot) -> i32 {
+    let mut list = ValueSlot::default();
+    list.words[0] = VALUE_TAG_LIST;
+    let Ok(roots) = RuntimeRootScope::from_values(vec![list, ValueSlot::default()]) else {
+        return 1;
+    };
+    let stream = NodeStream::new(&roots, 0, list);
     for argument in arguments.iter().rev() {
-        let node = allocate_value_node().cast::<ValueNode>();
-        if node.is_null() {
-            return 1;
-        }
         let Some(value) = crate::gc::text_value(argument.as_bytes()) else {
             return 1;
         };
-        // SAFETY: allocate_value_node returned a fresh initialized node.
-        unsafe {
-            (*node).value = value;
-            (*node).next = head;
+        roots.write(1, value);
+        if stream.prepend(1) != GC_OK {
+            return 1;
         }
-        head = node;
     }
-    let mut list = ValueSlot::default();
-    list.words[0] = VALUE_TAG_LIST;
-    list.words[2] = arguments.len() as u64;
-    list.words[4] = head as u64;
     // SAFETY: output was checked non-null and points to generated storage.
-    unsafe { *output = list };
+    unsafe { output.write(roots.read(0)) };
     0
 }
 
-/// Looks up a Unicode environment variable and returns one managed Text object.
-/// A null return denotes a missing or non-Unicode value.
+/// Looks up a Unicode environment variable in stable caller storage.
+/// Returns `1` with a managed Text value, `0` when missing or non-Unicode, and
+/// `-1` for invalid ABI input or an inactive runtime.
 #[unsafe(export_name = "loom_runtime_process_environment")]
-pub unsafe extern "C" fn process_environment(name: *const u8, name_length: u64) -> *mut c_void {
-    if name.is_null() {
-        return ptr::null_mut();
+pub unsafe extern "C" fn process_environment(
+    name: *const u8,
+    name_length: u64,
+    output: *mut ValueSlot,
+) -> i32 {
+    if name.is_null() || output.is_null() {
+        return -1;
     }
     let Ok(name_length) = usize::try_from(name_length) else {
-        return ptr::null_mut();
+        return -1;
     };
     // SAFETY: generated Text supplies a readable byte range of its stored length.
     let Ok(name) = std::str::from_utf8(unsafe { slice::from_raw_parts(name, name_length) }) else {
-        return ptr::null_mut();
+        return -1;
     };
     let Ok(value) = std::env::var(name) else {
-        return ptr::null_mut();
+        return 0;
     };
-    crate::gc::retain_text(value.as_bytes()).unwrap_or(ptr::null_mut())
+    let Some(value) = crate::gc::text_value(value.as_bytes()) else {
+        return -1;
+    };
+    unsafe { output.write(value) };
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gc::{activate_runtime_v1, deactivate_runtime_v1};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+    use crate::scheduler::ValueNode;
+    use loom_runtime_abi::{GC_OK, VALUE_WORD_AUX, VALUE_WORD_DATA};
+
+    #[test]
+    fn argument_builder_survives_collection_before_every_allocation() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let roots = RuntimeRootScope::with_count(1).expect("runtime root scope");
+            (*runtime).heap.collect_before_every_allocation = true;
+            let arguments = vec!["first".to_owned(), "界🙂".to_owned(), "last".to_owned()];
+            assert_eq!(build_arguments(&arguments, roots.pointer(0)), 0);
+            assert_eq!(roots.read(0).words[VALUE_WORD_AUX], 3);
+            let mut node = roots.read(0).words[VALUE_WORD_DATA] as *const ValueNode;
+            for expected in [&b"first"[..], "界🙂".as_bytes(), &b"last"[..]] {
+                assert!(!node.is_null());
+                assert_eq!(
+                    crate::text::text_value_bytes(&(*node).value),
+                    Some(expected),
+                );
+                node = (*node).next;
+            }
+            assert!(node.is_null());
+            (*runtime).heap.collect_before_every_allocation = false;
+            drop(roots);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn environment_writes_a_stable_text_value_output() {
+        let (name, expected) = std::env::vars()
+            .next()
+            .expect("test process has at least one Unicode environment variable");
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let roots = RuntimeRootScope::with_count(1).expect("runtime root scope");
+            (*runtime).heap.collect_before_every_allocation = true;
+            assert_eq!(
+                process_environment(name.as_ptr(), name.len() as u64, roots.pointer(0)),
+                1,
+            );
+            let first_address = roots.read(0).words[VALUE_WORD_DATA];
+            let _trigger = crate::gc::text_value(b"trigger").expect("managed Text");
+            assert_ne!(roots.read(0).words[VALUE_WORD_DATA], first_address);
+            assert_eq!(
+                crate::text::text_value_bytes(&roots.read(0)),
+                Some(expected.as_bytes()),
+            );
+            (*runtime).heap.collect_before_every_allocation = false;
+            drop(roots);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
 }
