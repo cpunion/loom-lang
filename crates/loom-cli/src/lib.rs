@@ -777,7 +777,11 @@ fn build_library(
             return Ok(EXIT_USAGE);
         }
     }
-    let bytes = match loom_mir::encode_interpreted_artifact(program) {
+    let bytes = match loom_driver::encode_library_artifact(
+        compilation.project(),
+        compilation.sources(),
+        program,
+    ) {
         Ok(bytes) => bytes,
         Err(error) => {
             emit_tool_error(
@@ -1818,13 +1822,13 @@ fn final_artifact_key(
 }
 
 fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<CacheKey> {
-    let version = loom_mir::INTERPRETED_ARTIFACT_VERSION.to_string();
+    let version = loom_driver::LIBRARY_ARTIFACT_VERSION.to_string();
     Some(PersistentCache::derived_key(
         compilation.key()?,
         &[
-            ("layer", "portable-library-artifact-v1"),
+            ("layer", "portable-library-artifact-v2"),
             ("target", target),
-            ("format", loom_mir::INTERPRETED_ARTIFACT_FORMAT),
+            ("format", loom_driver::LIBRARY_ARTIFACT_FORMAT),
             ("version", &version),
         ],
     ))

@@ -465,11 +465,20 @@ fn library_targets_build_portable_validated_artifacts() {
         cache_status(&first.stdout, "final_artifact").as_deref(),
         Some("miss")
     );
-    let checked = loom_mir::decode_interpreted_artifact(
+    let checked = loom_driver::decode_library_artifact(
         &fs::read(&first_artifact).expect("read portable library"),
     )
     .expect("decode and validate portable library");
-    assert!(checked.as_program().exports.contains_key("sample.answer"));
+    assert!(
+        checked
+            .program()
+            .as_program()
+            .exports
+            .contains_key("sample.answer")
+    );
+    assert_eq!(checked.root_package().name(), "sample");
+    assert_eq!(checked.root_package().language(), "0.3");
+    assert_eq!(checked.interfaces().len(), 1);
 
     let second_artifact = project.0.join("sample-copy.loomlib");
     let second = loomc()
@@ -497,6 +506,29 @@ fn library_targets_build_portable_validated_artifacts() {
         assert_eq!(rejected.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&rejected.stdout).contains("TargetKindMismatch"));
     }
+
+    project.write(
+        "consumer/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+    );
+    project.write(
+        "consumer/src/main.loom",
+        "module consumer\n\nimport sample.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n",
+    );
+    fs::remove_dir_all(project.0.join("src")).expect("remove producer sources");
+    let consumed = loomc()
+        .args(["--backend", "interpreter", "run"])
+        .arg(project.0.join("consumer"))
+        .output()
+        .expect("run artifact consumer without producer sources");
+    assert_eq!(
+        consumed.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&consumed.stdout),
+        String::from_utf8_lossy(&consumed.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&consumed.stdout), "Unit\n");
 }
 
 #[test]
