@@ -256,7 +256,19 @@ pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
             | "standard.file.create"
             | "standard.file.open_read_path"
             | "standard.file.create_path"
+            | "standard.file.try_open_read"
+            | "standard.file.try_create"
+            | "standard.file.try_open_read_path"
+            | "standard.file.try_create_path"
             | "standard.net.connect"
+            | "standard.net.try_connect"
+            | "standard.json.parse_json"
+            | "standard.json.format_json"
+            | "standard.log.debug"
+            | "standard.log.info"
+            | "standard.log.warn"
+            | "standard.log.error"
+            | "standard.log.write"
     )
 }
 

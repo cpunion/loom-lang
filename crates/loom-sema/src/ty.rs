@@ -50,6 +50,11 @@ pub enum BuiltinType {
     ParseIntError,
     DecodeTextError,
     PathError,
+    Json,
+    JsonError,
+    IoError,
+    IoErrorKind,
+    LogLevel,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -77,6 +82,8 @@ pub enum TyData {
     Builtin(BuiltinType),
     Tuple(Vec<TyId>),
     List(TyId),
+    /// Immutable, canonically ordered Text-keyed map.
+    TextMap(TyId),
     Option(TyId),
     Result {
         ok: TyId,
@@ -237,6 +244,10 @@ impl TyInterner {
             TyData::List(element) => {
                 let element = self.substitute(element, substitution);
                 self.intern(TyData::List(element))
+            }
+            TyData::TextMap(value) => {
+                let value = self.substitute(value, substitution);
+                self.intern(TyData::TextMap(value))
             }
             TyData::Nominal {
                 definition,

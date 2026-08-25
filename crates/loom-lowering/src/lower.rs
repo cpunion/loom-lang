@@ -38,7 +38,13 @@ const BYTES_TYPE: TypeId = TypeId(11);
 const PATH_TYPE: TypeId = TypeId(12);
 const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(13);
 const PATH_ERROR_TYPE: TypeId = TypeId(14);
-const SYNTHETIC_TYPE_COUNT: u32 = 15;
+const TEXT_MAP_TYPE: TypeId = TypeId(15);
+const JSON_TYPE: TypeId = TypeId(16);
+const JSON_ERROR_TYPE: TypeId = TypeId(17);
+const IO_ERROR_TYPE: TypeId = TypeId(18);
+const IO_ERROR_KIND_TYPE: TypeId = TypeId(19);
+const LOG_LEVEL_TYPE: TypeId = TypeId(20);
+const SYNTHETIC_TYPE_COUNT: u32 = 21;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -287,6 +293,12 @@ impl<'a> Compiler<'a> {
                 path: Some(PATH_TYPE),
                 decode_text_error: Some(DECODE_TEXT_ERROR_TYPE),
                 path_error: Some(PATH_ERROR_TYPE),
+                text_map: Some(TEXT_MAP_TYPE),
+                json: Some(JSON_TYPE),
+                json_error: Some(JSON_ERROR_TYPE),
+                io_error: Some(IO_ERROR_TYPE),
+                io_error_kind: Some(IO_ERROR_KIND_TYPE),
+                log_level: Some(LOG_LEVEL_TYPE),
             },
         };
         program.types.shrink_to_fit();
@@ -430,6 +442,10 @@ impl<'a> Compiler<'a> {
             TyData::List(element) => Ok(Type::List(Box::new(
                 self.lower_ty(*element, parameters, span)?,
             ))),
+            TyData::TextMap(value) => Ok(Type::Nominal(
+                TEXT_MAP_TYPE,
+                vec![self.lower_ty(*value, parameters, span)?],
+            )),
             TyData::Option(element) => Ok(Type::Nominal(
                 OPTION_TYPE,
                 vec![self.lower_ty(*element, parameters, span)?],
@@ -794,6 +810,13 @@ impl<'a> Compiler<'a> {
                     RequirementType::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new())
                 }
                 BuiltinType::PathError => RequirementType::Nominal(PATH_ERROR_TYPE, Vec::new()),
+                BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
+                BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
+                BuiltinType::IoError => RequirementType::Nominal(IO_ERROR_TYPE, Vec::new()),
+                BuiltinType::IoErrorKind => {
+                    RequirementType::Nominal(IO_ERROR_KIND_TYPE, Vec::new())
+                }
+                BuiltinType::LogLevel => RequirementType::Nominal(LOG_LEVEL_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -806,6 +829,10 @@ impl<'a> Compiler<'a> {
             TyData::Option(element) => Ok(RequirementType::Nominal(
                 OPTION_TYPE,
                 vec![self.lower_requirement_ty(*element, owner_concept, parameters, span)?],
+            )),
+            TyData::TextMap(value) => Ok(RequirementType::Nominal(
+                TEXT_MAP_TYPE,
+                vec![self.lower_requirement_ty(*value, owner_concept, parameters, span)?],
             )),
             TyData::Result { ok, error } => Ok(RequirementType::Nominal(
                 RESULT_TYPE,
@@ -2981,6 +3008,30 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::DecodeTextInvalidUtf8
             | BuiltinValue::PathContainsNul
             | BuiltinValue::PathAbsoluteJoin
+            | BuiltinValue::JsonNull
+            | BuiltinValue::JsonBool
+            | BuiltinValue::JsonNumber
+            | BuiltinValue::JsonText
+            | BuiltinValue::JsonArray
+            | BuiltinValue::JsonObject
+            | BuiltinValue::JsonInvalidSyntax
+            | BuiltinValue::JsonNumberOutOfRange
+            | BuiltinValue::JsonDepthLimit
+            | BuiltinValue::JsonNonFiniteNumber
+            | BuiltinValue::IoErrorNotFound
+            | BuiltinValue::IoErrorPermissionDenied
+            | BuiltinValue::IoErrorAlreadyExists
+            | BuiltinValue::IoErrorInvalidInput
+            | BuiltinValue::IoErrorConnectionRefused
+            | BuiltinValue::IoErrorConnectionReset
+            | BuiltinValue::IoErrorTimedOut
+            | BuiltinValue::IoErrorUnexpectedEof
+            | BuiltinValue::IoErrorClosed
+            | BuiltinValue::IoErrorOther
+            | BuiltinValue::LogLevelDebug
+            | BuiltinValue::LogLevelInfo
+            | BuiltinValue::LogLevelWarn
+            | BuiltinValue::LogLevelError
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -2995,6 +3046,30 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
+                    BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
+                    BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
+                    BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
+                    BuiltinValue::JsonText => (JSON_TYPE, VariantId(3)),
+                    BuiltinValue::JsonArray => (JSON_TYPE, VariantId(4)),
+                    BuiltinValue::JsonObject => (JSON_TYPE, VariantId(5)),
+                    BuiltinValue::JsonInvalidSyntax => (JSON_ERROR_TYPE, VariantId(0)),
+                    BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
+                    BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
+                    BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
+                    BuiltinValue::IoErrorNotFound => (IO_ERROR_KIND_TYPE, VariantId(0)),
+                    BuiltinValue::IoErrorPermissionDenied => (IO_ERROR_KIND_TYPE, VariantId(1)),
+                    BuiltinValue::IoErrorAlreadyExists => (IO_ERROR_KIND_TYPE, VariantId(2)),
+                    BuiltinValue::IoErrorInvalidInput => (IO_ERROR_KIND_TYPE, VariantId(3)),
+                    BuiltinValue::IoErrorConnectionRefused => (IO_ERROR_KIND_TYPE, VariantId(4)),
+                    BuiltinValue::IoErrorConnectionReset => (IO_ERROR_KIND_TYPE, VariantId(5)),
+                    BuiltinValue::IoErrorTimedOut => (IO_ERROR_KIND_TYPE, VariantId(6)),
+                    BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
+                    BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
+                    BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
+                    BuiltinValue::LogLevelDebug => (LOG_LEVEL_TYPE, VariantId(0)),
+                    BuiltinValue::LogLevelInfo => (LOG_LEVEL_TYPE, VariantId(1)),
+                    BuiltinValue::LogLevelWarn => (LOG_LEVEL_TYPE, VariantId(2)),
+                    BuiltinValue::LogLevelError => (LOG_LEVEL_TYPE, VariantId(3)),
                     BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                     BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                     BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -3025,6 +3100,21 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::PathFromText
             | BuiltinValue::PathAsText
             | BuiltinValue::PathJoin
+            | BuiltinValue::TextMapNew
+            | BuiltinValue::TextMapLength
+            | BuiltinValue::TextMapContains
+            | BuiltinValue::TextMapGet
+            | BuiltinValue::TextMapInsert
+            | BuiltinValue::TextMapRemove
+            | BuiltinValue::JsonParse
+            | BuiltinValue::JsonFormat
+            | BuiltinValue::IoErrorKind
+            | BuiltinValue::IoErrorMessage
+            | BuiltinValue::LogDebug
+            | BuiltinValue::LogInfo
+            | BuiltinValue::LogWarn
+            | BuiltinValue::LogError
+            | BuiltinValue::LogWrite
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
@@ -3039,12 +3129,21 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::FileCreate
             | BuiltinValue::FileOpenReadPath
             | BuiltinValue::FileCreatePath
+            | BuiltinValue::FileTryOpenRead
+            | BuiltinValue::FileTryCreate
+            | BuiltinValue::FileTryOpenReadPath
+            | BuiltinValue::FileTryCreatePath
             | BuiltinValue::FileReadText
             | BuiltinValue::FileWriteText
+            | BuiltinValue::FileTryReadText
+            | BuiltinValue::FileTryWriteText
             | BuiltinValue::FileClose
             | BuiltinValue::SocketConnect
+            | BuiltinValue::SocketTryConnect
             | BuiltinValue::SocketReadText
             | BuiltinValue::SocketWriteText
+            | BuiltinValue::SocketTryReadText
+            | BuiltinValue::SocketTryWriteText
             | BuiltinValue::SocketClose => {
                 let target = executable_builtin(builtin)
                     .ok_or_else(|| defect("non-executable builtin reached call lowering", span))?;
@@ -3476,6 +3575,21 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::PathFromText => Builtin::PathFromText,
         BuiltinValue::PathAsText => Builtin::PathAsText,
         BuiltinValue::PathJoin => Builtin::PathJoin,
+        BuiltinValue::TextMapNew => Builtin::TextMapNew,
+        BuiltinValue::TextMapLength => Builtin::TextMapLength,
+        BuiltinValue::TextMapContains => Builtin::TextMapContains,
+        BuiltinValue::TextMapGet => Builtin::TextMapGet,
+        BuiltinValue::TextMapInsert => Builtin::TextMapInsert,
+        BuiltinValue::TextMapRemove => Builtin::TextMapRemove,
+        BuiltinValue::JsonParse => Builtin::JsonParse,
+        BuiltinValue::JsonFormat => Builtin::JsonFormat,
+        BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
+        BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,
+        BuiltinValue::LogDebug => Builtin::LogDebug,
+        BuiltinValue::LogInfo => Builtin::LogInfo,
+        BuiltinValue::LogWarn => Builtin::LogWarn,
+        BuiltinValue::LogError => Builtin::LogError,
+        BuiltinValue::LogWrite => Builtin::LogWrite,
         BuiltinValue::ListAdd => Builtin::ListAdd,
         BuiltinValue::ListLength => Builtin::ListLength,
         BuiltinValue::ListGet => Builtin::ListGet,
@@ -3490,12 +3604,21 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::FileCreate => Builtin::FileCreate,
         BuiltinValue::FileOpenReadPath => Builtin::FileOpenReadPath,
         BuiltinValue::FileCreatePath => Builtin::FileCreatePath,
+        BuiltinValue::FileTryOpenRead => Builtin::FileTryOpenRead,
+        BuiltinValue::FileTryCreate => Builtin::FileTryCreate,
+        BuiltinValue::FileTryOpenReadPath => Builtin::FileTryOpenReadPath,
+        BuiltinValue::FileTryCreatePath => Builtin::FileTryCreatePath,
         BuiltinValue::FileReadText => Builtin::FileReadText,
         BuiltinValue::FileWriteText => Builtin::FileWriteText,
+        BuiltinValue::FileTryReadText => Builtin::FileTryReadText,
+        BuiltinValue::FileTryWriteText => Builtin::FileTryWriteText,
         BuiltinValue::FileClose => Builtin::FileClose,
         BuiltinValue::SocketConnect => Builtin::SocketConnect,
+        BuiltinValue::SocketTryConnect => Builtin::SocketTryConnect,
         BuiltinValue::SocketReadText => Builtin::SocketReadText,
         BuiltinValue::SocketWriteText => Builtin::SocketWriteText,
+        BuiltinValue::SocketTryReadText => Builtin::SocketTryReadText,
+        BuiltinValue::SocketTryWriteText => Builtin::SocketTryWriteText,
         BuiltinValue::SocketClose => Builtin::SocketClose,
         _ => return None,
     })
@@ -3747,7 +3870,149 @@ fn synthetic_types() -> Vec<TypeDef> {
             &["ContainsNul", "AbsoluteJoin"],
             span,
         ),
+        TypeDef {
+            id: TEXT_MAP_TYPE,
+            name: "TextMap".into(),
+            span,
+            type_parameters: 1,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".into(),
+                    ty: Type::Int,
+                    span,
+                }],
+                invariant: None,
+            },
+        },
+        json_type(span),
+        json_error_type(span),
+        io_error_type(span),
+        closed_error_type(
+            IO_ERROR_KIND_TYPE,
+            "IoErrorKind",
+            &[
+                "NotFound",
+                "PermissionDenied",
+                "AlreadyExists",
+                "InvalidInput",
+                "ConnectionRefused",
+                "ConnectionReset",
+                "TimedOut",
+                "UnexpectedEof",
+                "Closed",
+                "Other",
+            ],
+            span,
+        ),
+        closed_error_type(
+            LOG_LEVEL_TYPE,
+            "LogLevel",
+            &["Debug", "Info", "Warn", "Error"],
+            span,
+        ),
     ]
+}
+
+fn json_type(span: Span) -> TypeDef {
+    TypeDef {
+        id: JSON_TYPE,
+        name: "Json".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "Null".into(),
+                    payload: Vec::new(),
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "Bool".into(),
+                    payload: vec![Type::Bool],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(2),
+                    name: "Number".into(),
+                    payload: vec![Type::Float],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(3),
+                    name: "Text".into(),
+                    payload: vec![Type::Text],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(4),
+                    name: "Array".into(),
+                    payload: vec![Type::List(Box::new(Type::Nominal(JSON_TYPE, Vec::new())))],
+                    span,
+                },
+                VariantDef {
+                    id: VariantId(5),
+                    name: "Object".into(),
+                    payload: vec![Type::Nominal(
+                        TEXT_MAP_TYPE,
+                        vec![Type::Nominal(JSON_TYPE, Vec::new())],
+                    )],
+                    span,
+                },
+            ],
+        },
+    }
+}
+
+fn json_error_type(span: Span) -> TypeDef {
+    TypeDef {
+        id: JSON_ERROR_TYPE,
+        name: "JsonError".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: [
+                ("InvalidSyntax", vec![Type::Int]),
+                ("NumberOutOfRange", vec![Type::Int]),
+                ("DepthLimit", Vec::new()),
+                ("NonFiniteNumber", Vec::new()),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, payload))| VariantDef {
+                id: VariantId(u32::try_from(index).expect("json error variant index")),
+                name: name.into(),
+                payload,
+                span,
+            })
+            .collect(),
+        },
+    }
+}
+
+fn io_error_type(span: Span) -> TypeDef {
+    TypeDef {
+        id: IO_ERROR_TYPE,
+        name: "IoError".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "kind".into(),
+                    ty: Type::Nominal(IO_ERROR_KIND_TYPE, Vec::new()),
+                    span,
+                },
+                FieldDef {
+                    name: "message".into(),
+                    ty: Type::Text,
+                    span,
+                },
+            ],
+            invariant: None,
+        },
+    }
 }
 
 fn lower_builtin_type(builtin: BuiltinType) -> Type {
@@ -3769,6 +4034,11 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
         BuiltinType::DecodeTextError => Type::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new()),
         BuiltinType::PathError => Type::Nominal(PATH_ERROR_TYPE, Vec::new()),
+        BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
+        BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
+        BuiltinType::IoError => Type::Nominal(IO_ERROR_TYPE, Vec::new()),
+        BuiltinType::IoErrorKind => Type::Nominal(IO_ERROR_KIND_TYPE, Vec::new()),
+        BuiltinType::LogLevel => Type::Nominal(LOG_LEVEL_TYPE, Vec::new()),
     }
 }
 

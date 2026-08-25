@@ -506,6 +506,12 @@ impl<'program> Validator<'program> {
                 "enum",
             ),
             ("path_error", self.program.prelude.path_error, "enum"),
+            ("text_map", self.program.prelude.text_map, "record"),
+            ("json", self.program.prelude.json, "enum"),
+            ("json_error", self.program.prelude.json_error, "enum"),
+            ("io_error", self.program.prelude.io_error, "record"),
+            ("io_error_kind", self.program.prelude.io_error_kind, "enum"),
+            ("log_level", self.program.prelude.log_level, "enum"),
         ];
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
@@ -4440,21 +4446,143 @@ impl<'program> Validator<'program> {
                 | Builtin::FileCreate
                 | Builtin::FileOpenReadPath
                 | Builtin::FileCreatePath
+                | Builtin::FileTryOpenRead
+                | Builtin::FileTryCreate
+                | Builtin::FileTryOpenReadPath
+                | Builtin::FileTryCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
+                | Builtin::FileTryReadText
+                | Builtin::FileTryWriteText
                 | Builtin::FileClose
                 | Builtin::SocketConnect
+                | Builtin::SocketTryConnect
                 | Builtin::SocketReadText
                 | Builtin::SocketWriteText
+                | Builtin::SocketTryReadText
+                | Builtin::SocketTryWriteText
                 | Builtin::SocketClose
         ) {
-            let result = self.validate_io_builtin(builtin, &types);
+            let result = self.validate_io_builtin(builtin, &types, expression.span, path);
             if result.is_none() {
                 self.invalid_builtin_shape(builtin, &types, expression.span, path);
             }
             return result;
         }
         match builtin {
+            Builtin::TextMapNew => {
+                let map = self.program.prelude.text_map?;
+                match &expression.ty {
+                    Type::Nominal(actual, arguments) if *actual == map && arguments.len() == 1 => {
+                        Some(expression.ty.clone())
+                    }
+                    _ => None,
+                }
+            }
+            Builtin::TextMapLength
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map) =>
+            {
+                Some(Type::Int)
+            }
+            Builtin::TextMapContains
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(Type::Bool)
+            }
+            Builtin::TextMapGet
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                let value = Self::nominal_builtin_type_argument(
+                    &types,
+                    0,
+                    self.program.prelude.text_map,
+                    0,
+                )?;
+                self.expected_option_type(value, expression.span, path)
+            }
+            Builtin::TextMapInsert
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                let value = Self::nominal_builtin_type_argument(
+                    &types,
+                    0,
+                    self.program.prelude.text_map,
+                    0,
+                )?;
+                if !types_compatible(&value, types[2].as_ref()?) {
+                    return None;
+                }
+                Some(types[0].clone()?)
+            }
+            Builtin::TextMapRemove
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(types[0].clone()?)
+            }
+            Builtin::JsonParse if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                let json = self.expected_prelude_nominal(
+                    self.program.prelude.json,
+                    "json",
+                    expression.span,
+                    path,
+                )?;
+                self.expected_result_type(
+                    json,
+                    self.program.prelude.json_error,
+                    "json_error",
+                    expression.span,
+                    path,
+                )
+            }
+            Builtin::JsonFormat
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.json) =>
+            {
+                self.expected_result_type(
+                    Type::Text,
+                    self.program.prelude.json_error,
+                    "json_error",
+                    expression.span,
+                    path,
+                )
+            }
+            Builtin::IoErrorKind
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.io_error) =>
+            {
+                self.expected_prelude_nominal(
+                    self.program.prelude.io_error_kind,
+                    "io_error_kind",
+                    expression.span,
+                    path,
+                )
+            }
+            Builtin::IoErrorMessage
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.io_error) =>
+            {
+                Some(Type::Text)
+            }
+            Builtin::LogDebug | Builtin::LogInfo | Builtin::LogWarn | Builtin::LogError
+                if types_compatible(&Type::Text, types[0].as_ref()?) =>
+            {
+                Some(Type::Unit)
+            }
+            Builtin::LogWrite
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.log_level)
+                    && types_compatible(&Type::Text, types[1].as_ref()?)
+                    && Self::nominal_builtin_argument(&types, 2, self.program.prelude.text_map)
+                    && Self::nominal_builtin_type_argument(
+                        &types,
+                        2,
+                        self.program.prelude.text_map,
+                        0,
+                    )
+                    .is_some_and(|value| types_compatible(&Type::Text, &value)) =>
+            {
+                Some(Type::Unit)
+            }
             Builtin::ProcessArguments => Some(Type::List(Box::new(Type::Text))),
             Builtin::ProcessEnvironment if types_compatible(&Type::Text, types[0].as_ref()?) => {
                 let Some(option) = self.program.prelude.option else {
@@ -4626,8 +4754,15 @@ impl<'program> Validator<'program> {
             | Builtin::PathJoin
             | Builtin::FileWriteText
             | Builtin::SocketConnect
-            | Builtin::SocketWriteText => 2,
-            Builtin::ProcessArguments => 0,
+            | Builtin::SocketWriteText
+            | Builtin::TextMapContains
+            | Builtin::TextMapGet
+            | Builtin::TextMapRemove
+            | Builtin::FileTryWriteText
+            | Builtin::SocketTryConnect
+            | Builtin::SocketTryWriteText => 2,
+            Builtin::TextMapInsert | Builtin::LogWrite => 3,
+            Builtin::ProcessArguments | Builtin::TextMapNew => 0,
             Builtin::IsFinite
             | Builtin::ParseFloat
             | Builtin::FormatFloat
@@ -4651,7 +4786,22 @@ impl<'program> Validator<'program> {
             | Builtin::FileReadText
             | Builtin::FileClose
             | Builtin::SocketReadText
-            | Builtin::SocketClose => 1,
+            | Builtin::SocketClose
+            | Builtin::TextMapLength
+            | Builtin::JsonParse
+            | Builtin::JsonFormat
+            | Builtin::IoErrorKind
+            | Builtin::IoErrorMessage
+            | Builtin::FileTryOpenRead
+            | Builtin::FileTryCreate
+            | Builtin::FileTryOpenReadPath
+            | Builtin::FileTryCreatePath
+            | Builtin::FileTryReadText
+            | Builtin::SocketTryReadText
+            | Builtin::LogDebug
+            | Builtin::LogInfo
+            | Builtin::LogWarn
+            | Builtin::LogError => 1,
         };
         if arguments.len() != expected_arity {
             self.push(
@@ -4692,7 +4842,13 @@ impl<'program> Validator<'program> {
         }
     }
 
-    fn validate_io_builtin(&self, builtin: Builtin, types: &[Option<Type>]) -> Option<Type> {
+    fn validate_io_builtin(
+        &mut self,
+        builtin: Builtin,
+        types: &[Option<Type>],
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
         let file = self.program.prelude.file;
         let socket = self.program.prelude.socket;
         match builtin {
@@ -4706,6 +4862,18 @@ impl<'program> Validator<'program> {
             {
                 file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
             }
+            Builtin::FileTryOpenRead | Builtin::FileTryCreate
+                if types_compatible(&Type::Text, types[0].as_ref()?) =>
+            {
+                let file = Type::Nominal(file?, Vec::new());
+                self.expected_io_result_task(file, span, path)
+            }
+            Builtin::FileTryOpenReadPath | Builtin::FileTryCreatePath
+                if Self::nominal_builtin_argument(types, 0, self.program.prelude.path) =>
+            {
+                let file = Type::Nominal(file?, Vec::new());
+                self.expected_io_result_task(file, span, path)
+            }
             Builtin::FileReadText if Self::nominal_builtin_argument(types, 0, file) => {
                 Some(Type::Task(Box::new(Type::Text)))
             }
@@ -4714,6 +4882,15 @@ impl<'program> Validator<'program> {
                     && types_compatible(&Type::Text, types[1].as_ref()?) =>
             {
                 Some(Type::Task(Box::new(Type::Unit)))
+            }
+            Builtin::FileTryReadText if Self::nominal_builtin_argument(types, 0, file) => {
+                self.expected_io_result_task(Type::Text, span, path)
+            }
+            Builtin::FileTryWriteText
+                if Self::nominal_builtin_argument(types, 0, file)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                self.expected_io_result_task(Type::Unit, span, path)
             }
             Builtin::FileClose if Self::nominal_builtin_argument(types, 0, file) => {
                 Some(Type::Unit)
@@ -4724,6 +4901,13 @@ impl<'program> Validator<'program> {
             {
                 socket.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
             }
+            Builtin::SocketTryConnect
+                if types_compatible(&Type::Text, types[0].as_ref()?)
+                    && types_compatible(&Type::Int, types[1].as_ref()?) =>
+            {
+                let socket = Type::Nominal(socket?, Vec::new());
+                self.expected_io_result_task(socket, span, path)
+            }
             Builtin::SocketReadText if Self::nominal_builtin_argument(types, 0, socket) => {
                 Some(Type::Task(Box::new(Type::Text)))
             }
@@ -4732,6 +4916,15 @@ impl<'program> Validator<'program> {
                     && types_compatible(&Type::Text, types[1].as_ref()?) =>
             {
                 Some(Type::Task(Box::new(Type::Unit)))
+            }
+            Builtin::SocketTryReadText if Self::nominal_builtin_argument(types, 0, socket) => {
+                self.expected_io_result_task(Type::Text, span, path)
+            }
+            Builtin::SocketTryWriteText
+                if Self::nominal_builtin_argument(types, 0, socket)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                self.expected_io_result_task(Type::Unit, span, path)
             }
             Builtin::SocketClose if Self::nominal_builtin_argument(types, 0, socket) => {
                 Some(Type::Unit)
@@ -4751,6 +4944,19 @@ impl<'program> Validator<'program> {
                 .and_then(Option::as_ref)
                 .is_some_and(|actual| nominal_is(actual, id))
         })
+    }
+
+    fn nominal_builtin_type_argument(
+        types: &[Option<Type>],
+        index: usize,
+        expected: Option<crate::TypeId>,
+        argument: usize,
+    ) -> Option<Type> {
+        let expected = expected?;
+        let Type::Nominal(actual, arguments) = types.get(index)?.as_ref()? else {
+            return None;
+        };
+        (*actual == expected).then(|| arguments.get(argument).cloned())?
     }
 
     fn invalid_builtin_shape(
@@ -6249,6 +6455,17 @@ impl<'program> Validator<'program> {
             result_id,
             vec![success, Type::Nominal(error_id, Vec::new())],
         ))
+    }
+
+    fn expected_io_result_task(&mut self, success: Type, span: Span, path: &str) -> Option<Type> {
+        self.expected_result_type(
+            success,
+            self.program.prelude.io_error,
+            "io_error",
+            span,
+            path,
+        )
+        .map(|result| Type::Task(Box::new(result)))
     }
 
     fn expected_option_type(&mut self, element: Type, span: Span, path: &str) -> Option<Type> {

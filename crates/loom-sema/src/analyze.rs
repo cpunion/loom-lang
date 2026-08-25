@@ -618,6 +618,13 @@ impl Analyzer<'_> {
                     }
                     return self.typed.types.intern(TyData::List(type_arguments[0]));
                 }
+                "TextMap" => {
+                    if type_arguments.len() != 1 {
+                        self.report_arity(reference, "TextMap", 1, type_arguments.len());
+                        return self.typed.types.error();
+                    }
+                    return self.typed.types.intern(TyData::TextMap(type_arguments[0]));
+                }
                 "Task" => {
                     if type_arguments.len() != 1 {
                         self.report_arity(reference, "Task", 1, type_arguments.len());
@@ -1611,6 +1618,10 @@ impl Analyzer<'_> {
             TyData::List(element) => {
                 let element = self.instantiate_concept_type(element, concrete_self, instance);
                 self.typed.types.intern(TyData::List(element))
+            }
+            TyData::TextMap(value) => {
+                let value = self.instantiate_concept_type(value, concrete_self, instance);
+                self.typed.types.intern(TyData::TextMap(value))
             }
             TyData::Result { ok, error } => {
                 let ok = self.instantiate_concept_type(ok, concrete_self, instance);
@@ -3230,10 +3241,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::ParseFloatError
                 | BuiltinType::ParseIntError
                 | BuiltinType::DecodeTextError
-                | BuiltinType::PathError,
+                | BuiltinType::PathError
+                | BuiltinType::Json
+                | BuiltinType::JsonError
+                | BuiltinType::IoErrorKind
+                | BuiltinType::LogLevel,
             ) => true,
             TyData::Builtin(
-                BuiltinType::ContractFault | BuiltinType::File | BuiltinType::Socket,
+                BuiltinType::ContractFault
+                | BuiltinType::File
+                | BuiltinType::Socket
+                | BuiltinType::IoError,
             )
             | TyData::Param(_)
             | TyData::DynTarget(_)
@@ -3245,7 +3263,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Tuple(elements) => elements
                 .into_iter()
                 .all(|element| self.supports_value_equality_inner(element, active, depth + 1)),
-            TyData::List(element) | TyData::Option(element) | TyData::TaskOutcome(element) => {
+            TyData::List(element)
+            | TyData::TextMap(element)
+            | TyData::Option(element)
+            | TyData::TaskOutcome(element) => {
                 self.supports_value_equality_inner(element, active, depth + 1)
             }
             TyData::Result { ok, error } => {
@@ -3408,6 +3429,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             && let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name)
         {
             return self.check_variant_constructor(expression, variant, owner, &[], None);
+        }
+        if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
+            && let Some((builtin, ty)) = self.standard_static_value(&type_path, name)
+        {
+            self.semantics.calls.insert(
+                expression,
+                CallResolution {
+                    target: CallTarget::Builtin(builtin),
+                    substitution: Substitution::default(),
+                    dispatch_witness: None,
+                    witnesses: Vec::new(),
+                    receiver: None,
+                },
+            );
+            return self.types().builtin(ty);
         }
         let previous = self.allow_dirty_self_projection;
         let previous_scoped = self.checking_scoped_receiver;
@@ -3913,6 +3949,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     .join(", ")
             ),
             TyData::List(element) => format!("List[{}]", self.type_name(*element)),
+            TyData::TextMap(value) => format!("TextMap[{}]", self.type_name(*value)),
             TyData::Option(element) => format!("Option[{}]", self.type_name(*element)),
             TyData::Result { ok, error } => {
                 format!(
@@ -4828,26 +4865,40 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return self.types().error();
         };
-        if path.segments.len() == 1 && path.segments[0].name.as_str() == "List" {
+        if path.segments.len() == 1 && matches!(path.segments[0].name.as_str(), "List" | "TextMap")
+        {
             if !arguments.is_empty() {
                 self.call_arity(expression, 0, arguments.len());
             }
             let explicit = self.resolve_call_type_arguments(type_arguments);
-            let element = if explicit.len() == 1 {
+            let value = if explicit.len() == 1 {
                 explicit[0]
             } else {
+                let constructor = path.segments[0].name.as_str();
                 self.error_at(
                     "TypeMismatch",
-                    "List construction requires exactly one element type: `List[T]()`",
+                    format!(
+                        "{constructor} construction requires exactly one value type: `{constructor}[T]()`"
+                    ),
                     expression,
                 );
                 self.types().error()
             };
-            let result = self.types().intern(TyData::List(element));
+            let (target, result) = if path.segments[0].name.as_str() == "List" {
+                (
+                    BuiltinValue::ListNew,
+                    self.types().intern(TyData::List(value)),
+                )
+            } else {
+                (
+                    BuiltinValue::TextMapNew,
+                    self.types().intern(TyData::TextMap(value)),
+                )
+            };
             self.semantics.calls.insert(
                 expression,
                 CallResolution {
-                    target: CallTarget::Builtin(BuiltinValue::ListNew),
+                    target: CallTarget::Builtin(target),
                     substitution: Substitution::default(),
                     dispatch_witness: None,
                     witnesses: Vec::new(),
@@ -4895,8 +4946,46 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "create_path" if self.builtin_is_imported("standard.file.create_path") => {
                     Some(BuiltinValue::FileCreatePath)
                 }
+                "try_open_read" if self.builtin_is_imported("standard.file.try_open_read") => {
+                    Some(BuiltinValue::FileTryOpenRead)
+                }
+                "try_create" if self.builtin_is_imported("standard.file.try_create") => {
+                    Some(BuiltinValue::FileTryCreate)
+                }
+                "try_open_read_path"
+                    if self.builtin_is_imported("standard.file.try_open_read_path") =>
+                {
+                    Some(BuiltinValue::FileTryOpenReadPath)
+                }
+                "try_create_path" if self.builtin_is_imported("standard.file.try_create_path") => {
+                    Some(BuiltinValue::FileTryCreatePath)
+                }
                 "connect" if self.builtin_is_imported("standard.net.connect") => {
                     Some(BuiltinValue::SocketConnect)
+                }
+                "try_connect" if self.builtin_is_imported("standard.net.try_connect") => {
+                    Some(BuiltinValue::SocketTryConnect)
+                }
+                "parse_json" if self.builtin_is_imported("standard.json.parse_json") => {
+                    Some(BuiltinValue::JsonParse)
+                }
+                "format_json" if self.builtin_is_imported("standard.json.format_json") => {
+                    Some(BuiltinValue::JsonFormat)
+                }
+                "debug" if self.builtin_is_imported("standard.log.debug") => {
+                    Some(BuiltinValue::LogDebug)
+                }
+                "info" if self.builtin_is_imported("standard.log.info") => {
+                    Some(BuiltinValue::LogInfo)
+                }
+                "warn" if self.builtin_is_imported("standard.log.warn") => {
+                    Some(BuiltinValue::LogWarn)
+                }
+                "error" if self.builtin_is_imported("standard.log.error") => {
+                    Some(BuiltinValue::LogError)
+                }
+                "write" if self.builtin_is_imported("standard.log.write") => {
+                    Some(BuiltinValue::LogWrite)
                 }
                 _ => None,
             };
@@ -5041,13 +5130,31 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::FileCreate
             | BuiltinValue::FileOpenReadPath
             | BuiltinValue::FileCreatePath
-            | BuiltinValue::SocketConnect => {
+            | BuiltinValue::FileTryOpenRead
+            | BuiltinValue::FileTryCreate
+            | BuiltinValue::FileTryOpenReadPath
+            | BuiltinValue::FileTryCreatePath
+            | BuiltinValue::SocketConnect
+            | BuiltinValue::SocketTryConnect
+            | BuiltinValue::JsonParse
+            | BuiltinValue::JsonFormat
+            | BuiltinValue::LogDebug
+            | BuiltinValue::LogInfo
+            | BuiltinValue::LogWarn
+            | BuiltinValue::LogError
+            | BuiltinValue::LogWrite => {
                 self.check_standard_builtin_call(expression, builtin, arguments)
             }
             BuiltinValue::ListNew
+            | BuiltinValue::TextMapNew
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
+            | BuiltinValue::TextMapLength
+            | BuiltinValue::TextMapContains
+            | BuiltinValue::TextMapGet
+            | BuiltinValue::TextMapInsert
+            | BuiltinValue::TextMapRemove
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
             | BuiltinValue::DurationAsMilliseconds
@@ -5063,11 +5170,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::PathFromText
             | BuiltinValue::PathAsText
             | BuiltinValue::PathJoin
+            | BuiltinValue::IoErrorKind
+            | BuiltinValue::IoErrorMessage
             | BuiltinValue::FileReadText
             | BuiltinValue::FileWriteText
+            | BuiltinValue::FileTryReadText
+            | BuiltinValue::FileTryWriteText
             | BuiltinValue::FileClose
             | BuiltinValue::SocketReadText
             | BuiltinValue::SocketWriteText
+            | BuiltinValue::SocketTryReadText
+            | BuiltinValue::SocketTryWriteText
             | BuiltinValue::SocketClose => {
                 self.error_at(
                     "TypeMismatch",
@@ -5085,6 +5198,30 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::DecodeTextInvalidUtf8
             | BuiltinValue::PathContainsNul
             | BuiltinValue::PathAbsoluteJoin
+            | BuiltinValue::JsonNull
+            | BuiltinValue::JsonBool
+            | BuiltinValue::JsonNumber
+            | BuiltinValue::JsonText
+            | BuiltinValue::JsonArray
+            | BuiltinValue::JsonObject
+            | BuiltinValue::JsonInvalidSyntax
+            | BuiltinValue::JsonNumberOutOfRange
+            | BuiltinValue::JsonDepthLimit
+            | BuiltinValue::JsonNonFiniteNumber
+            | BuiltinValue::IoErrorNotFound
+            | BuiltinValue::IoErrorPermissionDenied
+            | BuiltinValue::IoErrorAlreadyExists
+            | BuiltinValue::IoErrorInvalidInput
+            | BuiltinValue::IoErrorConnectionRefused
+            | BuiltinValue::IoErrorConnectionReset
+            | BuiltinValue::IoErrorTimedOut
+            | BuiltinValue::IoErrorUnexpectedEof
+            | BuiltinValue::IoErrorClosed
+            | BuiltinValue::IoErrorOther
+            | BuiltinValue::LogLevelDebug
+            | BuiltinValue::LogLevelInfo
+            | BuiltinValue::LogLevelWarn
+            | BuiltinValue::LogLevelError
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -5222,6 +5359,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let file = self.types().builtin(BuiltinType::File);
                 self.types().intern(TyData::Task(file))
             }
+            BuiltinValue::FileTryOpenRead | BuiltinValue::FileTryCreate => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                self.try_resource_task(BuiltinType::File)
+            }
+            BuiltinValue::FileTryOpenReadPath | BuiltinValue::FileTryCreatePath => {
+                let path = self.types().builtin(BuiltinType::Path);
+                self.check_fixed_arguments(expression, arguments, &[path]);
+                self.try_resource_task(BuiltinType::File)
+            }
             BuiltinValue::SocketConnect => {
                 let text = self.types().builtin(BuiltinType::Text);
                 let int = self.types().builtin(BuiltinType::Int);
@@ -5229,8 +5376,53 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let socket = self.types().builtin(BuiltinType::Socket);
                 self.types().intern(TyData::Task(socket))
             }
+            BuiltinValue::SocketTryConnect => {
+                let text = self.types().builtin(BuiltinType::Text);
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[text, int]);
+                self.try_resource_task(BuiltinType::Socket)
+            }
+            BuiltinValue::JsonParse => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                let json = self.types().builtin(BuiltinType::Json);
+                let error = self.types().builtin(BuiltinType::JsonError);
+                self.types().intern(TyData::Result { ok: json, error })
+            }
+            BuiltinValue::JsonFormat => {
+                let json = self.types().builtin(BuiltinType::Json);
+                self.check_fixed_arguments(expression, arguments, &[json]);
+                let text = self.types().builtin(BuiltinType::Text);
+                let error = self.types().builtin(BuiltinType::JsonError);
+                self.types().intern(TyData::Result { ok: text, error })
+            }
+            BuiltinValue::LogDebug
+            | BuiltinValue::LogInfo
+            | BuiltinValue::LogWarn
+            | BuiltinValue::LogError => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                self.types().builtin(BuiltinType::Unit)
+            }
+            BuiltinValue::LogWrite => {
+                let level = self.types().builtin(BuiltinType::LogLevel);
+                let text = self.types().builtin(BuiltinType::Text);
+                let fields = self.types().intern(TyData::TextMap(text));
+                self.check_fixed_arguments(expression, arguments, &[level, text, fields]);
+                self.types().builtin(BuiltinType::Unit)
+            }
             _ => unreachable!("caller filters standard builtins"),
         }
+    }
+
+    fn try_resource_task(&mut self, resource: BuiltinType) -> TyId {
+        let resource = self.types().builtin(resource);
+        let error = self.types().builtin(BuiltinType::IoError);
+        let result = self.types().intern(TyData::Result {
+            ok: resource,
+            error,
+        });
+        self.types().intern(TyData::Task(result))
     }
 
     fn check_fixed_arguments(
@@ -5369,6 +5561,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 expression,
                 receiver,
                 element,
+                method_name,
+                type_arguments,
+                arguments,
+            )
+        {
+            return result;
+        }
+        if let TyData::TextMap(value) = self.types().data(receiver_ty).clone()
+            && let Some(result) = self.check_text_map_method_call(
+                expression,
+                value,
                 method_name,
                 type_arguments,
                 arguments,
@@ -5658,6 +5861,65 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(result)
     }
 
+    fn check_text_map_method_call(
+        &mut self,
+        expression: ExprId,
+        value: TyId,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let text = self.types().builtin(BuiltinType::Text);
+        let (builtin, parameters, result) = match method_name.as_str() {
+            "length" => (
+                BuiltinValue::TextMapLength,
+                Vec::new(),
+                self.types().builtin(BuiltinType::Int),
+            ),
+            "contains" => (
+                BuiltinValue::TextMapContains,
+                vec![text],
+                self.types().builtin(BuiltinType::Bool),
+            ),
+            "get" => (
+                BuiltinValue::TextMapGet,
+                vec![text],
+                self.types().intern(TyData::Option(value)),
+            ),
+            "insert" => (
+                BuiltinValue::TextMapInsert,
+                vec![text, value],
+                self.types().intern(TyData::TextMap(value)),
+            ),
+            "remove" => (
+                BuiltinValue::TextMapRemove,
+                vec![text],
+                self.types().intern(TyData::TextMap(value)),
+            ),
+            _ => return None,
+        };
+        if !type_arguments.is_empty() {
+            self.error_at(
+                "TypeMismatch",
+                "TextMap methods do not accept explicit type arguments",
+                expression,
+            );
+        }
+        self.check_fixed_arguments(expression, arguments, &parameters);
+        self.finish_call_arguments(arguments);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::Builtin(builtin),
+                substitution: Substitution::default(),
+                dispatch_witness: None,
+                witnesses: Vec::new(),
+                receiver: Some(ReceiverPassing::Value),
+            },
+        );
+        Some(result)
+    }
+
     fn check_task_fault_method_call(
         &mut self,
         expression: ExprId,
@@ -5714,6 +5976,56 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.types().intern(TyData::Result { ok: path, error }),
                 )
             }
+            ("Json", "Bool") => {
+                let parameter = self.types().builtin(BuiltinType::Bool);
+                (
+                    BuiltinValue::JsonBool,
+                    vec![parameter],
+                    self.types().builtin(BuiltinType::Json),
+                )
+            }
+            ("Json", "Number") => {
+                let parameter = self.types().builtin(BuiltinType::Float);
+                (
+                    BuiltinValue::JsonNumber,
+                    vec![parameter],
+                    self.types().builtin(BuiltinType::Json),
+                )
+            }
+            ("Json", "Text") => {
+                let parameter = self.types().builtin(BuiltinType::Text);
+                (
+                    BuiltinValue::JsonText,
+                    vec![parameter],
+                    self.types().builtin(BuiltinType::Json),
+                )
+            }
+            ("Json", "Array") => {
+                let json = self.types().builtin(BuiltinType::Json);
+                let parameter = self.types().intern(TyData::List(json));
+                (BuiltinValue::JsonArray, vec![parameter], json)
+            }
+            ("Json", "Object") => {
+                let json = self.types().builtin(BuiltinType::Json);
+                let parameter = self.types().intern(TyData::TextMap(json));
+                (BuiltinValue::JsonObject, vec![parameter], json)
+            }
+            ("JsonError", "InvalidSyntax") => {
+                let int = self.types().builtin(BuiltinType::Int);
+                (
+                    BuiltinValue::JsonInvalidSyntax,
+                    vec![int],
+                    self.types().builtin(BuiltinType::JsonError),
+                )
+            }
+            ("JsonError", "NumberOutOfRange") => {
+                let int = self.types().builtin(BuiltinType::Int);
+                (
+                    BuiltinValue::JsonNumberOutOfRange,
+                    vec![int],
+                    self.types().builtin(BuiltinType::JsonError),
+                )
+            }
             _ => return None,
         };
         if !type_arguments.is_empty() {
@@ -5736,6 +6048,57 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         Some(result)
+    }
+
+    fn standard_static_value(
+        &self,
+        type_path: &Path,
+        name: &Name,
+    ) -> Option<(BuiltinValue, BuiltinType)> {
+        let [segment] = type_path.segments.as_slice() else {
+            return None;
+        };
+        Some(match (segment.name.as_str(), name.as_str()) {
+            ("Json", "Null") => (BuiltinValue::JsonNull, BuiltinType::Json),
+            ("JsonError", "DepthLimit") => (BuiltinValue::JsonDepthLimit, BuiltinType::JsonError),
+            ("JsonError", "NonFiniteNumber") => {
+                (BuiltinValue::JsonNonFiniteNumber, BuiltinType::JsonError)
+            }
+            ("IoErrorKind", "NotFound") => {
+                (BuiltinValue::IoErrorNotFound, BuiltinType::IoErrorKind)
+            }
+            ("IoErrorKind", "PermissionDenied") => (
+                BuiltinValue::IoErrorPermissionDenied,
+                BuiltinType::IoErrorKind,
+            ),
+            ("IoErrorKind", "AlreadyExists") => {
+                (BuiltinValue::IoErrorAlreadyExists, BuiltinType::IoErrorKind)
+            }
+            ("IoErrorKind", "InvalidInput") => {
+                (BuiltinValue::IoErrorInvalidInput, BuiltinType::IoErrorKind)
+            }
+            ("IoErrorKind", "ConnectionRefused") => (
+                BuiltinValue::IoErrorConnectionRefused,
+                BuiltinType::IoErrorKind,
+            ),
+            ("IoErrorKind", "ConnectionReset") => (
+                BuiltinValue::IoErrorConnectionReset,
+                BuiltinType::IoErrorKind,
+            ),
+            ("IoErrorKind", "TimedOut") => {
+                (BuiltinValue::IoErrorTimedOut, BuiltinType::IoErrorKind)
+            }
+            ("IoErrorKind", "UnexpectedEof") => {
+                (BuiltinValue::IoErrorUnexpectedEof, BuiltinType::IoErrorKind)
+            }
+            ("IoErrorKind", "Closed") => (BuiltinValue::IoErrorClosed, BuiltinType::IoErrorKind),
+            ("IoErrorKind", "Other") => (BuiltinValue::IoErrorOther, BuiltinType::IoErrorKind),
+            ("LogLevel", "Debug") => (BuiltinValue::LogLevelDebug, BuiltinType::LogLevel),
+            ("LogLevel", "Info") => (BuiltinValue::LogLevelInfo, BuiltinType::LogLevel),
+            ("LogLevel", "Warn") => (BuiltinValue::LogLevelWarn, BuiltinType::LogLevel),
+            ("LogLevel", "Error") => (BuiltinValue::LogLevelError, BuiltinType::LogLevel),
+            _ => return None,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5836,6 +6199,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     Vec::new(),
                     self.types().builtin(BuiltinType::Int),
                 ),
+                (BuiltinType::IoError, "kind") => (
+                    BuiltinValue::IoErrorKind,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    self.types().builtin(BuiltinType::IoErrorKind),
+                ),
+                (BuiltinType::IoError, "message") => (
+                    BuiltinValue::IoErrorMessage,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    text,
+                ),
                 (BuiltinType::File, "read_text") => (
                     BuiltinValue::FileReadText,
                     ReceiverPassing::Value,
@@ -5848,6 +6223,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     vec![text],
                     self.types().intern(TyData::Task(unit)),
                 ),
+                (BuiltinType::File, "try_read_text") => {
+                    let error = self.types().builtin(BuiltinType::IoError);
+                    let result = self.types().intern(TyData::Result { ok: text, error });
+                    (
+                        BuiltinValue::FileTryReadText,
+                        ReceiverPassing::Value,
+                        Vec::new(),
+                        self.types().intern(TyData::Task(result)),
+                    )
+                }
+                (BuiltinType::File, "try_write_text") => {
+                    let error = self.types().builtin(BuiltinType::IoError);
+                    let result = self.types().intern(TyData::Result { ok: unit, error });
+                    (
+                        BuiltinValue::FileTryWriteText,
+                        ReceiverPassing::Value,
+                        vec![text],
+                        self.types().intern(TyData::Task(result)),
+                    )
+                }
                 (BuiltinType::File, "close") => (
                     BuiltinValue::FileClose,
                     ReceiverPassing::InOut,
@@ -5866,6 +6261,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     vec![text],
                     self.types().intern(TyData::Task(unit)),
                 ),
+                (BuiltinType::Socket, "try_read_text") => {
+                    let error = self.types().builtin(BuiltinType::IoError);
+                    let result = self.types().intern(TyData::Result { ok: text, error });
+                    (
+                        BuiltinValue::SocketTryReadText,
+                        ReceiverPassing::Value,
+                        Vec::new(),
+                        self.types().intern(TyData::Task(result)),
+                    )
+                }
+                (BuiltinType::Socket, "try_write_text") => {
+                    let error = self.types().builtin(BuiltinType::IoError);
+                    let result = self.types().intern(TyData::Result { ok: unit, error });
+                    (
+                        BuiltinValue::SocketTryWriteText,
+                        ReceiverPassing::Value,
+                        vec![text],
+                        self.types().intern(TyData::Task(result)),
+                    )
+                }
                 (BuiltinType::Socket, "close") => (
                     BuiltinValue::SocketClose,
                     ReceiverPassing::InOut,
@@ -6882,6 +7297,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let element = self.normalize_type_with_evidence(element, evidence);
                 self.types().intern(TyData::List(element))
             }
+            TyData::TextMap(value) => {
+                let value = self.normalize_type_with_evidence(value, evidence);
+                self.types().intern(TyData::TextMap(value))
+            }
             TyData::Option(element) => {
                 let element = self.normalize_type_with_evidence(element, evidence);
                 self.types().intern(TyData::Option(element))
@@ -7011,6 +7430,50 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "AbsoluteJoin" if payload.is_empty() => Some(PatternVariant::PathAbsoluteJoin),
                 _ => None,
             },
+            TyData::Builtin(BuiltinType::Json) => match name.as_str() {
+                "Null" if payload.is_empty() => Some(PatternVariant::JsonNull),
+                "Bool" => Some(PatternVariant::JsonBool),
+                "Number" => Some(PatternVariant::JsonNumber),
+                "Text" => Some(PatternVariant::JsonText),
+                "Array" => Some(PatternVariant::JsonArray),
+                "Object" => Some(PatternVariant::JsonObject),
+                _ => None,
+            },
+            TyData::Builtin(BuiltinType::JsonError) => match name.as_str() {
+                "InvalidSyntax" => Some(PatternVariant::JsonInvalidSyntax),
+                "NumberOutOfRange" => Some(PatternVariant::JsonNumberOutOfRange),
+                "DepthLimit" if payload.is_empty() => Some(PatternVariant::JsonDepthLimit),
+                "NonFiniteNumber" if payload.is_empty() => {
+                    Some(PatternVariant::JsonNonFiniteNumber)
+                }
+                _ => None,
+            },
+            TyData::Builtin(BuiltinType::IoErrorKind) => match name.as_str() {
+                "NotFound" if payload.is_empty() => Some(PatternVariant::IoErrorNotFound),
+                "PermissionDenied" if payload.is_empty() => {
+                    Some(PatternVariant::IoErrorPermissionDenied)
+                }
+                "AlreadyExists" if payload.is_empty() => Some(PatternVariant::IoErrorAlreadyExists),
+                "InvalidInput" if payload.is_empty() => Some(PatternVariant::IoErrorInvalidInput),
+                "ConnectionRefused" if payload.is_empty() => {
+                    Some(PatternVariant::IoErrorConnectionRefused)
+                }
+                "ConnectionReset" if payload.is_empty() => {
+                    Some(PatternVariant::IoErrorConnectionReset)
+                }
+                "TimedOut" if payload.is_empty() => Some(PatternVariant::IoErrorTimedOut),
+                "UnexpectedEof" if payload.is_empty() => Some(PatternVariant::IoErrorUnexpectedEof),
+                "Closed" if payload.is_empty() => Some(PatternVariant::IoErrorClosed),
+                "Other" if payload.is_empty() => Some(PatternVariant::IoErrorOther),
+                _ => None,
+            },
+            TyData::Builtin(BuiltinType::LogLevel) => match name.as_str() {
+                "Debug" if payload.is_empty() => Some(PatternVariant::LogLevelDebug),
+                "Info" if payload.is_empty() => Some(PatternVariant::LogLevelInfo),
+                "Warn" if payload.is_empty() => Some(PatternVariant::LogLevelWarn),
+                "Error" if payload.is_empty() => Some(PatternVariant::LogLevelError),
+                _ => None,
+            },
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
                     &self.analyzer.program.definitions[*definition].kind
@@ -7039,6 +7502,27 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             (PatternVariant::TaskFaulted, TyData::TaskOutcome(_)) => {
                 vec![self.types().builtin(BuiltinType::TaskFault)]
             }
+            (PatternVariant::JsonBool, TyData::Builtin(BuiltinType::Json)) => {
+                vec![self.types().builtin(BuiltinType::Bool)]
+            }
+            (PatternVariant::JsonNumber, TyData::Builtin(BuiltinType::Json)) => {
+                vec![self.types().builtin(BuiltinType::Float)]
+            }
+            (PatternVariant::JsonText, TyData::Builtin(BuiltinType::Json)) => {
+                vec![self.types().builtin(BuiltinType::Text)]
+            }
+            (PatternVariant::JsonArray, TyData::Builtin(BuiltinType::Json)) => {
+                let json = self.types().builtin(BuiltinType::Json);
+                vec![self.types().intern(TyData::List(json))]
+            }
+            (PatternVariant::JsonObject, TyData::Builtin(BuiltinType::Json)) => {
+                let json = self.types().builtin(BuiltinType::Json);
+                vec![self.types().intern(TyData::TextMap(json))]
+            }
+            (
+                PatternVariant::JsonInvalidSyntax | PatternVariant::JsonNumberOutOfRange,
+                TyData::Builtin(BuiltinType::JsonError),
+            ) => vec![self.types().builtin(BuiltinType::Int)],
             (
                 PatternVariant::User(variant),
                 TyData::Nominal {
@@ -7240,6 +7724,60 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .into_iter()
             .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
             .collect(),
+            TyData::Builtin(BuiltinType::Json) => [
+                PatternVariant::JsonNull,
+                PatternVariant::JsonBool,
+                PatternVariant::JsonNumber,
+                PatternVariant::JsonText,
+                PatternVariant::JsonArray,
+                PatternVariant::JsonObject,
+            ]
+            .into_iter()
+            .map(|variant| {
+                (
+                    CheckedPatternHead::Variant(variant),
+                    self.variant_payload(variant, expected),
+                )
+            })
+            .collect(),
+            TyData::Builtin(BuiltinType::JsonError) => [
+                PatternVariant::JsonInvalidSyntax,
+                PatternVariant::JsonNumberOutOfRange,
+                PatternVariant::JsonDepthLimit,
+                PatternVariant::JsonNonFiniteNumber,
+            ]
+            .into_iter()
+            .map(|variant| {
+                (
+                    CheckedPatternHead::Variant(variant),
+                    self.variant_payload(variant, expected),
+                )
+            })
+            .collect(),
+            TyData::Builtin(BuiltinType::IoErrorKind) => [
+                PatternVariant::IoErrorNotFound,
+                PatternVariant::IoErrorPermissionDenied,
+                PatternVariant::IoErrorAlreadyExists,
+                PatternVariant::IoErrorInvalidInput,
+                PatternVariant::IoErrorConnectionRefused,
+                PatternVariant::IoErrorConnectionReset,
+                PatternVariant::IoErrorTimedOut,
+                PatternVariant::IoErrorUnexpectedEof,
+                PatternVariant::IoErrorClosed,
+                PatternVariant::IoErrorOther,
+            ]
+            .into_iter()
+            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
+            .collect(),
+            TyData::Builtin(BuiltinType::LogLevel) => [
+                PatternVariant::LogLevelDebug,
+                PatternVariant::LogLevelInfo,
+                PatternVariant::LogLevelWarn,
+                PatternVariant::LogLevelError,
+            ]
+            .into_iter()
+            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
+            .collect(),
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
                     self.analyzer.program.definitions[definition].kind.clone()
@@ -7261,6 +7799,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Builtin(_)
             | TyData::Tuple(_)
             | TyData::List(_)
+            | TyData::TextMap(_)
             | TyData::Task(_)
             | TyData::Param(_)
             | TyData::SelfType(_)
@@ -7514,6 +8053,30 @@ enum PatternVariant {
     DecodeTextInvalidUtf8,
     PathContainsNul,
     PathAbsoluteJoin,
+    JsonNull,
+    JsonBool,
+    JsonNumber,
+    JsonText,
+    JsonArray,
+    JsonObject,
+    JsonInvalidSyntax,
+    JsonNumberOutOfRange,
+    JsonDepthLimit,
+    JsonNonFiniteNumber,
+    IoErrorNotFound,
+    IoErrorPermissionDenied,
+    IoErrorAlreadyExists,
+    IoErrorInvalidInput,
+    IoErrorConnectionRefused,
+    IoErrorConnectionReset,
+    IoErrorTimedOut,
+    IoErrorUnexpectedEof,
+    IoErrorClosed,
+    IoErrorOther,
+    LogLevelDebug,
+    LogLevelInfo,
+    LogLevelWarn,
+    LogLevelError,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -7579,6 +8142,46 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         }
         PatternVariant::PathContainsNul => Resolution::Builtin(BuiltinValue::PathContainsNul),
         PatternVariant::PathAbsoluteJoin => Resolution::Builtin(BuiltinValue::PathAbsoluteJoin),
+        PatternVariant::JsonNull => Resolution::Builtin(BuiltinValue::JsonNull),
+        PatternVariant::JsonBool => Resolution::Builtin(BuiltinValue::JsonBool),
+        PatternVariant::JsonNumber => Resolution::Builtin(BuiltinValue::JsonNumber),
+        PatternVariant::JsonText => Resolution::Builtin(BuiltinValue::JsonText),
+        PatternVariant::JsonArray => Resolution::Builtin(BuiltinValue::JsonArray),
+        PatternVariant::JsonObject => Resolution::Builtin(BuiltinValue::JsonObject),
+        PatternVariant::JsonInvalidSyntax => Resolution::Builtin(BuiltinValue::JsonInvalidSyntax),
+        PatternVariant::JsonNumberOutOfRange => {
+            Resolution::Builtin(BuiltinValue::JsonNumberOutOfRange)
+        }
+        PatternVariant::JsonDepthLimit => Resolution::Builtin(BuiltinValue::JsonDepthLimit),
+        PatternVariant::JsonNonFiniteNumber => {
+            Resolution::Builtin(BuiltinValue::JsonNonFiniteNumber)
+        }
+        PatternVariant::IoErrorNotFound => Resolution::Builtin(BuiltinValue::IoErrorNotFound),
+        PatternVariant::IoErrorPermissionDenied => {
+            Resolution::Builtin(BuiltinValue::IoErrorPermissionDenied)
+        }
+        PatternVariant::IoErrorAlreadyExists => {
+            Resolution::Builtin(BuiltinValue::IoErrorAlreadyExists)
+        }
+        PatternVariant::IoErrorInvalidInput => {
+            Resolution::Builtin(BuiltinValue::IoErrorInvalidInput)
+        }
+        PatternVariant::IoErrorConnectionRefused => {
+            Resolution::Builtin(BuiltinValue::IoErrorConnectionRefused)
+        }
+        PatternVariant::IoErrorConnectionReset => {
+            Resolution::Builtin(BuiltinValue::IoErrorConnectionReset)
+        }
+        PatternVariant::IoErrorTimedOut => Resolution::Builtin(BuiltinValue::IoErrorTimedOut),
+        PatternVariant::IoErrorUnexpectedEof => {
+            Resolution::Builtin(BuiltinValue::IoErrorUnexpectedEof)
+        }
+        PatternVariant::IoErrorClosed => Resolution::Builtin(BuiltinValue::IoErrorClosed),
+        PatternVariant::IoErrorOther => Resolution::Builtin(BuiltinValue::IoErrorOther),
+        PatternVariant::LogLevelDebug => Resolution::Builtin(BuiltinValue::LogLevelDebug),
+        PatternVariant::LogLevelInfo => Resolution::Builtin(BuiltinValue::LogLevelInfo),
+        PatternVariant::LogLevelWarn => Resolution::Builtin(BuiltinValue::LogLevelWarn),
+        PatternVariant::LogLevelError => Resolution::Builtin(BuiltinValue::LogLevelError),
         PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
         PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
@@ -7647,9 +8250,10 @@ fn contains_unbound_param(
             contains_unbound_param(types, *ok, substitution)
                 || contains_unbound_param(types, *error, substitution)
         }
-        TyData::Task(output) | TyData::List(output) | TyData::TaskOutcome(output) => {
-            contains_unbound_param(types, *output, substitution)
-        }
+        TyData::Task(output)
+        | TyData::List(output)
+        | TyData::TextMap(output)
+        | TyData::TaskOutcome(output) => contains_unbound_param(types, *output, substitution),
         TyData::Nominal { arguments, .. } => arguments
             .iter()
             .any(|argument| contains_unbound_param(types, *argument, substitution)),
@@ -7687,6 +8291,9 @@ fn unify_type(
                     .all(|(left, right)| unify_type(types, *left, *right, substitution))
         }
         (TyData::Option(left), TyData::Option(right)) => {
+            unify_type(types, *left, *right, substitution)
+        }
+        (TyData::TextMap(left), TyData::TextMap(right)) => {
             unify_type(types, *left, *right, substitution)
         }
         (
@@ -7794,6 +8401,7 @@ fn collect_projection_bindings(
             }
         }
         TyData::List(element)
+        | TyData::TextMap(element)
         | TyData::Option(element)
         | TyData::Task(element)
         | TyData::TaskOutcome(element) => {
@@ -7851,6 +8459,7 @@ fn collect_type_parameters(
         }
         TyData::Task(task_output)
         | TyData::List(task_output)
+        | TyData::TextMap(task_output)
         | TyData::TaskOutcome(task_output) => {
             collect_type_parameters(types, *task_output, output);
         }
@@ -7877,6 +8486,9 @@ fn is_strict_structural_subterm(types: &crate::TyInterner, candidate: TyId, root
         }),
         TyData::Option(element) => {
             *element == candidate || is_strict_structural_subterm(types, candidate, *element)
+        }
+        TyData::TextMap(value) => {
+            *value == candidate || is_strict_structural_subterm(types, candidate, *value)
         }
         TyData::Result { ok, error } => {
             *ok == candidate
@@ -7916,6 +8528,11 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Socket" => Some(BuiltinType::Socket),
         "DecodeTextError" => Some(BuiltinType::DecodeTextError),
         "PathError" => Some(BuiltinType::PathError),
+        "Json" => Some(BuiltinType::Json),
+        "JsonError" => Some(BuiltinType::JsonError),
+        "IoError" => Some(BuiltinType::IoError),
+        "IoErrorKind" => Some(BuiltinType::IoErrorKind),
+        "LogLevel" => Some(BuiltinType::LogLevel),
         _ => None,
     }
 }

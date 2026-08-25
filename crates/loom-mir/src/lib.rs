@@ -75,6 +75,18 @@ pub struct PreludeIds {
     pub decode_text_error: Option<TypeId>,
     #[serde(default)]
     pub path_error: Option<TypeId>,
+    #[serde(default)]
+    pub text_map: Option<TypeId>,
+    #[serde(default)]
+    pub json: Option<TypeId>,
+    #[serde(default)]
+    pub json_error: Option<TypeId>,
+    #[serde(default)]
+    pub io_error: Option<TypeId>,
+    #[serde(default)]
+    pub io_error_kind: Option<TypeId>,
+    #[serde(default)]
+    pub log_level: Option<TypeId>,
 }
 
 impl Program {
@@ -614,6 +626,30 @@ pub enum Builtin {
     SocketReadText,
     SocketWriteText,
     SocketClose,
+    TextMapNew,
+    TextMapLength,
+    TextMapContains,
+    TextMapGet,
+    TextMapInsert,
+    TextMapRemove,
+    JsonParse,
+    JsonFormat,
+    IoErrorKind,
+    IoErrorMessage,
+    FileTryOpenRead,
+    FileTryCreate,
+    FileTryOpenReadPath,
+    FileTryCreatePath,
+    FileTryReadText,
+    FileTryWriteText,
+    SocketTryConnect,
+    SocketTryReadText,
+    SocketTryWriteText,
+    LogDebug,
+    LogInfo,
+    LogWarn,
+    LogError,
+    LogWrite,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
