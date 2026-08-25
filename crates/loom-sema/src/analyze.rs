@@ -3221,12 +3221,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::Int
                 | BuiltinType::Float
                 | BuiltinType::Text
+                | BuiltinType::Bytes
+                | BuiltinType::Path
                 | BuiltinType::Unit
                 | BuiltinType::ConstraintError
                 | BuiltinType::TaskFault
                 | BuiltinType::Duration
                 | BuiltinType::ParseFloatError
-                | BuiltinType::ParseIntError,
+                | BuiltinType::ParseIntError
+                | BuiltinType::DecodeTextError
+                | BuiltinType::PathError,
             ) => true,
             TyData::Builtin(
                 BuiltinType::ContractFault | BuiltinType::File | BuiltinType::Socket,
@@ -4885,6 +4889,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "create" if self.builtin_is_imported("standard.file.create") => {
                     Some(BuiltinValue::FileCreate)
                 }
+                "open_read_path" if self.builtin_is_imported("standard.file.open_read_path") => {
+                    Some(BuiltinValue::FileOpenReadPath)
+                }
+                "create_path" if self.builtin_is_imported("standard.file.create_path") => {
+                    Some(BuiltinValue::FileCreatePath)
+                }
                 "connect" if self.builtin_is_imported("standard.net.connect") => {
                     Some(BuiltinValue::SocketConnect)
                 }
@@ -5029,6 +5039,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::DurationMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
+            | BuiltinValue::FileOpenReadPath
+            | BuiltinValue::FileCreatePath
             | BuiltinValue::SocketConnect => {
                 self.check_standard_builtin_call(expression, builtin, arguments)
             }
@@ -5039,6 +5051,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
             | BuiltinValue::DurationAsMilliseconds
+            | BuiltinValue::TextLength
+            | BuiltinValue::TextGet
+            | BuiltinValue::TextConcat
+            | BuiltinValue::TextContains
+            | BuiltinValue::TextEncodeUtf8
+            | BuiltinValue::BytesLength
+            | BuiltinValue::BytesGet
+            | BuiltinValue::BytesAppend
+            | BuiltinValue::BytesDecodeUtf8
+            | BuiltinValue::PathFromText
+            | BuiltinValue::PathAsText
+            | BuiltinValue::PathJoin
             | BuiltinValue::FileReadText
             | BuiltinValue::FileWriteText
             | BuiltinValue::FileClose
@@ -5058,6 +5082,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::ParseIntInvalidSyntax
             | BuiltinValue::ParseIntOutOfRange
+            | BuiltinValue::DecodeTextInvalidUtf8
+            | BuiltinValue::PathContainsNul
+            | BuiltinValue::PathAbsoluteJoin
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -5189,6 +5216,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let file = self.types().builtin(BuiltinType::File);
                 self.types().intern(TyData::Task(file))
             }
+            BuiltinValue::FileOpenReadPath | BuiltinValue::FileCreatePath => {
+                let path = self.types().builtin(BuiltinType::Path);
+                self.check_fixed_arguments(expression, arguments, &[path]);
+                let file = self.types().builtin(BuiltinType::File);
+                self.types().intern(TyData::Task(file))
+            }
             BuiltinValue::SocketConnect => {
                 let text = self.types().builtin(BuiltinType::Text);
                 let int = self.types().builtin(BuiltinType::Int);
@@ -5308,10 +5341,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         arguments: &[ExprId],
         expected: Option<TyId>,
     ) -> TyId {
-        if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
-            && let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, method_name)
-        {
-            return self.check_variant_constructor(expression, variant, owner, arguments, expected);
+        if let Expr::Path(type_path) = self.source().expressions[receiver].clone() {
+            if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, method_name)
+            {
+                return self
+                    .check_variant_constructor(expression, variant, owner, arguments, expected);
+            }
+            if let Some(result) = self.check_standard_static_method_call(
+                expression,
+                &type_path,
+                method_name,
+                type_arguments,
+                arguments,
+            ) {
+                return result;
+            }
         }
         let previous = self.allow_dirty_self_projection;
         let previous_scoped = self.checking_scoped_receiver;
@@ -5648,6 +5692,52 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(self.types().builtin(BuiltinType::Text))
     }
 
+    fn check_standard_static_method_call(
+        &mut self,
+        expression: ExprId,
+        type_path: &Path,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let [segment] = type_path.segments.as_slice() else {
+            return None;
+        };
+        let (builtin, parameters, result) = match (segment.name.as_str(), method_name.as_str()) {
+            ("Path", "from_text") => {
+                let text = self.types().builtin(BuiltinType::Text);
+                let path = self.types().builtin(BuiltinType::Path);
+                let error = self.types().builtin(BuiltinType::PathError);
+                (
+                    BuiltinValue::PathFromText,
+                    vec![text],
+                    self.types().intern(TyData::Result { ok: path, error }),
+                )
+            }
+            _ => return None,
+        };
+        if !type_arguments.is_empty() {
+            self.error_at(
+                "TypeMismatch",
+                "standard static methods do not accept explicit type arguments",
+                expression,
+            );
+        }
+        self.check_fixed_arguments(expression, arguments, &parameters);
+        self.finish_call_arguments(arguments);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::Builtin(builtin),
+                substitution: Substitution::default(),
+                dispatch_witness: None,
+                witnesses: Vec::new(),
+                receiver: None,
+            },
+        );
+        Some(result)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_standard_value_method_call(
         &mut self,
@@ -5660,8 +5750,86 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     ) -> Option<TyId> {
         let unit = self.types().builtin(BuiltinType::Unit);
         let text = self.types().builtin(BuiltinType::Text);
+        let int = self.types().builtin(BuiltinType::Int);
+        let bool_ty = self.types().builtin(BuiltinType::Bool);
         let (builtin, receiver_passing, parameters, result) =
             match (receiver_type, method_name.as_str()) {
+                (BuiltinType::Text, "length") => (
+                    BuiltinValue::TextLength,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    int,
+                ),
+                (BuiltinType::Text, "get") => (
+                    BuiltinValue::TextGet,
+                    ReceiverPassing::Value,
+                    vec![int],
+                    self.types().intern(TyData::Option(text)),
+                ),
+                (BuiltinType::Text, "concat") => (
+                    BuiltinValue::TextConcat,
+                    ReceiverPassing::Value,
+                    vec![text],
+                    text,
+                ),
+                (BuiltinType::Text, "contains") => (
+                    BuiltinValue::TextContains,
+                    ReceiverPassing::Value,
+                    vec![text],
+                    bool_ty,
+                ),
+                (BuiltinType::Text, "encode_utf8") => (
+                    BuiltinValue::TextEncodeUtf8,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    self.types().builtin(BuiltinType::Bytes),
+                ),
+                (BuiltinType::Bytes, "length") => (
+                    BuiltinValue::BytesLength,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    int,
+                ),
+                (BuiltinType::Bytes, "get") => (
+                    BuiltinValue::BytesGet,
+                    ReceiverPassing::Value,
+                    vec![int],
+                    self.types().intern(TyData::Option(int)),
+                ),
+                (BuiltinType::Bytes, "append") => {
+                    let bytes = self.types().builtin(BuiltinType::Bytes);
+                    (
+                        BuiltinValue::BytesAppend,
+                        ReceiverPassing::Value,
+                        vec![bytes],
+                        bytes,
+                    )
+                }
+                (BuiltinType::Bytes, "decode_utf8") => {
+                    let error = self.types().builtin(BuiltinType::DecodeTextError);
+                    (
+                        BuiltinValue::BytesDecodeUtf8,
+                        ReceiverPassing::Value,
+                        Vec::new(),
+                        self.types().intern(TyData::Result { ok: text, error }),
+                    )
+                }
+                (BuiltinType::Path, "as_text") => (
+                    BuiltinValue::PathAsText,
+                    ReceiverPassing::Value,
+                    Vec::new(),
+                    text,
+                ),
+                (BuiltinType::Path, "join") => {
+                    let path = self.types().builtin(BuiltinType::Path);
+                    let error = self.types().builtin(BuiltinType::PathError);
+                    (
+                        BuiltinValue::PathJoin,
+                        ReceiverPassing::Value,
+                        vec![path],
+                        self.types().intern(TyData::Result { ok: path, error }),
+                    )
+                }
                 (BuiltinType::Duration, "as_milliseconds") => (
                     BuiltinValue::DurationAsMilliseconds,
                     ReceiverPassing::Value,
@@ -6834,6 +7002,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseIntOutOfRange),
                 _ => None,
             },
+            TyData::Builtin(BuiltinType::DecodeTextError) => match name.as_str() {
+                "InvalidUtf8" if payload.is_empty() => Some(PatternVariant::DecodeTextInvalidUtf8),
+                _ => None,
+            },
+            TyData::Builtin(BuiltinType::PathError) => match name.as_str() {
+                "ContainsNul" if payload.is_empty() => Some(PatternVariant::PathContainsNul),
+                "AbsoluteJoin" if payload.is_empty() => Some(PatternVariant::PathAbsoluteJoin),
+                _ => None,
+            },
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
                     &self.analyzer.program.definitions[*definition].kind
@@ -7046,6 +7223,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Builtin(BuiltinType::ParseIntError) => [
                 PatternVariant::ParseIntInvalidSyntax,
                 PatternVariant::ParseIntOutOfRange,
+            ]
+            .into_iter()
+            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
+            .collect(),
+            TyData::Builtin(BuiltinType::DecodeTextError) => {
+                vec![(
+                    CheckedPatternHead::Variant(PatternVariant::DecodeTextInvalidUtf8),
+                    Vec::new(),
+                )]
+            }
+            TyData::Builtin(BuiltinType::PathError) => [
+                PatternVariant::PathContainsNul,
+                PatternVariant::PathAbsoluteJoin,
             ]
             .into_iter()
             .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
@@ -7321,6 +7511,9 @@ enum PatternVariant {
     ParseFloatOutOfRange,
     ParseIntInvalidSyntax,
     ParseIntOutOfRange,
+    DecodeTextInvalidUtf8,
+    PathContainsNul,
+    PathAbsoluteJoin,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -7381,6 +7574,11 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
             Resolution::Builtin(BuiltinValue::ParseIntInvalidSyntax)
         }
         PatternVariant::ParseIntOutOfRange => Resolution::Builtin(BuiltinValue::ParseIntOutOfRange),
+        PatternVariant::DecodeTextInvalidUtf8 => {
+            Resolution::Builtin(BuiltinValue::DecodeTextInvalidUtf8)
+        }
+        PatternVariant::PathContainsNul => Resolution::Builtin(BuiltinValue::PathContainsNul),
+        PatternVariant::PathAbsoluteJoin => Resolution::Builtin(BuiltinValue::PathAbsoluteJoin),
         PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
         PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
@@ -7707,6 +7905,8 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Int" => Some(BuiltinType::Int),
         "Float" => Some(BuiltinType::Float),
         "Text" => Some(BuiltinType::Text),
+        "Bytes" => Some(BuiltinType::Bytes),
+        "Path" => Some(BuiltinType::Path),
         "Unit" => Some(BuiltinType::Unit),
         "ConstraintError" => Some(BuiltinType::ConstraintError),
         "ContractFault" => Some(BuiltinType::ContractFault),
@@ -7714,6 +7914,8 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Duration" => Some(BuiltinType::Duration),
         "File" => Some(BuiltinType::File),
         "Socket" => Some(BuiltinType::Socket),
+        "DecodeTextError" => Some(BuiltinType::DecodeTextError),
+        "PathError" => Some(BuiltinType::PathError),
         _ => None,
     }
 }

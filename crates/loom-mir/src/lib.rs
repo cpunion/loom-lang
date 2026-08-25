@@ -67,6 +67,14 @@ pub struct PreludeIds {
     pub duration: Option<TypeId>,
     pub file: Option<TypeId>,
     pub socket: Option<TypeId>,
+    #[serde(default)]
+    pub bytes: Option<TypeId>,
+    #[serde(default)]
+    pub path: Option<TypeId>,
+    #[serde(default)]
+    pub decode_text_error: Option<TypeId>,
+    #[serde(default)]
+    pub path_error: Option<TypeId>,
 }
 
 impl Program {
@@ -573,6 +581,18 @@ pub enum Builtin {
     IsFinite,
     ParseFloat,
     FormatFloat,
+    TextLength,
+    TextGet,
+    TextConcat,
+    TextContains,
+    TextEncodeUtf8,
+    BytesLength,
+    BytesGet,
+    BytesAppend,
+    BytesDecodeUtf8,
+    PathFromText,
+    PathAsText,
+    PathJoin,
     ListAdd,
     ListLength,
     ListGet,
@@ -585,6 +605,8 @@ pub enum Builtin {
     DurationAsMilliseconds,
     FileOpenRead,
     FileCreate,
+    FileOpenReadPath,
+    FileCreatePath,
     FileReadText,
     FileWriteText,
     FileClose,

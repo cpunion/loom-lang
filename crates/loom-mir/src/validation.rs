@@ -498,6 +498,14 @@ impl<'program> Validator<'program> {
             ("duration", self.program.prelude.duration, "record"),
             ("file", self.program.prelude.file, "record"),
             ("socket", self.program.prelude.socket, "record"),
+            ("bytes", self.program.prelude.bytes, "record"),
+            ("path", self.program.prelude.path, "record"),
+            (
+                "decode_text_error",
+                self.program.prelude.decode_text_error,
+                "enum",
+            ),
+            ("path_error", self.program.prelude.path_error, "enum"),
         ];
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
@@ -626,6 +634,30 @@ impl<'program> Validator<'program> {
                 );
             }
         }
+        for (name, id) in [
+            ("Bytes", self.program.prelude.bytes),
+            ("Path", self.program.prelude.path),
+        ] {
+            let Some(definition) = id.and_then(|id| self.program.type_def(id)) else {
+                continue;
+            };
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Record { fields, invariant: None }
+                    if definition.type_parameters == 0
+                        && fields.len() == 1
+                        && fields[0].name == "raw"
+                        && fields[0].ty == Type::Text
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::RecordShape,
+                    format!("prelude {name} must be a non-generic {{ raw Text }} record"),
+                    definition.span,
+                    format!("prelude.{}", name.to_ascii_lowercase()),
+                );
+            }
+        }
         if let Some(definition) = self
             .program
             .prelude
@@ -650,6 +682,57 @@ impl<'program> Validator<'program> {
                     "prelude ParseIntError must use empty InvalidSyntax#0 and OutOfRange#1 variants",
                     definition.span,
                     "prelude.parse_int_error",
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
+            .decode_text_error
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 0
+                        && variants.len() == 1
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "InvalidUtf8"
+                        && variants[0].payload.is_empty()
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude DecodeTextError must use empty InvalidUtf8#0",
+                    definition.span,
+                    "prelude.decode_text_error",
+                );
+            }
+        }
+        if let Some(definition) = self
+            .program
+            .prelude
+            .path_error
+            .and_then(|id| self.program.type_def(id))
+        {
+            let valid = matches!(
+                &definition.kind,
+                TypeDefKind::Enum { variants }
+                    if definition.type_parameters == 0
+                        && variants.len() == 2
+                        && variants[0].id == VariantId(0)
+                        && variants[0].name == "ContainsNul"
+                        && variants[0].payload.is_empty()
+                        && variants[1].id == VariantId(1)
+                        && variants[1].name == "AbsoluteJoin"
+                        && variants[1].payload.is_empty()
+            );
+            if !valid {
+                self.push(
+                    MirValidationCode::VariantShape,
+                    "prelude PathError must use empty ContainsNul#0 and AbsoluteJoin#1 variants",
+                    definition.span,
+                    "prelude.path_error",
                 );
             }
         }
@@ -4355,6 +4438,8 @@ impl<'program> Validator<'program> {
             builtin,
             Builtin::FileOpenRead
                 | Builtin::FileCreate
+                | Builtin::FileOpenReadPath
+                | Builtin::FileCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
                 | Builtin::FileClose
@@ -4401,6 +4486,103 @@ impl<'program> Validator<'program> {
                     path,
                 ),
             Builtin::FormatFloat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
+            Builtin::TextLength if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                Some(Type::Int)
+            }
+            Builtin::TextGet
+                if types_compatible(&Type::Text, types[0].as_ref()?)
+                    && types_compatible(&Type::Int, types[1].as_ref()?) =>
+            {
+                self.expected_option_type(Type::Text, expression.span, path)
+            }
+            Builtin::TextConcat
+                if types_compatible(&Type::Text, types[0].as_ref()?)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(Type::Text)
+            }
+            Builtin::TextContains
+                if types_compatible(&Type::Text, types[0].as_ref()?)
+                    && types_compatible(&Type::Text, types[1].as_ref()?) =>
+            {
+                Some(Type::Bool)
+            }
+            Builtin::TextEncodeUtf8 if types_compatible(&Type::Text, types[0].as_ref()?) => self
+                .expected_prelude_nominal(
+                    self.program.prelude.bytes,
+                    "bytes",
+                    expression.span,
+                    path,
+                ),
+            Builtin::BytesLength
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes) =>
+            {
+                Some(Type::Int)
+            }
+            Builtin::BytesGet
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes)
+                    && types_compatible(&Type::Int, types[1].as_ref()?) =>
+            {
+                self.expected_option_type(Type::Int, expression.span, path)
+            }
+            Builtin::BytesAppend
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes)
+                    && Self::nominal_builtin_argument(&types, 1, self.program.prelude.bytes) =>
+            {
+                self.program
+                    .prelude
+                    .bytes
+                    .map(|id| Type::Nominal(id, Vec::new()))
+            }
+            Builtin::BytesDecodeUtf8
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes) =>
+            {
+                self.expected_result_type(
+                    Type::Text,
+                    self.program.prelude.decode_text_error,
+                    "decode_text_error",
+                    expression.span,
+                    path,
+                )
+            }
+            Builtin::PathFromText if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                let path_ty = self.expected_prelude_nominal(
+                    self.program.prelude.path,
+                    "path",
+                    expression.span,
+                    path,
+                )?;
+                self.expected_result_type(
+                    path_ty,
+                    self.program.prelude.path_error,
+                    "path_error",
+                    expression.span,
+                    path,
+                )
+            }
+            Builtin::PathAsText
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.path) =>
+            {
+                Some(Type::Text)
+            }
+            Builtin::PathJoin
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.path)
+                    && Self::nominal_builtin_argument(&types, 1, self.program.prelude.path) =>
+            {
+                let path_ty = self.expected_prelude_nominal(
+                    self.program.prelude.path,
+                    "path",
+                    expression.span,
+                    path,
+                )?;
+                self.expected_result_type(
+                    path_ty,
+                    self.program.prelude.path_error,
+                    "path_error",
+                    expression.span,
+                    path,
+                )
+            }
             Builtin::TaskFaultCode | Builtin::TaskFaultMessage
                 if self.program.prelude.task_fault.is_some_and(|task_fault| {
                     types[0]
@@ -4436,6 +4618,12 @@ impl<'program> Validator<'program> {
         let expected_arity = match builtin {
             Builtin::ListAdd
             | Builtin::ListGet
+            | Builtin::TextGet
+            | Builtin::TextConcat
+            | Builtin::TextContains
+            | Builtin::BytesGet
+            | Builtin::BytesAppend
+            | Builtin::PathJoin
             | Builtin::FileWriteText
             | Builtin::SocketConnect
             | Builtin::SocketWriteText => 2,
@@ -4443,6 +4631,12 @@ impl<'program> Validator<'program> {
             Builtin::IsFinite
             | Builtin::ParseFloat
             | Builtin::FormatFloat
+            | Builtin::TextLength
+            | Builtin::TextEncodeUtf8
+            | Builtin::BytesLength
+            | Builtin::BytesDecodeUtf8
+            | Builtin::PathFromText
+            | Builtin::PathAsText
             | Builtin::ListLength
             | Builtin::ProcessEnvironment
             | Builtin::ParseInt
@@ -4452,6 +4646,8 @@ impl<'program> Validator<'program> {
             | Builtin::DurationAsMilliseconds
             | Builtin::FileOpenRead
             | Builtin::FileCreate
+            | Builtin::FileOpenReadPath
+            | Builtin::FileCreatePath
             | Builtin::FileReadText
             | Builtin::FileClose
             | Builtin::SocketReadText
@@ -4502,6 +4698,11 @@ impl<'program> Validator<'program> {
         match builtin {
             Builtin::FileOpenRead | Builtin::FileCreate
                 if types_compatible(&Type::Text, types[0].as_ref()?) =>
+            {
+                file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
+            }
+            Builtin::FileOpenReadPath | Builtin::FileCreatePath
+                if Self::nominal_builtin_argument(types, 0, self.program.prelude.path) =>
             {
                 file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
             }
@@ -6048,6 +6249,64 @@ impl<'program> Validator<'program> {
             result_id,
             vec![success, Type::Nominal(error_id, Vec::new())],
         ))
+    }
+
+    fn expected_option_type(&mut self, element: Type, span: Span, path: &str) -> Option<Type> {
+        let Some(option_id) = self.program.prelude.option else {
+            self.push(
+                MirValidationCode::InvalidTypeReference,
+                "operation returns Option, but prelude.option is absent",
+                span,
+                path,
+            );
+            return None;
+        };
+        let Some(option) = self.program.type_def(option_id) else {
+            self.invalid_type(option_id, span, "prelude.option");
+            return None;
+        };
+        if !matches!(option.kind, TypeDefKind::Enum { .. }) || option.type_parameters != 1 {
+            self.push(
+                MirValidationCode::VariantShape,
+                "prelude.option must be a unary generic enum",
+                option.span,
+                "prelude.option",
+            );
+            return None;
+        }
+        Some(Type::Nominal(option_id, vec![element]))
+    }
+
+    fn expected_prelude_nominal(
+        &mut self,
+        id: Option<crate::TypeId>,
+        name: &str,
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
+        let Some(id) = id else {
+            self.push(
+                MirValidationCode::InvalidTypeReference,
+                format!("operation requires prelude.{name}"),
+                span,
+                path,
+            );
+            return None;
+        };
+        let Some(definition) = self.program.type_def(id) else {
+            self.invalid_type(id, span, format!("prelude.{name}"));
+            return None;
+        };
+        if definition.type_parameters != 0 {
+            self.push(
+                MirValidationCode::TypeMismatch,
+                format!("prelude.{name} must be a non-generic type"),
+                definition.span,
+                format!("prelude.{name}"),
+            );
+            return None;
+        }
+        Some(Type::Nominal(id, Vec::new()))
     }
 
     fn task_outcome_type(&self, output: Type) -> Type {

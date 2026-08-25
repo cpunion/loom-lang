@@ -619,12 +619,47 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             duration: None,
             file: None,
             socket: None,
+            bytes: None,
+            path: None,
+            decode_text_error: None,
+            path_error: None,
         },
         ..Program::default()
     };
     let errors = validation_errors(&program);
     assert!(errors.contains(MirValidationCode::InvalidTypeReference));
     assert!(errors.contains(MirValidationCode::RecordShape));
+}
+
+#[test]
+fn text_get_rejects_a_non_integer_index_at_the_checked_boundary() {
+    let program = Program {
+        functions: vec![function(
+            0,
+            vec![local(0, Type::Text, false), local(1, Type::Text, false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::TextGet),
+                        type_arguments: Vec::new(),
+                        arguments: vec![
+                            CallArgument::Value(copy(0, Type::Text)),
+                            CallArgument::Value(copy(1, Type::Text)),
+                        ],
+                        witnesses: Vec::new(),
+                    },
+                    ty: Type::Int,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
 }
 
 #[test]

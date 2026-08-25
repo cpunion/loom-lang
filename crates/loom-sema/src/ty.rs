@@ -37,6 +37,8 @@ pub enum BuiltinType {
     Int,
     Float,
     Text,
+    Bytes,
+    Path,
     Unit,
     ConstraintError,
     ContractFault,
@@ -46,6 +48,8 @@ pub enum BuiltinType {
     Socket,
     ParseFloatError,
     ParseIntError,
+    DecodeTextError,
+    PathError,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

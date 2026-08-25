@@ -254,6 +254,8 @@ pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
             | "standard.time.milliseconds"
             | "standard.file.open_read"
             | "standard.file.create"
+            | "standard.file.open_read_path"
+            | "standard.file.create_path"
             | "standard.net.connect"
     )
 }

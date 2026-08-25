@@ -427,3 +427,84 @@ test async fn generic_async_contracts() {
     assert_eq!(measured.call_plan.ensures.len(), 1);
     assert_eq!(measured.suspension_points.len(), 1);
 }
+
+#[test]
+fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
+    let program = compile_and_validate(
+        r#"
+module standard.resource
+
+import standard.file.open_read_path
+import standard.file.create_path
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
+    let scalar_count = text.length()
+    let scalar = text.get(index)
+    let concatenated = text.concat("!")
+    let contained = text.contains("loom")
+    let encoded = text.encode_utf8()
+    let byte_count = bytes.length()
+    let byte = bytes.get(index)
+    let appended = bytes.append(encoded)
+    let decoded = appended.decode_utf8()
+    let rendered = base.as_text()
+    let joined = base.join(child)
+    let parsed = Path.from_text(text)
+    assert bytes == bytes
+    assert base == base
+    Unit
+}
+
+fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
+    match value {
+        Ok(_) => Unit
+        Err(error) => match error {
+            InvalidUtf8 => Unit
+        }
+    }
+}
+
+fn pathOutcome(value Result[Path, PathError]) Unit {
+    match value {
+        Ok(_) => Unit
+        Err(error) => match error {
+            ContainsNul => Unit
+            AbsoluteJoin => Unit
+        }
+    }
+}
+
+async fn pathFiles(path Path) Unit {
+    scoped input = open_read_path(path).await
+    scoped output = create_path(path).await
+    Unit
+}
+"#,
+    );
+    let debug = format!("{program:#?}");
+    for builtin in [
+        "TextLength",
+        "TextGet",
+        "TextConcat",
+        "TextContains",
+        "TextEncodeUtf8",
+        "BytesLength",
+        "BytesGet",
+        "BytesAppend",
+        "BytesDecodeUtf8",
+        "PathFromText",
+        "PathAsText",
+        "PathJoin",
+        "FileOpenReadPath",
+        "FileCreatePath",
+    ] {
+        assert!(debug.contains(builtin), "missing {builtin} in {debug}");
+    }
+}

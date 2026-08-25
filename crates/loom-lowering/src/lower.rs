@@ -34,7 +34,11 @@ const TASK_OUTCOME_TYPE: TypeId = TypeId(7);
 const DURATION_TYPE: TypeId = TypeId(8);
 const FILE_TYPE: TypeId = TypeId(9);
 const SOCKET_TYPE: TypeId = TypeId(10);
-const SYNTHETIC_TYPE_COUNT: u32 = 11;
+const BYTES_TYPE: TypeId = TypeId(11);
+const PATH_TYPE: TypeId = TypeId(12);
+const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(13);
+const PATH_ERROR_TYPE: TypeId = TypeId(14);
+const SYNTHETIC_TYPE_COUNT: u32 = 15;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -279,6 +283,10 @@ impl<'a> Compiler<'a> {
                 duration: Some(DURATION_TYPE),
                 file: Some(FILE_TYPE),
                 socket: Some(SOCKET_TYPE),
+                bytes: Some(BYTES_TYPE),
+                path: Some(PATH_TYPE),
+                decode_text_error: Some(DECODE_TEXT_ERROR_TYPE),
+                path_error: Some(PATH_ERROR_TYPE),
             },
         };
         program.types.shrink_to_fit();
@@ -763,6 +771,8 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Int => RequirementType::Int,
                 BuiltinType::Float => RequirementType::Float,
                 BuiltinType::Text => RequirementType::Text,
+                BuiltinType::Bytes => RequirementType::Nominal(BYTES_TYPE, Vec::new()),
+                BuiltinType::Path => RequirementType::Nominal(PATH_TYPE, Vec::new()),
                 BuiltinType::Unit => RequirementType::Unit,
                 BuiltinType::ConstraintError => {
                     RequirementType::Nominal(CONSTRAINT_ERROR_TYPE, Vec::new())
@@ -780,6 +790,10 @@ impl<'a> Compiler<'a> {
                 BuiltinType::ParseIntError => {
                     RequirementType::Nominal(PARSE_INT_ERROR_TYPE, Vec::new())
                 }
+                BuiltinType::DecodeTextError => {
+                    RequirementType::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new())
+                }
+                BuiltinType::PathError => RequirementType::Nominal(PATH_ERROR_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -1622,6 +1636,11 @@ impl ContractLowerer<'_, '_> {
                             BuiltinValue::ParseIntOutOfRange => {
                                 (PARSE_INT_ERROR_TYPE, VariantId(1))
                             }
+                            BuiltinValue::DecodeTextInvalidUtf8 => {
+                                (DECODE_TEXT_ERROR_TYPE, VariantId(0))
+                            }
+                            BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
+                            BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
                             BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                             BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                             BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -2786,6 +2805,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 });
             }
             SemaCallTarget::Builtin(builtin) => {
+                let receiver = resolution.receiver.and(receiver);
                 return self.lower_builtin_call(id, builtin, receiver, source_arguments);
             }
             _ => {}
@@ -2958,6 +2978,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::ParseIntInvalidSyntax
             | BuiltinValue::ParseIntOutOfRange
+            | BuiltinValue::DecodeTextInvalidUtf8
+            | BuiltinValue::PathContainsNul
+            | BuiltinValue::PathAbsoluteJoin
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -2969,6 +2992,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
+                    BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
+                    BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
+                    BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                     BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                     BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -2987,6 +3013,18 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             BuiltinValue::ParseFloat
             | BuiltinValue::FormatFloat
             | BuiltinValue::IsFinite
+            | BuiltinValue::TextLength
+            | BuiltinValue::TextGet
+            | BuiltinValue::TextConcat
+            | BuiltinValue::TextContains
+            | BuiltinValue::TextEncodeUtf8
+            | BuiltinValue::BytesLength
+            | BuiltinValue::BytesGet
+            | BuiltinValue::BytesAppend
+            | BuiltinValue::BytesDecodeUtf8
+            | BuiltinValue::PathFromText
+            | BuiltinValue::PathAsText
+            | BuiltinValue::PathJoin
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
@@ -2999,6 +3037,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::DurationAsMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
+            | BuiltinValue::FileOpenReadPath
+            | BuiltinValue::FileCreatePath
             | BuiltinValue::FileReadText
             | BuiltinValue::FileWriteText
             | BuiltinValue::FileClose
@@ -3424,6 +3464,18 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::ParseFloat => Builtin::ParseFloat,
         BuiltinValue::FormatFloat => Builtin::FormatFloat,
         BuiltinValue::IsFinite => Builtin::IsFinite,
+        BuiltinValue::TextLength => Builtin::TextLength,
+        BuiltinValue::TextGet => Builtin::TextGet,
+        BuiltinValue::TextConcat => Builtin::TextConcat,
+        BuiltinValue::TextContains => Builtin::TextContains,
+        BuiltinValue::TextEncodeUtf8 => Builtin::TextEncodeUtf8,
+        BuiltinValue::BytesLength => Builtin::BytesLength,
+        BuiltinValue::BytesGet => Builtin::BytesGet,
+        BuiltinValue::BytesAppend => Builtin::BytesAppend,
+        BuiltinValue::BytesDecodeUtf8 => Builtin::BytesDecodeUtf8,
+        BuiltinValue::PathFromText => Builtin::PathFromText,
+        BuiltinValue::PathAsText => Builtin::PathAsText,
+        BuiltinValue::PathJoin => Builtin::PathJoin,
         BuiltinValue::ListAdd => Builtin::ListAdd,
         BuiltinValue::ListLength => Builtin::ListLength,
         BuiltinValue::ListGet => Builtin::ListGet,
@@ -3436,6 +3488,8 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::DurationAsMilliseconds => Builtin::DurationAsMilliseconds,
         BuiltinValue::FileOpenRead => Builtin::FileOpenRead,
         BuiltinValue::FileCreate => Builtin::FileCreate,
+        BuiltinValue::FileOpenReadPath => Builtin::FileOpenReadPath,
+        BuiltinValue::FileCreatePath => Builtin::FileCreatePath,
         BuiltinValue::FileReadText => Builtin::FileReadText,
         BuiltinValue::FileWriteText => Builtin::FileWriteText,
         BuiltinValue::FileClose => Builtin::FileClose,
@@ -3679,6 +3733,20 @@ fn synthetic_types() -> Vec<TypeDef> {
         opaque_record_type(DURATION_TYPE, "Duration", Type::Int, span),
         opaque_record_type(FILE_TYPE, "File", Type::Int, span),
         opaque_record_type(SOCKET_TYPE, "Socket", Type::Int, span),
+        opaque_record_type(BYTES_TYPE, "Bytes", Type::Text, span),
+        opaque_record_type(PATH_TYPE, "Path", Type::Text, span),
+        closed_error_type(
+            DECODE_TEXT_ERROR_TYPE,
+            "DecodeTextError",
+            &["InvalidUtf8"],
+            span,
+        ),
+        closed_error_type(
+            PATH_ERROR_TYPE,
+            "PathError",
+            &["ContainsNul", "AbsoluteJoin"],
+            span,
+        ),
     ]
 }
 
@@ -3688,6 +3756,8 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Int => Type::Int,
         BuiltinType::Float => Type::Float,
         BuiltinType::Text => Type::Text,
+        BuiltinType::Bytes => Type::Nominal(BYTES_TYPE, Vec::new()),
+        BuiltinType::Path => Type::Nominal(PATH_TYPE, Vec::new()),
         BuiltinType::Unit => Type::Unit,
         BuiltinType::ConstraintError => Type::Nominal(CONSTRAINT_ERROR_TYPE, Vec::new()),
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
@@ -3697,6 +3767,29 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
         BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
         BuiltinType::ParseIntError => Type::Nominal(PARSE_INT_ERROR_TYPE, Vec::new()),
+        BuiltinType::DecodeTextError => Type::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new()),
+        BuiltinType::PathError => Type::Nominal(PATH_ERROR_TYPE, Vec::new()),
+    }
+}
+
+fn closed_error_type(id: TypeId, name: &str, variants: &[&str], span: Span) -> TypeDef {
+    TypeDef {
+        id,
+        name: name.into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: variants
+                .iter()
+                .enumerate()
+                .map(|(index, name)| VariantDef {
+                    id: VariantId(u32::try_from(index).expect("synthetic error variant index")),
+                    name: (*name).into(),
+                    payload: Vec::new(),
+                    span,
+                })
+                .collect(),
+        },
     }
 }
 
@@ -3898,6 +3991,11 @@ fn lower_pattern(
                         }
                         BuiltinValue::ParseIntInvalidSyntax => (PARSE_INT_ERROR_TYPE, VariantId(0)),
                         BuiltinValue::ParseIntOutOfRange => (PARSE_INT_ERROR_TYPE, VariantId(1)),
+                        BuiltinValue::DecodeTextInvalidUtf8 => {
+                            (DECODE_TEXT_ERROR_TYPE, VariantId(0))
+                        }
+                        BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
+                        BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
                         BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                         BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                         BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
