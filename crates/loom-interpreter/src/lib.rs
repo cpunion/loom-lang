@@ -366,11 +366,20 @@ struct ManagedTask {
     /// Present only for the compiler-known `Task.sleep` leaf task.
     timer_deadline: Option<Instant>,
     host_io: bool,
+    contract_state: Option<AsyncContractState>,
     join_mode: TaskJoinMode,
     join_dynamic: bool,
     join_combined: bool,
     join_winner: Option<usize>,
     cancel_requested: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncContractState {
+    call_site: Span,
+    entered: bool,
+    old_receiver: Option<Value>,
+    old_arguments: Vec<Option<Value>>,
 }
 
 enum HostIoValue {
@@ -918,6 +927,9 @@ impl<'program> Interpreter<'program> {
                 Span::default(),
             ))
         })?;
+        if let Err(failure) = self.enter_async_contracts(task_id, frame, &function) {
+            return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
+        }
         loop {
             let cursor = self.tasks.get(&task_id).expect("task exists").cursor;
             if let Some(statement) = function.body.statements.get(cursor).cloned() {
@@ -1326,7 +1338,37 @@ impl<'program> Interpreter<'program> {
             let task = self.tasks.get_mut(&task_id).expect("task exists");
             (task.frame, std::mem::take(&mut task.cleanups))
         };
-        let outcome = self.run_cleanups(frame, cleanups, outcome);
+        let mut outcome = self.run_cleanups(frame, cleanups, outcome);
+        let completed_value = match &outcome {
+            Ok(value) => Some(value.clone()),
+            Err(EvalAbort::Return(value)) => Some((**value).clone()),
+            Err(EvalAbort::Failure(_) | EvalAbort::Cancelled) => None,
+        };
+        if let Some(value) = completed_value {
+            let function_id = self
+                .tasks
+                .get(&task_id)
+                .and_then(|task| task.contract_state.as_ref().map(|_| task.function));
+            if let Some(function_id) = function_id {
+                let checked = self
+                    .program
+                    .function(function_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ExecutionFailure::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "async task references an unknown function at exit",
+                            Span::default(),
+                        ))
+                    })
+                    .and_then(|function| {
+                        self.check_async_exit_contracts(task_id, frame, &function, &value)
+                    });
+                if let Err(failure) = checked {
+                    outcome = Err(EvalAbort::Failure(failure));
+                }
+            }
+        }
         let status = match outcome {
             Ok(value) => TaskStatus::Completed(value),
             Err(EvalAbort::Return(value)) => TaskStatus::Completed(*value),
@@ -1470,6 +1512,12 @@ impl<'program> Interpreter<'program> {
                     marked: false,
                     timer_deadline: None,
                     host_io: false,
+                    contract_state: Some(AsyncContractState {
+                        call_site,
+                        entered: false,
+                        old_receiver: None,
+                        old_arguments: Vec::new(),
+                    }),
                     join_mode: TaskJoinMode::All,
                     join_dynamic: false,
                     join_combined: false,
@@ -1589,6 +1637,141 @@ impl<'program> Interpreter<'program> {
             )?;
         }
         Ok(result)
+    }
+
+    fn enter_async_contracts(
+        &mut self,
+        task_id: u64,
+        frame: u64,
+        function: &Function,
+    ) -> Result<(), ExecutionFailure> {
+        let state = self
+            .tasks
+            .get(&task_id)
+            .and_then(|task| task.contract_state.as_ref())
+            .cloned()
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "async function task is missing contract state",
+                    function.span,
+                ))
+            })?;
+        if state.entered {
+            return Ok(());
+        }
+
+        let parameter_values = self.read_parameter_values(frame, function)?;
+        let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
+        if let (Some(contract), Some(receiver_value)) =
+            (&function.call_plan.receiver_invariant, receiver.as_ref())
+        {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Invariant,
+                receiver_value,
+                arguments,
+                None,
+                None,
+                &[],
+                contract.span,
+            )?;
+        }
+        for contract in &function.call_plan.requires {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Precondition,
+                receiver.as_ref().unwrap_or(&Value::Unit),
+                arguments,
+                None,
+                None,
+                &[],
+                state.call_site,
+            )?;
+        }
+
+        let snapshot_needs = old_snapshot_needs(&function.call_plan.ensures, arguments.len());
+        let old_arguments = arguments
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                snapshot_needs
+                    .arguments
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                    .then(|| value.clone())
+            })
+            .collect::<Vec<_>>();
+        let old_receiver = snapshot_needs.receiver.then(|| receiver.clone()).flatten();
+        let contract_state = self
+            .tasks
+            .get_mut(&task_id)
+            .and_then(|task| task.contract_state.as_mut())
+            .expect("async contract state was checked above");
+        contract_state.entered = true;
+        contract_state.old_receiver = old_receiver;
+        contract_state.old_arguments = old_arguments;
+        Ok(())
+    }
+
+    fn check_async_exit_contracts(
+        &mut self,
+        task_id: u64,
+        frame: u64,
+        function: &Function,
+        result: &Value,
+    ) -> Result<(), ExecutionFailure> {
+        let state = self
+            .tasks
+            .get(&task_id)
+            .and_then(|task| task.contract_state.as_ref())
+            .cloned()
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "async function task is missing contract state",
+                    function.span,
+                ))
+            })?;
+        if !state.entered {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "async function exited before entry contracts",
+                    function.span,
+                )
+                .into());
+        }
+        let parameter_values = self.read_parameter_values(frame, function)?;
+        let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
+        if let (Some(contract), Some(receiver_value)) =
+            (&function.call_plan.receiver_invariant, receiver.as_ref())
+        {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Invariant,
+                receiver_value,
+                arguments,
+                Some(result),
+                state.old_receiver.as_ref(),
+                &state.old_arguments,
+                contract.span,
+            )?;
+        }
+        for contract in &function.call_plan.ensures {
+            self.require_contract(
+                contract,
+                ContractFaultKind::Postcondition,
+                receiver.as_ref().unwrap_or(&Value::Unit),
+                arguments,
+                Some(result),
+                state.old_receiver.as_ref(),
+                &state.old_arguments,
+                contract.span,
+            )?;
+        }
+        Ok(())
     }
 
     fn read_parameter_values(
@@ -2080,6 +2263,7 @@ impl<'program> Interpreter<'program> {
                         marked: false,
                         timer_deadline: Some(deadline),
                         host_io: false,
+                        contract_state: None,
                         join_mode: TaskJoinMode::All,
                         join_dynamic: false,
                         join_combined: false,
@@ -3206,6 +3390,7 @@ impl<'program> Interpreter<'program> {
                 marked: false,
                 timer_deadline: None,
                 host_io: false,
+                contract_state: None,
                 join_mode: TaskJoinMode::All,
                 join_dynamic: false,
                 join_combined: false,
@@ -3245,6 +3430,7 @@ impl<'program> Interpreter<'program> {
                 marked: false,
                 timer_deadline: None,
                 host_io: true,
+                contract_state: None,
                 join_mode: TaskJoinMode::All,
                 join_dynamic: false,
                 join_combined: false,

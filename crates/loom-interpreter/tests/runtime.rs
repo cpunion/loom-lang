@@ -1146,3 +1146,57 @@ fn async_tasks_resume_through_the_ready_queue_and_collect_frames() {
     assert_eq!(stats.live, 0);
     assert!(stats.collections >= 2);
 }
+
+#[test]
+fn async_entry_and_exit_contracts_fault_the_task() {
+    for (phase, expected) in [
+        ("requires", ContractFaultKind::Precondition),
+        ("ensures", ContractFaultKind::Postcondition),
+    ] {
+        let rejected = Contract {
+            code: format!("async_{phase}"),
+            span: span(),
+            expression: ContractExpr {
+                kind: ContractExprKind::Constant(Constant::Bool(false)),
+                span: span(),
+            },
+        };
+        let mut call_plan = CallPlan::default();
+        if phase == "requires" {
+            call_plan.requires.push(rejected);
+        } else {
+            call_plan.ensures.push(rejected);
+        }
+        let function = Function {
+            id: FunctionId(0),
+            name: format!("async_{phase}"),
+            span: span(),
+            type_parameters: 0,
+            is_async: true,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            locals: Vec::new(),
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+            call_plan,
+        };
+        let program = Program {
+            functions: vec![function],
+            ..Program::default()
+        };
+        program.validate().expect("async contract MIR validates");
+        let failure = Interpreter::new(&program)
+            .invoke(FunctionId(0), Vec::new(), span())
+            .expect_err("rejected async contract faults its task");
+        assert!(
+            matches!(&failure, ExecutionFailure::Contract { fault } if fault.category == expected),
+            "{phase}: {failure:?}"
+        );
+    }
+}
