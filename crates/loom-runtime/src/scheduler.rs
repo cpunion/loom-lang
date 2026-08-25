@@ -2919,4 +2919,68 @@ mod resource_ownership_tests {
             executor_destroy(executor);
         }
     }
+
+    #[test]
+    fn aggregate_join_transfers_every_resource_to_the_awaiting_task() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let (left_socket, mut left_peer) = UnixStream::pair().expect("create left pair");
+        let (right_socket, mut right_peer) = UnixStream::pair().expect("create right pair");
+        left_peer
+            .set_nonblocking(true)
+            .expect("make left peer nonblocking");
+        right_peer
+            .set_nonblocking(true)
+            .expect("make right peer nonblocking");
+
+        unsafe {
+            let parent = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let left = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let right = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!parent.is_null() && !left.is_null() && !right.is_null());
+
+            (*left).owner = parent;
+            (*right).owner = parent;
+            (*parent).owned_children.extend([left, right]);
+            (*parent).join_children.extend([left, right]);
+            (*left).status = TaskStatus::Completed;
+            (*right).status = TaskStatus::Completed;
+
+            crate::gc::enter_executor(executor);
+            assert_eq!(
+                store_resource_result(left, SOCKET_TYPE, left_socket.into()),
+                TASK_COMPLETED
+            );
+            assert_eq!(
+                store_resource_result(right, SOCKET_TYPE, right_socket.into()),
+                TASK_COMPLETED
+            );
+            crate::gc::leave_executor();
+
+            let destination = task_slot(parent, 0).cast::<ValueSlot>();
+            assert_eq!(
+                task_write_join_result(parent, destination.cast(), JOIN_RESULT_TUPLE),
+                WAIT_OK
+            );
+            assert_eq!((*parent).owned_result_resources.len(), 2);
+            assert!((*left).owned_result_resources.is_empty());
+            assert!((*right).owned_result_resources.is_empty());
+
+            let first = (*destination).words[4] as *mut ValueNode;
+            assert!(!first.is_null());
+            let second = (*first).next;
+            assert!(!second.is_null());
+            assert_eq!(
+                io_close(executor, (&raw mut (*first).value).cast()),
+                WAIT_OK
+            );
+            assert_eq!(
+                io_close(executor, (&raw mut (*second).value).cast()),
+                WAIT_OK
+            );
+            assert_peer_closed(&mut left_peer);
+            assert_peer_closed(&mut right_peer);
+            executor_destroy(executor);
+        }
+    }
 }
