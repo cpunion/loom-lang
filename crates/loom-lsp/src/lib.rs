@@ -294,7 +294,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
             return self.log_error(&error.to_string());
         }
         if let Some(document) = self.open_documents.get_mut(uri) {
-            document.text = text.to_owned();
+            text.clone_into(&mut document.text);
         }
         self.publish_diagnostics()
     }
@@ -898,7 +898,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .iter()
             .filter_map(|(workspace, host)| {
                 let matched_depth = std::iter::once(workspace.as_path())
-                    .chain(host.project().packages().map(|package| package.root()))
+                    .chain(host.project().packages().map(loom_driver::Package::root))
                     .filter(|root| path.starts_with(root))
                     .map(|root| root.components().count())
                     .max()?;

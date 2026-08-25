@@ -105,7 +105,7 @@ fn human_diagnostics_use_scalar_columns_and_keep_machine_records_stable() {
             },
         ],
         notes: vec!["first note".to_owned(), "second note".to_owned()],
-        details: Default::default(),
+        details: std::collections::BTreeMap::default(),
     };
     let json_before = serde_json::to_value(&record).expect("serialize stable JSON record");
     let human = record.human_with_source(snapshot.sources());
@@ -281,6 +281,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn portable_library_is_a_consumable_versioned_dependency() {
     let project = TestProject::new();
     project.write(

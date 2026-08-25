@@ -2958,6 +2958,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_builtin_call(
         &mut self,
         id: ExprId,
@@ -3797,6 +3798,7 @@ impl TypeParameters {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn synthetic_types() -> Vec<TypeDef> {
     let span = Span::default();
     vec![

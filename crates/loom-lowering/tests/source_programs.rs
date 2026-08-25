@@ -510,6 +510,7 @@ async fn pathFiles(path Path) Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn structured_standard_values_lower_to_checked_mir() {
     let program = compile_and_validate(
         r#"

@@ -649,6 +649,7 @@ fn nested_workspace_documents_route_to_the_most_specific_root() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn portable_dependency_implementations_are_opaque_and_read_only() {
     let project = TestProject::new("module placeholder\n");
     project.write(

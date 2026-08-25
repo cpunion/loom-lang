@@ -977,6 +977,7 @@ impl Resolver {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_artifact(
         &mut self,
         manifest: &Path,

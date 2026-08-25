@@ -553,6 +553,7 @@ impl AnalysisHost {
         }
     }
 
+    #[allow(clippy::single_match_else, clippy::too_many_lines)]
     fn analyze_semantics(
         &self,
         hir: &loom_hir::Program,
