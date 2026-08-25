@@ -5,6 +5,7 @@ use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn explicit_discard_evaluates_values_on_both_backends() {
     let project = tempfile::tempdir().expect("create discard project");
     std::fs::write(
