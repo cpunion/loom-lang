@@ -1,6 +1,6 @@
 # loom-lang GC、词法清理与异步任务定案
 
-状态：Core 0.3 Confirmed Normative Design / C1 Native Main Loop Closed / Sync Moving-GC Codegen Pending
+状态：Core 0.3 Confirmed Normative Design / C1 Native + Precise Moving-GC Main Loop Closed
 
 日期：2026-08-26
 
@@ -68,6 +68,14 @@ FFI 后置并采用显式边界：
 - 必须暴露 managed storage 时使用 compiler/runtime pin boundary；
 - pin 只存在于 FFI 边界，不扩散成普通源码的所有权或 `Pin` 类型系统；
 - native 代码不得在 boundary 生命周期之外保留可移动对象的裸地址。
+
+### 2.4 分配、root 与 runtime helper
+
+所有 managed allocator 共用 collect-before slowpath：projected allocation charge 到达阈值时，collector 在创建新对象之前运行。compiler-generated code 必须先把当前 safepoint state 写入同步 shadow-stack frame；Rust runtime helper 则把输入、部分结果和 scratch value 放进 `RuntimeRootScope`。任何可能触发分配的调用返回后，都必须从稳定 root slot 重新读取 managed pointer，不得继续使用 allocation 前取得的 interior pointer、裸对象地址或 Rust borrow。
+
+aggregate 增量构造使用 `NodeStream`：partial chain 与当前 child 都保持为可重写 root，每次新 node 分配完成后再重新加载并发布新的 head/count。runtime-private getter、process environment 和 float formatting 通过 caller 提供的完整、地址稳定 `Value` output slot 返回结果，不跨 ABI 返回可被下一次 collection 移走的 raw managed pointer。普通 `Value` 深复制和 node-chain 构造由 Rust runtime 的非递归 work stack 完成；LLVM module 不生成自己的递归 clone/build helper。
+
+同步 shadow-stack、coroutine frame/result layout 和 trace descriptor 属于 Runtime/compiler-generated Task metadata。Executor 只负责 task/join、ready queue、wait registration 和 reactor/worker 驱动；它不承载每个同步调用的 GC bitmap 或 runtime helper root scope。collector 会把 Executor 拥有的 Task 集合作为 root source 遍历，但这不把 GC layout 决策放进调度器。
 
 ## 3. `scoped` 与 `defer`
 
@@ -456,26 +464,28 @@ async HIR
   → backend-specific object code
 ```
 
-每个 suspension point 有稳定 state id 和 live-local set。coroutine frame descriptor 必须让 GC 只跟踪已经初始化的 managed slots；取消状态还必须跟踪已经注册但尚未执行的 cleanup。优化可以收缩 frame、合并状态、内联 child 或消除 Task/JoinState 分配，但不得改变暂停、取消、cleanup、fault 和结果顺序。
+每个 suspension point 有稳定 state id 和精确、严格排序且无重复的 live-local set。lowering 为结构化 MIR 建立显式 CFG，对 use/def 执行 backward least fixed point；edge 覆盖顺序 continuation、if/match/block、loop backedge、return、cancellation，以及当前已经注册的 `defer`/`scoped` cleanup 的 LIFO 路径。只用于构造当前 task operand 的 local 不跨该 suspension 保留，resume 或取消 cleanup 仍会读取的 local 必须进入集合。MIR validator 独立重算同一结果并拒绝缺失、陈旧或 all-locals fallback metadata。
+
+coroutine frame descriptor 因而只让 GC 跟踪当前 state 中已经初始化且真实存活的 managed slots；取消状态同时覆盖尚未执行 cleanup 的依赖。优化可以进一步收缩 frame、合并状态、内联 child 或消除 Task/JoinState 分配，但不得改变暂停、取消、cleanup、fault 和结果顺序。
 
 closed-world reachability 从 entry/tests 继续遍历 async constructor、resume/cancel/trace descriptor、join mode helper 和 runtime builtin。环境变量改变实例数量不增加代码 roots；只有源码中可达的 task constructors 和显式 witness edges进入 DCE 集合。
 
 ## 7. 当前 reference implementation 状态
 
-截至 2026-08-26，Core 0.3 C1 native 主闭环已关闭；compact witness 已完成，同步 moving-GC codegen 仍在开发。下列进度按这一边界陈述：
+截至 2026-08-26，Core 0.3 C1 native 主闭环、compact witness、同步 precise moving-GC 与 coroutine exact-liveness 已关闭。下列进度按这一边界陈述：
 
 - lexer/parser/HIR/sema/MIR 已实现 `scoped`、`defer`、`async fn`、后缀 `.await`、独立 `?`、`Task[T]`、可穷尽匹配的 `TaskOutcome[T]`/`TaskFault`、`for name in start..end`、`List[T]()` 与 `add/length/get`；旧前缀 await 只产生普通语法错误；
 - `Dispose`、`MustScope`、`NoSuspend`、scoped 不可复制/逃逸、compiler-private affine TaskCarrier、未消费/重复/条件 Task 转移和 interface access across await 均由静态检查器执行；即使已有 generic/conditional witness，`fn erase[T: C](value T) dyn C` 仍因未知 `T` 可能隐藏递归 `MustScope`/Task obligation 而 fail closed；
-- lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复；取消 state 保存挂起时已注册的 cleanup；
+- lowering 为每个 await 分配稳定 state；线性 chain 按求值顺序抽取，if/match/block 内的 await 由同一 state dispatch 恢复。结构化 CFG backward liveness 精确覆盖正常 continuation、loop backedge、return/cancellation 与 active cleanup；MIR validator 独立重算并拒绝 all-locals fallback；
 - interpreter 与 LLVM 都执行 normal return、早退、fault 和 cancellation 的块级 LIFO cleanup；取消传播到 child，join 在返回 winner/failure 前 drain sibling cleanup；native Task fault record 保留第一个 primary fault，后续 fault record 不覆盖它；
 - Task 是单个 runtime pointer；单 Task、组合 Task 与 `Task.sleep/waitReadable/waitWritable` 都可先存储再等待。静态异构参数返回 tuple，动态同构 list 返回 list，`all/settled/any/race` 共享真实 composite Task/JoinState；
-- native root 已按 compiler-private closed-world `FAULT`/`ALLOC`/`EXECUTOR` requirement summary 分层：pure/no-fault primitive-scalar root 没有隐藏 context；其余同步 root 只创建并激活 `LoomRuntime`，async root 才在该 Runtime 上附加 Executor。该 requirement 图不增加源码 effect 标注；
+- native root 已按 compiler-private closed-world `FAULT`/`ALLOC`/`EXECUTOR` requirement summary 分层：pure/no-fault primitive-scalar root 没有隐藏 context；其余同步 root 只创建并激活 `LoomRuntime`，async root 才在该 Runtime 上附加 Executor。同步 root bitmap、layout/trace metadata 与 runtime helper root scope 属于 Runtime/compiler/Task，不挂在 Executor 上；该 requirement 图不增加源码 effect 标注；
 - Rust runtime 实现 version 1 `WaitSource`/generation-checked one-shot `Registration`/`ReadyNotification` ABI，macOS 用 kqueue、Linux 用 epoll。timer、Unix socket、completion、重复通知和取消均有 runtime fixture；源码 fd writable wait 同时通过 interpreter 与 native artifact；
 - scheduler 只在 notification 后 enqueue，coroutine `resume` 真正返回 `Pending`，不会在 callback 栈重入或忙轮询；reactor 与 blocking-I/O worker mailbox 都按首次真实使用懒初始化；
 - `Duration`、真实文件和 TCP socket 已接入同一 Task ABI；native `Socket.read_text/write_text` 在 `WouldBlock` 时通过 kqueue/epoll registration 挂起，`File`/`Socket` 是 compiler-known `MustScope`，退出最内层 block 时自动关闭；解释器执行相同源码语义；
-- `LoomRuntime` 是 sync/async 共用的 managed heap 所有者；async Executor 只借用该 Runtime。collector 在 resume 之间以 Task value slots/runtime results 为 roots，追踪 universal `Value`、`ValueNode` 和 managed `Text`，回收不可达对象、复制存活对象并重写指针。owned `dyn` proof 位于独立非移动 mark-sweep GC arena，collector 从 `dyn` witness 根追踪 prerequisite DAG 并 sweep；Task 隐藏 proof 位于 Task 私有 slots/arena，两者都不随 moving value heap relocation。同步不逃逸局部 `List[Int]` 的 `{data, len, cap}` 快路只含 `i64`，由生成代码显式释放而不进入 GC；canonical append loop 可以在 SSA 中携带 header，但每次 element store 后会立即提交 len，reserve/fault/return/drop 边界始终以一致的内存 header 为准；exact-length scan 证明只删除不可达 bounds/`None` edge，不改变 cleanup；
-- compact witness 已以 compiler-private `WitnessDescriptor`/`WitnessInstance`、concept-local reachable method slots、连续 prerequisite arrays、GC owned-proof arena 与 Task 独立 proof slots/arena 落地。runtime ABI 总版本为 v5，coroutine/task ABI v2，witness ABI v1；精确 identity 见[编译过程与后端](07-compiler-pipeline-and-backends.md#runtime-requirements-与-root-context)和[安装与发布](10-installation-and-release.md)；
-- runtime 侧 `shadow-stack-v1` descriptor/frame、root push/pop、safepoint 和 moving-GC fixture 已存在，但 LLVM 同步函数尚未发射/登记 root frame，也尚未插入 safepoint poll。当前验证的 moving-GC codegen 只能宣称 Task-root async 边界；同步 frame 闭环是下一个 moving-GC codegen 任务；
+- `LoomRuntime` 是 sync/async 共用的 managed heap 所有者；async Executor 只借用该 Runtime。collector 同时追踪同步 shadow-stack 与 Executor-owned Task value slots/runtime results，复制存活的 universal `Value`、`ValueNode` 和 managed `Text` 并重写 roots。所有 managed allocator 都经过统一 collect-before slowpath；Rust helper 用 `RuntimeRootScope`/`NodeStream` 保护 partial aggregate，stdlib getter/process/format 边界写完整 stable output。owned `dyn` proof 位于独立非移动 mark-sweep GC arena，Task 隐藏 proof 位于 Task 私有 slots/arena，两者都不随 moving value heap relocation。同步不逃逸局部 `List[Int]` 的 `{data, len, cap}` 快路只含 `i64`，由生成代码显式释放而不进入 GC；canonical append loop 可以在 SSA 中携带 header，但每次 element store 后会立即提交 len，reserve/fault/return/drop 边界始终以一致的内存 header 为准；exact-length scan 证明只删除不可达 bounds/`None` edge，不改变 cleanup；
+- compact witness 已以 compiler-private `WitnessDescriptor`/`WitnessInstance`、concept-local reachable method slots、连续 prerequisite arrays、GC owned-proof arena 与 Task 独立 proof slots/arena 落地。runtime ABI 总版本为 v7，standard-library ABI v4，coroutine/task ABI v2，witness ABI v1；精确 identity 见[编译过程与后端](07-compiler-pipeline-and-backends.md#runtime-requirements-与-root-context)和[安装与发布](10-installation-and-release.md)；
+- LLVM 同步函数已发射 `shadow-stack-v1` descriptor/frame、按 safepoint state 的 precise bitmap、push/pop 与 poll；clone/build source/output proxy、call/builtin/direct allocation 在可能移动前发布 state。`loom_gc_clone_value_v1` 与 `loom_gc_build_value_nodes_v1` 使用 Rust runtime 非递归 work stack，LLVM module-local 递归 helper 已删除；
 - `examples/core03` 以及专用 stored/dynamic join、nested await、取消 cleanup、fd readiness、runtime/async Task-root moving-GC fixtures 均真实通过 check/build/test/source-run/native-run。runtime 全部使用 Rust 实现，不再保留 C++ wait/float runtime。
 
-这关闭的是 C1 executable 主闭环，不包括 LLVM 同步 shadow-stack root 发射与 safepoint poll；后者仍是 moving-GC codegen 阶段的硬门。package/HTTPS registry、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。Core 0.3 的最小普通程序标准库还包括 Text/Bytes/Path、TextMap、JSON、typed file/socket I/O 与日志，其权威边界见[标准库规范](11-standard-library.md)。`NativeLayout` catalog 已覆盖 scalar 与当前函数内 direct-primitive POD record storage，`NativeSignatureShape` callable 已支持 `Unit`/`Bool`/`Int`/`Float`；record/List 快路还没有覆盖 POD record 的跨函数 concrete ABI，catalog/plan 也仍需扩展到 managed aggregate、container 与 coroutine trace layout。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。
+这关闭的是 C1 executable 与 precise moving-GC 主闭环，不表示 concrete layout 优化已经完成。package/HTTPS registry、分层 cache、LLVM line-table/dSYM、`loomc debug` 源码断点/单步入口，以及[正式性能/增量门、C2 冻结 oracle 与 C3 多包 repository workload](09-quality-and-controlled-evidence.md)已另行接入。Core 0.3 的最小普通程序标准库还包括 Text/Bytes/Path、TextMap、JSON、typed file/socket I/O 与日志，其权威边界见[标准库规范](11-standard-library.md)。`NativeLayout` catalog 已覆盖 scalar 与当前函数内 direct-primitive POD record storage，`NativeSignatureShape` callable 已支持 `Unit`/`Bool`/`Int`/`Float`；跨函数 POD record concrete ABI、managed generic/container layout-driven calling convention、统一 clone/trace/drop plan 和更完整的 coroutine/`dyn` layout specialization 仍未完成。多线程 executor、Loom 值专用 pretty-printer、人类开发效率对照与大型外部生产仓库证据仍需独立阶段。

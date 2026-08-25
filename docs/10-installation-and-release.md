@@ -14,17 +14,22 @@ SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从�
 
 当前 universal `Value` lowering 只支持 64-bit pointer target；这是当前 compiler/runtime-private
 表示边界。32-bit triple 在产生 object 前以
-`UnsupportedNativePointerWidth` fail closed。当前 native runtime ABI 总版本是 v5，coroutine/task ABI
-是 v2，witness ABI 是 v1；其精确 identity 为
-`loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v5/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3`。
+`UnsupportedNativePointerWidth` fail closed。当前 native runtime ABI 总版本是 v7，standard-library ABI
+是 v4，coroutine/task ABI 是 v2，witness ABI 是 v1；其精确 identity 为
+`loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4`。
 
-v5 保留 `runtime-v1` 的 Runtime lifecycle：managed heap 由 `LoomRuntime` 拥有，async root 才附加
-Executor，reactor 与 blocking-I/O worker 均懒初始化，pure/no-fault primitive-scalar root 不创建
-隐藏 context。`task-v2` 为 coroutine descriptor 增加独立 proof count/slots/arena；`witness-v1`
-固定 compiler-private compact descriptor/instance 边界；`gc-v5` 追踪并 sweep owned `dyn` 的非移动
-proof arena。`shadow-stack-v1` 表示 runtime 端 precise synchronous root frame 与 safepoint protocol 已版本化，
-不表示 LLVM 同步 root-frame 发射与 safepoint poll 已接入；该 moving-GC codegen 阶段仍在开发。
-bundle identity 必须与上述字符串精确一致。
+v7 保留 `runtime-v1` 的 Runtime lifecycle：managed heap、同步 shadow-stack 与 collector state 由
+`LoomRuntime` 拥有，async root 才附加 Executor；Executor 只承载 task/join、ready queue 与 wait/reactor
+状态，不承载 compiler root bitmap 或 runtime helper root scope。reactor 与 blocking-I/O worker 均懒初始化，
+pure/no-fault primitive-scalar root 不创建隐藏 context。`task-v2` 为 coroutine descriptor 增加独立 proof
+count/slots/arena；`witness-v1` 固定 compiler-private compact descriptor/instance 边界。
+
+`gc-v7` 固定 collect-before allocation slowpath、LLVM precise synchronous shadow-stack state publication、
+Rust runtime `loom_gc_clone_value_v1`/`loom_gc_build_value_nodes_v1` 非递归 helper，以及 runtime
+`RuntimeRootScope`/`NodeStream` partial-construction protocol。`stdlib-v4` 固定 getter、process environment 与
+float formatting 向 caller-owned stable full-`Value` output slot 写结果，不再返回 raw managed pointer/object。
+`shadow-stack-v1` 现在同时由 runtime 和 LLVM codegen 完整实现。bundle identity 必须与上述字符串精确一致；
+不提供旧总 ABI、旧 GC/stdlib identity 或旧 raw-output signature 的兼容路径。
 
 ## LLVM 19
 
