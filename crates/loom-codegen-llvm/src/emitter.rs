@@ -36,9 +36,9 @@ use loom_runtime_abi::{
 
 use crate::abi::{
     ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_ABI_VERSION, COROUTINE_FRAME_FIELD_RESULT,
-    COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, DYN_FLAG_WRITEBACK, JOIN_RESULT_LIST,
-    JOIN_RESULT_OUTCOME, JOIN_RESULT_OUTCOME_LIST, JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR,
-    JOIN_RESULT_TUPLE, READY_EVENT_COMPLETED, READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS,
+    COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, JOIN_RESULT_LIST, JOIN_RESULT_OUTCOME,
+    JOIN_RESULT_OUTCOME_LIST, JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR, JOIN_RESULT_TUPLE,
+    READY_EVENT_COMPLETED, READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS,
     READY_NOTIFICATION_FIELD_FRAME, TASK_STEP_CANCELLED, TASK_STEP_COMPLETED, TASK_STEP_FAULTED,
     TASK_STEP_PENDING, TASK_VALUE_DIRECT, VALUE_FIELD_AUX, VALUE_FIELD_DATA, VALUE_FIELD_NOMINAL,
     VALUE_FIELD_SCALAR, VALUE_FIELD_TAG, VALUE_FIELD_WITNESS, VALUE_NODE_FIELD_NEXT,
@@ -4549,6 +4549,22 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     unwind_status: Cell<Option<u64>>,
 }
 
+struct PreparedCallArguments<'ctx> {
+    values: Vec<PointerValue<'ctx>>,
+    writebacks: Vec<CallWriteback<'ctx>>,
+}
+
+struct CallWriteback<'ctx> {
+    place: Place,
+    source: CallWritebackSource<'ctx>,
+}
+
+#[derive(Clone, Copy)]
+enum CallWritebackSource<'ctx> {
+    Value(PointerValue<'ctx>),
+    DynamicData(PointerValue<'ctx>),
+}
+
 impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     #[allow(clippy::too_many_lines)]
     fn new(
@@ -6020,20 +6036,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 } else {
                     witness
                 };
-                let writeback = writeback
-                    .as_ref()
-                    .map(|writeback| self.place(writeback))
-                    .transpose()?;
                 self.initialize(destination, VALUE_TAG_DYN)?;
-                let mut flags = u64::from(*mutable) * DYN_FLAG_MUTABLE;
-                if writeback.is_some() {
-                    flags |= DYN_FLAG_WRITEBACK;
-                }
                 self.backend.store_i64_field(
                     self.backend.value_type,
                     destination,
                     VALUE_FIELD_AUX,
-                    self.backend.tag(flags),
+                    self.backend.tag(u64::from(*mutable) * DYN_FLAG_MUTABLE),
                 )?;
                 self.backend.store_pointer_field(
                     self.backend.value_type,
@@ -6046,20 +6054,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     destination,
                     VALUE_FIELD_WITNESS,
                     witness,
-                )?;
-                let writeback = if let Some(writeback) = writeback {
-                    self.backend
-                        .builder
-                        .build_ptr_to_int(writeback, self.backend.i64_type, "dyn.writeback")
-                        .map_err(builder_error)?
-                } else {
-                    self.backend.i64_type.const_zero()
-                };
-                self.backend.store_i64_field(
-                    self.backend.value_type,
-                    destination,
-                    VALUE_FIELD_SCALAR,
-                    writeback,
                 )?;
                 Ok(true)
             }
@@ -6077,45 +6071,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     VALUE_FIELD_WITNESS,
                     "dyn.reborrow.witness",
                 )?;
-                let writeback = self.backend.load_i64_field(
-                    self.backend.value_type,
-                    source,
-                    VALUE_FIELD_SCALAR,
-                    "dyn.reborrow.writeback",
-                )?;
-                let source_flags = self.backend.load_i64_field(
-                    self.backend.value_type,
-                    source,
-                    VALUE_FIELD_AUX,
-                    "dyn.reborrow.flags",
-                )?;
-                let writeback_flag = self
-                    .backend
-                    .builder
-                    .build_and(
-                        source_flags,
-                        self.backend.tag(DYN_FLAG_WRITEBACK),
-                        "dyn.reborrow.writeback.flag",
-                    )
-                    .map_err(builder_error)?;
-                let mutable_flag = self.backend.tag(u64::from(*mutable) * DYN_FLAG_MUTABLE);
-                let flags = self
-                    .backend
-                    .builder
-                    .build_or(mutable_flag, writeback_flag, "dyn.reborrow.flags")
-                    .map_err(builder_error)?;
                 self.initialize(destination, VALUE_TAG_DYN)?;
                 self.backend.store_i64_field(
                     self.backend.value_type,
                     destination,
                     VALUE_FIELD_AUX,
-                    flags,
-                )?;
-                self.backend.store_i64_field(
-                    self.backend.value_type,
-                    destination,
-                    VALUE_FIELD_SCALAR,
-                    writeback,
+                    self.backend.tag(u64::from(*mutable) * DYN_FLAG_MUTABLE),
                 )?;
                 self.backend.store_pointer_field(
                     self.backend.value_type,
@@ -8510,10 +8471,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return self.emit_native_call(*function, arguments, witnesses, destination);
         }
 
-        let Some(mut values) = self.emit_call_arguments(arguments)? else {
+        let Some(mut prepared) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
-        let mut dynamic_writeback = None;
+        let mut dynamic_receiver_writeback = None;
         let (direct, indirect, conformance_proofs, requirement_proofs) = match target {
             CallTarget::Direct(function) | CallTarget::Inherent(function) => {
                 let target = self
@@ -8590,10 +8551,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 }
             }
             CallTarget::Dynamic { requirement } => {
-                let receiver = values.first().copied().ok_or_else(|| {
+                let receiver = prepared.values.first().copied().ok_or_else(|| {
                     CodegenError::new("InvalidDynamicCall", "dynamic call has no receiver")
                 })?;
-                let owner = self.backend.load_pointer_field(
+                let data = self.backend.load_pointer_field(
                     self.backend.value_type,
                     receiver,
                     VALUE_FIELD_DATA,
@@ -8605,22 +8566,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     VALUE_FIELD_WITNESS,
                     "dyn.witness",
                 )?;
-                values[0] = owner;
-                if self
-                    .backend
-                    .program
-                    .requirement(*requirement)
-                    .is_some_and(|definition| {
-                        definition.receiver == Some(loom_mir::Receiver::Mutable)
-                    })
-                {
-                    let writeback = self.backend.load_i64_field(
-                        self.backend.value_type,
-                        receiver,
-                        VALUE_FIELD_SCALAR,
-                        "dyn.writeback",
-                    )?;
-                    dynamic_writeback = Some((owner, writeback));
+                let dispatch = self.alloc_value("dyn.dispatch.proxy");
+                self.shallow_copy_named(dispatch, data, "dyn.dispatch.copy.in")?;
+                prepared.values[0] = dispatch;
+                let mutable =
+                    self.backend
+                        .program
+                        .requirement(*requirement)
+                        .is_some_and(|definition| {
+                            definition.receiver == Some(loom_mir::Receiver::Mutable)
+                        });
+                if mutable {
+                    dynamic_receiver_writeback = Some((receiver, dispatch));
                 }
                 let method = self.load_witness_method(runtime_witness, *requirement)?;
                 let conformance_proofs = self.backend.load_pointer_field(
@@ -8638,7 +8595,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             CallTarget::Builtin(_) => unreachable!(),
         };
-        let argument_head = self.build_argument_nodes(&values)?;
+        let argument_head = self.build_argument_nodes(&prepared.values)?;
         let status = if let Some(function) = direct {
             call_int(
                 &self.backend.builder,
@@ -8673,9 +8630,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "dynamic call returned void"))?
                 .into_int_value()
         };
-        if let Some((source, writeback)) = dynamic_writeback {
-            self.emit_dynamic_writeback(source, writeback)?;
+        if let Some((carrier, dispatch)) = dynamic_receiver_writeback {
+            let data = self.backend.load_pointer_field(
+                self.backend.value_type,
+                carrier,
+                VALUE_FIELD_DATA,
+                "dyn.receiver.writeback.data",
+            )?;
+            self.shallow_copy_named(data, dispatch, "dyn.receiver.writeback")?;
         }
+        self.emit_call_writebacks(&prepared.writebacks)?;
         self.propagate_status(status)?;
         Ok(true)
     }
@@ -8693,15 +8657,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "native ABI call unexpectedly carries witnesses",
             ));
         }
-        let Some(values) = self.emit_call_arguments(arguments)? else {
+        let Some(prepared) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
         let declaration = &self.backend.native_functions[&function];
         let signature = &declaration.signature;
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
-            values.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
+            prepared.values.len()
+                + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
-        for (value, layout) in values.into_iter().zip(signature.shape().parameters()) {
+        for (value, layout) in prepared
+            .values
+            .iter()
+            .copied()
+            .zip(signature.shape().parameters())
+        {
             call_arguments.push(
                 self.backend
                     .load_native_value(layout, value, "argument.native")?
@@ -8724,52 +8694,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &call_arguments,
                 "native.call",
             )?;
+            self.emit_call_writebacks(&prepared.writebacks)?;
             self.propagate_status(status)?;
             value
         };
+        if signature.effect() == NativeEffectAbi::PureNoFault {
+            self.emit_call_writebacks(&prepared.writebacks)?;
+        }
         self.backend
             .store_native_value(signature.shape().result(), destination, value)?;
         Ok(true)
     }
 
-    fn emit_dynamic_writeback(
-        &self,
-        source: PointerValue<'ctx>,
-        writeback: IntValue<'ctx>,
-    ) -> Result<(), CodegenError> {
-        let copy = self.append_block("dyn.writeback.copy");
-        let done = self.append_block("dyn.writeback.done");
-        let present = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                writeback,
-                self.backend.i64_type.const_zero(),
-                "dyn.writeback.present",
-            )
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(present, copy, done)
-            .map_err(builder_error)?;
-        self.backend.builder.position_at_end(copy);
-        let target = self
-            .backend
-            .builder
-            .build_int_to_ptr(writeback, self.backend.ptr_type, "dyn.writeback.target")
-            .map_err(builder_error)?;
-        self.clone_value(target, source)?;
-        self.backend.branch(done)?;
-        self.backend.builder.position_at_end(done);
-        Ok(())
-    }
-
     fn emit_call_arguments(
         &self,
         arguments: &[CallArgument],
-    ) -> Result<Option<Vec<PointerValue<'ctx>>>, CodegenError> {
-        let mut values = Vec::with_capacity(arguments.len());
+    ) -> Result<Option<PreparedCallArguments<'ctx>>, CodegenError> {
+        let mut evaluated = Vec::with_capacity(arguments.len());
         for argument in arguments {
             match argument {
                 CallArgument::Value(expression) => {
@@ -8777,12 +8718,93 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     if !self.emit_expr(expression, value)? {
                         return Ok(None);
                     }
-                    values.push(value);
+                    evaluated.push(Some(value));
                 }
-                CallArgument::InOut(place) => values.push(self.place(place)?),
+                CallArgument::InOut(_) => evaluated.push(None),
             }
         }
-        Ok(Some(values))
+        self.materialize_call_arguments(arguments, evaluated)
+            .map(Some)
+    }
+
+    fn materialize_call_arguments(
+        &self,
+        arguments: &[CallArgument],
+        evaluated: Vec<Option<PointerValue<'ctx>>>,
+    ) -> Result<PreparedCallArguments<'ctx>, CodegenError> {
+        if arguments.len() != evaluated.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "call preparation lost an evaluated argument",
+            ));
+        }
+        let mut values = Vec::with_capacity(arguments.len());
+        let mut writebacks = Vec::new();
+        for (argument, evaluated) in arguments.iter().zip(evaluated) {
+            match argument {
+                CallArgument::Value(expression) => {
+                    let value = evaluated.ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "value argument was not evaluated before call preparation",
+                        )
+                    })?;
+                    if let ExprKind::MakeView {
+                        writeback: Some(place),
+                        mutable: true,
+                        ..
+                    } = &expression.kind
+                    {
+                        writebacks.push(CallWriteback {
+                            place: place.clone(),
+                            source: CallWritebackSource::DynamicData(value),
+                        });
+                    }
+                    values.push(value);
+                }
+                CallArgument::InOut(place) => {
+                    if evaluated.is_some() {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            "inout argument unexpectedly has an evaluated value",
+                        ));
+                    }
+                    if place.projection.is_empty() {
+                        values.push(self.local(place.local)?);
+                    } else {
+                        let proxy = self.alloc_value("inout.projected.proxy");
+                        let source = self.place(place)?;
+                        self.shallow_copy_named(proxy, source, "inout.copy.in")?;
+                        values.push(proxy);
+                        writebacks.push(CallWriteback {
+                            place: place.clone(),
+                            source: CallWritebackSource::Value(proxy),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(PreparedCallArguments { values, writebacks })
+    }
+
+    fn emit_call_writebacks(&self, writebacks: &[CallWriteback<'ctx>]) -> Result<(), CodegenError> {
+        for writeback in writebacks {
+            let (source, name) = match writeback.source {
+                CallWritebackSource::Value(source) => (source, "inout.writeback"),
+                CallWritebackSource::DynamicData(carrier) => (
+                    self.backend.load_pointer_field(
+                        self.backend.value_type,
+                        carrier,
+                        VALUE_FIELD_DATA,
+                        "dyn.borrow.writeback.data",
+                    )?,
+                    "dyn.borrow.writeback",
+                ),
+            };
+            let destination = self.place(&writeback.place)?;
+            self.shallow_copy_named(destination, source, name)?;
+        }
+        Ok(())
     }
 
     fn build_argument_nodes(
@@ -8996,17 +9018,25 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         ) {
             return self.emit_list_builtin(builtin, arguments, destination);
         }
-        let Some(values) = self.emit_call_arguments(arguments)? else {
+        let Some(prepared) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
         if matches!(
             builtin,
             Builtin::ProcessArguments | Builtin::ProcessEnvironment
         ) {
-            return self.emit_process_builtin(builtin, &values, destination);
+            let continues = self.emit_process_builtin(builtin, &prepared.values, destination)?;
+            if continues {
+                self.emit_call_writebacks(&prepared.writebacks)?;
+            }
+            return Ok(continues);
         }
         if matches!(builtin, Builtin::TaskFaultCode | Builtin::TaskFaultMessage) {
-            return self.emit_task_fault_builtin(builtin, &values, destination);
+            let continues = self.emit_task_fault_builtin(builtin, &prepared.values, destination)?;
+            if continues {
+                self.emit_call_writebacks(&prepared.writebacks)?;
+            }
+            return Ok(continues);
         }
         if matches!(
             builtin,
@@ -9023,7 +9053,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::PathAsText
                 | Builtin::PathJoin
         ) {
-            return self.emit_standard_value_builtin(builtin, &values, destination);
+            let continues =
+                self.emit_standard_value_builtin(builtin, &prepared.values, destination)?;
+            if continues {
+                self.emit_call_writebacks(&prepared.writebacks)?;
+            }
+            return Ok(continues);
         }
         if matches!(
             builtin,
@@ -9043,7 +9078,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::LogError
                 | Builtin::LogWrite
         ) {
-            return self.emit_structured_value_builtin(builtin, &values, destination);
+            let continues =
+                self.emit_structured_value_builtin(builtin, &prepared.values, destination)?;
+            if continues {
+                self.emit_call_writebacks(&prepared.writebacks)?;
+            }
+            return Ok(continues);
         }
         if matches!(
             builtin,
@@ -9070,9 +9110,21 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::SocketTryWriteText
                 | Builtin::SocketClose
         ) {
-            return self.emit_standard_io_builtin(builtin, &values, destination);
+            let commits_before_status =
+                matches!(builtin, Builtin::FileClose | Builtin::SocketClose);
+            let writebacks = if commits_before_status {
+                prepared.writebacks.as_slice()
+            } else {
+                &[]
+            };
+            let continues =
+                self.emit_standard_io_builtin(builtin, &prepared.values, writebacks, destination)?;
+            if continues && !commits_before_status {
+                self.emit_call_writebacks(&prepared.writebacks)?;
+            }
+            return Ok(continues);
         }
-        match (builtin, values.as_slice()) {
+        let continues = match (builtin, prepared.values.as_slice()) {
             (Builtin::IsFinite, [value]) => {
                 let number = self.float_scalar(*value)?;
                 let ordered = self
@@ -9120,7 +9172,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "InvalidBuiltinCall",
                 "builtin argument shape does not match checked MIR",
             )),
+        }?;
+        if continues {
+            self.emit_call_writebacks(&prepared.writebacks)?;
         }
+        Ok(continues)
     }
 
     fn emit_task_fault_builtin(
@@ -9873,7 +9929,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let Some(result) = self.emit_native_int_list_builtin(builtin, arguments, destination)? {
             return Ok(result);
         }
-        let values = if matches!(builtin, Builtin::ListLength | Builtin::ListGet)
+        let prepared = if matches!(builtin, Builtin::ListLength | Builtin::ListGet)
             && let Some((CallArgument::Value(receiver), remaining)) = arguments.split_first()
             && let ExprKind::Copy(place) = &receiver.kind
             && remaining.iter().all(|argument| match argument {
@@ -9885,8 +9941,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             // source. No suspension may intervene because native stack slots are not GC roots.
             let snapshot = self.alloc_value("list.readonly.snapshot");
             self.shallow_copy(snapshot, self.place(place)?)?;
-            let mut values = Vec::with_capacity(arguments.len());
-            values.push(snapshot);
+            let mut evaluated = Vec::with_capacity(arguments.len());
+            evaluated.push(Some(snapshot));
             for argument in remaining {
                 match argument {
                     CallArgument::Value(expression) => {
@@ -9894,19 +9950,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         if !self.emit_expr(expression, value)? {
                             return Ok(false);
                         }
-                        values.push(value);
+                        evaluated.push(Some(value));
                     }
-                    CallArgument::InOut(place) => values.push(self.place(place)?),
+                    CallArgument::InOut(_) => evaluated.push(None),
                 }
             }
-            values
+            self.materialize_call_arguments(arguments, evaluated)?
         } else {
-            let Some(values) = self.emit_call_arguments(arguments)? else {
+            let Some(prepared) = self.emit_call_arguments(arguments)? else {
                 return Ok(false);
             };
-            values
+            prepared
         };
-        self.emit_list_builtin_values(builtin, &values, destination)
+        self.emit_list_builtin_values(builtin, &prepared.values, &prepared.writebacks, destination)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -10202,6 +10258,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         builtin: Builtin,
         values: &[PointerValue<'ctx>],
+        writebacks: &[CallWriteback<'ctx>],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         match (builtin, values) {
@@ -10212,6 +10269,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &[(*list).into(), (*value).into()],
                     "list.add",
                 )?;
+                self.emit_call_writebacks(writebacks)?;
                 let invalid = self
                     .backend
                     .builder
@@ -10241,6 +10299,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     VALUE_FIELD_SCALAR,
                     length,
                 )?;
+                self.emit_call_writebacks(writebacks)?;
                 Ok(true)
             }
             (Builtin::ListGet, [list, index]) => {
@@ -10276,6 +10335,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.backend.branch(merge)?;
 
                 self.backend.builder.position_at_end(merge);
+                self.emit_call_writebacks(writebacks)?;
                 Ok(true)
             }
             _ => Err(CodegenError::new(
@@ -10364,6 +10424,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         builtin: Builtin,
         values: &[PointerValue<'ctx>],
+        writebacks: &[CallWriteback<'ctx>],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         match (builtin, values) {
@@ -10546,6 +10607,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &[self.runtime_context.into(), (*resource).into()],
                     "io.close",
                 )?;
+                self.emit_call_writebacks(writebacks)?;
                 let invalid = self
                     .backend
                     .builder
@@ -11533,10 +11595,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
         source: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        self.shallow_copy_named(destination, source, "move")
+    }
+
+    fn shallow_copy_named(
+        &self,
+        destination: PointerValue<'ctx>,
+        source: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
         let value = self
             .backend
             .builder
-            .build_load(self.backend.value_type, source, "move")
+            .build_load(self.backend.value_type, source, &format!("{name}.value"))
             .map_err(builder_error)?;
         self.backend
             .builder

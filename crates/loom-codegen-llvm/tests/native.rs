@@ -2538,6 +2538,255 @@ pub fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn projected_inout_and_dynamic_calls_use_address_free_stable_proxies() {
+    let source = r#"module stable_call_carriers
+
+dyn concept CounterOps {
+    method add(mut self, amount Int) Int
+    method read(self) Int
+}
+
+dyn concept ReadableCounter {
+    method read(self) Int
+}
+
+record Counter { value Int }
+record Holder { counter Counter }
+
+impl CounterOps for Counter {
+    method add(mut self, amount Int) Int {
+        self.value = self.value + amount
+        if amount < 0 {
+            assert false
+            Unit
+        } else {
+            Unit
+        }
+        self.value
+    }
+
+    method read(self) Int { self.value }
+}
+
+impl ReadableCounter for Counter {
+    method read(self) Int { self.value }
+}
+
+impl Holder {
+    method addProjected(mut self, amount Int) Int {
+        self.counter.add(amount)
+    }
+
+    method failProjected(mut self) Unit {
+        discard self.counter.add(-1)
+        Unit
+    }
+
+    method addAfterAllocation(mut self) Int {
+        self.counter.add(allocatingAmount())
+    }
+}
+
+fn allocatingAmount() Int {
+    let allocated = "a".concat("bc")
+    allocated.length()
+}
+
+fn addDynamic(counter dyn CounterOps, amount Int) Int {
+    counter.add(amount)
+}
+
+fn readDynamic(counter dyn ReadableCounter) Int {
+    counter.read()
+}
+
+fn observeReadonly(holder Holder) Int {
+    readDynamic(holder.counter)
+}
+
+pub fn main() Unit {
+    var projected = Holder { counter = Counter { value = 10 } }
+    let projectedValue = projected.addProjected(2)
+    assert projectedValue == 12
+    let projectedAfter = projected.counter.value
+    assert projectedAfter == 12
+    let allocatedValue = projected.addAfterAllocation()
+    assert allocatedValue == 15
+
+    var dynamic = Holder { counter = Counter { value = 20 } }
+    let dynamicValue = addDynamic(dynamic.counter, 3)
+    assert dynamicValue == 23
+    let dynamicAfter = dynamic.counter.value
+    assert dynamicAfter == 23
+    let readonlyValue = observeReadonly(dynamic)
+    assert readonlyValue == 23
+
+    if false {
+        projected.failProjected()
+    } else {
+        Unit
+    }
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let projected = llvm_function(&llvm, "stable_call_carriers_addProjected");
+    let projected_call = projected
+        .find("call i32 @loom.fn.")
+        .expect("projected call");
+    let projected_writeback = projected[projected_call..]
+        .find("inout.writeback.value")
+        .map(|offset| projected_call + offset)
+        .expect("projected writeback");
+    let projected_status = projected[projected_writeback..]
+        .find("call.ok")
+        .map(|offset| projected_writeback + offset)
+        .expect("status propagation after projected writeback");
+    assert!(projected.contains("inout.projected.proxy"), "{projected}");
+    assert!(projected.contains("inout.copy.in.value"), "{projected}");
+    assert!(projected_call < projected_writeback, "{projected}");
+    assert!(projected_writeback < projected_status, "{projected}");
+
+    let allocating = llvm_function(&llvm, "stable_call_carriers_addAfterAllocation");
+    let allocation = allocating
+        .find("stable_call_carriers_allocatingAmount")
+        .expect("later allocating argument is evaluated");
+    let copy_in = allocating
+        .find("inout.copy.in.value")
+        .expect("projected receiver copy-in");
+    assert!(allocation < copy_in, "{allocating}");
+
+    let failure = llvm_function(&llvm, "stable_call_carriers_failProjected");
+    let failure_call = failure.find("call i32 @loom.fn.").expect("failing call");
+    let failure_writeback = failure[failure_call..]
+        .find("inout.writeback.value")
+        .map(|offset| failure_call + offset)
+        .expect("failure-path projected writeback");
+    let failure_status = failure[failure_writeback..]
+        .find("call.ok")
+        .map(|offset| failure_writeback + offset)
+        .expect("failure status propagation");
+    assert!(failure_call < failure_writeback, "{failure}");
+    assert!(failure_writeback < failure_status, "{failure}");
+
+    let dynamic = llvm_function(&llvm, "stable_call_carriers_addDynamic");
+    let dynamic_call = dynamic.find("dyn.call").expect("dynamic dispatch");
+    let receiver_writeback = dynamic[dynamic_call..]
+        .find("dyn.receiver.writeback.value")
+        .map(|offset| dynamic_call + offset)
+        .expect("dynamic receiver writeback");
+    let dynamic_status = dynamic[receiver_writeback..]
+        .find("call.ok")
+        .map(|offset| receiver_writeback + offset)
+        .expect("dynamic status propagation");
+    assert!(dynamic.contains("dyn.dispatch.proxy"), "{dynamic}");
+    assert!(dynamic.contains("dyn.dispatch.copy.in.value"), "{dynamic}");
+    assert!(dynamic_call < receiver_writeback, "{dynamic}");
+    assert!(receiver_writeback < dynamic_status, "{dynamic}");
+
+    let main = llvm_native_function(&llvm, "stable_call_carriers_main");
+    assert!(main.contains("dyn.borrow.writeback.data"), "{main}");
+    assert!(main.contains("dyn.borrow.writeback.value"), "{main}");
+    let readonly = llvm_function(&llvm, "stable_call_carriers_observeReadonly");
+    assert!(!readonly.contains("dyn.borrow.writeback"), "{readonly}");
+    assert!(!llvm.contains("ptrtoint"), "{llvm}");
+    assert!(!llvm.contains("inttoptr"), "{llvm}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn projected_inout_commits_before_fault_cleanup_observes_the_owner() {
+    let source = r#"module fault_writeback_order
+
+record Cell { value Int }
+record Holder { cell Cell }
+
+impl Cell {
+    method mutateThenFail(mut self) Unit {
+        self.value = 9
+        assert false
+        Unit
+    }
+}
+
+impl Holder {
+    method invokeFailure(mut self) Unit {
+        self.cell.mutateThenFail()
+        Unit
+    }
+}
+
+async fn failAndCleanup() Unit {
+    var holder = Holder { cell = Cell { value = 1 } }
+    defer {
+        let observed = holder.cell.value
+        if observed == 9 {
+            Unit
+        } else {
+            let impossible = 1 / 0
+            discard impossible
+            Unit
+        }
+    }
+    holder.invokeFailure()
+    Unit
+}
+
+async fn complete() Unit { Unit }
+
+pub async fn main() Unit {
+    let failed, completed = Task.settled(failAndCleanup(), complete()).await
+    match failed {
+        Faulted(fault) => {
+            let code = fault.code()
+            assert code == "AssertionFault"
+            Unit
+        }
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match completed {
+        Completed(_) => Unit
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let invoke = llvm_function(&llvm, "fault_writeback_order_invokeFailure");
+    let call = invoke.find("call i32 @loom.fn.").expect("failing call");
+    let writeback = invoke[call..]
+        .find("inout.writeback.value")
+        .map(|offset| call + offset)
+        .expect("projected owner writeback");
+    let status = invoke[writeback..]
+        .find("call.ok")
+        .map(|offset| writeback + offset)
+        .expect("status branch after writeback");
+    assert!(call < writeback, "{invoke}");
+    assert!(writeback < status, "{invoke}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
 fn native_int_is_checked_i64_even_after_llvm_optimization() {
     let cases = [
         (

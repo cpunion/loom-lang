@@ -14,7 +14,6 @@ pub(crate) use loom_runtime_abi::{
 };
 
 pub(crate) const DYN_FLAG_MUTABLE: u64 = 1;
-pub(crate) const DYN_FLAG_WRITEBACK: u64 = 2;
 
 pub(crate) const TASK_VALUE_DIRECT: u64 = 0;
 
