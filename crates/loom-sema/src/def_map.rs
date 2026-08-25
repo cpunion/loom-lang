@@ -4,17 +4,18 @@ use std::collections::BTreeMap;
 
 use loom_core::{Diagnostic, Name, Span};
 use loom_hir::{DefId, DefinitionKind, ModuleId, Program, Visibility};
+use serde::{Deserialize, Serialize};
 
 use crate::module_graph::{imported_name, is_compiler_known_import};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Namespace {
     Type,
     Value,
     Concept,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Binding {
     Unique(DefId),
     Duplicate(Vec<DefId>),
@@ -54,7 +55,7 @@ impl Binding {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DefMap {
     types: BTreeMap<Name, Binding>,
     values: BTreeMap<Name, Binding>,
@@ -127,7 +128,7 @@ impl DefMap {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DefMapBuild {
     pub maps: BTreeMap<ModuleId, DefMap>,
     pub diagnostics: Vec<Diagnostic>,

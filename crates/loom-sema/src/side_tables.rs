@@ -6,13 +6,14 @@ use loom_hir::{
     ArenaMap, BodyId, DefId, ExprId, GenericParamId, LocalId, ParamId, PatternId, ReceiverKind,
     TypeRefId,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AssociatedTypeBinding, ConceptInstance, Mutability, Substitution, TyId, TyInterner,
     WitnessSelection,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Resolution {
     Definition(DefId),
     GenericParam(GenericParamId),
@@ -24,7 +25,7 @@ pub enum Resolution {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BuiltinValue {
     Unit,
     None,
@@ -63,7 +64,7 @@ pub enum BuiltinValue {
     SocketClose,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum CallTarget {
     Function(DefId),
     InherentMethod(DefId),
@@ -75,13 +76,13 @@ pub enum CallTarget {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ReceiverPassing {
     Value,
     InOut,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CallResolution {
     pub target: CallTarget,
     pub substitution: Substitution,
@@ -93,13 +94,13 @@ pub struct CallResolution {
     pub receiver: Option<ReceiverPassing>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RegionId(pub u32);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ViewTokenId(pub u32);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ViewResolution {
     pub source: ViewSource,
     pub mutable: bool,
@@ -107,7 +108,7 @@ pub struct ViewResolution {
     pub token: ViewTokenId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ViewSource {
     Concrete {
         witness: WitnessSelection,
@@ -118,26 +119,26 @@ pub enum ViewSource {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PlaceRoot {
     Param(ParamId),
     Local(LocalId),
     SelfValue,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PlaceProjection {
     Field(DefId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Place {
     pub root: PlaceRoot,
     pub projections: Vec<PlaceProjection>,
     pub mutability: Mutability,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Coercion {
     RefinedToBase {
         refined: DefId,
@@ -156,7 +157,7 @@ pub enum Coercion {
 /// runtime validation boundary.  `Proven` is emitted only by the closed,
 /// deterministic proof engine; it changes the construction expression from a
 /// `Result` into the established nominal value itself.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ConstructionCheck {
     Proven,
     Runtime,
@@ -166,13 +167,13 @@ pub enum ConstructionCheck {
 /// A disproven predicate remains `Runtime`: unlike invalid checked
 /// construction, an assertion or callable contract may intentionally expose a
 /// faulting path and must retain its blame/reporting behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RuntimeCheck {
     Proven,
     Runtime,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct BodySemantics {
     pub expression_resolutions: ArenaMap<ExprId, Resolution>,
     pub expression_types: ArenaMap<ExprId, TyId>,
@@ -203,7 +204,7 @@ pub struct BodySemantics {
     pub scoped_disposals: ArenaMap<LocalId, ScopedDisposal>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ScopedDisposal {
     Concept {
         requirement: DefId,
@@ -212,7 +213,7 @@ pub enum ScopedDisposal {
     Builtin(BuiltinValue),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CallableSignature {
     pub is_async: bool,
     /// All type parameters in scope for the callable body, including enclosing
@@ -230,13 +231,13 @@ pub struct CallableSignature {
     pub call_bounds: Vec<Bound>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Bound {
     pub self_ty: TyId,
     pub concept: ConceptInstance,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Signature {
     Type { generic_params: Vec<GenericParamId> },
     Field { owner: DefId, ty: TyId },
@@ -247,7 +248,7 @@ pub enum Signature {
     Impl,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TypedProgram {
     pub types: TyInterner,
     pub resolved_type_refs: ArenaMap<TypeRefId, TyId>,
@@ -256,7 +257,7 @@ pub struct TypedProgram {
     pub conformances: ArenaMap<DefId, ConformanceSemantics>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConformanceSemantics {
     pub concept: ConceptInstance,
     pub target: TyId,

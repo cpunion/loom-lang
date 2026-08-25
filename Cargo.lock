@@ -275,6 +275,7 @@ version = "0.1.0"
 dependencies = [
  "loom-core",
  "loom-syntax",
+ "serde",
 ]
 
 [[package]]
@@ -347,6 +348,7 @@ dependencies = [
  "loom-core",
  "loom-hir",
  "loom-syntax",
+ "serde",
 ]
 
 [[package]]

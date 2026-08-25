@@ -3,21 +3,22 @@
 use std::collections::BTreeMap;
 
 use loom_hir::{DefId, GenericParamId};
+use serde::{Deserialize, Serialize};
 
 use crate::{AssociatedTypeBinding, ConceptInstance, Substitution, TyData, TyId, TyInterner};
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Goal {
     pub self_ty: TyId,
     pub concept: ConceptInstance,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ParamEnv {
     pub bounds: Vec<Goal>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ImplHeader {
     pub definition: DefId,
     pub generic_params: Vec<GenericParamId>,
@@ -27,7 +28,7 @@ pub struct ImplHeader {
     pub associated_types: Vec<AssociatedTypeBinding>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ImplIndex {
     by_concept: BTreeMap<DefId, Vec<ImplHeader>>,
 }
@@ -78,7 +79,7 @@ impl ImplIndex {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WitnessSelection {
     pub source: WitnessSource,
     pub substitution: Substitution,
@@ -86,13 +87,13 @@ pub struct WitnessSelection {
     pub prerequisites: Vec<WitnessSelection>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum WitnessSource {
     Implementation(DefId),
     ParamBound(usize),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SolveFailure {
     Missing,
     Ambiguous(Vec<DefId>),

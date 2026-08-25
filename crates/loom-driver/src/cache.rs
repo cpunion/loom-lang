@@ -4,18 +4,20 @@
 //! files are untrusted: every blob is size/hash checked and cached MIR crosses
 //! the ordinary artifact decoder and MIR validator before it is returned.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use loom_core::FileId;
+use loom_core::{FileId, Severity};
 use loom_mir::{Program, decode_interpreted_artifact, encode_interpreted_artifact};
+use loom_sema::{Analysis, DefMapBuild, ImplIndex, ModuleGraph, TypedProgram};
 use loom_syntax::{Parse, SYNTAX_NESTING_LIMIT_VERSION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
 pub const CACHE_SCHEMA_VERSION: u32 = 2;
@@ -24,6 +26,7 @@ const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
 const PARSE_NAMESPACE: &str = "source-parse";
 const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
+const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const DEBUG_COMPANION_NAMESPACE: &str = "debug-companion";
 const ARTIFACT_NAMESPACE: &str = "artifact";
@@ -79,6 +82,11 @@ impl<T> CacheLookup<T> {
 pub struct CachedCompilation {
     program: Program,
     diagnostics: Vec<DiagnosticRecord>,
+}
+
+pub(crate) struct CachedSemanticState {
+    pub keys: BTreeMap<String, ModuleQueryKey>,
+    pub analysis: Analysis,
 }
 
 impl CachedCompilation {
@@ -418,6 +426,87 @@ impl PersistentCache {
         self.store_blob(MODULE_INTERFACE_NAMESPACE, key, &bytes)
     }
 
+    /// Builds the stable slot used to carry reusable typed body facts for a
+    /// declaration-compatible module graph. Body fingerprints deliberately do
+    /// not enter this key: the payload records them per module so one changed
+    /// body can reuse every unchanged module across compiler processes.
+    #[must_use]
+    pub(crate) fn typed_module_state_key(
+        keys: &BTreeMap<String, ModuleQueryKey>,
+        compiler_version: &str,
+    ) -> CacheKey {
+        let mut identity = Identity::new("loom-typed-module-state-v1");
+        identity.field("compiler-version", compiler_version);
+        for (module, key) in keys {
+            identity.field("module", module);
+            identity.field("interface", &key.interface_fingerprint);
+            identity.field("shape", &key.shape_fingerprint);
+        }
+        identity.finish()
+    }
+
+    /// Loads typed semantic facts only for the exact declaration-compatible
+    /// graph. Cache bytes remain untrusted; reuse is additionally guarded by a
+    /// panic boundary in the driver and falls back to a fresh analysis.
+    #[must_use]
+    pub(crate) fn load_typed_module_state(
+        &self,
+        key: &CacheKey,
+        expected: &BTreeMap<String, ModuleQueryKey>,
+    ) -> CacheLookup<CachedSemanticState> {
+        let Some(bytes) = self.load_blob(TYPED_MODULE_STATE_NAMESPACE, key) else {
+            return CacheLookup::Miss;
+        };
+        let Ok(envelope) = serde_json::from_slice::<TypedModuleStateEnvelope>(&bytes) else {
+            return CacheLookup::Miss;
+        };
+        if envelope.schema_version != CACHE_SCHEMA_VERSION
+            || !same_module_shapes(&envelope.keys, expected)
+            || envelope
+                .analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            return CacheLookup::Miss;
+        }
+        CacheLookup::Hit(CachedSemanticState {
+            keys: envelope.keys,
+            analysis: envelope.analysis.into_analysis(),
+        })
+    }
+
+    /// Atomically stores per-module body fingerprints with their typed facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on serialization or persistence failure. Compiler
+    /// callers may continue as if semantic caching were disabled.
+    pub(crate) fn store_typed_module_state(
+        &self,
+        key: &CacheKey,
+        keys: &BTreeMap<String, ModuleQueryKey>,
+        analysis: &Analysis,
+    ) -> Result<(), CacheError> {
+        if analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        {
+            return Err(CacheError::io(
+                &self.root,
+                "typed module state cannot contain error diagnostics",
+            ));
+        }
+        let bytes = serde_json::to_vec(&TypedModuleStateEnvelope {
+            schema_version: CACHE_SCHEMA_VERSION,
+            keys: keys.clone(),
+            analysis: SemanticAnalysisWire::from_analysis(analysis),
+        })
+        .map_err(|error| CacheError::io(&self.root, error))?;
+        self.store_blob(TYPED_MODULE_STATE_NAMESPACE, key, &bytes)
+    }
+
     /// Loads, decodes, and validates a cached checked-MIR entry.
     #[must_use]
     pub fn load_compilation(&self, key: &CacheKey) -> CacheLookup<CachedCompilation> {
@@ -623,6 +712,60 @@ struct ParseEnvelope {
 struct ModuleInterfaceEnvelope {
     schema_version: u32,
     interface: ModuleInterface,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TypedModuleStateEnvelope {
+    schema_version: u32,
+    keys: BTreeMap<String, ModuleQueryKey>,
+    analysis: SemanticAnalysisWire,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticAnalysisWire {
+    typed: TypedProgram,
+    module_graph: ModuleGraph,
+    def_maps: DefMapBuild,
+    impl_index: ImplIndex,
+    diagnostics: Vec<loom_core::Diagnostic>,
+}
+
+impl SemanticAnalysisWire {
+    fn from_analysis(analysis: &Analysis) -> Self {
+        Self {
+            typed: analysis.typed.clone(),
+            module_graph: analysis.module_graph.clone(),
+            def_maps: analysis.def_maps.clone(),
+            impl_index: analysis.impl_index.clone(),
+            diagnostics: analysis.diagnostics.clone(),
+        }
+    }
+
+    fn into_analysis(self) -> Analysis {
+        Analysis {
+            typed: self.typed,
+            module_graph: self.module_graph,
+            def_maps: self.def_maps,
+            impl_index: self.impl_index,
+            diagnostics: self.diagnostics,
+        }
+    }
+}
+
+fn same_module_shapes(
+    cached: &BTreeMap<String, ModuleQueryKey>,
+    expected: &BTreeMap<String, ModuleQueryKey>,
+) -> bool {
+    cached.len() == expected.len()
+        && expected.iter().all(|(module, current)| {
+            cached.get(module).is_some_and(|previous| {
+                previous.module == current.module
+                    && previous.interface_fingerprint == current.interface_fingerprint
+                    && previous.shape_fingerprint == current.shape_fingerprint
+            })
+        })
 }
 
 struct Identity(Sha256);

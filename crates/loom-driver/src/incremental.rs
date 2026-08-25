@@ -19,7 +19,7 @@ pub struct ModuleInterface {
     pub fingerprint: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ModuleQueryKey {
     pub module: String,
     pub interface_fingerprint: String,

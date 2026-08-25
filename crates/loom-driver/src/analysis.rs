@@ -467,14 +467,32 @@ impl AnalysisHost {
                 ));
             }
         }
-        (self.finish_snapshot(sources, parses, diagnostics), stats)
+        (
+            self.finish_snapshot_with_semantic_cache(
+                sources,
+                parses,
+                diagnostics,
+                Some((cache, compiler_version)),
+            ),
+            stats,
+        )
     }
 
     fn finish_snapshot(
         &self,
         sources: SourceMap,
         parses: BTreeMap<FileId, Parse>,
+        diagnostics: Vec<Diagnostic>,
+    ) -> AnalysisSnapshot {
+        self.finish_snapshot_with_semantic_cache(sources, parses, diagnostics, None)
+    }
+
+    fn finish_snapshot_with_semantic_cache(
+        &self,
+        sources: SourceMap,
+        parses: BTreeMap<FileId, Parse>,
         mut diagnostics: Vec<Diagnostic>,
+        semantic_cache: Option<(&PersistentCache, &str)>,
     ) -> AnalysisSnapshot {
         let LoweringResult {
             program: mut hir,
@@ -497,7 +515,7 @@ impl AnalysisHost {
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error);
         let (analysis, semantic_query_stats) =
-            self.analyze_semantics(&hir, query_keys, source_has_errors);
+            self.analyze_semantics(&hir, query_keys, source_has_errors, semantic_cache);
         diagnostics.extend(analysis.diagnostics.iter().cloned());
 
         let output = if diagnostics
@@ -540,11 +558,24 @@ impl AnalysisHost {
         hir: &loom_hir::Program,
         keys: BTreeMap<String, ModuleQueryKey>,
         source_has_errors: bool,
+        persistent: Option<(&PersistentCache, &str)>,
     ) -> (Analysis, SemanticQueryStats) {
         let mut state = self
             .semantic_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.is_none()
+            && !source_has_errors
+            && let Some((cache, compiler_version)) = persistent
+        {
+            let cache_key = PersistentCache::typed_module_state_key(&keys, compiler_version);
+            if let CacheLookup::Hit(cached) = cache.load_typed_module_state(&cache_key, &keys) {
+                *state = Some(SemanticState {
+                    keys: cached.keys,
+                    analysis: cached.analysis,
+                });
+            }
+        }
         let total_bodies = hir.bodies.iter().count();
         let mut reusable_modules = BTreeSet::new();
         let compatible = !source_has_errors
@@ -592,22 +623,40 @@ impl AnalysisHost {
         } else {
             BTreeSet::new()
         };
+        let mut reuse_survived_validation = compatible;
         let analysis = if compatible {
-            analyze_reusing_bodies(
-                hir,
-                &state.as_ref().expect("compatible state exists").analysis,
-                &reusable_bodies,
-            )
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                analyze_reusing_bodies(
+                    hir,
+                    &state.as_ref().expect("compatible state exists").analysis,
+                    &reusable_bodies,
+                )
+            })) {
+                Ok(analysis) => analysis,
+                Err(_) => {
+                    reuse_survived_validation = false;
+                    analyze(hir)
+                }
+            }
         } else {
             analyze(hir)
         };
+        let (modules_reused, bodies_reused) = if reuse_survived_validation {
+            (reusable_modules.len(), reusable_bodies.len())
+        } else {
+            (0, 0)
+        };
         let semantic_stats = SemanticQueryStats {
-            modules_reused: reusable_modules.len(),
-            modules_checked: keys.len().saturating_sub(reusable_modules.len()),
-            bodies_reused: reusable_bodies.len(),
-            bodies_checked: total_bodies.saturating_sub(reusable_bodies.len()),
+            modules_reused,
+            modules_checked: keys.len().saturating_sub(modules_reused),
+            bodies_reused,
+            bodies_checked: total_bodies.saturating_sub(bodies_reused),
         };
         if !source_has_errors && !analysis.has_errors() {
+            if let Some((cache, compiler_version)) = persistent {
+                let cache_key = PersistentCache::typed_module_state_key(&keys, compiler_version);
+                let _ = cache.store_typed_module_state(&cache_key, &keys, &analysis);
+            }
             *state = Some(SemanticState {
                 keys,
                 analysis: analysis.clone(),

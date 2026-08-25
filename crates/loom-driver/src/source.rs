@@ -311,7 +311,12 @@ impl SourceMap {
             .map(|source| {
                 (
                     source.absolute,
-                    (source.stable_path, source.package, source.is_root_package),
+                    (
+                        source.stable_path,
+                        source.package,
+                        source.is_root_package,
+                        source.embedded_text,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -325,7 +330,7 @@ impl SourceMap {
             }
             if let Some(stable_path) = project.overlay_stable_path(&overlay) {
                 let package = project.root_package().map(|package| package.id().clone());
-                paths.insert(overlay, (stable_path, package, true));
+                paths.insert(overlay, (stable_path, package, true, None));
             }
         }
         let mut paths = paths.into_iter().collect::<Vec<_>>();
@@ -337,12 +342,14 @@ impl SourceMap {
 
         let mut documents = Vec::with_capacity(paths.len());
         let mut by_path = BTreeMap::new();
-        for (index, (path, (relative_path, package, is_root_package))) in
+        for (index, (path, (relative_path, package, is_root_package, embedded_text))) in
             paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
             let bytes = if let Some(text) = overlays.get(&path) {
                 text.as_bytes().to_vec()
+            } else if let Some(text) = embedded_text {
+                text.into_bytes()
             } else {
                 fs::read(&path).map_err(|error| DriverError::io(path.clone(), error))?
             };

@@ -80,6 +80,12 @@ struct SourceRoot {
 }
 
 #[derive(Clone, Debug)]
+struct EmbeddedSource {
+    path: String,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Package {
     id: PackageId,
     root: PathBuf,
@@ -90,6 +96,7 @@ pub struct Package {
     enabled_features: BTreeSet<String>,
     source: String,
     checksum: Option<String>,
+    embedded_sources: Vec<EmbeddedSource>,
 }
 
 impl Package {
@@ -235,6 +242,7 @@ pub(crate) struct ProjectSource {
     pub stable_path: String,
     pub package: Option<PackageId>,
     pub is_root_package: bool,
+    pub embedded_text: Option<String>,
 }
 
 impl ProjectGraph {
@@ -463,9 +471,41 @@ impl ProjectGraph {
         match &self.kind {
             ProjectKind::Legacy { input } => legacy_sources(&self.root, input),
             ProjectKind::Manifest { root_package } => {
-                let mut sources = BTreeMap::<PathBuf, (String, PackageId, bool)>::new();
+                let mut sources =
+                    BTreeMap::<PathBuf, (String, PackageId, bool, Option<String>)>::new();
                 for package in self.packages.values() {
                     let is_root = &package.id == root_package;
+                    for source in &package.embedded_sources {
+                        let path = package
+                            .manifest
+                            .join("__loomlib_sources")
+                            .join(package.id.name())
+                            .join(package.id.version())
+                            .join(&source.path);
+                        let stable_path = if is_root {
+                            source.path.clone()
+                        } else {
+                            format!("deps/{}/{path}", package.id, path = source.path)
+                        };
+                        if let Some((previous, _, _, _)) = sources.insert(
+                            path.clone(),
+                            (
+                                stable_path.clone(),
+                                package.id.clone(),
+                                is_root,
+                                Some(source.text.clone()),
+                            ),
+                        ) && previous != stable_path
+                        {
+                            return Err(manifest_error(
+                                &package.manifest,
+                                format!(
+                                    "embedded source `{}` is selected through both `{previous}` and `{stable_path}`",
+                                    source.path
+                                ),
+                            ));
+                        }
+                    }
                     for source_root in &package.source_roots {
                         for path in discover_package_source(source_root, &package.root)? {
                             let relative = relative_key(&package.root, &path)
@@ -475,9 +515,9 @@ impl ProjectGraph {
                             } else {
                                 format!("deps/{}/{relative}", package.id)
                             };
-                            if let Some((previous, _, _)) = sources.insert(
+                            if let Some((previous, _, _, _)) = sources.insert(
                                 path.clone(),
-                                (stable_path.clone(), package.id.clone(), is_root),
+                                (stable_path.clone(), package.id.clone(), is_root, None),
                             ) && previous != stable_path
                             {
                                 return Err(manifest_error(
@@ -494,11 +534,14 @@ impl ProjectGraph {
                 let mut result = sources
                     .into_iter()
                     .map(
-                        |(absolute, (stable_path, package, is_root_package))| ProjectSource {
-                            absolute,
-                            stable_path,
-                            package: Some(package),
-                            is_root_package,
+                        |(absolute, (stable_path, package, is_root_package, embedded_text))| {
+                            ProjectSource {
+                                absolute,
+                                stable_path,
+                                package: Some(package),
+                                is_root_package,
+                                embedded_text,
+                            }
                         },
                     )
                     .collect::<Vec<_>>();
@@ -644,6 +687,7 @@ fn default_language_version() -> String {
 struct RawDependency {
     path: Option<String>,
     registry: Option<String>,
+    artifact: Option<String>,
     package: Option<String>,
     version: Option<String>,
     #[serde(default)]
@@ -812,6 +856,7 @@ impl Resolver {
                 enabled_features: combined_features.clone(),
                 source,
                 checksum,
+                embedded_sources: Vec::new(),
             },
         );
         self.enabled_features.insert(manifest, combined_features);
@@ -854,6 +899,37 @@ impl Resolver {
             .as_deref()
             .map(|value| parse_requirement(manifest, alias, value))
             .transpose()?;
+        if let Some(artifact) = &dependency.artifact {
+            if dependency.path.is_some() || dependency.registry.is_some() {
+                return Err(manifest_error(
+                    manifest,
+                    format!("dependency `{alias}` cannot combine artifact with path or registry"),
+                ));
+            }
+            if !dependency.features.is_empty() {
+                return Err(manifest_error(
+                    manifest,
+                    format!(
+                        "dependency `{alias}` cannot select features from an already-built artifact"
+                    ),
+                ));
+            }
+            let child = self.resolve_artifact(manifest, root, alias, artifact)?;
+            validate_resolved_dependency(
+                manifest,
+                alias,
+                package_name,
+                dependency.version.as_deref(),
+                requirement.as_ref(),
+                &child,
+            )?;
+            return Ok(PackageDependency {
+                alias: alias.to_owned(),
+                requirement: dependency.version.clone(),
+                package: child,
+                source: "artifact".to_owned(),
+            });
+        }
         let (child_manifest, origin, registry_version) = self.dependency_location(
             manifest,
             root,
@@ -869,14 +945,14 @@ impl Resolver {
         };
         let source = origin.source();
         let child = self.resolve(&child_manifest, stack, &request, &origin)?;
-        if child.name() != package_name {
-            return Err(manifest_error(
-                manifest,
-                format!(
-                    "dependency `{alias}` requested package `{package_name}`, but `{child}` was resolved"
-                ),
-            ));
-        }
+        validate_resolved_dependency(
+            manifest,
+            alias,
+            package_name,
+            dependency.version.as_deref(),
+            requirement.as_ref(),
+            &child,
+        )?;
         if registry_version
             .as_ref()
             .is_some_and(|version| version.to_string() != child.version())
@@ -889,24 +965,142 @@ impl Resolver {
                 ),
             ));
         }
-        if let Some(requirement) = &requirement {
-            let actual = Version::parse(child.version()).expect("package version was validated");
-            if !requirement.matches(&actual) {
-                return Err(manifest_error(
-                    manifest,
-                    format!(
-                        "dependency `{alias}` requires `{}`, but `{child}` was resolved",
-                        dependency.version.as_deref().expect("requirement exists")
-                    ),
-                ));
-            }
-        }
         Ok(PackageDependency {
             alias: alias.to_owned(),
             requirement: dependency.version.clone(),
             package: child,
             source,
         })
+    }
+
+    fn resolve_artifact(
+        &mut self,
+        manifest: &Path,
+        root: &Path,
+        alias: &str,
+        declared: &str,
+    ) -> Result<PackageId, DriverError> {
+        let relative = manifest_relative_path(
+            manifest,
+            &format!("dependency `{alias}` artifact"),
+            declared,
+            true,
+        )?;
+        let requested = root.join(relative);
+        let artifact_path = fs::canonicalize(&requested).map_err(|source| DriverError::Io {
+            path: requested,
+            source,
+        })?;
+        if !artifact_path.is_file()
+            || artifact_path
+                .extension()
+                .is_none_or(|extension| extension != "loomlib")
+        {
+            return Err(manifest_error(
+                manifest,
+                format!("dependency `{alias}` artifact must be a readable .loomlib file"),
+            ));
+        }
+        let bytes = fs::read(&artifact_path).map_err(|source| DriverError::Io {
+            path: artifact_path.clone(),
+            source,
+        })?;
+        let artifact = crate::decode_library_artifact(&bytes).map_err(|error| {
+            manifest_error(
+                manifest,
+                format!(
+                    "dependency `{alias}` cannot consume {}: {error}",
+                    artifact_path.display()
+                ),
+            )
+        })?;
+        let checksum = format!("{:x}", Sha256::digest(&bytes));
+        let (root_package, packages, sources) = artifact.into_dependency_parts();
+        let mut sources_by_package = BTreeMap::<PackageId, Vec<EmbeddedSource>>::new();
+        for source in sources {
+            sources_by_package
+                .entry(source.package)
+                .or_default()
+                .push(EmbeddedSource {
+                    path: source.path,
+                    text: source.text,
+                });
+        }
+        for package in &packages {
+            validate_name("artifact package", package.id.name(), &artifact_path)?;
+            Version::parse(package.id.version()).map_err(|error| {
+                manifest_error(
+                    &artifact_path,
+                    format!(
+                        "artifact package `{}` has an invalid SemVer version: {error}",
+                        package.id
+                    ),
+                )
+            })?;
+            for dependency in &package.dependencies {
+                validate_name(
+                    "artifact dependency alias",
+                    &dependency.alias,
+                    &artifact_path,
+                )?;
+            }
+        }
+        for package in packages {
+            if let Some(previous) = self.packages.get(&package.id) {
+                if previous.source == "artifact"
+                    && previous.checksum.as_deref() == Some(checksum.as_str())
+                {
+                    sources_by_package.remove(&package.id);
+                    continue;
+                }
+                return Err(manifest_error(
+                    manifest,
+                    format!(
+                        "artifact package identity `{}` is also provided by {}",
+                        package.id,
+                        previous.manifest.display()
+                    ),
+                ));
+            }
+            let dependencies = package
+                .dependencies
+                .into_iter()
+                .map(|dependency| PackageDependency {
+                    alias: dependency.alias,
+                    requirement: dependency.requirement,
+                    package: dependency.package,
+                    source: "artifact".to_owned(),
+                })
+                .collect();
+            let mut embedded_sources = sources_by_package.remove(&package.id).unwrap_or_default();
+            embedded_sources.sort_by(|left, right| left.path.cmp(&right.path));
+            self.packages.insert(
+                package.id.clone(),
+                Package {
+                    id: package.id,
+                    root: artifact_path
+                        .parent()
+                        .expect("artifact path has a parent")
+                        .to_path_buf(),
+                    manifest: artifact_path.clone(),
+                    source_roots: Vec::new(),
+                    dependencies,
+                    targets: Vec::new(),
+                    enabled_features: BTreeSet::new(),
+                    source: "artifact".to_owned(),
+                    checksum: Some(checksum.clone()),
+                    embedded_sources,
+                },
+            );
+        }
+        if !sources_by_package.is_empty() {
+            return Err(manifest_error(
+                &artifact_path,
+                "artifact contains sources for packages absent from its package graph",
+            ));
+        }
+        self.verify_locked_checksum(manifest, &root_package, "artifact", Some(&checksum))?;
+        Ok(root_package)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1011,7 +1205,9 @@ impl Resolver {
         source: &str,
         checksum: Option<&str>,
     ) -> Result<(), DriverError> {
-        if self.lock_mode == LockMode::Refresh || !source.starts_with("registry+") {
+        if self.lock_mode == LockMode::Refresh
+            || !(source.starts_with("registry+") || source == "artifact")
+        {
             return Ok(());
         }
         let Some(locked) = self.locked.as_ref().and_then(|lock| {
@@ -1027,12 +1223,43 @@ impl Resolver {
             return Err(manifest_error(
                 manifest,
                 format!(
-                    "registry package `{package}` checksum differs from {LOCK_FILE}; refuse mutable published versions"
+                    "resolved package `{package}` checksum differs from {LOCK_FILE}; refuse mutable dependency contents"
                 ),
             ));
         }
         Ok(())
     }
+}
+
+fn validate_resolved_dependency(
+    manifest: &Path,
+    alias: &str,
+    package_name: &str,
+    declared_requirement: Option<&str>,
+    requirement: Option<&VersionReq>,
+    child: &PackageId,
+) -> Result<(), DriverError> {
+    if child.name() != package_name {
+        return Err(manifest_error(
+            manifest,
+            format!(
+                "dependency `{alias}` requested package `{package_name}`, but `{child}` was resolved"
+            ),
+        ));
+    }
+    if let Some(requirement) = requirement {
+        let actual = Version::parse(child.version()).expect("package version was validated");
+        if !requirement.matches(&actual) {
+            return Err(manifest_error(
+                manifest,
+                format!(
+                    "dependency `{alias}` requires `{}`, but `{child}` was resolved",
+                    declared_requirement.expect("parsed requirement has source text")
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
@@ -1343,7 +1570,7 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
                 ),
             ));
         }
-        if package.source.starts_with("registry+")
+        if (package.source.starts_with("registry+") || package.source == "artifact")
             && package.checksum.as_deref().is_none_or(|checksum| {
                 checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
@@ -1628,6 +1855,7 @@ fn legacy_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, Drive
                 stable_path,
                 package: None,
                 is_root_package: true,
+                embedded_text: None,
             })
         })
         .collect()

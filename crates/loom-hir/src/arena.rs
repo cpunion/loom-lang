@@ -4,6 +4,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
+use serde::{Deserialize, Serialize};
+
 /// A typed index that can address an [`Arena`] or [`ArenaMap`].
 pub trait ArenaId: Copy + Eq + Ord + std::hash::Hash + fmt::Debug {
     /// Creates an ID from a dense zero-based index.
@@ -19,7 +21,7 @@ pub trait ArenaId: Copy + Eq + Ord + std::hash::Hash + fmt::Debug {
 }
 
 /// An append-only arena with a distinct ID type.
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Arena<I, T> {
     values: Vec<T>,
     marker: PhantomData<fn(I) -> I>,
@@ -119,7 +121,7 @@ impl<I: ArenaId, T> IndexMut<I> for Arena<I, T> {
 }
 
 /// A dense side table keyed by an arena ID.
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ArenaMap<I, T> {
     values: Vec<Option<T>>,
     marker: PhantomData<fn(I) -> I>,

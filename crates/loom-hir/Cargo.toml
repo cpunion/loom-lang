@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 loom-core.workspace = true
 loom-syntax.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

@@ -8,6 +8,7 @@ mod analysis;
 mod cache;
 mod format;
 mod incremental;
+mod library;
 mod project;
 mod report;
 mod source;
@@ -23,6 +24,10 @@ pub use cache::{
 };
 pub use format::{FormatResult, format_source};
 pub use incremental::ModuleInterface;
+pub use library::{
+    LIBRARY_ARTIFACT_FORMAT, LIBRARY_ARTIFACT_VERSION, LibraryArtifact, LibraryArtifactError,
+    decode_library_artifact, encode_library_artifact,
+};
 pub use project::{
     CURRENT_LANGUAGE_VERSION, LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package,
     PackageDependency, PackageId, ProjectGraph, ProjectOptions, Target, TargetKind,

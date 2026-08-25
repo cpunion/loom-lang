@@ -6,7 +6,8 @@ use std::sync::{Arc, Barrier};
 use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, LockMode, PersistentCache, PipelineStage, Position,
-    ProjectGraph, ProjectOptions, SymbolId, TargetKind, discover_loom_files, format_source,
+    ProjectGraph, ProjectOptions, SymbolId, TargetKind, decode_library_artifact,
+    discover_loom_files, encode_library_artifact, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -208,6 +209,150 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
             .expect("manifest graph lowers to MIR")
             .exports
             .contains_key("application.start")
+    );
+}
+
+#[test]
+fn portable_library_is_a_consumable_versioned_dependency() {
+    let project = TestProject::new();
+    project.write(
+        "utility/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n",
+    );
+    project.write(
+        "utility/src/math.loom",
+        "module utility.math\n\npub fn increment(value Int) Int { value + 1 }\n\nfn private_value() Int { 99 }\n",
+    );
+    let producer = AnalysisHost::new(project.root.join("utility")).expect("open producer");
+    let producer_snapshot = producer.snapshot().expect("compile producer");
+    assert!(
+        !producer_snapshot.has_errors(),
+        "{:#?}",
+        producer_snapshot.diagnostics()
+    );
+    let bytes = encode_library_artifact(
+        producer_snapshot.project(),
+        producer_snapshot.sources(),
+        producer_snapshot
+            .executable()
+            .expect("producer checked MIR"),
+    )
+    .expect("encode package artifact");
+    let decoded = decode_library_artifact(&bytes).expect("decode package artifact");
+    assert_eq!(decoded.root_package().name(), "utility");
+    assert_eq!(decoded.root_package().version(), "1.2.0");
+    assert_eq!(decoded.root_package().language(), "0.3");
+    assert!(
+        decoded
+            .interfaces()
+            .iter()
+            .any(|interface| { interface.module.ends_with("::utility.math") })
+    );
+    fs::write(project.root.join("utility.loomlib"), bytes).expect("write package artifact");
+
+    project.write(
+        "application/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"application\"\nversion = \"0.1.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.main\"\n",
+    );
+    project.write(
+        "application/src/main.loom",
+        "module application\n\nimport utility.math.increment\n\npub fn main() Unit {\n    let answer = increment(41)\n    assert answer == 42\n    Unit\n}\n",
+    );
+    fs::remove_dir_all(project.root.join("utility")).expect("remove producer checkout");
+
+    let consumer = AnalysisHost::new(project.root.join("application")).expect("open consumer");
+    assert_eq!(consumer.project().packages().count(), 2);
+    let snapshot = consumer
+        .snapshot()
+        .expect("compile from artifact dependency");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let dependency = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| !source.is_root_package())
+        .expect("embedded dependency source");
+    assert_eq!(
+        dependency.relative_path(),
+        "deps/utility@1.2.0/src/math.loom"
+    );
+    assert!(
+        dependency
+            .absolute_path()
+            .to_string_lossy()
+            .contains("utility.loomlib")
+    );
+    let program = snapshot.executable().expect("consumer checked MIR");
+    let entry = program.exports["application.main"];
+    let value = Interpreter::new(program)
+        .invoke(entry, Vec::new(), Span::default())
+        .expect("run artifact-backed dependency");
+    assert_eq!(value, Value::Unit);
+
+    let cache = PersistentCache::new(project.root.join("semantic-cache"));
+    let first_process =
+        AnalysisHost::new(project.root.join("application")).expect("open first cached consumer");
+    let first_sources = first_process
+        .load_sources()
+        .expect("load first source graph");
+    let (first_cached, _) = first_process.snapshot_from_sources_with_parse_cache(
+        first_sources,
+        &cache,
+        "test-compiler-language-0.3",
+    );
+    assert!(
+        !first_cached.has_errors(),
+        "{:#?}",
+        first_cached.diagnostics()
+    );
+
+    project.write(
+        "application/src/main.loom",
+        "module application\n\nimport utility.math.increment\n\npub fn main() Unit {\n    let answer = increment(40)\n    assert answer == 41\n    Unit\n}\n",
+    );
+    let second_process =
+        AnalysisHost::new(project.root.join("application")).expect("open second cached consumer");
+    let second_sources = second_process
+        .load_sources()
+        .expect("load changed consumer graph");
+    let (incremental, _) = second_process.snapshot_from_sources_with_parse_cache(
+        second_sources,
+        &cache,
+        "test-compiler-language-0.3",
+    );
+    assert!(
+        !incremental.has_errors(),
+        "{:#?}",
+        incremental.diagnostics()
+    );
+    assert_eq!(incremental.semantic_query_stats().modules_reused, 1);
+    assert!(incremental.semantic_query_stats().bodies_reused >= 2);
+    let program = incremental
+        .executable()
+        .expect("incremental artifact consumer");
+    let entry = program.exports["application.main"];
+    assert_eq!(
+        Interpreter::new(program)
+            .invoke(entry, Vec::new(), Span::default())
+            .expect("run incrementally rebuilt consumer"),
+        Value::Unit
+    );
+
+    project.write(
+        "application/src/main.loom",
+        "module application\n\nimport utility.math.private_value\n\npub fn main() Unit {\n    let hidden = private_value()\n    assert hidden == 99\n    Unit\n}\n",
+    );
+    let private_import = AnalysisHost::new(project.root.join("application"))
+        .expect("open private-import consumer")
+        .snapshot()
+        .expect("analyze private artifact import");
+    assert!(
+        private_import
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "UnknownName"),
+        "{:#?}",
+        private_import.diagnostics()
     );
 }
 

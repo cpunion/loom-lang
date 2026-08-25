@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use loom_core::{FileId, ModuleName, Name, PackageId, Span};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Arena, BodyId, BodySourceMap, DefId, ExprId, GenericParamId, LocalId, ModuleId, ParamId,
@@ -202,7 +203,7 @@ pub struct MethodDef {
     pub body: Option<BodyId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ReceiverKind {
     ReadOnly,
     Mutable,

@@ -1,11 +1,13 @@
 //! Typed HIR identities.
 
 use crate::ArenaId;
+use serde::{Deserialize, Serialize};
 
 macro_rules! define_id {
     ($($name:ident),+ $(,)?) => {
         $(
-            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+            #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+            #[serde(transparent)]
             pub struct $name(u32);
 
             impl $name {

@@ -3,8 +3,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use loom_hir::{Arena, ArenaId, DefId, GenericParamId};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct TyId(u32);
 
 impl TyId {
@@ -29,7 +31,7 @@ impl ArenaId for TyId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum BuiltinType {
     Bool,
     Int,
@@ -46,25 +48,25 @@ pub enum BuiltinType {
     ParseIntError,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Mutability {
     ReadOnly,
     Mutable,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ConceptInstance {
     pub concept: DefId,
     pub bindings: Vec<AssociatedTypeBinding>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct AssociatedTypeBinding {
     pub associated_type: DefId,
     pub ty: TyId,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum TyData {
     Error,
     Never,
@@ -107,6 +109,59 @@ pub struct TyInterner {
     by_value: HashMap<TyData, TyId>,
     error: TyId,
     never: TyId,
+}
+
+#[derive(Deserialize, Serialize)]
+struct TyInternerWire {
+    values: Vec<TyData>,
+    error: TyId,
+    never: TyId,
+}
+
+impl Serialize for TyInterner {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        TyInternerWire {
+            values: self.values.values().cloned().collect(),
+            error: self.error,
+            never: self.never,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TyInterner {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = TyInternerWire::deserialize(deserializer)?;
+        let mut values = Arena::default();
+        let mut by_value = HashMap::new();
+        for value in wire.values {
+            let id = values.alloc(value.clone());
+            if by_value.insert(value, id).is_some() {
+                return Err(serde::de::Error::custom(
+                    "typed cache contains a duplicate interned type",
+                ));
+            }
+        }
+        if values.get(wire.error) != Some(&TyData::Error)
+            || values.get(wire.never) != Some(&TyData::Never)
+        {
+            return Err(serde::de::Error::custom(
+                "typed cache has invalid error/never type identities",
+            ));
+        }
+        Ok(Self {
+            values,
+            by_value,
+            error: wire.error,
+            never: wire.never,
+        })
+    }
 }
 
 impl Default for TyInterner {
@@ -249,7 +304,7 @@ impl TyInterner {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Substitution {
     values: BTreeMap<GenericParamId, TyId>,
 }

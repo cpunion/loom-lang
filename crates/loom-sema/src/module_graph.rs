@@ -4,15 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use loom_core::{Diagnostic, ModuleName};
 use loom_hir::{Import, ModuleId, ModuleResolution, Path, Program};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ImportEdge {
     pub from: ModuleId,
     pub to: ModuleId,
     pub import_index: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ModuleGraph {
     outgoing: BTreeMap<ModuleId, Vec<ImportEdge>>,
 }
