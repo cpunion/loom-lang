@@ -1,4 +1,6 @@
 use std::fmt::Write as _;
+use std::io::Read as _;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -191,13 +193,8 @@ fn main() {
 
 fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Result<(), String> {
     let project = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let round_trip = project.path().join("round-trip.txt");
-    let missing = project.path().join("missing.txt");
-    let source = std::fs::read_to_string(workspace.join(STANDARD_LIBRARY_FIXTURE))
-        .map_err(|error| error.to_string())?
-        .replace("__ROUND_TRIP_PATH__", &loom_text_literal(&round_trip))
-        .replace("__MISSING_PATH__", &loom_text_literal(&missing));
-    std::fs::write(project.path().join("main.loom"), source).map_err(|error| error.to_string())?;
+    let (round_trip, empty_write_listener, snapshot_listener) =
+        prepare_standard_library_fixture(workspace, project.path())?;
 
     let analysis_started = Instant::now();
     let snapshot = AnalysisHost::new(project.path())
@@ -214,6 +211,9 @@ fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Res
         return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
     }
     let program = snapshot.executable().map_err(|error| error.to_string())?;
+    let empty_write_server = spawn_fixture_server(empty_write_listener, b"", "empty write")?;
+    let snapshot_server =
+        spawn_fixture_server(snapshot_listener, b"socket snapshot", "socket snapshot")?;
 
     let interpreter_started = Instant::now();
     let interpreted = Interpreter::new(program).run_tests();
@@ -268,6 +268,8 @@ fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Res
     if std::fs::read_to_string(&round_trip).map_err(|error| error.to_string())? != "typed I/O" {
         return Err("typed file round trip did not preserve text".to_owned());
     }
+    join_fixture_server(empty_write_server, "empty-write")?;
+    join_fixture_server(snapshot_server, "socket-snapshot")?;
     upper_gate(
         gates,
         "standard-library.native-execution",
@@ -275,6 +277,88 @@ fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Res
         EXECUTION_BUDGET,
     );
     Ok(())
+}
+
+fn prepare_standard_library_fixture(
+    workspace: &Path,
+    project: &Path,
+) -> Result<(PathBuf, TcpListener, TcpListener), String> {
+    let round_trip = project.join("round-trip.txt");
+    let reuse = project.join("reuse.txt");
+    let missing = project.join("missing.txt");
+    let empty_write_listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("bind empty-write fixture: {error}"))?;
+    let empty_write_port = empty_write_listener
+        .local_addr()
+        .map_err(|error| format!("read empty-write fixture address: {error}"))?
+        .port();
+    let snapshot_listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("bind socket-snapshot fixture: {error}"))?;
+    let snapshot_port = snapshot_listener
+        .local_addr()
+        .map_err(|error| format!("read socket-snapshot fixture address: {error}"))?
+        .port();
+    let source = std::fs::read_to_string(workspace.join(STANDARD_LIBRARY_FIXTURE))
+        .map_err(|error| error.to_string())?
+        .replace("__ROUND_TRIP_PATH__", &loom_text_literal(&round_trip))
+        .replace("__REUSE_PATH__", &loom_text_literal(&reuse))
+        .replace("__MISSING_PATH__", &loom_text_literal(&missing))
+        .replace("__LOOPBACK_PORT__", &empty_write_port.to_string())
+        .replace("__READ_LOOPBACK_PORT__", &snapshot_port.to_string());
+    std::fs::write(project.join("main.loom"), source).map_err(|error| error.to_string())?;
+    Ok((round_trip, empty_write_listener, snapshot_listener))
+}
+
+fn spawn_fixture_server(
+    listener: TcpListener,
+    expected: &'static [u8],
+    label: &'static str,
+) -> Result<std::thread::JoinHandle<Result<(), String>>, String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("configure {label} listener: {error}"))?;
+    Ok(std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        for connection in 0..2 {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err(format!(
+                                "{label} fixture timed out before connection {}",
+                                connection + 1
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => return Err(format!("accept {label} fixture: {error}")),
+                }
+            };
+            stream
+                .set_read_timeout(Some(EXECUTION_BUDGET))
+                .map_err(|error| format!("configure {label} stream: {error}"))?;
+            let mut bytes = Vec::new();
+            stream
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("read {label} fixture: {error}"))?;
+            if bytes != expected {
+                return Err(format!(
+                    "{label} fixture expected {expected:?}, received {bytes:?}"
+                ));
+            }
+        }
+        Ok(())
+    }))
+}
+
+fn join_fixture_server(
+    server: std::thread::JoinHandle<Result<(), String>>,
+    label: &str,
+) -> Result<(), String> {
+    server
+        .join()
+        .map_err(|_| format!("{label} fixture thread panicked"))?
 }
 
 fn loom_text_literal(path: &Path) -> String {
