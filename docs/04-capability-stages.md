@@ -212,7 +212,7 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 - HTTPS registry resolve/publish、credential transport、bundle/cache 全量复核；
 - `loomc runtime export`、目标 runtime bundle、显式 linker 与发布 archive。
 
-`Text` 保持规范名称，不增加 `String`/`str` alias。当前 uniform value tag 只是 C1 backend helper 的临时分派表示；目标 typed lowering 让 concrete `Text` 使用单个 managed pointer，并以 layout descriptor 代替 per-value tag。release workflow 必须真实导出并重新链接宿主 runtime bundle，标准库 fixture 必须在解释器/native 两条路径产生相同值、文件、日志和错误结果。
+`Text` 保持规范名称，不增加 `String`/`str` alias。当前已把旧的 `{tag, byte-length, byte-pointer}` payload 原子迁移为 `{tag, TextObject*}` 兼容 envelope；对象本身是带 versioned layout descriptor、缓存 scalar length 与 trailing UTF-8 的单个 managed allocation。下一步 typed lowering 再从已知 concrete `Text` 位置移除外围 tag；在此之前 generic、container、coroutine 与 `dyn` 边界继续使用 uniform envelope。release workflow 必须真实导出并重新链接宿主 runtime bundle，标准库 fixture 必须在解释器/native 两条路径产生相同值、文件、日志和错误结果。
 
 ## 15. 明确后置
 

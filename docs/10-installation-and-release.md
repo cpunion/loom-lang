@@ -12,6 +12,10 @@ SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从�
 使用真正支持该 target 的 linker；编译器会在链接前校验 bundle target/ABI/digest，并把 bundle
 与 linker identity 纳入缓存。仅需要 relocatable object 时不需要 runtime bundle。
 
+当前 native compatibility Value ABI 只支持 64-bit pointer target；32-bit triple 在产生 object
+前以 `UnsupportedNativePointerWidth` fail closed。当前 runtime identity 包含
+`loom-value-v2/layout-v1/text-v1/gc-v2/stdlib-v3`，旧 runtime bundle 会因 ABI 不匹配而拒绝。
+
 ## LLVM 19
 
 编译 Loom 工具链需要 LLVM 19 开发文件。Ubuntu 24.04 使用

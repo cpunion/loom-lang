@@ -132,9 +132,9 @@ InstanceKey = (
 
 ### 普通值
 
-当前 C1 lowering 把 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 把跨调用、aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。`Text` 已先完成兼容迁移：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
 
-最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。C1 tag 消除属于后端表示优化，不改变 checked MIR 或 cache 中的语言语义 identity。
+最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 

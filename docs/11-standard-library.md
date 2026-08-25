@@ -19,9 +19,11 @@
 
 `Text` 是本语言的规范名称，不另设 `String`/`string` alias，也不引入带 borrow/lifetime 含义的 `str`。这个名字强调它与任意 `Bytes` 的边界；它不代表 UI rich text、可变 buffer 或特殊大对象。若以后需要高效增量构造，将使用独立的 `TextBuilder` 一类普通库类型，不改变 `Text` 的不可变值语义。
 
-当前 C1 native backend 为了 shared generic body，把所有值暂存在统一 compiler-private slot；其中 `Text` 使用 kind tag、UTF-8 byte length 和 immutable data pointer。字面量 data 位于只读 LLVM global，动态 data 位于 moving-GC byte arena；copy 可以共享 data，equality 先比较长度再比较 bytes，concat 产生新平坦 buffer。当前 `length/get` 扫描 UTF-8，因此都是线性时间。这个 slot tag 不是 `Text` 语义或最终 ABI。
+当前 C1 native backend 为了 shared generic body，仍把跨 callable、container、`dyn` 与 coroutine 边界的值放在统一 compiler-private envelope；其中 `Text` envelope 只写 kind tag 和一个 managed object pointer，其余 payload word 必须为零。`TextObject` 是一块不可变分配：固定 header 含 versioned layout descriptor、allocation size、UTF-8 byte length 与已缓存 scalar length，header 后紧跟无 NUL terminator 的 UTF-8 bytes。需要容纳任意字节的 storage 使用独立 `ByteObject` descriptor，不能伪装成 `Text`；由 `Text` 编码得到的 `Bytes` 可以安全共享有效的 `TextObject`，而 UTF-8 decode 成功会建立真正的 `TextObject`。
 
-目标 typed representation 是单个 `Text` managed pointer，指向含 byte length、已缓存 scalar length 和 UTF-8 bytes 的不可变对象；可选 hash cache、small-string optimization 或静态字面量对象只能由性能证据驱动。编译器已知 `Text` 的位置不需要 per-value tag；GC 可以通过 allocation/layout descriptor 追踪，移动后重写 root。第一版不采用 rope、隐式 normalization、稳定地址、NUL terminator 或 borrowed slice。
+字面量是相同布局的只读、不可移动 LLVM global；动态对象进入 precise moving GC，移动时整块复制并重写所有 compiler-described root。copy 可以共享对象，equality 先比较 byte length 再比较 bytes，concat 产生新平坦对象；`length` 读取缓存值为 O(1)，按 scalar 的 `get` 仍为 O(n)。当前 envelope tag 不是 `Text` 语义、RTTI 或最终 ABI。
+
+最终 typed lowering 直接把已知 `Text` 位置表示为单个 `TextObject*`，删除外围 uniform envelope 的 per-value tag；shared generic/container/coroutine/`dyn` 边界则先补齐 layout 参数或 slot layout。可选 hash cache 或 small-string optimization 只能由性能证据驱动。第一版不采用 rope、隐式 normalization、稳定地址、NUL terminator 或 borrowed slice。
 
 ## 2. Text、Bytes 与 Path
 
