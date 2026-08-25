@@ -340,13 +340,13 @@ feature 仅形成具名闭包并以 `dep:alias` 激活 `optional = true` 依赖�
 2. 每个 module 的 canonical public interface；包含 import、exported declaration、generic bound、concept requirement、associated type、contract、public inherent method 与 conformance header，排除实现 body 和 source range；
 3. 整张 package graph 的 validated checked MIR 与稳定 diagnostics；
 4. 已选 run/test root 的 LLVM target object；key 只包含全局 type/concept schema、reachable function body、live witness method/proof edge、target/data layout/optimization 与 debug-source policy，不包含不可达私有函数 body；
-5. 最终 native executable、macOS dSYM payload、解释器 `.loomi` 或 portable `.loomlib` artifact。
+5. 解释器 `.loomi` 或 portable `.loomlib` final artifact；native executable 与 macOS dSYM 每次从 object 重建。
 
-CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，native artifact 只有在内容验证后才原子 materialize 并设置执行权限。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 target 可 materialize 到不同位置。
+CAS 把 ref 与 SHA-256 blob 分开。读取时验证 schema、namespace、key、size 与完整内容 hash；checked MIR 再经过 versioned `.loomi` decoder 和完整 MIR validator，target object/`.loomi`/`.loomlib` 只有在内容验证后才原子 materialize。写入为 blob-first、ref-last 的同目录原子替换；并发或损坏只能退化为 miss。最终输出路径不进入 key，因此相同 portable artifact 可 materialize 到不同位置。
 
 整图 checked-MIR key 使用独立的 v3 语义域和 length-delimited fields，只包含 language version、frontend identity、standard-library identity、contract mode、canonical package/dependency/feature graph、registry checksum、稳定 source path 与 bytes。frontend build identity 散列 workspace-relative 的 core/syntax/HIR/sema/MIR/lowering/driver 全部生产文件与各自 manifest、workspace manifest/lock、完整 `rustc -vV`、HOST/TARGET 与 Rust cfg/features；当前 builtin 标准库规则就在这些层中，因此 standard-library identity 也绑定同一内容指纹。它不含 checkout 绝对路径、Cargo debug/release profile、原始 Rust flags、LLVM/runtime/interpreter/CLI 生产源码；会改变条件编译的 flags 已由 Cargo 展开到 cfg 身份，纯 codegen/path-remap flags 不会无关分裂语义 cache。workspace manifest/lock 目前仍是前端和 object 共享的保守输入，因此无关依赖升级可能造成额外 miss，但不会错误复用。target declaration 的 name/kind/entry 只负责选择产物 root，不属于源码类型检查语义。backend/runtime ABI、Loom target triple/data layout/CPU/features/optimization/relocation 也不进入该层，因此 interpreter 与 LLVM、development 与 release、隐式 host-native 与显式 generic target 可以复用同一份重新验证过的 checked MIR；构造这个 key 不初始化 LLVM TargetMachine。
 
-LLVM object cache 使用独立的 v5 域，只包装 backend 自洽的 native object fingerprint。该 fingerprint 包含 codegen-LLVM/core/MIR/runtime-ABI 的生产文件与 manifests、Rust build cfg、llvm-sys 按实际 shared/static fallback 策略选中的 `llvm-config --libfiles` 集合及每个 libLLVM 文件内容，再以运行时 LLVM 数值版本作为二次防线，并继续包含 backend/MIR object format、所选 root、可达 function/witness/proof、全局类型 schema、debug-source policy，以及 target triple/data layout/CPU/features/optimization/relocation。动态链接时这里的二进制内容指构建时 llvm-sys 选中的文件，不声称能跨平台证明 loader 最终映射的运行时路径。frontend、interpreter、CLI 与 runtime 实现源码不会让相同 checked MIR 的 object 无关失效，编译 `loomc` 自身时使用的 Cargo debug/release profile也不进入 key。同一对象策略会命中，隐式 host-native、显式 generic target 和 Loom `--release` 则各自得到不同 key。final native artifact 的派生 key 继续包含内嵌 runtime identity，或外部 runtime manifest/archive SHA-256 与显式 linker path/executable/version identity，以及 macOS `dsymutil` identity。工具 identity 无法确认时停用 final-artifact cache，不影响前端检查或 object cache 的正确性。
+LLVM object cache 使用独立的 v5 域，只包装 backend 自洽的 native object fingerprint。该 fingerprint 包含 codegen-LLVM/core/MIR/runtime-ABI 的生产文件与 manifests、Rust build cfg、llvm-sys 按实际 shared/static fallback 策略选中的 `llvm-config --libfiles` 集合及每个 libLLVM 文件内容，再以运行时 LLVM 数值版本作为二次防线，并继续包含 backend/MIR object format、所选 root、可达 function/witness/proof、全局类型 schema、debug-source policy，以及 target triple/data layout/CPU/features/optimization/relocation。动态链接时这里的二进制内容指构建时 llvm-sys 选中的文件，不声称能跨平台证明 loader 最终映射的运行时路径。frontend、interpreter、CLI 与 runtime 实现源码不会让相同 checked MIR 的 object 无关失效，编译 `loomc` 自身时使用的 Cargo debug/release profile也不进入 key。同一对象策略会命中，隐式 host-native、显式 generic target 和 Loom `--release` 则各自得到不同 key。native final-artifact cache 当前统一禁用：顶层 clang/linker 的 bytes 和 version 不能完整证明子 linker、plugin、SDK/sysroot、CRT、system library、deployment target 与 `dsymutil` 输出的联合身份。每次 native build/run/test/debug 都从经过内容验证的 object 重链并重新生成 dSYM；解释器 `.loomi` 和 portable `.loomlib` 仍真实命中 final cache。只有未来引入覆盖全部输入的 content-addressed hermetic link bundle 才能重新启用 native 该层。
 
 ### 增量层与当前边界
 
@@ -358,18 +358,18 @@ source hash
   → whole-graph checked MIR                         已跨进程缓存
   → reachable function/witness/proof fingerprint    已实现
   → target object cache                             已实现并复用
-  → runtime/linker/debug-tool keyed final link       已实现并复用
+  → native final link                                每次重链，等待 hermetic bundle
 ```
 
-这里把三种主张严格分开：长驻 `AnalysisHost` 的连续 snapshot 会同时比较 public interface、全声明 semantic shape 和 body fingerprint；声明形状不变时只重查 body 变化的 module，并复用其余 module 的 `BodySemantics`，形状变化则安全回退整图检查。跨进程仍从 validated whole-graph checked MIR 恢复，不序列化 typed-HIR body。不可达私有 body 修改还可复用同一 target object/final artifact，测试会在破坏 final ref 后证明只重新链接。当前 shared-generic ABI 没有独立 monomorphized machine instance；generic/witness proof 参数直接进入 reachable object fingerprint，将来增加单态化时再把 canonical type/proof arguments 拆成 instance CAS entry。
+这里把三种主张严格分开：长驻 `AnalysisHost` 的连续 snapshot 会同时比较 public interface、全声明 semantic shape 和 body fingerprint；声明形状不变时只重查 body 变化的 module，并复用其余 module 的 `BodySemantics`，形状变化则安全回退整图检查。跨进程仍从 validated whole-graph checked MIR 恢复，不序列化 typed-HIR body。不可达私有 body 修改还可复用同一 target object，但 native executable 会从该 object 重新链接。当前 shared-generic ABI 没有独立 monomorphized machine instance；generic/witness proof 参数直接进入 reachable object fingerprint，将来增加单态化时再把 canonical type/proof arguments 拆成 instance CAS entry。
 
 cache 必须 content-addressed，不以 mtime、绝对路径、文件遍历顺序或编辑器状态作为语义输入。各层只携带能够改变该层结果的 identity：
 
 - parse/interface/checked MIR：frontend、language、stdlib、contract、canonical module/package/dependency/feature 与 source/interface/body hashes；
 - target object：compiler source、可达 MIR/proof、backend object format、target triple、CPU feature policy 与 optimization；
-- final artifact：object key、runtime ABI/archive、linker/debug tool 与所选 entry/产物模式。
+- final artifact：只对 `.loomi`/`.loomlib` 启用；native executable/dSYM 等待 hermetic link bundle。
 
-cache miss 与冷构建必须得到同一 checked MIR、diagnostics ordering、reachability 和运行结果。当前 relocation/content/corruption、逐源 parse hit、interface body-insensitivity、跨 backend/profile/target 的 checked-MIR hit、target/optimization-separated object hit、DCE-aware object hit、dSYM relocation、12-writer contention 与 CLI hit 测试固定这一行为；cache corruption 只能造成安全 miss/重建，不能执行未验证 IR。
+cache miss 与冷构建必须得到同一 checked MIR、diagnostics ordering、reachability 和运行结果。当前 relocation/content/corruption、逐源 parse hit、interface body-insensitivity、跨 backend/profile/target 的 checked-MIR hit、target/optimization-separated object hit、DCE-aware object hit、native final-cache disabled/relink、12-writer contention 与 CLI hit 测试固定这一行为；cache corruption 只能造成安全 miss/重建，不能执行未验证 IR。
 
 ## 10. `any` 与 DCE 边界
 
@@ -420,7 +420,7 @@ Core 0.3 的新增关门条件：
 16. async scheduler safepoint 能重定位 Task slots/results 引用的 managed objects，同时不改变 Task identity、proof address、合同或 concept behavior；
 17. async descriptor 和 join runtime edge进入 root graph，未构造的 task/conformance 仍可被 DCE；
 18. manifest path dependency、SemVer、cycle、bin/test target 与稳定 dependency source label 通过 driver/CLI 回归；
-19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。
+19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/object/`.loomi`/`.loomlib` 构建真实 hit，native final 明确 disabled 并重链。
 20. development/release 机器 IR 回归证明常量折叠、内联与不可达函数删除真实发生，不只比较 profile 名称；
 21. 三个冻结 Core task 在解释器与 release LLVM main/test oracle 上一致，并满足 [性能、增量与 C2 implementation-controlled 门](09-quality-and-controlled-evidence.md)；
 22. lossless syntax/recovery 与 artifact decoder/checked-MIR validator 的 libFuzzer target 在 CI 持续运行；

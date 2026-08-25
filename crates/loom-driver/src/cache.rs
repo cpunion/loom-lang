@@ -28,7 +28,6 @@ const PARSE_NAMESPACE: &str = "source-parse";
 const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
-const DEBUG_COMPANION_NAMESPACE: &str = "debug-companion";
 const ARTIFACT_NAMESPACE: &str = "artifact";
 const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v3";
 
@@ -561,22 +560,6 @@ impl PersistentCache {
     /// Returns a cache error when persistence fails.
     pub fn store_target_object(&self, key: &CacheKey, bytes: &[u8]) -> Result<(), CacheError> {
         self.store_blob(TARGET_OBJECT_NAMESPACE, key, bytes)
-    }
-
-    /// Loads a platform debug companion after content verification.
-    #[must_use]
-    pub fn load_debug_companion(&self, key: &CacheKey) -> CacheLookup<Vec<u8>> {
-        self.load_blob(DEBUG_COMPANION_NAMESPACE, key)
-            .map_or(CacheLookup::Miss, CacheLookup::Hit)
-    }
-
-    /// Stores a platform debug companion payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns a cache error when persistence fails.
-    pub fn store_debug_companion(&self, key: &CacheKey, bytes: &[u8]) -> Result<(), CacheError> {
-        self.store_blob(DEBUG_COMPANION_NAMESPACE, key, bytes)
     }
 
     /// Loads an arbitrary final artifact after ref and content verification.

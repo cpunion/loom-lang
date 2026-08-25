@@ -279,12 +279,11 @@ pub fn export_native_runtime_bundle(
     })
 }
 
-/// A resolved linker whose executable bytes and version output are identified.
+/// A resolved linker whose executable bytes and version behavior are validated.
 #[derive(Clone, Debug)]
 pub struct RuntimeLinker {
     program: PathBuf,
     program_sha256: String,
-    identity: String,
 }
 
 impl RuntimeLinker {
@@ -333,30 +332,15 @@ impl RuntimeLinker {
                 "explicit linker returned an empty version identity",
             ));
         }
-        let mut version_hasher = Sha256::new();
-        version_hasher.update(&output.stdout);
-        version_hasher.update([0]);
-        version_hasher.update(&output.stderr);
-        let identity = format!(
-            "path-sha256={};program-sha256={program_sha256};version-sha256={}",
-            digest_path(&program),
-            format_args!("{:x}", version_hasher.finalize())
-        );
         Ok(Self {
             program,
             program_sha256,
-            identity,
         })
     }
 
     #[must_use]
     pub fn program(&self) -> &Path {
         &self.program
-    }
-
-    #[must_use]
-    pub fn identity(&self) -> &str {
-        &self.identity
     }
 }
 
@@ -765,27 +749,6 @@ fn bundle_error(message: impl Into<String>) -> CodegenError {
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn digest_path(path: &Path) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        digest(path.as_os_str().as_bytes())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt as _;
-
-        let mut hasher = Sha256::new();
-        for unit in path.as_os_str().encode_wide() {
-            hasher.update(unit.to_le_bytes());
-        }
-        format!("{:x}", hasher.finalize())
-    }
-    #[cfg(not(any(unix, windows)))]
-    digest(path.to_string_lossy().as_bytes())
 }
 
 fn valid_digest(value: &str) -> bool {

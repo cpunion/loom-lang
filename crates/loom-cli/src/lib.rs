@@ -110,20 +110,6 @@ enum NativeLinkPlan {
 }
 
 impl NativeLinkPlan {
-    fn linker_identity(&self) -> Result<String, loom_codegen_llvm::CodegenError> {
-        match self {
-            Self::EmbeddedHost => loom_codegen_llvm::native_linker_identity(),
-            Self::RuntimeBundle { linker, .. } => Ok(linker.identity().to_owned()),
-        }
-    }
-
-    fn runtime_identity(&self) -> String {
-        match self {
-            Self::EmbeddedHost => loom_codegen_llvm::native_runtime_identity(),
-            Self::RuntimeBundle { bundle, .. } => bundle.identity().to_owned(),
-        }
-    }
-
     fn link(&self, object: &Path, output: &Path) -> Result<(), loom_codegen_llvm::CodegenError> {
         match self {
             Self::EmbeddedHost => loom_codegen_llvm::link_native_object(object, output),
@@ -804,22 +790,11 @@ fn run_build(
     } else {
         None
     };
-    let artifact_key = final_artifact_key(
-        &compilation,
-        program,
-        options.backend,
-        "run",
-        Some(&entry),
-        Some(&emit_options),
-        native_link.as_ref(),
-    );
+    let artifact_key = final_artifact_key(&compilation, options.backend, "run", Some(&entry));
     match restore_cached_artifact(
         &compilation,
         artifact_key.as_ref(),
         &output,
-        options.backend == Backend::Llvm,
-        options.backend == Backend::Llvm
-            && loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()),
         options,
         stdout,
     )? {
@@ -895,15 +870,7 @@ fn build_library(
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
     let artifact_key = library_artifact_key(compilation, target);
-    match restore_cached_artifact(
-        compilation,
-        artifact_key.as_ref(),
-        output,
-        false,
-        false,
-        options,
-        stdout,
-    )? {
+    match restore_cached_artifact(compilation, artifact_key.as_ref(), output, options, stdout)? {
         Ok(true) => {
             emit_build_result(options, stdout, output)?;
             return Ok(EXIT_SUCCESS);
@@ -1019,21 +986,11 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
         let executable = directory.path().join("loom-tests");
         let emit_options =
             configured_emit_options(options, loom_codegen_llvm::EmitOptions::tests());
-        let artifact_key = final_artifact_key(
-            &compilation,
-            program,
-            options.backend,
-            "tests",
-            None,
-            Some(&emit_options),
-            None,
-        );
+        let artifact_key = final_artifact_key(&compilation, options.backend, "tests", None);
         match restore_cached_artifact(
             &compilation,
             artifact_key.as_ref(),
             &executable,
-            true,
-            true,
             options,
             stdout,
         )? {
@@ -1134,21 +1091,12 @@ fn run_program(
             let executable = directory.path().join("loom-program");
             let emit_options =
                 configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
-            let artifact_key = final_artifact_key(
-                &compilation,
-                program,
-                options.backend,
-                "run",
-                Some(&entry),
-                Some(&emit_options),
-                None,
-            );
+            let artifact_key =
+                final_artifact_key(&compilation, options.backend, "run", Some(&entry));
             match restore_cached_artifact(
                 &compilation,
                 artifact_key.as_ref(),
                 &executable,
-                true,
-                true,
                 options,
                 stdout,
             )? {
@@ -1239,21 +1187,11 @@ fn run_debug(
     let executable = directory.path().join("loom-debug-program");
     let emit_options =
         configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
-    let artifact_key = final_artifact_key(
-        &compilation,
-        program,
-        options.backend,
-        "debug",
-        Some(&entry),
-        Some(&emit_options),
-        None,
-    );
+    let artifact_key = final_artifact_key(&compilation, options.backend, "debug", Some(&entry));
     let restored = match restore_cached_artifact(
         &compilation,
         artifact_key.as_ref(),
         &executable,
-        true,
-        true,
         options,
         stdout,
     )? {
@@ -1893,51 +1831,25 @@ fn cache_context(language_version: &str) -> CacheContext {
 
 fn final_artifact_key(
     compilation: &Compilation,
-    program: &loom_mir::Program,
     backend: Backend,
     mode: &str,
     entry: Option<&str>,
-    emit_options: Option<&loom_codegen_llvm::EmitOptions>,
-    native_link: Option<&NativeLinkPlan>,
 ) -> Option<CacheKey> {
-    let (parent, toolchain, runtime) = match backend {
-        Backend::Llvm => {
-            let emit_options = emit_options?;
-            let linker = native_link.map_or_else(
-                || loom_codegen_llvm::native_linker_identity().ok(),
-                |link| link.linker_identity().ok(),
-            )?;
-            let debug =
-                if loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()) {
-                    loom_codegen_llvm::native_debug_tool_identity()
-                        .ok()?
-                        .unwrap_or_else(|| "embedded-elf-dwarf".to_owned())
-                } else {
-                    "foreign-target-no-host-debug-companion".to_owned()
-                };
-            (
-                target_object_key(compilation, program, emit_options)?,
-                format!("{linker};debug={debug}"),
-                native_link.map_or_else(
-                    loom_codegen_llvm::native_runtime_identity,
-                    NativeLinkPlan::runtime_identity,
-                ),
-            )
-        }
-        Backend::Interpreter => (
-            compilation.key()?.clone(),
-            "loom-interpreted-artifact-writer-v2".to_owned(),
-            "loom-interpreter-runtime-v1".to_owned(),
-        ),
-    };
+    if backend == Backend::Llvm {
+        // Native linking is intentionally outside persistent caching until a
+        // hermetic link bundle identifies every linker child, SDK/sysroot,
+        // CRT/system library and debug companion as one atomic unit.
+        return None;
+    }
+    let parent = compilation.key()?.clone();
     Some(PersistentCache::derived_key(
         &parent,
         &[
             ("layer", "final-artifact-v2"),
             ("mode", mode),
             ("entry", entry.unwrap_or("")),
-            ("artifact-toolchain", &toolchain),
-            ("runtime", &runtime),
+            ("artifact-toolchain", "loom-interpreted-artifact-writer-v2"),
+            ("runtime", "loom-interpreter-runtime-v1"),
         ],
     ))
 }
@@ -2109,8 +2021,6 @@ fn restore_cached_artifact(
     compilation: &Compilation,
     key: Option<&CacheKey>,
     output: &Path,
-    executable: bool,
-    debug_companion: bool,
     options: &Options,
     stdout: &mut dyn Write,
 ) -> io::Result<Result<bool, String>> {
@@ -2134,35 +2044,8 @@ fn restore_cached_artifact(
         )?;
         return Ok(Ok(false));
     };
-    let debug_companion = if debug_companion {
-        if let Some(path) = loom_codegen_llvm::native_debug_companion_path(output) {
-            let CacheLookup::Hit(debug_bytes) = cache.load_debug_companion(key) else {
-                emit_cache_result(
-                    options.json,
-                    stdout,
-                    "final_artifact",
-                    CacheStatus::Miss,
-                    Some(key),
-                )?;
-                return Ok(Ok(false));
-            };
-            Some((path, debug_bytes))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    if let Err(error) = cache.materialize(&bytes, output, executable) {
+    if let Err(error) = cache.materialize(&bytes, output, false) {
         return Ok(Err(error.to_string()));
-    }
-    if let Some((path, bytes)) = debug_companion {
-        if let Err(error) = cache.materialize(&bytes, &path, false) {
-            return Ok(Err(error.to_string()));
-        }
-        if let Err(error) = loom_codegen_llvm::materialize_native_debug_metadata(output) {
-            return Ok(Err(error.to_string()));
-        }
     }
     emit_cache_result(
         options.json,
@@ -2180,11 +2063,6 @@ fn store_artifact_best_effort(compilation: &Compilation, key: Option<&CacheKey>,
         return;
     };
     let _ = cache.store_artifact(key, &bytes);
-    if let Some(path) = loom_codegen_llvm::native_debug_companion_path(output)
-        && let Ok(debug) = std::fs::read(path)
-    {
-        let _ = cache.store_debug_companion(key, &debug);
-    }
 }
 
 fn emit_cache_result(

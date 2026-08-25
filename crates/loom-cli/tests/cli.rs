@@ -105,6 +105,7 @@ if [ "${{1-}}" = "--version" ]; then
 fi
 log=${{LOOM_FAKE_LINK_LOG:?}}
 object_copy=${{LOOM_FAKE_OBJECT_COPY:?}}
+payload=${{LOOM_FAKE_LINK_PAYLOAD:?}}
 : > "$log"
 cp "$1" "$object_copy"
 output=
@@ -119,7 +120,7 @@ while [ "$#" -gt 0 ]; do
     fi
 done
 [ -n "$output" ]
-printf '#!/bin/sh\nexit 0\n' > "$output"
+printf '#!/bin/sh\n# %s\nexit 0\n' "$(cat "$payload")" > "$output"
 chmod 755 "$output"
 "#,
         ),
@@ -673,7 +674,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
 }
 
 #[test]
-fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
+fn unreachable_private_body_edits_reuse_native_object_and_relink() {
     let project = TestProject::new(
         "module demo\n\npub fn main() Unit {\n    Unit\n}\n\nfn dead() Int {\n    1\n}\n",
     );
@@ -689,6 +690,10 @@ fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
         cache_status(&first.stdout, "target_object").as_deref(),
         Some("miss")
     );
+    assert_eq!(
+        cache_status(&first.stdout, "final_artifact").as_deref(),
+        Some("disabled")
+    );
 
     project.write(
         "main.loom",
@@ -700,7 +705,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
         .arg(&second_artifact)
         .arg(&project.0)
         .output()
-        .expect("reuse DCE-safe final artifact");
+        .expect("reuse DCE-safe target object");
     assert_eq!(second.status.code(), Some(0));
     assert_eq!(
         cache_status(&second.stdout, "checked_mir").as_deref(),
@@ -708,22 +713,15 @@ fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
     );
     assert_eq!(
         cache_status(&second.stdout, "final_artifact").as_deref(),
-        Some("hit")
+        Some("disabled")
     );
     assert_eq!(
-        fs::read(&first_artifact).expect("read first native artifact"),
-        fs::read(&second_artifact).expect("read second native artifact")
+        cache_status(&second.stdout, "target_object").as_deref(),
+        Some("hit")
     );
+    assert!(first_artifact.is_file());
+    assert!(second_artifact.is_file());
 
-    let final_key = cache_key(&second.stdout, "final_artifact").expect("final artifact key");
-    fs::write(
-        project
-            .0
-            .join("target/loom/cache/v2/refs/artifact")
-            .join(format!("{final_key}.json")),
-        b"corrupt",
-    )
-    .expect("corrupt generated final ref");
     let third = loomc()
         .args(["--json", "build", "--output"])
         .arg(project.0.join("third.native"))
@@ -733,7 +731,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_final_link() {
     assert_eq!(third.status.code(), Some(0));
     assert_eq!(
         cache_status(&third.stdout, "final_artifact").as_deref(),
-        Some("miss")
+        Some("disabled")
     );
     assert_eq!(
         cache_status(&third.stdout, "target_object").as_deref(),
@@ -791,8 +789,12 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     assert_eq!(build.status.code(), Some(0));
     assert_eq!(
         cache_status(&build.stdout, "final_artifact").as_deref(),
+        Some("disabled")
+    );
+    assert_eq!(
+        cache_status(&build.stdout, "target_object").as_deref(),
         Some("hit"),
-        "the preceding source run and build share a target artifact key"
+        "the preceding source run and build share a target object key"
     );
     assert!(artifact.is_file());
 
@@ -1843,7 +1845,7 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
 #[cfg(unix)]
 #[test]
 #[allow(clippy::too_many_lines)]
-fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identities() {
+fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
     let bundle_one = project.0.join("runtime-one");
     write_fake_runtime_bundle(&bundle_one, b"foreign runtime archive one");
@@ -1851,6 +1853,8 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
     let linker = project.0.join("fake-linker");
     let link_log = project.0.join("link-arguments");
     let object_copy = project.0.join("linked-target-object");
+    let link_payload = project.0.join("link-payload");
+    fs::write(&link_payload, b"payload one\n").expect("first linker payload");
 
     let build = |bundle: &std::path::Path, output: &std::path::Path| {
         loomc()
@@ -1868,6 +1872,7 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
             .arg(&project.0)
             .env("LOOM_FAKE_LINK_LOG", &link_log)
             .env("LOOM_FAKE_OBJECT_COPY", &object_copy)
+            .env("LOOM_FAKE_LINK_PAYLOAD", &link_payload)
             .output()
             .expect("cross link with fake linker")
     };
@@ -1883,7 +1888,7 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
     );
     assert_eq!(
         cache_status(&first.stdout, "final_artifact").as_deref(),
-        Some("miss")
+        Some("disabled")
     );
     assert!(
         fs::read(&object_copy)
@@ -1920,16 +1925,28 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
         first_output.exists(),
         "requested output must be materialized"
     );
+    assert!(
+        fs::read_to_string(&first_output)
+            .expect("first linked output")
+            .contains("payload one")
+    );
 
-    let cached = build(&bundle_one, &project.0.join("foreign-cached"));
-    assert_eq!(cached.status.code(), Some(0));
+    fs::write(&link_payload, b"payload two\n").expect("changed linker payload");
+    let relinked = build(&bundle_one, &project.0.join("foreign-relinked"));
+    assert_eq!(relinked.status.code(), Some(0));
     assert_eq!(
-        cache_status(&cached.stdout, "final_artifact").as_deref(),
-        Some("hit")
+        cache_status(&relinked.stdout, "final_artifact").as_deref(),
+        Some("disabled")
     );
     assert_eq!(
-        cache_key(&first.stdout, "final_artifact"),
-        cache_key(&cached.stdout, "final_artifact")
+        cache_status(&relinked.stdout, "target_object").as_deref(),
+        Some("hit")
+    );
+    assert!(
+        fs::read_to_string(project.0.join("foreign-relinked"))
+            .expect("relinked output")
+            .contains("payload two"),
+        "an undeclared linker input must not be hidden by a final-artifact hit"
     );
 
     write_fake_linker(&project, "linker identity two");
@@ -1937,11 +1954,7 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
     assert_eq!(changed_linker.status.code(), Some(0));
     assert_eq!(
         cache_status(&changed_linker.stdout, "final_artifact").as_deref(),
-        Some("miss")
-    );
-    assert_ne!(
-        cache_key(&first.stdout, "final_artifact"),
-        cache_key(&changed_linker.stdout, "final_artifact")
+        Some("disabled")
     );
 
     let bundle_two = project.0.join("runtime-two");
@@ -1950,11 +1963,7 @@ fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identiti
     assert_eq!(changed_runtime.status.code(), Some(0));
     assert_eq!(
         cache_status(&changed_runtime.stdout, "final_artifact").as_deref(),
-        Some("miss")
-    );
-    assert_ne!(
-        cache_key(&changed_linker.stdout, "final_artifact"),
-        cache_key(&changed_runtime.stdout, "final_artifact")
+        Some("disabled")
     );
 }
 

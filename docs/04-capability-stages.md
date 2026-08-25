@@ -190,7 +190,7 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 
 多文件 module、schema-versioned `loom.toml`、path/文件系统/HTTPS registry dependency、认证发布、可信离线 cache、SemVer requirement、optional-dependency feature、SHA-256 `loom.lock`、bin/test/lib target 与 `--target` 已接入 driver/CLI；lib 产物是 portable validated checked-MIR，不是稳定 native ABI。`resolve --update` 显式更新 pin，`--locked` 保证图不漂移，`--offline` 只使用重新验证过的 immutable bundle；feature 不增加源码 `cfg` 或运行时注册。无 manifest 的历史目录和单文件仍可编译；`crate` 不成为 Loom 关键字。
 
-持久缓存已经落地逐 source lossless token/AST、module public-interface、整张 package graph checked MIR（连同稳定 diagnostics）、closed-world reachable LLVM object、最终 native/`.loomi` artifact，以及 macOS dSYM payload。checked-MIR v3 key 只包含 language/frontend/stdlib/contract、canonical package/dependency/feature semantic graph 与稳定相对源码内容；frontend build identity 的生产源码只来自 core/syntax/HIR/sema/MIR/lowering/driver，不散列 backend/runtime/interpreter/CLI 源码，并且排除 Cargo build profile 和 manifest target declaration，因此可跨 interpreter/LLVM、development/release 和目标策略复用。当前 workspace manifest/lock 仍作为两层共享的保守输入：无关依赖升级可能多产生 miss，但不会产生错误 hit。LLVM object v5 key 的 native fingerprint 再加入 codegen/MIR/runtime-ABI build identity、llvm-sys 构建时选中的 libLLVM 版本与二进制内容、运行时读到的 LLVM 数值版本、reachable function/witness/proof，以及真实 target/data-layout/CPU/optimization policy；final artifact 才加入 runtime archive、linker、debug tool、entry 和产物模式。mtime、绝对 checkout 路径、文件遍历顺序和编辑器状态不参与 identity；读取时验证 ref、size、SHA-256，parse 重建源码，checked MIR 重新通过 artifact decoder/MIR validator。损坏只产生 miss，写入采用同目录原子替换。
+持久缓存已经落地逐 source lossless token/AST、module public-interface、整张 package graph checked MIR（连同稳定 diagnostics）、closed-world reachable LLVM object，以及解释器 `.loomi`/portable `.loomlib` artifact。checked-MIR v3 key 只包含 language/frontend/stdlib/contract、canonical package/dependency/feature semantic graph 与稳定相对源码内容；frontend build identity 的生产源码只来自 core/syntax/HIR/sema/MIR/lowering/driver，不散列 backend/runtime/interpreter/CLI 源码，并且排除 Cargo build profile 和 manifest target declaration，因此可跨 interpreter/LLVM、development/release 和目标策略复用。当前 workspace manifest/lock 仍作为两层共享的保守输入：无关依赖升级可能多产生 miss，但不会产生错误 hit。LLVM object v5 key 的 native fingerprint 再加入 codegen/MIR/runtime-ABI build identity、llvm-sys 构建时选中的 libLLVM 版本与二进制内容、运行时读到的 LLVM 数值版本、reachable function/witness/proof，以及真实 target/data-layout/CPU/optimization policy。native executable/dSYM 因宿主 clang/ld、SDK/sysroot、CRT 和系统库还不是 hermetic bundle，明确禁用 final cache 并每次从 object 重链；不用版本字符串伪装精确工具身份。mtime、绝对 checkout 路径、文件遍历顺序和编辑器状态不参与已启用 cache identity；读取时验证 ref、size、SHA-256，parse 重建源码，checked MIR 重新通过 artifact decoder/MIR validator。损坏只产生 miss，写入采用同目录原子替换。
 
 当前增量分层状态：
 
@@ -199,9 +199,9 @@ Pending task 不得忙轮询；事件唤醒只入队，不直接重入 continuat
 3. checked MIR：整图缓存；reachable function body 进入 object fingerprint；
 4. generic/witness：当前 shared generic body，proof/witness edge 进入 reachability fingerprint；未来单态化才新增独立 instance entry；
 5. development/release profile 与显式 target triple/data layout 下的 object：已真实复用；非宿主 triple 可真实发出 relocatable object；跨目标 executable 只有在显式 runtime bundle、linker、triple、data layout、generic/empty-feature runtime CPU policy、ABI 和 archive digest 全部匹配时才链接，否则 fail closed；
-6. embedded 或外部 runtime bundle、linker executable/version 与 debug-tool keyed final link：已真实复用。
+6. native final link：明确不缓存，每次从 object 重链；等待包含子工具、SDK/sysroot、CRT、system library 和 dSYM 配对的 hermetic link bundle。
 
-当前明确宣称两层复用：同一长驻 host 的无关 module 不重查 body semantics；跨进程则恢复 validated whole-graph checked MIR，不序列化 typed-HIR body。不可达 private body 修改还可继续复用 object/final link。
+当前明确宣称两层复用：同一长驻 host 的无关 module 不重查 body semantics；跨进程则恢复 validated whole-graph checked MIR，不序列化 typed-HIR body。不可达 private body 修改还可继续复用 object，native final 只做快速重链。
 
 ## 14. C1l：普通程序标准库与发布闭环
 
