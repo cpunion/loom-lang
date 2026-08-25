@@ -237,6 +237,7 @@ dependencies = [
  "inkwell",
  "loom-driver",
  "loom-mir",
+ "loom-runtime-abi",
  "serde",
  "serde_json",
  "sha2",
@@ -338,8 +339,13 @@ dependencies = [
 name = "loom-runtime"
 version = "0.1.0"
 dependencies = [
+ "loom-runtime-abi",
  "polling",
 ]
+
+[[package]]
+name = "loom-runtime-abi"
+version = "0.1.0"
 
 [[package]]
 name = "loom-sema"

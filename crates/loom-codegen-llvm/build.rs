@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=../loom-runtime-abi/Cargo.toml");
+    println!("cargo:rerun-if-changed=../loom-runtime-abi/src/lib.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/Cargo.toml");
     println!("cargo:rerun-if-changed=../loom-runtime/src/lib.rs");
     println!("cargo:rerun-if-changed=../loom-runtime/src/float.rs");
@@ -43,12 +45,17 @@ fn main() {
         .expect("read Loom runtime artifacts")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| {
+        .filter(|path| {
             path.extension() == Some(OsStr::new("a"))
                 && path
                     .file_name()
                     .and_then(OsStr::to_str)
                     .is_some_and(|name| name.starts_with("libloom_runtime-"))
+        })
+        .max_by_key(|path| {
+            fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
         })
         .expect("find Loom runtime static library");
     fs::copy(archive, output.join("libloom_runtime.a")).expect("copy Loom runtime static library");

@@ -10,15 +10,18 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
+
 use crate::gc::{collect, enter_executor, leave_executor};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
 };
 use crate::{
-    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
-    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY,
-    WAIT_OK, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_UNSUPPORTED,
+    COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
+    TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
+    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
+    WAIT_UNSUPPORTED,
 };
 
 const NO_JOIN_WINNER: u64 = u64::MAX;
@@ -41,9 +44,6 @@ const TASK_FAULT_CODE: &[u8] = b"TaskFault";
 const TASK_FAULT_MESSAGE: &[u8] = b"task execution failed";
 const FILE_TYPE: u64 = 9;
 const SOCKET_TYPE: u64 = 10;
-const FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
-const FAULT_FORMAT_JSON: &str = "json";
-const FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;
@@ -120,6 +120,24 @@ pub(crate) struct ValueNode {
 }
 
 pub type LoomTaskResume = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
+pub type LoomTaskCancel = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
+pub type LoomTraceVisitor = unsafe extern "C" fn(*mut c_void, *mut c_void);
+pub type LoomTaskTrace = unsafe extern "C" fn(*mut LoomTask, Option<LoomTraceVisitor>, *mut c_void);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LoomCoroutineDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub resume: Option<LoomTaskResume>,
+    pub cancel: Option<LoomTaskCancel>,
+    pub trace: Option<LoomTaskTrace>,
+    pub slot_count: u64,
+    pub result_slot: u64,
+    pub state_count: u64,
+    pub live_bitmap_words: u64,
+    pub live_bitmaps: *const u64,
+}
 
 #[repr(C)]
 struct RuntimeWitnessNode {
@@ -216,7 +234,7 @@ fn duplicate_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
 }
 
 pub struct LoomTask {
-    resume: LoomTaskResume,
+    descriptor: LoomCoroutineDescriptor,
     pub(crate) slots: Box<[ValueSlot]>,
     result_slot: usize,
     state: u64,
@@ -260,6 +278,68 @@ fn terminal(status: TaskStatus) -> bool {
         status,
         TaskStatus::Completed | TaskStatus::Faulted | TaskStatus::Cancelled
     )
+}
+
+fn task_slot_is_live(task: &LoomTask, index: usize) -> bool {
+    match task.status {
+        TaskStatus::Completed => return index == task.result_slot,
+        TaskStatus::Faulted | TaskStatus::Cancelled => return false,
+        TaskStatus::Runnable | TaskStatus::Running | TaskStatus::Waiting | TaskStatus::Draining => {
+        }
+    }
+    let descriptor = task.descriptor;
+    if descriptor.live_bitmaps.is_null() {
+        return true;
+    }
+    let Ok(state) = usize::try_from(task.state) else {
+        return true;
+    };
+    let Ok(state_count) = usize::try_from(descriptor.state_count) else {
+        return true;
+    };
+    let Ok(words) = usize::try_from(descriptor.live_bitmap_words) else {
+        return true;
+    };
+    if state >= state_count {
+        return true;
+    }
+    let Some(offset) = state
+        .checked_mul(words)
+        .and_then(|row| row.checked_add(index / 64))
+    else {
+        return true;
+    };
+    let word = unsafe { *descriptor.live_bitmaps.add(offset) };
+    word & (1_u64 << (index % 64)) != 0
+}
+
+#[unsafe(export_name = "loom_task_trace_live_slots")]
+pub unsafe extern "C" fn task_trace_live_slots(
+    task: *mut LoomTask,
+    visitor: Option<LoomTraceVisitor>,
+    context: *mut c_void,
+) {
+    let (Some(task), Some(visitor)) = (unsafe { task.as_mut() }, visitor) else {
+        return;
+    };
+    for index in 0..task.slots.len() {
+        if task_slot_is_live(task, index) {
+            unsafe { visitor((&raw mut task.slots[index]).cast(), context) };
+        }
+    }
+}
+
+pub(crate) unsafe fn trace_task_roots(
+    task: *mut LoomTask,
+    visitor: Option<LoomTraceVisitor>,
+    context: *mut c_void,
+) {
+    if task.is_null() {
+        return;
+    }
+    if let Some(trace) = unsafe { (*task).descriptor.trace } {
+        unsafe { trace(task, visitor, context) };
+    }
 }
 
 fn terminal_step(task: *const LoomTask) -> i32 {
@@ -1015,21 +1095,62 @@ pub unsafe extern "C" fn task_spawn(
     slot_count: u64,
     result_slot: u64,
 ) -> *mut LoomTask {
-    let (Ok(slot_count), Ok(result_slot), Some(resume)) = (
-        usize::try_from(slot_count),
-        usize::try_from(result_slot),
+    let descriptor = LoomCoroutineDescriptor {
+        abi_version: COROUTINE_ABI_VERSION,
+        flags: 0,
         resume,
+        cancel: None,
+        trace: None,
+        slot_count,
+        result_slot,
+        state_count: 0,
+        live_bitmap_words: 0,
+        live_bitmaps: ptr::null(),
+    };
+    unsafe { task_spawn_descriptor(executor, &raw const descriptor) }
+}
+
+#[unsafe(export_name = "loom_task_spawn_descriptor")]
+pub unsafe extern "C" fn task_spawn_descriptor(
+    executor: *mut LoomExecutor,
+    descriptor: *const LoomCoroutineDescriptor,
+) -> *mut LoomTask {
+    let Some(mut descriptor) = (unsafe { descriptor.as_ref() }).copied() else {
+        return ptr::null_mut();
+    };
+    let (Ok(slot_count), Ok(result_slot), Some(_)) = (
+        usize::try_from(descriptor.slot_count),
+        usize::try_from(descriptor.result_slot),
+        descriptor.resume,
     ) else {
         return ptr::null_mut();
     };
-    if executor.is_null() || slot_count == 0 || result_slot >= slot_count {
+    let bitmap_layout_valid = descriptor.live_bitmaps.is_null()
+        || (descriptor.state_count > 0
+            && descriptor.live_bitmap_words >= descriptor.slot_count.div_ceil(64)
+            && descriptor
+                .state_count
+                .checked_mul(descriptor.live_bitmap_words)
+                .is_some());
+    if executor.is_null()
+        || descriptor.abi_version != COROUTINE_ABI_VERSION
+        || slot_count == 0
+        || result_slot >= slot_count
+        || !bitmap_layout_valid
+    {
         return ptr::null_mut();
+    }
+    if descriptor.cancel.is_none() {
+        descriptor.cancel = descriptor.resume;
+    }
+    if descriptor.trace.is_none() {
+        descriptor.trace = Some(task_trace_live_slots);
     }
     // SAFETY: non-null executor is uniquely driven on this thread.
     let executor_ref = unsafe { &mut *executor };
     let owner = executor_ref.active_task;
     let mut task = Box::new(LoomTask {
-        resume,
+        descriptor,
         slots: vec![ValueSlot::default(); slot_count].into_boxed_slice(),
         result_slot,
         state: 0,
@@ -2124,7 +2245,19 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
         }
         unsafe { (*task).status = TaskStatus::Running };
         unsafe { (*executor).active_task = task };
-        let resume = unsafe { (*task).resume };
+        let descriptor = unsafe { (*task).descriptor };
+        let resume = if unsafe { (*task).cancel_requested } {
+            descriptor.cancel.or(descriptor.resume)
+        } else {
+            descriptor.resume
+        };
+        let Some(resume) = resume else {
+            unsafe {
+                (*executor).active_task = ptr::null_mut();
+                complete_terminal(&mut *executor, task, TASK_FAULTED);
+            }
+            continue;
+        };
         enter_executor(executor);
         let step = unsafe { resume(task, executor) };
         leave_executor();

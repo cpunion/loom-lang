@@ -33,10 +33,10 @@ pub(crate) const JOIN_RESULT_OUTCOME: u64 = 3;
 pub(crate) const JOIN_RESULT_OUTCOME_TUPLE: u64 = 4;
 pub(crate) const JOIN_RESULT_OUTCOME_LIST: u64 = 5;
 
-pub(crate) const TASK_STEP_COMPLETED: u64 = 0;
-pub(crate) const TASK_STEP_PENDING: u64 = 1;
-pub(crate) const TASK_STEP_FAULTED: u64 = 2;
-pub(crate) const TASK_STEP_CANCELLED: u64 = 3;
+pub(crate) const TASK_STEP_COMPLETED: u64 = loom_runtime_abi::TASK_COMPLETED as u64;
+pub(crate) const TASK_STEP_PENDING: u64 = loom_runtime_abi::TASK_PENDING as u64;
+pub(crate) const TASK_STEP_FAULTED: u64 = loom_runtime_abi::TASK_FAULTED as u64;
+pub(crate) const TASK_STEP_CANCELLED: u64 = loom_runtime_abi::TASK_CANCELLED as u64;
 
 pub(crate) const VALUE_FIELD_TAG: u32 = 0;
 pub(crate) const VALUE_FIELD_NOMINAL: u32 = 1;
@@ -56,14 +56,15 @@ pub(crate) const WITNESS_NODE_FIELD_NEXT: u32 = 1;
 /// Requirement method slots follow in global `RequirementId` order.
 pub(crate) const WITNESS_METHOD_FIELD_OFFSET: u32 = 1;
 
-pub(crate) const WAIT_ABI_VERSION: u64 = 1;
-pub(crate) const WAIT_SOURCE_KIND_TIMER: u64 = 1;
-pub(crate) const WAIT_SOURCE_KIND_FD: u64 = 2;
-pub(crate) const WAIT_SOURCE_KIND_COMPLETION: u64 = 3;
-pub(crate) const WAIT_INTEREST_READABLE: u64 = 1 << 0;
-pub(crate) const WAIT_INTEREST_WRITABLE: u64 = 1 << 1;
-pub(crate) const READY_EVENT_TIMER: u64 = 1 << 2;
-pub(crate) const READY_EVENT_COMPLETED: u64 = 1 << 3;
+pub(crate) const WAIT_ABI_VERSION: u64 = loom_runtime_abi::WAIT_ABI_VERSION as u64;
+pub(crate) const COROUTINE_ABI_VERSION: u64 = loom_runtime_abi::COROUTINE_ABI_VERSION as u64;
+pub(crate) const WAIT_SOURCE_KIND_TIMER: u64 = loom_runtime_abi::WAIT_SOURCE_TIMER as u64;
+pub(crate) const WAIT_SOURCE_KIND_FD: u64 = loom_runtime_abi::WAIT_SOURCE_FD as u64;
+pub(crate) const WAIT_SOURCE_KIND_COMPLETION: u64 = loom_runtime_abi::WAIT_SOURCE_COMPLETION as u64;
+pub(crate) const WAIT_INTEREST_READABLE: u64 = loom_runtime_abi::WAIT_READABLE as u64;
+pub(crate) const WAIT_INTEREST_WRITABLE: u64 = loom_runtime_abi::WAIT_WRITABLE as u64;
+pub(crate) const READY_EVENT_TIMER: u64 = loom_runtime_abi::READY_TIMER as u64;
+pub(crate) const READY_EVENT_COMPLETED: u64 = loom_runtime_abi::READY_COMPLETED as u64;
 
 pub(crate) const WAIT_SOURCE_FIELD_ABI_VERSION: u32 = 0;
 pub(crate) const WAIT_SOURCE_FIELD_KIND: u32 = 1;

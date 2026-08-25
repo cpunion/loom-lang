@@ -26,7 +26,7 @@ use loom_mir::{
 };
 
 use crate::abi::{
-    ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_FRAME_FIELD_RESULT,
+    ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_ABI_VERSION, COROUTINE_FRAME_FIELD_RESULT,
     COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, DYN_FLAG_WRITEBACK, JOIN_RESULT_LIST,
     JOIN_RESULT_OUTCOME, JOIN_RESULT_OUTCOME_LIST, JOIN_RESULT_OUTCOME_TUPLE, JOIN_RESULT_SCALAR,
     JOIN_RESULT_TUPLE, READY_EVENT_COMPLETED, READY_EVENT_TIMER, READY_NOTIFICATION_FIELD_EVENTS,
@@ -209,10 +209,12 @@ struct Backend<'ctx, 'program> {
     registration_type: StructType<'ctx>,
     ready_notification_type: StructType<'ctx>,
     coroutine_frame_type: StructType<'ctx>,
+    coroutine_descriptor_type: StructType<'ctx>,
     loom_function_type: FunctionType<'ctx>,
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
+    coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     names: Cell<u64>,
 }
@@ -417,6 +419,22 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         );
         let coroutine_frame_type = context.opaque_struct_type("loom.CoroutineFrame");
         coroutine_frame_type.set_body(&[i64_type.into(), ptr_type.into()], false);
+        let coroutine_descriptor_type = context.opaque_struct_type("loom.CoroutineDescriptor");
+        coroutine_descriptor_type.set_body(
+            &[
+                context.i32_type().into(),
+                context.i32_type().into(),
+                ptr_type.into(),
+                ptr_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+            ],
+            false,
+        );
         let loom_function_type = context.i32_type().fn_type(
             &[
                 ptr_type.into(),
@@ -450,10 +468,12 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             registration_type,
             ready_notification_type,
             coroutine_frame_type,
+            coroutine_descriptor_type,
             loom_function_type,
             task_resume_type,
             functions: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
+            coroutine_descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
             names: Cell::new(0),
         }
@@ -519,9 +539,112 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     source.span.range.start,
                 )?;
                 self.task_resumes.insert(*id, resume);
+                let descriptor = self.declare_coroutine_descriptor(*id, source, resume)?;
+                self.coroutine_descriptors.insert(*id, descriptor);
             }
         }
         Ok(())
+    }
+
+    fn declare_coroutine_descriptor(
+        &self,
+        id: FunctionId,
+        source: &Function,
+        resume: FunctionValue<'ctx>,
+    ) -> Result<GlobalValue<'ctx>, CodegenError> {
+        let layout = AsyncLayout::new(source)?;
+        let state_count = source
+            .suspension_points
+            .iter()
+            .map(|point| u64::from(point.state))
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many coroutine states"))?;
+        let words = layout.slot_count.div_ceil(64);
+        let total_words = state_count
+            .checked_mul(words)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "live bitmap is too large"))?;
+        let mut bitmap = vec![0_u64; total_words];
+        let mut mark = |state: u64, slot: u64| -> Result<(), CodegenError> {
+            let word = state
+                .checked_mul(words)
+                .and_then(|row| row.checked_add(slot / 64))
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "live slot is too large"))?;
+            bitmap[word] |= 1_u64 << (slot % 64);
+            Ok(())
+        };
+        for slot in layout.old_parameter_slots.values().copied() {
+            for state in 0..state_count {
+                mark(state, slot)?;
+            }
+        }
+        for state in 0..state_count {
+            mark(state, layout.result_slot)?;
+            let suspension = u32::try_from(state).ok().and_then(|state| {
+                source
+                    .suspension_points
+                    .iter()
+                    .find(|point| point.state == state)
+            });
+            if state == 0 || suspension.is_none() {
+                for slot in layout.local_slots.values().copied() {
+                    mark(state, slot)?;
+                }
+            } else if let Some(suspension) = suspension {
+                for local in &suspension.live_locals {
+                    if let Some(slot) = layout.local_slots.get(local).copied() {
+                        mark(state, slot)?;
+                    }
+                }
+            }
+        }
+        let bitmap_values = bitmap
+            .into_iter()
+            .map(|word| self.i64_type.const_int(word, false))
+            .collect::<Vec<_>>();
+        let bitmap_type = self.i64_type.array_type(
+            u32::try_from(bitmap_values.len())
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "live bitmap is too large"))?,
+        );
+        let bitmap_global =
+            self.module
+                .add_global(bitmap_type, None, &format!("loom.coroutine.live.{}", id.0));
+        bitmap_global.set_initializer(&self.i64_type.const_array(&bitmap_values));
+        bitmap_global.set_constant(true);
+        bitmap_global.set_linkage(Linkage::Internal);
+
+        let resume = resume.as_global_value().as_pointer_value();
+        let trace = self
+            .native_task_trace_live_slots()
+            .as_global_value()
+            .as_pointer_value();
+        let fields = [
+            self.context
+                .i32_type()
+                .const_int(COROUTINE_ABI_VERSION, false)
+                .into(),
+            self.context.i32_type().const_zero().into(),
+            resume.into(),
+            resume.into(),
+            trace.into(),
+            self.i64_type.const_int(layout.slot_count, false).into(),
+            self.i64_type.const_int(layout.result_slot, false).into(),
+            self.i64_type.const_int(state_count, false).into(),
+            self.i64_type.const_int(words, false).into(),
+            bitmap_global.as_pointer_value().into(),
+        ];
+        let descriptor = self.module.add_global(
+            self.coroutine_descriptor_type,
+            None,
+            &format!("loom.coroutine.descriptor.{}", id.0),
+        );
+        descriptor.set_initializer(&self.coroutine_descriptor_type.const_named_struct(&fields));
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Internal);
+        Ok(descriptor)
     }
 
     fn declare_witnesses(&mut self) -> Result<(), CodegenError> {
@@ -1774,21 +1897,32 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_task_spawn(&self) -> FunctionValue<'ctx> {
+    fn native_task_spawn_descriptor(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_task_spawn")
+            .get_function("loom_task_spawn_descriptor")
             .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(
+                let function_type = self
+                    .ptr_type
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function("loom_task_spawn_descriptor", function_type, None)
+            })
+    }
+
+    fn native_task_trace_live_slots(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_trace_live_slots")
+            .unwrap_or_else(|| {
+                let function_type = self.context.void_type().fn_type(
                     &[
                         self.ptr_type.into(),
                         self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
+                        self.ptr_type.into(),
                     ],
                     false,
                 );
                 self.module
-                    .add_function("loom_task_spawn", function_type, None)
+                    .add_function("loom_task_trace_live_slots", function_type, None)
             })
     }
 
@@ -2199,16 +2333,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let ready = self.context.append_basic_block(constructor, "task.ready");
         let failed = self.context.append_basic_block(constructor, "task.failed");
         self.builder.position_at_end(entry);
-        let resume = self.task_resumes[&id].as_global_value().as_pointer_value();
+        let descriptor = self.coroutine_descriptors[&id].as_pointer_value();
         let task = call_pointer(
             &self.builder,
-            self.native_task_spawn(),
-            &[
-                executor.into(),
-                resume.into(),
-                self.i64_type.const_int(layout.slot_count, false).into(),
-                self.i64_type.const_int(layout.result_slot, false).into(),
-            ],
+            self.native_task_spawn_descriptor(),
+            &[executor.into(), descriptor.into()],
             "task.spawn",
         )?;
         let exists = self

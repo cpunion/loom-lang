@@ -33,49 +33,28 @@ pub use reactor::{
     executor_register, executor_wait, wait_fd_once, wait_now_ns,
 };
 pub use scheduler::{
-    LoomJoinSpec, LoomTask, executor_gc_collections, executor_gc_live_objects,
-    executor_gc_reclaimed, executor_gc_relocations, executor_live_tasks, executor_raise_fault,
-    executor_run, executor_tasks_reclaimed, join_add_list, join_add_task, join_create, join_task,
+    LoomCoroutineDescriptor, LoomJoinSpec, LoomTask, LoomTaskCancel, LoomTaskResume, LoomTaskTrace,
+    LoomTraceVisitor, executor_gc_collections, executor_gc_live_objects, executor_gc_reclaimed,
+    executor_gc_relocations, executor_live_tasks, executor_raise_fault, executor_run,
+    executor_tasks_reclaimed, join_add_list, join_add_task, join_create, join_task,
     task_add_join_child, task_cancel, task_clone_witness, task_from_wait_source, task_is_cancelled,
     task_join_count, task_join_result, task_join_result_step, task_join_step, task_join_winner,
     task_prepare_join, task_report_fault, task_result, task_set_fault, task_set_state, task_slot,
-    task_spawn, task_suspend_join, task_suspend_value, task_suspend_wait, task_write_join_result,
+    task_spawn, task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
+    task_trace_live_slots, task_write_join_result,
 };
 
-pub const WAIT_ABI_VERSION: u32 = 1;
+pub use loom_runtime_abi::{
+    COROUTINE_ABI_VERSION, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX,
+    FAULT_SCHEMA_VERSION, READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE, READY_TIMER,
+    READY_WRITABLE, RUNTIME_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
+    TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
+    WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
+    WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
+    WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE,
+};
+
 pub const WAIT_INFINITE: u64 = u64::MAX;
-
-pub const TASK_COMPLETED: i32 = 0;
-pub const TASK_PENDING: i32 = 1;
-pub const TASK_FAULTED: i32 = 2;
-pub const TASK_CANCELLED: i32 = 3;
-
-pub const TASK_JOIN_ALL: u32 = 0;
-pub const TASK_JOIN_SETTLED: u32 = 1;
-pub const TASK_JOIN_ANY: u32 = 2;
-pub const TASK_JOIN_RACE: u32 = 3;
-
-pub const WAIT_OK: i32 = 0;
-pub const WAIT_INVALID_ARGUMENT: i32 = 1;
-pub const WAIT_UNSUPPORTED: i32 = 2;
-pub const WAIT_SYSTEM_ERROR: i32 = 3;
-pub const WAIT_DUPLICATE_SOURCE: i32 = 4;
-pub const WAIT_STALE_REGISTRATION: i32 = 5;
-pub const WAIT_NO_MEMORY: i32 = 6;
-
-pub const WAIT_SOURCE_TIMER: u32 = 1;
-pub const WAIT_SOURCE_FD: u32 = 2;
-pub const WAIT_SOURCE_COMPLETION: u32 = 3;
-
-pub const WAIT_READABLE: u32 = 1 << 0;
-pub const WAIT_WRITABLE: u32 = 1 << 1;
-
-pub const READY_READABLE: u32 = 1 << 0;
-pub const READY_WRITABLE: u32 = 1 << 1;
-pub const READY_TIMER: u32 = 1 << 2;
-pub const READY_COMPLETED: u32 = 1 << 3;
-pub const READY_CLOSED: u32 = 1 << 4;
-pub const READY_ERROR: u32 = 1 << 5;
 
 #[cfg(test)]
 mod tests {
@@ -98,6 +77,7 @@ mod tests {
     }
 
     static VALUE_RELOCATED: AtomicBool = AtomicBool::new(false);
+    static DESCRIPTOR_CANCELLED: AtomicBool = AtomicBool::new(false);
     const TASK_BATCH_SIZE: usize = 512;
 
     unsafe extern "C" fn gc_fixture_resume(
@@ -143,6 +123,14 @@ mod tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn descriptor_cancel(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        DESCRIPTOR_CANCELLED.store(true, Ordering::SeqCst);
+        TASK_CANCELLED
     }
 
     #[repr(C)]
@@ -361,6 +349,56 @@ mod tests {
             assert!((*node).next.is_null());
             executor_destroy(executor);
         }
+    }
+
+    #[test]
+    fn coroutine_descriptor_drives_cancel_and_precise_gc_roots() {
+        DESCRIPTOR_CANCELLED.store(false, Ordering::SeqCst);
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let bitmap = [1_u64];
+        let descriptor = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION,
+            flags: 0,
+            resume: Some(completed_child_resume),
+            cancel: Some(descriptor_cancel),
+            trace: None,
+            slot_count: 3,
+            result_slot: 2,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        unsafe {
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            gc::enter_executor(executor);
+            let live = gc::allocate_value().cast::<scheduler::ValueSlot>();
+            let dead = gc::allocate_value().cast::<scheduler::ValueSlot>();
+            gc::leave_executor();
+            let live_slot = task_slot(task, 0).cast::<scheduler::ValueSlot>();
+            let dead_slot = task_slot(task, 1).cast::<scheduler::ValueSlot>();
+            (*live_slot).words[0] = 7;
+            (*live_slot).words[4] = live as u64;
+            (*dead_slot).words[0] = 7;
+            (*dead_slot).words[4] = dead as u64;
+            gc::collect(&mut *executor);
+            assert_eq!(executor_gc_live_objects(executor), 1);
+            assert_ne!((*live_slot).words[4], live as u64);
+
+            assert_eq!(task_cancel(executor, task), WAIT_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert!(DESCRIPTOR_CANCELLED.load(Ordering::SeqCst));
+            executor_destroy(executor);
+        }
+
+        let incompatible = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION + 1,
+            ..descriptor
+        };
+        let executor = executor_create();
+        assert!(unsafe { task_spawn_descriptor(executor, &raw const incompatible) }.is_null());
+        unsafe { executor_destroy(executor) };
     }
 
     #[test]

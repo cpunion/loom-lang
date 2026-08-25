@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::ptr;
 
 use crate::reactor::LoomExecutor;
-use crate::scheduler::{ValueNode, ValueSlot};
+use crate::scheduler::{ValueNode, ValueSlot, trace_task_roots};
 
 const VALUE_TAG_RECORD: u64 = 5;
 const VALUE_TAG_TEXT: u64 = 4;
@@ -262,6 +262,21 @@ struct Marks {
     bytes: HashSet<usize>,
 }
 
+struct TraceContext {
+    index: *const HeapIndex,
+    marks: *mut Marks,
+}
+
+unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
+    if slot.is_null() || context.is_null() {
+        return;
+    }
+    let context = unsafe { &mut *context.cast::<TraceContext>() };
+    let index = unsafe { &*context.index };
+    let marks = unsafe { &mut *context.marks };
+    trace_value(unsafe { &*slot.cast::<ValueSlot>() }, index, marks);
+}
+
 fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
     match value.words[0] {
         VALUE_TAG_TEXT => {
@@ -367,10 +382,13 @@ pub(crate) fn collect(executor: &mut LoomExecutor) {
     }
     let index = HeapIndex::new(executor);
     let mut marks = Marks::default();
+    let mut trace_context = TraceContext {
+        index: &raw const index,
+        marks: &raw mut marks,
+    };
     for task in &executor.tasks {
-        for slot in &task.slots {
-            trace_value(slot, &index, &mut marks);
-        }
+        let task = (&raw const **task).cast_mut();
+        unsafe { trace_task_roots(task, Some(trace_slot), (&raw mut trace_context).cast()) };
     }
 
     let before = executor
