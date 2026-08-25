@@ -52,7 +52,7 @@ use crate::abi::{
     WITNESS_METHOD_FIELD_OFFSET, WITNESS_NODE_FIELD_NEXT, WITNESS_NODE_FIELD_VALUE,
 };
 use crate::codegen::{DebugSource, EmitKind, EmitOptions, NativeObjectArtifact};
-use crate::native_storage::{NativeIntListGetMatch, NativeIntListPlan};
+use crate::native_storage::{NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan};
 use crate::requirements::{RuntimeRequirementGraph, is_scalar_int_candidate};
 use crate::target::create_target_machine;
 use crate::{CodegenError, ReachableProgram, Roots};
@@ -5425,6 +5425,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let current = self.local(local)?;
         self.shallow_copy(current, start_value)?;
 
+        if let Some(append) = self.native_int_list_plan.direct_append_loop(body) {
+            // The proof also requires the block tail to be the literal Unit,
+            // so this specialized path may omit materializing that otherwise
+            // effect-free value after the append.
+            return self.emit_native_int_list_append_range(local, current, end_value, append);
+        }
+
         let header = self.append_block("range.header");
         let iteration = self.append_block("range.iteration");
         let exit = self.append_block("range.exit");
@@ -5473,6 +5480,260 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?;
             self.backend.branch(header)?;
         }
+        self.backend.builder.position_at_end(exit);
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn emit_native_int_list_append_range(
+        &self,
+        range_local: LocalId,
+        current: PointerValue<'ctx>,
+        end_value: PointerValue<'ctx>,
+        append: NativeIntListAppendLoop<'_>,
+    ) -> Result<bool, CodegenError> {
+        let storage = self
+            .native_int_lists
+            .get(&append.local)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "proved native Int list append has no private storage",
+                )
+            })?;
+
+        // Bounds have already been evaluated. Capture the authoritative
+        // header only now, so effects in either bound cannot make the cached
+        // state stale before the loop starts.
+        let initial_data = self.backend.load_pointer_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_DATA,
+            "int.list.loop.initial.data",
+        )?;
+        let initial_length = self.backend.load_i64_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_LENGTH,
+            "int.list.loop.initial.length",
+        )?;
+        let initial_capacity = self.backend.load_i64_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_CAPACITY,
+            "int.list.loop.initial.capacity",
+        )?;
+        let preheader = self
+            .backend
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "range has no preheader"))?;
+
+        let header = self.append_block("range.header");
+        let iteration = self.append_block("range.iteration");
+        let exit = self.append_block("range.exit");
+        self.backend.branch(header)?;
+
+        self.backend.builder.position_at_end(header);
+        let data_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.ptr_type, "int.list.loop.data")
+            .map_err(builder_error)?;
+        let length_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "int.list.loop.length")
+            .map_err(builder_error)?;
+        let capacity_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "int.list.loop.capacity")
+            .map_err(builder_error)?;
+        data_phi.add_incoming(&[(&initial_data, preheader)]);
+        length_phi.add_incoming(&[(&initial_length, preheader)]);
+        capacity_phi.add_incoming(&[(&initial_capacity, preheader)]);
+        let data = data_phi.as_basic_value().into_pointer_value();
+        let length = length_phi.as_basic_value().into_int_value();
+        let capacity = capacity_phi.as_basic_value().into_int_value();
+
+        let current_scalar = self.int_scalar(current)?;
+        let end_scalar = self.int_scalar(end_value)?;
+        let has_next = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::SLT, current_scalar, end_scalar, "range.more")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(has_next, iteration, exit)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(iteration);
+        let outer_loop_depth = self.loop_depth.get();
+        let iteration_loop_depth = outer_loop_depth.checked_add(1).ok_or_else(|| {
+            CodegenError::new("ProgramTooLarge", "loop nesting exceeds the compiler limit")
+        })?;
+        self.loop_depth.set(iteration_loop_depth);
+        let outer_range_local = self.active_range_local.replace(Some(range_local));
+
+        let append_result: Result<
+            Option<(
+                PointerValue<'ctx>,
+                IntValue<'ctx>,
+                IntValue<'ctx>,
+                BasicBlock<'ctx>,
+            )>,
+            CodegenError,
+        > = (|| {
+            // A direct local receiver has no evaluation effects. Evaluate the
+            // element before checking/growing capacity, matching List.add's
+            // established source order while the memory header is coherent.
+            let element = self.alloc_value("int.list.add.value");
+            if !self.emit_expr(append.value, element)? {
+                return Ok(None);
+            }
+            let scalar = self.int_scalar(element)?;
+            let full = self
+                .backend
+                .builder
+                .build_int_compare(IntPredicate::EQ, length, capacity, "int.list.add.full")
+                .map_err(builder_error)?;
+            let grow = self.append_block("int.list.add.grow");
+            let ready = self.append_block("int.list.add.ready");
+            self.backend
+                .builder
+                .build_conditional_branch(full, grow, ready)
+                .map_err(builder_error)?;
+            let no_grow = self.backend.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "append has no capacity-test block")
+            })?;
+
+            self.backend.builder.position_at_end(grow);
+            let minimum = self
+                .backend
+                .builder
+                .build_int_add(
+                    length,
+                    self.backend.i64_type.const_int(1, false),
+                    "int.list.add.minimum",
+                )
+                .map_err(builder_error)?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_int_list_reserve(),
+                &[storage.into(), minimum.into()],
+                "int.list.reserve",
+            )?;
+            let invalid = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    status,
+                    self.backend.context.i32_type().const_zero(),
+                    "int.list.reserve.invalid",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(invalid, "ListRuntimeFault")?;
+
+            // reserve preserves length. It is the only operation allowed to
+            // replace the allocation, so only data/capacity are reloaded on
+            // its successful edge before those values rejoin loop SSA.
+            let grown_data = self.backend.load_pointer_field(
+                self.backend.int_list_type,
+                storage,
+                INT_LIST_FIELD_DATA,
+                "int.list.loop.grown.data",
+            )?;
+            let grown_capacity = self.backend.load_i64_field(
+                self.backend.int_list_type,
+                storage,
+                INT_LIST_FIELD_CAPACITY,
+                "int.list.loop.grown.capacity",
+            )?;
+            let reserve_success_block =
+                self.backend.builder.get_insert_block().ok_or_else(|| {
+                    CodegenError::new("LlvmBuilderFailed", "append growth has no success block")
+                })?;
+            self.backend.branch(ready)?;
+
+            self.backend.builder.position_at_end(ready);
+            let ready_data_phi = self
+                .backend
+                .builder
+                .build_phi(self.backend.ptr_type, "int.list.add.ready.data")
+                .map_err(builder_error)?;
+            let ready_capacity_phi = self
+                .backend
+                .builder
+                .build_phi(self.backend.i64_type, "int.list.add.ready.capacity")
+                .map_err(builder_error)?;
+            ready_data_phi.add_incoming(&[(&data, no_grow), (&grown_data, reserve_success_block)]);
+            ready_capacity_phi.add_incoming(&[
+                (&capacity, no_grow),
+                (&grown_capacity, reserve_success_block),
+            ]);
+            let ready_data = ready_data_phi.as_basic_value().into_pointer_value();
+            let ready_capacity = ready_capacity_phi.as_basic_value().into_int_value();
+
+            let slot =
+                self.native_int_list_element_pointer(ready_data, length, "int.list.add.slot")?;
+            self.backend
+                .builder
+                .build_store(slot, scalar)
+                .map_err(builder_error)?;
+            let next_length = self
+                .backend
+                .builder
+                .build_int_add(
+                    length,
+                    self.backend.i64_type.const_int(1, false),
+                    "int.list.add.next.length",
+                )
+                .map_err(builder_error)?;
+            // Commit immediately after the infallible Int slot store. Every
+            // later fault/return/drop edge can therefore trust the memory
+            // header even though the hot path carries its values in SSA.
+            self.backend.store_i64_field(
+                self.backend.int_list_type,
+                storage,
+                INT_LIST_FIELD_LENGTH,
+                next_length,
+            )?;
+
+            let current_scalar = self.int_scalar(current)?;
+            let next = self
+                .backend
+                .builder
+                .build_int_add(
+                    current_scalar,
+                    self.backend.i64_type.const_int(1, false),
+                    "range.next",
+                )
+                .map_err(builder_error)?;
+            self.backend.store_i64_field(
+                self.backend.value_type,
+                current,
+                VALUE_FIELD_SCALAR,
+                next,
+            )?;
+            let backedge = self.backend.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "append range has no backedge")
+            })?;
+            self.backend.branch(header)?;
+            Ok(Some((ready_data, next_length, ready_capacity, backedge)))
+        })();
+
+        self.active_range_local.set(outer_range_local);
+        self.loop_depth.set(outer_loop_depth);
+        if let Some((next_data, next_length, next_capacity, backedge)) = append_result? {
+            data_phi.add_incoming(&[(&next_data, backedge)]);
+            length_phi.add_incoming(&[(&next_length, backedge)]);
+            capacity_phi.add_incoming(&[(&next_capacity, backedge)]);
+        }
+
         self.backend.builder.position_at_end(exit);
         Ok(true)
     }

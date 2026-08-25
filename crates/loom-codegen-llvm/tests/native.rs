@@ -936,6 +936,63 @@ fn renamedSameShape(size Int) Int {
     checksum
 }
 
+fn appendOnly(size Int) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(index)
+        Unit
+    }
+    values.length()
+}
+
+fn negativeRange() Int {
+    var values = List[Int]()
+    for index in 3..-2 {
+        values.add(index)
+        Unit
+    }
+    values.length()
+}
+
+fn twoAppends(size Int) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(index)
+        values.add(index + 1)
+        Unit
+    }
+    values.length()
+}
+
+fn appendObservedLength() Int {
+    var values = List[Int]()
+    values.add(99)
+    for index in 0..4 {
+        values.add(values.length())
+        Unit
+    }
+    let count = values.length()
+    let last = match values.get(4) {
+        Some(value) => value
+        None => -100
+    }
+    count * 10 + last
+}
+
+fn checkedElement(index Int, accepted Bool) Int {
+    assert accepted || index != 9
+    index
+}
+
+fn faultableAppend(size Int, accepted Bool) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(checkedElement(index, accepted))
+        Unit
+    }
+    values.length()
+}
+
 fn edgeReads() Int {
     var numbers = List[Int]()
     let empty = match numbers.get(0) {
@@ -1018,16 +1075,36 @@ fn noneSideEffectFallsBack(buildSize Int, scanSize Int) Int {
 pub fn main() Unit {
     let scan = renamedSameShape(40)
     let empty = renamedSameShape(0)
+    let emptyAppend = appendOnly(0)
+    let one = appendOnly(1)
+    let negative = negativeRange()
+    let grown = appendOnly(40)
+    let fallback = twoAppends(20)
+    let observed = appendObservedLength()
+    let faultable = faultableAppend(40, true)
     let edges = edgeReads()
     let cleanup = cleanupOnFaultPath(true)
     let intervening = interveningAppendKeepsCheck(40)
     let noneEffects = noneSideEffectFallsBack(2, 3)
     assert scan == 2300
     assert empty == 0
+    assert emptyAppend == 0
+    assert one == 1
+    assert negative == 0
+    assert grown == 40
+    assert fallback == 40
+    assert observed == 54
+    assert faultable == 40
     assert edges == 56
     assert cleanup == 42
     assert intervening == 780
     assert noneEffects == 1
+    Unit
+}
+
+pub fn faultMain() Unit {
+    let count = faultableAppend(40, false)
+    assert count == 40
     Unit
 }
 ";
@@ -1093,7 +1170,117 @@ pub fn main() Unit {
             "bounds proof must not remove the independent checked checksum: {scan}"
         );
 
+        if ir == &release_ir {
+            for (name, instruction) in [
+                ("int.list.loop.data", "= phi ptr"),
+                ("int.list.loop.length", "= phi i64"),
+                ("int.list.loop.capacity", "= phi i64"),
+            ] {
+                assert!(
+                    scan.lines()
+                        .any(|line| line.contains(name) && line.contains(instruction)),
+                    "release append loop lost `{name}` {instruction}: {scan}"
+                );
+            }
+            for reload in [
+                "int.list.add.length",
+                "int.list.add.capacity",
+                "int.list.add.data",
+                "int.list.add.index",
+            ] {
+                assert!(
+                    !scan
+                        .lines()
+                        .any(|line| line.contains(reload) && line.contains("= load")),
+                    "release hot loop retained `{reload}`: {scan}"
+                );
+            }
+        }
+
         if ir == &development_ir {
+            let append = llvm_integer_function(&llvm, "native_int_list_appendOnly");
+            for phi in [
+                "int.list.loop.data = phi ptr",
+                "int.list.loop.length = phi i64",
+                "int.list.loop.capacity = phi i64",
+            ] {
+                assert!(append.contains(phi), "missing `{phi}`: {append}");
+            }
+            for (name, instruction) in [
+                ("int.list.loop.initial.data", "= load ptr"),
+                ("int.list.loop.initial.length", "= load i64"),
+                ("int.list.loop.initial.capacity", "= load i64"),
+                ("int.list.loop.grown.data", "= load ptr"),
+                ("int.list.loop.grown.capacity", "= load i64"),
+            ] {
+                assert!(
+                    append
+                        .lines()
+                        .any(|line| line.contains(name) && line.contains(instruction)),
+                    "missing `{name}` {instruction}: {append}"
+                );
+            }
+            assert!(!append.contains("int.list.loop.grown.length"), "{append}");
+            for (name, instruction) in [
+                ("int.list.add.length", "= load i64"),
+                ("int.list.add.capacity", "= load i64"),
+                ("int.list.add.data", "= load ptr"),
+                ("int.list.add.index", "= load i64"),
+            ] {
+                assert!(
+                    !append
+                        .lines()
+                        .any(|line| line.contains(name) && line.contains(instruction)),
+                    "specialized loop retained `{name}` {instruction}: {append}"
+                );
+            }
+
+            let observed = llvm_integer_function(&llvm, "native_int_list_appendObservedLength");
+            assert!(
+                observed.contains("int.list.loop.length = phi i64"),
+                "same-list length observation lost append-loop SSA: {observed}"
+            );
+            let fallback = llvm_integer_function(&llvm, "native_int_list_twoAppends");
+            assert!(
+                !fallback.contains("int.list.loop.length = phi i64"),
+                "multiple append statements must conservatively fall back: {fallback}"
+            );
+            assert!(
+                fallback.lines().any(|line| line.contains("int.list.add.length")
+                    && line.contains("= load i64")),
+                "fallback must retain authoritative header reloads: {fallback}"
+            );
+            assert_eq!(
+                fallback
+                    .matches("call i32 @loom_int_list_reserve_v1")
+                    .count(),
+                2,
+                "each generic append site needs its own guarded reserve: {fallback}"
+            );
+            assert!(!fallback.contains("@loom_runtime_list_add"), "{fallback}");
+
+            let faultable = llvm_function(&llvm, "native_int_list_faultableAppend");
+            assert!(
+                faultable.contains("int.list.loop.length = phi i64"),
+                "fallible element lost append-loop SSA: {faultable}"
+            );
+            assert_native_int_list_dropped_once_on_each_return(faultable);
+            let slot_store = faultable
+                .lines()
+                .position(|line| line.contains("ptr %int.list.add.slot"))
+                .expect("fallible append stores its Int slot");
+            let length_commit = faultable
+                .lines()
+                .position(|line| {
+                    line.contains("store i64 %int.list.add.next.length")
+                        && !line.contains("ptr %int.list.add.slot")
+                })
+                .expect("fallible append commits its header length");
+            assert!(
+                slot_store < length_commit,
+                "header length was committed before its element slot: {faultable}"
+            );
+
             for fallback in [
                 "native_int_list_interveningAppendKeepsCheck",
                 "native_int_list_noneSideEffectFallsBack",
@@ -1104,20 +1291,7 @@ pub fn main() Unit {
             }
             let cleanup = llvm_function(&llvm, "native_int_list_cleanupOnFaultPath");
             assert!(cleanup.contains("@loom_int_list_drop_v1"), "{cleanup}");
-            for block in cleanup
-                .split("\n\n")
-                .filter(|block| block.contains("ret i32"))
-            {
-                assert!(
-                    block.contains("@loom_int_list_drop_v1"),
-                    "status return omitted native list cleanup: {block}"
-                );
-                assert_eq!(
-                    block.matches("@loom_int_list_drop_v1").count(),
-                    1,
-                    "status return cleaned native list more than once: {block}"
-                );
-            }
+            assert_native_int_list_dropped_once_on_each_return(cleanup);
         }
     }
 
@@ -1131,6 +1305,21 @@ pub fn main() Unit {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(output.stdout, b"Unit\n");
+
+    let fault_executable = project.path().join("fault-program");
+    emit_native(program, &fault_executable, &EmitOptions::run("faultMain"))
+        .expect("emit fallible native Int list executable");
+    let output = Command::new(fault_executable)
+        .output()
+        .expect("run fallible native Int list executable");
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(diagnostic.contains("AssertionFault"), "{output:?}");
+    assert!(!diagnostic.contains("ListRuntimeFault"), "{output:?}");
 }
 
 #[test]
@@ -1343,6 +1532,25 @@ fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'so
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
+}
+
+fn assert_native_int_list_dropped_once_on_each_return(function: &str) {
+    let returns = function
+        .split("\n\n")
+        .filter(|block| {
+            block
+                .lines()
+                .any(|line| line.trim_start().starts_with("ret "))
+        })
+        .collect::<Vec<_>>();
+    assert!(!returns.is_empty(), "function has no return: {function}");
+    for block in returns {
+        assert_eq!(
+            block.matches("@loom_int_list_drop_v1").count(),
+            1,
+            "return must drop native Int list exactly once: {block}"
+        );
+    }
 }
 
 fn llvm_declaration_attributes<'source>(ir: &'source str, symbol: &str) -> &'source str {

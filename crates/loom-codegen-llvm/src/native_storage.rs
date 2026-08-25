@@ -68,6 +68,19 @@ impl NativeIntListPlan {
         self.locals.iter().copied()
     }
 
+    /// Proves that a range body is exactly one direct append into compiler-
+    /// private `List[Int]` storage. This proof lets the emitter carry the
+    /// private header in loop SSA while every unrecognized shape keeps using
+    /// the general builtin lowering.
+    #[must_use]
+    pub(crate) fn direct_append_loop<'a>(
+        &self,
+        body: &'a Block,
+    ) -> Option<NativeIntListAppendLoop<'a>> {
+        let append = exact_single_append_body(body)?;
+        self.contains(append.local).then_some(append)
+    }
+
     /// Recognizes the only `List.get` consumer accepted by the plan: a direct,
     /// exhaustive `Option[Int]` match. The analyzer has already rejected any
     /// receiver mutation nested in the index expression.
@@ -102,6 +115,12 @@ impl NativeIntListPlan {
     fn has_proven_exhaustive_get(&self, range: LocalId, list: LocalId) -> bool {
         self.proven_exhaustive_gets.contains(&(range, list))
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeIntListAppendLoop<'a> {
+    pub(crate) local: LocalId,
+    pub(crate) value: &'a Expr,
 }
 
 #[derive(Clone, Copy)]
@@ -222,7 +241,7 @@ fn prove_exhaustive_int_list_gets(
 
                 if block_mutates_list(body, list) {
                     length = if length == IntListLengthFact::Empty
-                        && exact_single_append_body(body, list)
+                        && exact_single_append_body(body).is_some_and(|append| append.local == list)
                     {
                         range_end.map_or(IntListLengthFact::Unknown, |end| {
                             IntListLengthFact::ExactZeroBasedRange(end)
@@ -267,9 +286,9 @@ fn stable_int_value(function: &Function, expression: &Expr) -> Option<StableIntV
 /// Recognizes the lowering's canonical append loop body. Calls nested in the
 /// element expression may fault, but a path which reaches the later scan has
 /// completed exactly one append for every normal range iteration.
-fn exact_single_append_body(body: &Block, list: LocalId) -> bool {
+fn exact_single_append_body(body: &Block) -> Option<NativeIntListAppendLoop<'_>> {
     let [statement] = body.statements.as_slice() else {
-        return false;
+        return None;
     };
     let StatementKind::Evaluate(Expr {
         kind:
@@ -282,16 +301,18 @@ fn exact_single_append_body(body: &Block, list: LocalId) -> bool {
         ..
     }) = &statement.kind
     else {
-        return false;
+        return None;
     };
     let [CallArgument::InOut(receiver), CallArgument::Value(value)] = arguments.as_slice() else {
-        return false;
+        return None;
     };
-    type_arguments.is_empty()
+    let local = receiver.local;
+    (type_arguments.is_empty()
         && witnesses.is_empty()
-        && exact_local(receiver, list)
-        && !expr_mutates_list(value, list)
-        && block_has_unit_tail(body)
+        && receiver.projection.is_empty()
+        && !expr_mutates_list(value, local)
+        && block_has_unit_tail(body))
+    .then_some(NativeIntListAppendLoop { local, value })
 }
 
 /// Recognizes a direct exhaustive `Option[Int]` consumer for the induction
@@ -1039,9 +1060,40 @@ mod tests {
 
     #[test]
     fn exact_completed_append_range_proves_exhaustive_get_range() {
-        let plan = NativeIntListPlan::analyze(&program(), &exact_build_and_scan());
+        let function = exact_build_and_scan();
+        let plan = NativeIntListPlan::analyze(&program(), &function);
         assert!(plan.contains(LIST));
         assert!(plan.has_proven_exhaustive_get(SCAN_RANGE, LIST));
+
+        let StatementKind::ForRange { body, .. } = &function.body.statements[1].kind else {
+            panic!("build statement is not a range")
+        };
+        let append = plan
+            .direct_append_loop(body)
+            .expect("canonical direct append loop");
+        assert_eq!(append.local, LIST);
+        assert!(matches!(
+            append.value.kind,
+            ExprKind::Copy(ref place) if place.local == BUILD_RANGE
+        ));
+    }
+
+    #[test]
+    fn append_loop_proof_rejects_multiple_mutations() {
+        let function = function(vec![
+            initialize(),
+            range(
+                BUILD_RANGE,
+                4,
+                block(vec![append(copy(BUILD_RANGE)), append(integer(99))]),
+            ),
+        ]);
+        let plan = NativeIntListPlan::analyze(&program(), &function);
+        assert!(plan.contains(LIST));
+        let StatementKind::ForRange { body, .. } = &function.body.statements[1].kind else {
+            panic!("build statement is not a range")
+        };
+        assert!(plan.direct_append_loop(body).is_none());
     }
 
     #[test]
