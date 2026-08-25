@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
+use std::io::Write as _;
 use std::ptr;
 
 use crate::gc::allocate_value_node;
@@ -46,6 +47,12 @@ pub struct JsonFailure {
     pub offset: usize,
 }
 
+/// Parses one complete UTF-8 JSON document with deterministic byte offsets.
+///
+/// # Errors
+///
+/// Returns the stable syntax, numeric-range, or depth-limit failure and its
+/// zero-based UTF-8 byte offset.
 pub fn parse_json(source: &str) -> Result<JsonNode, JsonFailure> {
     JsonParser {
         source,
@@ -55,14 +62,43 @@ pub fn parse_json(source: &str) -> Result<JsonNode, JsonFailure> {
     .parse()
 }
 
+/// Formats a JSON value using Loom's canonical ordering and escaping rules.
+///
+/// # Errors
+///
+/// Returns `DepthLimit` for values nested beyond 128 containers and
+/// `NonFiniteNumber` for NaN or infinite numbers.
 pub fn format_json(value: &JsonNode) -> Result<String, JsonFailure> {
     let mut output = String::new();
     format_json_value(value, 0, &mut output)?;
     Ok(output)
 }
 
+/// Escapes one Text value as a JSON string, including the surrounding quotes.
 pub fn escape_json_text(value: &str) -> String {
-    serde_json::to_string(value).expect("a Rust string always serializes as JSON")
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            control if control <= '\u{1f}' => {
+                let value = u32::from(control) as usize;
+                output.push_str("\\u00");
+                output.push(char::from(HEX[value >> 4]));
+                output.push(char::from(HEX[value & 0x0f]));
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
 }
 
 struct JsonParser<'source> {
@@ -79,13 +115,13 @@ impl JsonParser<'_> {
         if self.index == self.bytes.len() {
             Ok(value)
         } else {
-            Err(self.failure(JsonFailureKind::InvalidSyntax, self.index))
+            Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index))
         }
     }
 
     fn parse_value(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
         let Some(byte) = self.bytes.get(self.index).copied() else {
-            return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+            return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
         };
         match byte {
             b'n' => {
@@ -104,13 +140,13 @@ impl JsonParser<'_> {
             b'[' => self.parse_array(depth),
             b'{' => self.parse_object(depth),
             b'-' | b'0'..=b'9' => self.parse_number(),
-            _ => Err(self.failure(JsonFailureKind::InvalidSyntax, self.index)),
+            _ => Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index)),
         }
     }
 
     fn parse_array(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
         if depth >= JSON_DEPTH_LIMIT {
-            return Err(self.failure(JsonFailureKind::DepthLimit, self.index));
+            return Err(Self::failure(JsonFailureKind::DepthLimit, self.index));
         }
         self.index += 1;
         self.skip_whitespace();
@@ -125,7 +161,7 @@ impl JsonParser<'_> {
                 return Ok(JsonNode::Array(values));
             }
             if !self.consume_byte(b',') {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
             self.skip_whitespace();
         }
@@ -133,7 +169,7 @@ impl JsonParser<'_> {
 
     fn parse_object(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
         if depth >= JSON_DEPTH_LIMIT {
-            return Err(self.failure(JsonFailureKind::DepthLimit, self.index));
+            return Err(Self::failure(JsonFailureKind::DepthLimit, self.index));
         }
         self.index += 1;
         self.skip_whitespace();
@@ -144,15 +180,15 @@ impl JsonParser<'_> {
         loop {
             let key_offset = self.index;
             if self.bytes.get(self.index) != Some(&b'"') {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
             let key = self.parse_string()?;
             if values.contains_key(&key) {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, key_offset));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, key_offset));
             }
             self.skip_whitespace();
             if !self.consume_byte(b':') {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
             self.skip_whitespace();
             values.insert(key, self.parse_value(depth + 1)?);
@@ -161,7 +197,7 @@ impl JsonParser<'_> {
                 return Ok(JsonNode::Object(values));
             }
             if !self.consume_byte(b',') {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
             self.skip_whitespace();
         }
@@ -170,12 +206,12 @@ impl JsonParser<'_> {
     fn parse_string(&mut self) -> Result<String, JsonFailure> {
         let start = self.index;
         if !self.consume_byte(b'"') {
-            return Err(self.failure(JsonFailureKind::InvalidSyntax, start));
+            return Err(Self::failure(JsonFailureKind::InvalidSyntax, start));
         }
         let mut output = String::new();
         loop {
             let Some(byte) = self.bytes.get(self.index).copied() else {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, start));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, start));
             };
             match byte {
                 b'"' => {
@@ -187,11 +223,11 @@ impl JsonParser<'_> {
                     self.parse_escape(&mut output)?;
                 }
                 0..=0x1f => {
-                    return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
                 }
                 _ => {
                     let Some(value) = self.source[self.index..].chars().next() else {
-                        return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
                     };
                     output.push(value);
                     self.index += value.len_utf8();
@@ -203,7 +239,7 @@ impl JsonParser<'_> {
     fn parse_escape(&mut self, output: &mut String) -> Result<(), JsonFailure> {
         let offset = self.index;
         let Some(byte) = self.bytes.get(self.index).copied() else {
-            return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+            return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
         };
         self.index += 1;
         match byte {
@@ -219,24 +255,24 @@ impl JsonParser<'_> {
                 let first = self.parse_hex_quad()?;
                 let scalar = if (0xd800..=0xdbff).contains(&first) {
                     if !self.consume_byte(b'\\') || !self.consume_byte(b'u') {
-                        return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
                     }
                     let second = self.parse_hex_quad()?;
                     if !(0xdc00..=0xdfff).contains(&second) {
-                        return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
                     }
                     0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
                 } else if (0xdc00..=0xdfff).contains(&first) {
-                    return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
                 } else {
                     u32::from(first)
                 };
                 let Some(scalar) = char::from_u32(scalar) else {
-                    return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
                 };
                 output.push(scalar);
             }
-            _ => return Err(self.failure(JsonFailureKind::InvalidSyntax, offset)),
+            _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset)),
         }
         Ok(())
     }
@@ -244,7 +280,7 @@ impl JsonParser<'_> {
     fn parse_hex_quad(&mut self) -> Result<u16, JsonFailure> {
         let offset = self.index;
         let Some(bytes) = self.bytes.get(self.index..self.index.saturating_add(4)) else {
-            return Err(self.failure(JsonFailureKind::InvalidSyntax, offset));
+            return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
         };
         let mut value = 0_u16;
         for byte in bytes {
@@ -252,7 +288,7 @@ impl JsonParser<'_> {
                 b'0'..=b'9' => u16::from(*byte - b'0'),
                 b'a'..=b'f' => u16::from(*byte - b'a' + 10),
                 b'A'..=b'F' => u16::from(*byte - b'A' + 10),
-                _ => return Err(self.failure(JsonFailureKind::InvalidSyntax, offset)),
+                _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset)),
             };
             value = (value << 4) | digit;
         }
@@ -267,7 +303,7 @@ impl JsonParser<'_> {
             Some(b'0') => {
                 self.index += 1;
                 if self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
-                    return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
                 }
             }
             Some(b'1'..=b'9') => {
@@ -276,7 +312,7 @@ impl JsonParser<'_> {
                     self.index += 1;
                 }
             }
-            _ => return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index)),
+            _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index)),
         }
         if self.consume_byte(b'.') {
             let fraction = self.index;
@@ -284,7 +320,7 @@ impl JsonParser<'_> {
                 self.index += 1;
             }
             if self.index == fraction {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
         }
         if matches!(self.bytes.get(self.index), Some(b'e' | b'E')) {
@@ -297,16 +333,16 @@ impl JsonParser<'_> {
                 self.index += 1;
             }
             if self.index == exponent {
-                return Err(self.failure(JsonFailureKind::InvalidSyntax, self.index));
+                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
             }
         }
         let Ok(value) = self.source[start..self.index].parse::<f64>() else {
-            return Err(self.failure(JsonFailureKind::NumberOutOfRange, start));
+            return Err(Self::failure(JsonFailureKind::NumberOutOfRange, start));
         };
         if value.is_finite() {
             Ok(JsonNode::Number(value))
         } else {
-            Err(self.failure(JsonFailureKind::NumberOutOfRange, start))
+            Err(Self::failure(JsonFailureKind::NumberOutOfRange, start))
         }
     }
 
@@ -316,7 +352,7 @@ impl JsonParser<'_> {
             self.index += keyword.len();
             Ok(())
         } else {
-            Err(self.failure(JsonFailureKind::InvalidSyntax, start))
+            Err(Self::failure(JsonFailureKind::InvalidSyntax, start))
         }
     }
 
@@ -338,7 +374,7 @@ impl JsonParser<'_> {
         }
     }
 
-    fn failure(&self, kind: JsonFailureKind, offset: usize) -> JsonFailure {
+    fn failure(kind: JsonFailureKind, offset: usize) -> JsonFailure {
         JsonFailure { kind, offset }
     }
 }
@@ -1058,7 +1094,6 @@ pub unsafe extern "C" fn log_write(
         line.push_str(&escape_json_text(value));
     }
     line.push_str("}}\n");
-    use std::io::Write as _;
     match std::io::stderr().lock().write_all(line.as_bytes()) {
         Ok(()) => 0,
         Err(_) => 1,

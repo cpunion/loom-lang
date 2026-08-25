@@ -280,7 +280,9 @@ unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
 fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
     match value.words[0] {
         VALUE_TAG_TEXT => {
-            let address = value.words[4] as usize;
+            let Ok(address) = usize::try_from(value.words[4]) else {
+                return;
+            };
             if index.bytes.contains(&address) {
                 marks.bytes.insert(address);
             }
