@@ -513,3 +513,25 @@ fn bare_return_is_syntactically_accepted() {
     };
     assert!(returned.value.is_none());
 }
+
+#[test]
+fn discard_is_a_statement_with_an_expression_operand() {
+    let parsed = assert_clean(
+        "module discards\nfn value() Int { 1 }\nfn run() {\n    discard value()\n    discard 1 + 2\n}\n",
+    );
+    let DeclKind::Function(function) = &parsed.ast().declarations[1].kind else {
+        panic!("expected function");
+    };
+    assert_eq!(function.body.items.len(), 2);
+    let BlockItem::Discard(call) = &function.body.items[0] else {
+        panic!("expected discard statement");
+    };
+    assert!(matches!(call.kind, ExprKind::Call { .. }));
+    let BlockItem::Discard(binary) = &function.body.items[1] else {
+        panic!("expected discard statement");
+    };
+    assert!(matches!(binary.kind, ExprKind::Binary { .. }));
+
+    let nested = parse("module discards\nfn run() { let value = discard 1 }\n");
+    assert!(codes(&nested).contains(&"UnexpectedToken"));
+}

@@ -57,6 +57,7 @@ pub enum TokenKind {
     VarKw,
     ScopedKw,
     DeferKw,
+    DiscardKw,
     AsyncKw,
     AwaitKw,
     IfKw,
@@ -145,6 +146,7 @@ impl TokenKind {
                 | Self::VarKw
                 | Self::ScopedKw
                 | Self::DeferKw
+                | Self::DiscardKw
                 | Self::AsyncKw
                 | Self::AwaitKw
                 | Self::IfKw
@@ -700,6 +702,7 @@ fn keyword(text: &str) -> TokenKind {
         "var" => TokenKind::VarKw,
         "scoped" => TokenKind::ScopedKw,
         "defer" => TokenKind::DeferKw,
+        "discard" => TokenKind::DiscardKw,
         "async" => TokenKind::AsyncKw,
         "await" => TokenKind::AwaitKw,
         "if" => TokenKind::IfKw,
@@ -765,6 +768,15 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn discard_is_a_reserved_keyword() {
+        assert_eq!(
+            kinds("discard discarded"),
+            vec![TokenKind::DiscardKw, TokenKind::Ident, TokenKind::Eof]
+        );
+        assert!(TokenKind::DiscardKw.is_keyword());
     }
 
     #[test]

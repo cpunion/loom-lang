@@ -1071,10 +1071,13 @@ fn overlays_and_cli_snapshots_use_the_same_source_map() {
 
 #[test]
 fn formatter_is_canonical_idempotent_and_refuses_broken_source() {
-    let source = "module demo\r\n\r\nfn main() Unit {\r\n\tUnit   \r\n}\r\n\r\n";
+    let source = "module demo\r\n\r\nfn value() Int { 1 }\r\n\r\nfn main() Unit {\r\n\tdiscard value()   \r\n}\r\n\r\n";
     let first = format_source(FileId(0), source);
     assert!(first.diagnostics.is_empty());
-    assert_eq!(first.text, "module demo\n\nfn main() Unit {\n    Unit\n}\n");
+    assert_eq!(
+        first.text,
+        "module demo\n\nfn value() Int { 1 }\n\nfn main() Unit {\n    discard value()\n}\n"
+    );
     let second = format_source(FileId(0), &first.text);
     assert_eq!(second.text, first.text);
 

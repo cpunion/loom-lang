@@ -492,6 +492,7 @@ pub enum Statement {
     Defer {
         body: ExprId,
     },
+    Discard(ExprId),
     Expr(ExprId),
     Assert(ExprId),
 }

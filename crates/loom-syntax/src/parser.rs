@@ -1851,6 +1851,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 BlockItem::Defer(self.parse_block_at(nesting))
             }
+            TokenKind::DiscardKw => {
+                self.bump();
+                BlockItem::Discard(self.parse_expr_at(true, nesting))
+            }
             TokenKind::ReturnKw => BlockItem::Return(self.parse_return_at(nesting)),
             TokenKind::AssertKw => {
                 self.bump();

@@ -685,6 +685,9 @@ impl<'a> BodyLower<'a> {
                         body: self.lower_block(block),
                     });
                 }
+                syntax::BlockItem::Discard(expression) => {
+                    statements.push(Statement::Discard(self.lower_expr(expression)));
+                }
                 syntax::BlockItem::Return(returned) => {
                     let value = returned.value.as_ref().map(|value| self.lower_expr(value));
                     let expression = self
@@ -1112,7 +1115,7 @@ mod tests {
     use loom_syntax::parse_with_file;
 
     use super::{SourceUnit, lower_files};
-    use crate::{DefinitionKind, Expr, Pattern};
+    use crate::{DefinitionKind, Expr, Pattern, Statement};
 
     #[test]
     fn lowering_is_deterministic_and_keeps_pattern_name_unresolved() {
@@ -1240,5 +1243,46 @@ impl C for R {
                 .values()
                 .any(|expression| matches!(expression, Expr::Return(None)))
         }));
+    }
+
+    #[test]
+    fn discard_lowers_to_a_distinct_statement() {
+        let parsed = parse_with_file(
+            FileId(0),
+            "module discards\nfn value() Int { 1 }\nfn run() { discard value() }\n",
+        );
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+        let lowered = lower_files([SourceUnit {
+            file: FileId(0),
+            syntax: parsed.ast(),
+        }]);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+
+        let function = lowered
+            .program
+            .definitions
+            .iter()
+            .find_map(|(_, definition)| match &definition.kind {
+                DefinitionKind::Function(function)
+                    if definition
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| name.as_str() == "run") =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("run function");
+        let body = &lowered.program.bodies[function.body];
+        let Expr::Block { statements, tail } = &body.expressions[body.root] else {
+            panic!("expected block root");
+        };
+        assert!(tail.is_none());
+        assert!(matches!(statements.as_slice(), [Statement::Discard(_)]));
     }
 }

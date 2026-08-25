@@ -448,6 +448,7 @@ pub enum BlockItem {
     Local(LocalBinding),
     ForRange(ForRange),
     Defer(Block),
+    Discard(Expr),
     Return(ReturnExpr),
     Assert(Expr),
     Assignment(Assignment),
