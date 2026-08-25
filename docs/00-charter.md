@@ -25,7 +25,7 @@ Core 0.1 包含：
 - `type T = Base where predicate`；
 - `invariant`、`requires`、`ensures`、`assert`。
 
-支撑这些能力的普通表达式基础——`let`、局部 `var`、`if`、block、尾表达式、提前 `return` 和基础运算——也属于 Core 0.1。
+支撑这些能力的普通表达式基础——`let`、局部 `var`、`if`、block、尾表达式、提前 `return`、显式 `discard` 和基础运算——也属于 Core 0.1。每个非 `Unit` 表达式结果都必须进入一个使用位置，或由 `discard expression` 明确丢弃；不通过函数或类型属性隐式允许忽略结果。
 
 ## 2.1 已确认的 Core 0.2 扩展
 

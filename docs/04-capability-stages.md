@@ -31,12 +31,12 @@
 - UTF-8 source、lexer/parser 与 error-island 恢复；
 - module/import/visibility；
 - record、enum、Option、Result；
-- fn、method、let/var、if、block、return、match；
+- fn、method、let/var、if、block、return、match 与显式 `discard`；
 - rank-1 泛型与定义处检查；
 - 普通 `test fn`；
 - CLI 与 LSP 共享 source snapshot 和 analysis。
 
-关门条件包括：全部 declaration/body 都要检查；module cycle、重复/不可见名字稳定诊断；封闭类型 match 必须穷尽；文件遍历与声明顺序不能改变结果；测试返回 Unit/Ok、Err 与 fault 必须可区分。
+关门条件包括：全部 declaration/body 都要检查；module cycle、重复/不可见名字稳定诊断；封闭类型 match 必须穷尽；非 `Unit` 结果必须进入使用位置或显式 `discard`，未知泛型和资源/Task obligation 不得借此丢失；文件遍历与声明顺序不能改变结果；测试返回 Unit/Ok、Err 与 fault 必须可区分。
 
 ## 3. C1b：受约束数据
 

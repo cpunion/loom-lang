@@ -25,7 +25,7 @@ Core 0.1 包含：
 - record `invariant`；
 - `requires`、`ensures`、`assert`。
 
-普通表达式基础包括 `let`、局部 `var`、`if`、block、尾表达式、提前 `return` 和基础运算。表达式及参数从左到右求值。
+普通表达式基础包括 `let`、局部 `var`、`if`、block、尾表达式、提前 `return`、显式 `discard` 和基础运算。表达式及参数从左到右求值。
 
 ### 1.1 Core prelude 与 `Float`
 
@@ -171,6 +171,11 @@ fn add_tax(price Price, rate Float) Result[Price, ConstraintError] {
 - 局部变量允许类型推断；
 - 普通函数体按源码顺序执行；
 - 尾表达式是返回值，`return` 用于提前返回；
+- 每个非 `Unit` 表达式结果必须进入 initializer、assignment RHS、argument、condition、aggregate payload、`return`、尾表达式或其他由类型检查器给出期望类型的使用位置，否则必须写 `discard expression`；
+- `discard` 是面向任意表达式的显式结果丢弃 statement，不是函数、method 或类型的属性；普通具体类型默认允许显式丢弃，Core 不增加 `Discardable`、`MustUse` 或 `NonDiscardable` concept；
+- 因为没有负向 bound 能证明“不是 Task/MustScope”，包含未约束 type parameter、`Self` 或 associated projection 的泛型结果必须保守拒绝 discard，并报告 `CannotDiscardUnknownType`；具体化后已知为普通值不改变“普通具体类型默认允许”的规则；
+- `discard expression` 仍对 operand 从左到右完整求值一次，保留调用、可变状态、I/O、合同、fault 和其他可观察行为；只有编译器证明整个求值不可观察时才可做 DCE；
+- 尾表达式仍必须匹配 callable 的逻辑返回类型，不因位于 block 末尾而被隐式丢弃；
 - Core 0.1 没有函数重载、动态派发或隐式 receiver；Core 0.2 的 concept 接口参数在需要擦除时增加 receiver dispatch，编译器可对静态可知的接口调用去虚化。
 
 method 在 `impl T` 中使用独立的 `method` 关键字声明：

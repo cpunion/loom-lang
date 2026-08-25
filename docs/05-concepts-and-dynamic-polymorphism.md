@@ -195,6 +195,8 @@ source Source[Item = Int]
 
 `dyn C` 是普通一等值，可以存储、复制、嵌套和返回。普通 copy 产生独立的逻辑值及同一份不可变 conformance proof；复制后的可变 receiver 不得通过隐藏别名改变原副本。对象地址、临时写回地址和 proof layout 都不可观察。
 
+上述“普通一等值”不允许类型擦除隐藏 Core 0.3 的资源或任务 obligation。concrete source 若具有直接或递归 `MustScope` obligation、是未消费 `Task`，或其泛型形状尚不能证明不含两者，则不得适配成可自由保存或 discard 的 `dyn C`。checker 必须在建立 erased interface 时拒绝，而不是等到 `discard dyn_value` 后丢失 concrete obligation；Core 没有运行时 obligation registry，也不借此引入 ownership、borrow 或 move carrier。
+
 对已经存储的 `dyn C` 调用 `mut self` requirement，receiver 必须是 `var` place，修改该接口值内部的 concrete data。同步函数的 concrete `var T` 实参自动适配到 mutable 接口参数时，编译器可以使用仅覆盖该次调用的写回载体，正常返回后把修改写回原 place。该载体只存在于 checked MIR/backend，不能被存储、返回、嵌套或跨 `.await`；源码仍不暴露 borrow、lifetime、`&mut` 或 token。异步调用的接口参数按拥有值复制进 Task frame，不保留指向 caller place 的写回地址。
 
 ## 8. 表示与派发

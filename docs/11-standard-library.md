@@ -126,7 +126,7 @@ socket.try_read_text() Task[Result[Text, IoError]]
 socket.try_write_text(Text) Task[Result[Unit, IoError]]
 ```
 
-成功取得的 `File`/`Socket` 仍是结构性 `MustScope`；Option/Result/tuple/list/record/enum 等包装不会消除 obligation。包装值不能被普通保存、丢弃、传参或用 wildcard 丢掉资源 payload。惯用写法可以把 `?` 与后缀 `.await` 放入 `scoped` initializer；错误提前返回时尚未建立 resource binding，因此不会登记虚假的 cleanup：
+成功取得的 `File`/`Socket` 仍是结构性 `MustScope`；Option/Result/tuple/list/record/enum 等包装不会消除 obligation。包装值不能被普通保存、用 `discard` 或裸 expression statement 丢弃、传参或用 wildcard 丢掉资源 payload，也不得借 `dyn C` 擦除隐藏 obligation。惯用写法可以把 `?` 与后缀 `.await` 放入 `scoped` initializer；错误提前返回时尚未建立 resource binding，因此不会登记虚假的 cleanup：
 
 ```loom
 scoped file = try_open_read_path(path).await?

@@ -142,7 +142,7 @@ relational compare 不能链式书写；`a < b < c` 报 `ChainedComparison`。eq
 
 ### 4.2 block 和 statement context
 
-block 是按源码顺序执行的 statement 列表，可选择一个尾 expression。有尾 expression 时 block 值是该 expression；否则为 `Unit`。为允许 formatter 把 `}` 单独放一行，最终 expression 与 `}` 之间只有 `NL` 时仍是尾 expression；最终 expression 后出现显式 `,` 才把它固定为 expression statement。非尾 expression statement 处于 Unit context，其类型必须是 `Unit`。
+block 是按源码顺序执行的 statement 列表，可选择一个尾 expression。有尾 expression 时 block 值是该 expression；否则为 `Unit`。为允许 formatter 把 `}` 单独放一行，最终 expression 与 `}` 之间只有 `NL` 时仍是尾 expression；最终 expression 后出现显式 `,` 才把它固定为 expression statement。普通非尾 expression statement 处于 Unit context，其类型必须是 `Unit`；非 `Unit` 结果必须进入一个使用位置，或改写为 `discard expression`。
 
 Core statement 仅有：
 
@@ -152,10 +152,19 @@ var binding = expression
 place = expression
 return expression?
 assert expression
+discard expression
 Unit-valued expression
 ```
 
 无 operand 的 `return` 等价于 `return Unit`；因此只能匹配逻辑返回类型 `Unit`。显式返回其他类型的 callable 使用它会得到普通返回类型不匹配诊断。空 block 和只有 Unit-valued statements、没有尾 expression 的 block 都产生 `Unit`。省略只适用于 callable 的返回 annotation；`Result[Unit, E]`、`Task[Unit]`、字段、参数和其他类型位置仍须显式写 `Unit`。
+
+`discard` 是 block item，不是 expression，其 grammar 是精确的 `"discard" Expression`。operand 可具有任意已知静态类型；`Unit` operand 合法但不是必需形式。该规则只存在于使用点，callee/function/method/type 上没有 discard attribute，也不查找 `Discardable`、`MustUse` 或 `NonDiscardable` concept。
+
+普通具体类型默认允许显式 discard。没有负向 concept bound 可以证明任意 type parameter “不是 Task/MustScope”，所以 operand 类型本身或递归组成中出现未约束 `Param`、`Self` 或 associated projection 时必须保守报告 `CannotDiscardUnknownType`。这不是把普通类型默认设为不可丢弃；具体类型闭合且没有下述 obligation 时即可 discard。
+
+`discard` 不跳过 operand：operand 依旧从左到右、恰好完整求值一次，然后只丢弃最终值。任何 mutation、I/O、调用、合同检查、cleanup 登记或 fault 轨迹都必须保持。DCE 只在编译器已证明整个求值不可观察时合法；“结果被 discard”本身不是删除 call 的证明。
+
+尾 expression 始终是 block 值，必须匹配当前 expected type；对返回 `Unit` 的 callable，末尾非 `Unit` expression 仍是 `TypeMismatch`，不会被隐式 discard。要明确丢弃它，必须写成最后一个 `discard expression` statement，使无尾 expression 的 block 产生 `Unit`。
 
 assignment 只是 statement，不是 expression；不能用在 initializer、argument、condition、match RHS 或 block tail，不能链式，违反报 `AssignmentInExpression`。左侧必须是 checker 认可的可写 place，权限仍由 `let`/`var`、field visibility 和 `self`/`mut self` 规则决定。
 
@@ -317,6 +326,7 @@ NestedDeclarationNotAllowed MissingModuleDeclaration
 DuplicateModuleDeclaration ModuleCycle DuplicateDeclaration UnknownName
 NameNotVisible WildcardImportNotSupported TopLevelStatementNotAllowed
 TypeMismatch CannotInferType AmbiguousTypeInference InvalidGenericOperation
+UnusedValue CannotDiscardUnknownType
 MissingField UnknownField DuplicateField NonExhaustiveMatch
 UnreachableMatchArm InvalidTestSignature ImmutableBindingAssignment
 InvalidAssignmentTarget ForeignInherentImpl ReadonlyReceiverMutation
@@ -557,6 +567,7 @@ AsyncFunction  := "async" "fn" FunctionTail
 AsyncTest      := "test" "async" "fn" FunctionTail
 ScopedBinding  := "scoped" Identifier Type? "=" Expression
 DeferItem      := "defer" Block
+DiscardItem    := "discard" Expression
 AwaitSuffix    := "." "await"
 PropagateSuffix := "?"
 TupleType      := "(" Type "," (Type ("," Type)*)? ")"

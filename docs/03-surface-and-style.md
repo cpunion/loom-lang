@@ -80,6 +80,7 @@ Core 0.1 的常用拼写为：
 - 缺失值写作 `Option[T]`，Core 0.1 不引入 `T?` 糖；
 - `let` 声明不可变局部，`var` 声明可变局部；
 - block 的尾表达式是返回值，`return` 只用于提前返回；无 operand 的 `return` 等价于 `return Unit`；
+- 非 `Unit` 结果不能作为裸 expression statement；需要忽略时写 `discard expression`，不在 callee 上标注“可丢弃”属性；
 - record literal 的字段使用 `=`；
 - Core 0.1 不提供 `?` 错误传播糖，失败分支使用显式 `match`。
 
@@ -91,6 +92,15 @@ pub fn value_or[T](value Option[T], fallback T) T {
     }
 }
 ```
+
+`discard` 可接受任意表达式，包括 call、block、`if` 或 `match`；它自身是 statement，不能出现在 initializer、argument 或 block tail 的 expression 位置。`Unit` 表达式可直接作为 statement；对它写 `discard` 合法但多余。
+
+```loom
+write_log("start")        // Unit result is already a statement
+discard calculate_price() // explicitly ignore a non-Unit result
+```
+
+`discard` 不是“不执行”；operand 仍完整求值，包括所有副作用、合同检查和 fault。优化器只能删除已证明不可观察的整个求值。普通具体类型默认允许显式 discard，语言不定义 `Discardable`、`MustUse` 或 `NonDiscardable` concept。未约束 type parameter、`Self`、associated projection 或递归包含它们的类型不能证明没有 Task/MustScope obligation，因此泛型代码中的 discard 保守报 `CannotDiscardUnknownType`。
 
 ## 5. 受约束值：`Price`
 

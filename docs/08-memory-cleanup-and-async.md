@@ -104,7 +104,7 @@ scoped socket Socket = connect(address)
 
 compiler-known `File`/`Socket` I/O method 是窄化的运行时边界：调用 method 时立刻复制所需 host handle，并把副本交给新 Task 独占；Task 不捕获 Loom scoped value。因而 Task 可以在原 resource block 退出后才被结构化等待，原 resource 仍在 block exit 关闭，Task 副本在完成、取消或 Task 销毁时关闭。复制失败在 typed `try_` 表面形成 `Err(IoError)`；实现不得把 raw descriptor 延迟到首次 resume 才复制，否则 descriptor reuse 会把操作错误地施加到另一个资源。此规则不开放普通 scoped capture，也不增加 clone/borrow/lifetime 源码语法。
 
-`MustScope` 是结构性 obligation：它穿透 tuple、List、TextMap、Option、Result、TaskOutcome、record 与 enum，不能靠 `Result[File, E]` 或其他 aggregate 隐藏。含 obligation 的值不能由普通 `let` 保存、丢弃、传给普通参数或存入 aggregate；pattern 也不能用 `_` 丢弃资源 payload。允许的解包路径是直接 `?` 进入 `scoped`，或在 `match` 成功 arm 中把 pattern binding 立即转入 `scoped`。`Task[T]` 是唯一窄化暂停边界：尚未交付的资源由 runtime Task 拥有，所以 Task 可以存储和 join；`.await` 产生 `T` 后，上述结构性规则立即恢复。这个规则是 compiler-known obligation/consume 检查，不增加通用 move、borrow 或 lifetime 表面。
+`MustScope` 是结构性 obligation：它穿透 tuple、List、TextMap、Option、Result、TaskOutcome、record 与 enum，不能靠 `Result[File, E]` 或其他 aggregate 隐藏。含 obligation 的值不能由普通 `let` 保存、由 `discard` 或裸 expression statement 丢弃、传给普通参数或存入 aggregate；pattern 也不能用 `_` 丢弃资源 payload。允许的解包路径是直接 `?` 进入 `scoped`，或在 `match` 成功 arm 中把 pattern binding 立即转入 `scoped`。`Task[T]` 是唯一窄化暂停边界：尚未交付的资源由 runtime Task 拥有，所以 Task 可以存储和 join；`.await` 产生 `T` 后，上述结构性规则立即恢复。这个规则是 compiler-known obligation/consume 检查，不增加通用 move、borrow 或 lifetime 表面。
 
 `standard.resource` 中的 compiler-known concepts：
 
@@ -153,6 +153,18 @@ scoped third = acquireThird()
 离开 scope 时顺序固定为 `third.dispose()`、`releaseByName(second)`、`first.dispose()`。
 
 若正常路径上的 cleanup 产生 fault，第一个按 LIFO 实际观察到的 cleanup fault 成为主失败，其余 cleanup 仍继续执行。若已经因原始 fault/取消开始 unwind，cleanup fault 不替换原始失败；实现可以把它记录为 suppressed diagnostic，但源码不能捕获它。
+
+### 3.4 `discard` 与资源/任务 obligation
+
+普通具体类型的值可以在使用点写 `discard expression` 显式丢弃，不需要也不存在 `Discardable`、`MustUse` 或 `NonDiscardable` concept。但 `discard` 不会消费或清除 compiler-known obligation：
+
+- 任何直接或递归 aggregate 中的 `MustScope` obligation 都禁止 discard，资源必须走 `scoped` 的唯一词法 cleanup 路径；
+- 未消费 `Task` 保留独立静态禁止；Task 或含 Task 的 aggregate 不能 discard，必须 await、join 或作为逻辑结果返回；
+- 未约束 type parameter、`Self`、associated projection 及递归包含它们的类型，无法在没有负向 bound 的 Core 中证明不含上述 obligation，必须保守报 `CannotDiscardUnknownType`；
+- `dyn C` 擦除不得隐藏 Task 或 MustScope obligation；只有静态证明 concrete source 不含两者时才能建立可作为普通值 discard 的 erased interface，否则适配本身必须拒绝；
+- `discard scoped_value` 不是 dispose，也不把 scoped binding 变为可 move 值；`scoped` 仍是只对 compiler-known `Dispose`/`MustScope` 生效的受限 RAII，本版不引入通用 move、move-only 类型、ownership 或 borrow 语法。
+
+对通过上述检查的 operand，`discard` 仍完整求值，然后只丢弃最终值。资源获取、Task 建立、I/O、fault 或 cleanup 不能因为最终值未使用而被删除；仅可证明不可观察的整个求值可做 DCE。
 
 ## 4. `async fn`、`Task[T]` 与显式暂停
 
