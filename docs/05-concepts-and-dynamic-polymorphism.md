@@ -251,17 +251,19 @@ A → any → dyn C   // 禁止运行时搜索 A 是否 conform C
 
 | code | 含义 |
 |---|---|
-| `ConformanceNotFound` | 没有可证明的 conformance |
+| `MissingConformance` | 没有可证明的 conformance |
 | `DuplicateConformance` | 同一 `(T, C)` 重复 |
 | `OverlappingConformance` | conditional impl 可能重叠 |
 | `ConformanceResolutionCycle` | proof 搜索成环 |
 | `DynNotDeclared` | 普通 concept 被用于 erased interface |
 | `DynStaticRequirement` | dyn concept 含 static requirement |
 | `DynGenericMethod` | dyn concept 含 generic method |
-| `DynSelfNotErasable` | 非 receiver `Self` 不能擦除 |
+| `DynSelfLeak` | 非 receiver `Self` 不能擦除 |
 | `DynAssociatedTypeUnbound` | associated binding 不完整 |
 | `DynAssociatedTypeMismatch` | binding 与 conformance 不一致 |
-| `MutableViewRequiresVariable` | `mut self` 接口实参不是 `var` place；code 名保留兼容性，消息不得要求用户书写 view/borrow 语法 |
+| `DynMutReceiverUnavailable` | `mut self` 接口实参不是 `var` place；消息不得要求用户书写 view/borrow 语法 |
+| `AssociatedBoundNotSatisfied` | associated type binding 未满足声明的 concept bounds |
+| `AssociatedProjectionCycle` | associated type projection 直接或间接成环 |
 | `UnsupportedSyntax` | 旧 `view[...]` 或显式 view construction |
 
 ## 12. 不在当前范围
