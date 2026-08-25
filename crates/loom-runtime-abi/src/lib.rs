@@ -74,8 +74,10 @@ pub struct LoomWitnessInstance {
 /// `live_bitmaps` contains `state_count` rows of exactly `live_bitmap_words`
 /// words. Bit `n` identifies entry `n` in the frame's slot-pointer array. Bits
 /// beyond `slot_count` in the final word must be zero. Descriptors are
-/// compiler-private immutable globals and must outlive every frame which
-/// references them.
+/// runtime-private immutable metadata: generated frames normally reference
+/// compiler globals, while runtime helper scopes may own an address-stable
+/// descriptor dynamically. In both cases the descriptor and its bitmap must
+/// outlive every linked frame which references them.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LoomGcRootDescriptor {
