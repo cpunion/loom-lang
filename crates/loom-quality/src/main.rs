@@ -24,6 +24,7 @@ const C3_NATIVE_BUILD_BUDGET: Duration = Duration::from_secs(90);
 const C3_REPOSITORY: &str = "examples/c3/application";
 const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
+const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -159,6 +160,9 @@ fn main() {
             .failures
             .push(format!("async-generic-contracts: {error}"));
     }
+    if let Err(error) = standard_library_gate(&workspace, &mut report.gates) {
+        report.failures.push(format!("standard-library: {error}"));
+    }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
         report.failures.push(error);
     }
@@ -183,6 +187,102 @@ fn main() {
     if !passed {
         std::process::exit(1);
     }
+}
+
+fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Result<(), String> {
+    let project = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let round_trip = project.path().join("round-trip.txt");
+    let missing = project.path().join("missing.txt");
+    let source = std::fs::read_to_string(workspace.join(STANDARD_LIBRARY_FIXTURE))
+        .map_err(|error| error.to_string())?
+        .replace("__ROUND_TRIP_PATH__", &loom_text_literal(&round_trip))
+        .replace("__MISSING_PATH__", &loom_text_literal(&missing));
+    std::fs::write(project.path().join("main.loom"), source).map_err(|error| error.to_string())?;
+
+    let analysis_started = Instant::now();
+    let snapshot = AnalysisHost::new(project.path())
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    upper_gate(
+        gates,
+        "standard-library.analysis",
+        analysis_started.elapsed(),
+        ANALYSIS_BUDGET,
+    );
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+
+    let interpreter_started = Instant::now();
+    let interpreted = Interpreter::new(program).run_tests();
+    if interpreted.len() != program.tests.len()
+        || interpreted
+            .iter()
+            .any(|result| result.status != TestStatus::Passed)
+    {
+        return Err(format!(
+            "interpreter tests did not all pass: {interpreted:#?}"
+        ));
+    }
+    upper_gate(
+        gates,
+        "standard-library.interpreter-execution",
+        interpreter_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+
+    let executable = project.path().join("native-tests");
+    let native_build_started = Instant::now();
+    emit_native(
+        program,
+        &executable,
+        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+    )
+    .map_err(|error| format!("native test build failed: {error}"))?;
+    upper_gate(
+        gates,
+        "standard-library.native-build",
+        native_build_started.elapsed(),
+        NATIVE_BUILD_BUDGET,
+    );
+
+    let native_run_started = Instant::now();
+    let output = Command::new(&executable)
+        .current_dir(project.path())
+        .output()
+        .map_err(|error| format!("execute native tests: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || stdout.lines().count() != program.tests.len()
+        || !stdout.lines().all(|line| line.starts_with("passed "))
+    {
+        return Err(format!(
+            "native test mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if std::fs::read_to_string(&round_trip).map_err(|error| error.to_string())? != "typed I/O" {
+        return Err("typed file round trip did not preserve text".to_owned());
+    }
+    upper_gate(
+        gates,
+        "standard-library.native-execution",
+        native_run_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+    Ok(())
+}
+
+fn loom_text_literal(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 fn async_generic_contract_gate(
