@@ -90,12 +90,12 @@ target/release/loom-benchmark --throughput --output target/basic-benchmark-throu
 development 使用 `default<O0>,globaldce`，release 使用 `default<O2>,globaldce`，且两者在优化前后都通过 LLVM verifier。机器 IR 回归进一步固定：
 
 - 不可达私有函数在两个 profile 都不进入 object；
-- closed-world callable graph 固定传播独立的 `FAULT`/`ALLOC`/`EXECUTOR` invocation/body requirements；root IR 证明普通同步路径不创建 Executor、async 路径建立 Runtime + Executor，runtime fixture 另行证明 reactor/worker 按需创建；
+- closed-world callable graph 固定传播独立的 `FAULT`/`COLLECT`/`EXECUTOR` invocation/body requirements；root IR 证明普通同步路径不创建 Executor、async 路径建立 Runtime + Executor，runtime fixture 另行证明 reactor/worker 按需创建；
 - development 保留可达的 checked constant arithmetic helper；
 - release 常量折叠并内联该 helper，移除对应 overflow intrinsic 与 machine function；
 - eligible pure/no-fault concrete `Int` 私有 body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 pointer，pure root IR 也没有 Runtime/Executor creation；fallible checked arithmetic、递归和合同路径继续使用 `{status, i64}` 加 context，并保留 root fault 回归；
-- eligible primitive record local 在 development IR 使用有预算的 `record.local` 栈节点；whole-value copy/call/return boundary 从当前字段物化独立 managed chain，不让私有栈地址逃逸。release SROA 后当前 golden/benchmark record 热循环没有 node traversal、字段 load/store 或 GC allocation，checked accumulator 仍保留；
-- eligible 同步不逃逸局部 `List[Int]` 在 development/release IR 中使用 compiler-private `{data, len, cap}` storage：canonical append loop 具有 preheader data/len/cap load 和 loop phi，非增长 backedge 不重载 header，reserve-success 只重载 data/cap，element store 后立即提交 len；所有 status return 恰好 drop 一次；
+- eligible primitive record local 在 development IR 使用有预算的 `record.local` 栈节点；whole-value copy/call/return boundary 从当前字段物化独立 managed chain，不让私有栈地址逃逸。POD header/field storage 不进入 shadow roots，普通 loop/return 不生成 GC poll；release SROA 后当前 golden/benchmark record 热循环没有 node traversal、字段 load/store 或 GC allocation，checked accumulator 仍保留；
+- eligible 同步不逃逸局部 `List[Int]` 在 development/release IR 中使用 compiler-private `{data, len, cap}` storage：canonical append loop 具有 preheader data/len/cap load 和 loop phi，非增长 backedge 不重载 header，reserve-success 只重载 data/cap，element store 后立即提交 len；storage/index/element 临时不进入 shadow roots，循环没有 synthetic GC poll，所有 status return 恰好 drop 一次；
 - exact-length scan 证明只接受空初始化、零起点单 append build、相同 constant/immutable end、唯一 induction binding、无中间 mutation 和 direct exhaustive `Option[Int]` match；命中时 release IR 没有逐元素 past-end/`None` edge，所有不匹配形状保留 checked get，checked checksum 仍使用 overflow intrinsic；
 - compiler-generated terminal fault/status branch 带 branch-weight metadata，context fault sink 是 cold/noinline；普通 `if`、match pattern 与业务 `Result` 分支保持无权重。runtime fixture 另固定 Task first-fault-wins，第二次 fault record 不覆盖 primary fault；
 - escaping、`List[Text]`、async、multiple/conditional append 与观察顺序 hazard 有明确 universal 或 generic-native fallback 回归；

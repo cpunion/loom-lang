@@ -93,7 +93,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果完全由 primitive scalar 组成的 direct call 已生成私有 typed body 并保留 universal wrapper：`Unit -> i1`、`Bool -> i1`、`Int -> i64`、`Float -> double`。closed-world summary 为 pure/no-fault 时，body 没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path；安全的同步局部 POD record 把字段节点放入有预算的入口栈存储，release 由 SROA 把热循环字段提升为 SSA，只在 whole-value copy/call/return 边界物化独立 managed chain。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果完全由 primitive scalar 组成的 direct call 已生成私有 typed body 并保留 universal wrapper：`Unit -> i1`、`Bool -> i1`、`Int -> i64`、`Float -> double`。closed-world summary 为 pure/no-fault 时，body 没有 status 或隐藏 context；可能 fault/collect 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path；安全的同步局部 POD record 把字段节点放入有预算的入口栈存储，release 由 SROA 把热循环字段提升为 SSA，只在 whole-value copy/call/return 边界物化独立 managed chain。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -163,14 +163,14 @@ eligible concrete `Int` 函数按 requirement summary 使用两种私有调用�
 
 ```text
 i64 int_fn(i64 arguments...)                         // pure + no fault
-{status, i64} int_fn(i64 arguments..., context)      // may fault/allocate
+{status, i64} int_fn(i64 arguments..., context)      // may fault/collect
 ```
 
-universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。四种 primitive scalar callable 形状由 `NativeSignatureShape` 统一选择；`NativeLayout` 虽已能分类当前 POD record storage，record 仍没有同类的跨函数 concrete private signature。其他类型也必须在 catalog/plan 中补齐完整 calling convention 与 layout/clone/trace/drop 后才能套用 typed ABI。
+universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/collect 路由到调用方 context。四种 primitive scalar callable 形状由 `NativeSignatureShape` 统一选择；`NativeLayout` 虽已能分类当前 POD record storage，record 仍没有同类的跨函数 concrete private signature。其他类型也必须在 catalog/plan 中补齐完整 calling convention 与 layout/clone/trace/drop 后才能套用 typed ABI。
 
 ### Runtime requirements 与 root context
 
-LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 compiler-private requirement 图。三个独立 bit 是 `FAULT`（实现名 `MAY_FAULT`）、`ALLOC`（`MAY_ALLOCATE`）和 `EXECUTOR`（`NEEDS_EXECUTOR`）；它们描述当前 lowering 所需设施，不是源码 effect system，也不进入 concept 或公共函数类型。scanner 记录 local operation、builtin、direct/static/dynamic witness call edge，再以固定点传播 callee 的 invocation summary。每个 callable 分开保存 invocation/body summary；async invocation 是建立 Task 的需求，deferred resume body 另行统计，避免把 resume 工作错误地当作同步构造器执行。
+LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 compiler-private requirement 图。三个独立 bit 是 `FAULT`（实现名 `MAY_FAULT`）、`COLLECT`（`MAY_COLLECT`）和 `EXECUTOR`（`NEEDS_EXECUTOR`）；它们描述当前 lowering 所需设施，不是源码 effect system，也不进入 concept 或公共函数类型。`COLLECT` 只表示可能进入 moving-GC collection boundary；普通 native allocation、只读 runtime 调用和私有 POD/List storage 不会误设该 bit。scanner 记录 local operation、builtin、direct/static/dynamic witness call edge，再以固定点传播 callee 的 invocation summary。每个 callable 分开保存 invocation/body summary；async invocation 是建立 Task 的需求，deferred resume body 另行统计，避免把 resume 工作错误地当作同步构造器执行。
 
 root context 由 invocation summary 与实际 ABI 共同决定：
 
@@ -196,7 +196,7 @@ witness table 不是语言必须存在的对象。当前 64-bit compiler-private
 
 普通 `Value` 深复制和 aggregate node 构造完全位于 Rust runtime：`loom_gc_clone_value_v1` 使用显式、非递归 work stack，`loom_gc_build_value_nodes_v1` 接收稳定 source-slot pointer array 和稳定 output slot。LLVM module 不再生成递归 clone/build helper；生成代码先把 source/output proxy 纳入当前 precise root state，再调用 runtime ABI。owned `dyn` 的非全局 proof 使用独立的非移动 mark-sweep proof arena：`loom_gc_clone_witness_v1` 以单次事务 worklist 深拷贝 prerequisite DAG，GC 从 live `dyn` 的 witness 字段追踪并 sweep proof instances。proof allocation 进入 GC live/reclaimed/threshold 统计，但 proof 地址不 relocation。native local `List[Int]` storage 只含非 managed `i64` 并由生成代码显式释放，不进入 trace 集合。
 
-`shadow-stack-v1` 的同步 moving-GC 路径已经闭合。LLVM 为可能含 managed 值的同步函数发射地址稳定的 root slots、descriptor/frame、push/pop 和按 safepoint state 编号的 live bitmap；参数、`old`、output、词法 local、projection/`dyn` proxy 和临时值只在已初始化且实际存活的区间置位，move 会清空并停用 source root。可能分配或内部 poll 的 call、clone/build、builtin 与显式 safepoint 都先发布对应 state，collector 可以原地重写 slot。纯 primitive-scalar 路径不会为“零 managed root”创建空 frame，但 effectful scalar-only 路径仍可执行必要 poll。
+`shadow-stack-v1` 的同步 moving-GC 路径已经闭合。LLVM 为可能含 managed 值的同步函数发射地址稳定的 root slots、descriptor/frame、push/pop 和按 collection boundary 编号的 live bitmap；参数、`old`、output、词法 local、projection/`dyn` proxy 和临时值只在已初始化且实际存活的区间置位，move 会清空并停用 source root。真实可能 collection 的 callee、clone/build、builtin 与直接 managed allocator 都先发布对应 state，collector 可以原地重写 slot。当前 collector 只由 collect-before allocation slowpath 驱动，没有并发或外部 request flag，因此生成代码不在普通 loop backedge 或 return 插入 synthetic poll；POD 私有栈节点、native `List[Int]` storage 和 scalar 临时也不进入 shadow roots。纯 primitive-scalar 路径不会为“零 managed root”创建空 frame。
 
 ### Task 与 coroutine
 
