@@ -303,10 +303,8 @@ fn match_target(
                     .zip(right_arguments)
                     .all(|(left, right)| match_target(types, *left, *right, substitution))
         }
-        (TyData::Option(left), TyData::Option(right)) => {
-            match_target(types, *left, *right, substitution)
-        }
-        (TyData::TextMap(left), TyData::TextMap(right)) => {
+        (TyData::Option(left), TyData::Option(right))
+        | (TyData::TextMap(left), TyData::TextMap(right)) => {
             match_target(types, *left, *right, substitution)
         }
         (
@@ -361,10 +359,8 @@ fn heads_may_unify_inner(
                         heads_may_unify_inner(types, *left, *right, left_bindings, right_bindings)
                     })
         }
-        (TyData::Option(left), TyData::Option(right)) => {
-            heads_may_unify_inner(types, *left, *right, left_bindings, right_bindings)
-        }
-        (TyData::TextMap(left), TyData::TextMap(right)) => {
+        (TyData::Option(left), TyData::Option(right))
+        | (TyData::TextMap(left), TyData::TextMap(right)) => {
             heads_may_unify_inner(types, *left, *right, left_bindings, right_bindings)
         }
         (

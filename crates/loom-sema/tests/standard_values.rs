@@ -134,6 +134,7 @@ fn incomplete(error PathError) Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn text_map_json_typed_io_and_logging_type_check() {
     let diagnostics = analyze_source(
         r#"
@@ -314,4 +315,106 @@ fn incompleteIo(kind IoErrorKind) Unit {
             >= 2,
         "{diagnostics:#?}"
     );
+}
+
+#[test]
+fn wrapped_resources_must_be_unwrapped_directly_into_scoped() {
+    let diagnostics = analyze_source(
+        r"
+module resources
+
+import standard.file.try_open_read
+
+fn consume[T](value T) Unit {
+    Unit
+}
+
+async fn stored(path Text) Unit {
+    let outcome = try_open_read(path).await
+    Unit
+}
+
+async fn discarded(path Text) Unit {
+    try_open_read(path).await
+    Unit
+}
+
+async fn wildcard(path Text) Unit {
+    match try_open_read(path).await {
+        Ok(_) => Unit
+        Err(_) => Unit
+    }
+    Unit
+}
+
+async fn extractedButNotScoped(path Text) Unit {
+    match try_open_read(path).await {
+        Ok(file) => {
+            let alias = file
+            Unit
+        }
+        Err(_) => Unit
+    }
+    Unit
+}
+
+async fn passed(path Text) Unit {
+    consume(try_open_read(path).await)
+    Unit
+}
+
+async fn aggregate() Unit {
+    let files = List[File]()
+    Unit
+}
+",
+    );
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        codes
+            .iter()
+            .filter(|code| **code == "MustScopeRequiresScoped")
+            .count()
+            >= 5,
+        "{diagnostics:#?}"
+    );
+    assert!(
+        codes.contains(&"MustScopeArgumentNotAllowed"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn task_wrapped_resources_can_wait_then_enter_scoped() {
+    let diagnostics = analyze_source(
+        r"
+module resources
+
+import standard.file.try_open_read
+
+async fn direct(path Text) Result[Unit, IoError] {
+    let pending = try_open_read(path)
+    scoped file = pending.await?
+    let read = file.try_read_text().await?
+    Ok(Unit)
+}
+
+async fn matched(path Text) Unit {
+    let pending = try_open_read(path)
+    match pending.await {
+        Ok(file) => {
+            scoped file = file
+            let read = file.try_read_text().await
+            Unit
+        }
+        Err(_) => Unit
+    }
+    Unit
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }

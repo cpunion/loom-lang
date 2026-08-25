@@ -89,8 +89,9 @@ pub enum TyData {
         ok: TyId,
         error: TyId,
     },
-    /// Compiler-internal task handle. Source code cannot name or store it;
-    /// it exists only between an async call and its immediate `await`.
+    /// Compiler-known one-shot task handle. Source code may store and join it,
+    /// but structured-consumption checks require it to be awaited, joined, or
+    /// returned before its lexical scope exits.
     Task(TyId),
     TaskOutcome(TyId),
     Nominal {

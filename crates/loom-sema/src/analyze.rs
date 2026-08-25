@@ -1176,6 +1176,7 @@ impl Analyzer<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_associated_type_bindings(&mut self) {
         let conformances = self
             .typed
@@ -2041,11 +2042,13 @@ struct BodyChecker<'a, 'program> {
     next_view_token: u32,
     borrows: Vec<ActiveBorrow>,
     scoped_locals: BTreeSet<LocalId>,
+    pending_must_scope_locals: BTreeSet<LocalId>,
     active_no_suspend: Vec<(LocalId, RegionId, Span)>,
     task_local_uses: BTreeSet<LocalId>,
     cleanup_depth: u32,
     allow_await_here: bool,
     checking_scoped_receiver: bool,
+    scoped_initializer: Option<ExprId>,
     proof_facts: ProofFacts,
     local_terms: BTreeMap<LocalId, ProofTerm>,
 }
@@ -2072,11 +2075,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             next_view_token: 0,
             borrows: Vec::new(),
             scoped_locals: BTreeSet::new(),
+            pending_must_scope_locals: BTreeSet::new(),
             active_no_suspend: Vec::new(),
             task_local_uses: BTreeSet::new(),
             cleanup_depth: 0,
             allow_await_here: false,
             checking_scoped_receiver: false,
+            scoped_initializer: None,
             proof_facts: ProofFacts::default(),
             local_terms: BTreeMap::new(),
         }
@@ -2522,6 +2527,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             for scope in self.scopes.iter().rev() {
                 if let Some(local) = scope.get(name) {
                     let local = *local;
+                    if self.pending_must_scope_locals.contains(&local) {
+                        if self.scoped_initializer == Some(expression) {
+                            self.pending_must_scope_locals.remove(&local);
+                        } else {
+                            self.error_at(
+                                "MustScopeRequiresScoped",
+                                "a resource extracted from a wrapper must be moved directly into `scoped`",
+                                expression,
+                            );
+                        }
+                    }
                     if self.scoped_locals.contains(&local)
                         && !self.checking_assignment_target
                         && !self.checking_scoped_receiver
@@ -2725,8 +2741,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         let context = self.analyzer.type_context(self.environment.owner);
                         self.analyzer.resolve_type_ref(annotation, &context)
                     });
+                    let previous_initializer = self.scoped_initializer;
+                    if scoped {
+                        self.scoped_initializer = Some(*value);
+                    }
                     let ty =
                         self.check_suspendable_expr(*value, expected, ExpressionContext::Value);
+                    self.scoped_initializer = previous_initializer;
                     diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
                     self.semantics.local_types.insert(*local, ty);
                     let term = self.proof_term(*value);
@@ -3220,6 +3241,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.supports_value_equality_inner(ty, &mut BTreeSet::new(), 0)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn supports_value_equality_inner(
         &mut self,
         ty: TyId,
@@ -3230,8 +3252,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return false;
         }
         match self.analyzer.typed.types.data(ty).clone() {
-            TyData::Error | TyData::Never => true,
-            TyData::Builtin(
+            TyData::Error
+            | TyData::Never
+            | TyData::Builtin(
                 BuiltinType::Bool
                 | BuiltinType::Int
                 | BuiltinType::Float
@@ -3435,7 +3458,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return self.check_variant_constructor(expression, variant, owner, &[], None);
         }
         if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
-            && let Some((builtin, ty)) = self.standard_static_value(&type_path, name)
+            && let Some((builtin, ty)) = Self::standard_static_value(&type_path, name)
         {
             self.semantics.calls.insert(
                 expression,
@@ -3528,6 +3551,22 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 pattern_rows.push(vec![pattern]);
             }
             let arm_ty = self.check_expr(arm.value, result, context);
+            let arm_locals = self
+                .scopes
+                .last()
+                .into_iter()
+                .flat_map(BTreeMap::values)
+                .copied()
+                .collect::<Vec<_>>();
+            for local in arm_locals {
+                if self.pending_must_scope_locals.remove(&local) {
+                    self.error(
+                        "MustScopeRequiresScoped",
+                        "a resource extracted by this pattern must be moved directly into `scoped`",
+                        self.local_span(local),
+                    );
+                }
+            }
             self.scopes.pop();
             if useful && !self.expression_diverges(arm.value) {
                 has_reachable_arm = true;
@@ -3551,6 +3590,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_pattern(&mut self, pattern: PatternId, expected: TyId) -> CheckedPattern {
         self.semantics.pattern_types.insert(pattern, expected);
         match self.source().patterns[pattern].clone() {
@@ -3560,7 +3600,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     .insert(pattern, Resolution::Error);
                 CheckedPattern::Invalid
             }
-            Pattern::Wildcard => CheckedPattern::Wildcard,
+            Pattern::Wildcard => {
+                if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+                    self.error(
+                        "MustScopeRequiresScoped",
+                        "a pattern cannot discard a value containing a MustScope resource",
+                        self.pattern_span(pattern),
+                    );
+                }
+                CheckedPattern::Wildcard
+            }
             Pattern::Binding(local) => {
                 self.bind_pattern(pattern, local, expected);
                 CheckedPattern::Wildcard
@@ -3675,6 +3724,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .pattern_resolutions
             .insert(pattern, Resolution::Local(local));
         self.semantics.local_types.insert(local, expected);
+        if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+            self.pending_must_scope_locals.insert(local);
+        }
         self.assume_established_type(
             expected,
             &ProofTerm::Place(ProofPlace {
@@ -5111,6 +5163,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.types().intern(TyData::Task(output))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_builtin_call(
         &mut self,
         expression: ExprId,
@@ -5305,6 +5358,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         expected
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_standard_builtin_call(
         &mut self,
         expression: ExprId,
@@ -5440,6 +5494,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         for (argument, ty) in arguments.iter().zip(expected) {
             self.check_expr(*argument, Some(*ty), ExpressionContext::Value);
+            if self.has_marker_obligation(*ty, MUST_SCOPE_CONCEPT) {
+                self.error_at(
+                    "MustScopeArgumentNotAllowed",
+                    "a value containing a MustScope resource cannot be passed as an ordinary argument",
+                    *argument,
+                );
+            }
         }
     }
 
@@ -5511,6 +5572,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         for (argument, actual, parameter_ty) in actual_types {
             let expected = self.types().substitute(parameter_ty, &substitution);
+            if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+                self.error_at(
+                    "MustScopeArgumentNotAllowed",
+                    "a value containing a MustScope resource cannot be passed as an ordinary argument",
+                    argument,
+                );
+            }
             let previous_mode = self.dynamic_coercion_mode;
             if !signature.is_async
                 && matches!(
@@ -5604,6 +5672,22 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             )
         {
             return result;
+        }
+        let scoped_receiver = self
+            .semantics
+            .expression_places
+            .get(receiver)
+            .and_then(|place| match place.root {
+                PlaceRoot::Local(local) if place.projections.is_empty() => Some(local),
+                _ => None,
+            })
+            .is_some_and(|local| self.scoped_locals.contains(&local));
+        if self.has_marker_obligation(receiver_ty, MUST_SCOPE_CONCEPT) && !scoped_receiver {
+            self.error_at(
+                "MustScopeRequiresScoped",
+                "methods on a MustScope value require a receiver already bound with `scoped`",
+                receiver,
+            );
         }
         if self.self_dirty
             && self
@@ -5807,6 +5891,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 }
                 if let Some(argument) = arguments.first() {
                     self.check_expr(*argument, Some(element), ExpressionContext::Value);
+                    if self.has_marker_obligation(element, MUST_SCOPE_CONCEPT) {
+                        self.error_at(
+                            "MustScopeArgumentNotAllowed",
+                            "a value containing a MustScope resource cannot be stored in a List",
+                            *argument,
+                        );
+                    }
                 }
                 if self
                     .semantics
@@ -6054,11 +6145,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(result)
     }
 
-    fn standard_static_value(
-        &self,
-        type_path: &Path,
-        name: &Name,
-    ) -> Option<(BuiltinValue, BuiltinType)> {
+    fn standard_static_value(type_path: &Path, name: &Name) -> Option<(BuiltinValue, BuiltinType)> {
         let [segment] = type_path.segments.as_slice() else {
             return None;
         };
@@ -6105,7 +6192,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn check_standard_value_method_call(
         &mut self,
         expression: ExprId,
@@ -6293,6 +6380,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 ),
                 _ => return None,
             };
+        if matches!(receiver_type, BuiltinType::File | BuiltinType::Socket)
+            && !self
+                .semantics
+                .expression_places
+                .get(receiver)
+                .and_then(|place| match place.root {
+                    PlaceRoot::Local(local) if place.projections.is_empty() => Some(local),
+                    _ => None,
+                })
+                .is_some_and(|local| self.scoped_locals.contains(&local))
+        {
+            self.error_at(
+                "MustScopeRequiresScoped",
+                "File and Socket methods require a receiver already bound with `scoped`",
+                receiver,
+            );
+        }
         if !type_arguments.is_empty() {
             self.error_at(
                 "TypeMismatch",
@@ -7202,15 +7306,109 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn has_marker_obligation(&mut self, ty: TyId, marker: &str) -> bool {
-        if marker == MUST_SCOPE_CONCEPT
-            && matches!(
-                self.types().data(ty),
-                TyData::Builtin(BuiltinType::File | BuiltinType::Socket)
-            )
+        if marker == MUST_SCOPE_CONCEPT {
+            return self.has_must_scope_obligation(ty, &mut BTreeSet::new(), 0);
+        }
+        self.has_marker_conformance(ty, marker).is_some()
+    }
+
+    fn has_must_scope_obligation(
+        &mut self,
+        ty: TyId,
+        active: &mut BTreeSet<TyId>,
+        depth: u16,
+    ) -> bool {
+        if depth >= 128 {
+            // Fail closed for a type shape beyond the checker nesting budget.
+            return true;
+        }
+        match self.types().data(ty) {
+            TyData::Task(_) => return false,
+            TyData::Builtin(BuiltinType::File | BuiltinType::Socket) => return true,
+            _ => {}
+        }
+        if self
+            .has_marker_conformance(ty, MUST_SCOPE_CONCEPT)
+            .is_some()
         {
             return true;
         }
-        self.has_marker_conformance(ty, marker).is_some()
+        match self.types().data(ty).clone() {
+            TyData::Tuple(elements) => elements.into_iter().any(|element| {
+                self.has_must_scope_obligation(element, active, depth.saturating_add(1))
+            }),
+            TyData::List(element)
+            | TyData::TextMap(element)
+            | TyData::Option(element)
+            | TyData::TaskOutcome(element) => {
+                self.has_must_scope_obligation(element, active, depth.saturating_add(1))
+            }
+            TyData::Result { ok, error } => {
+                self.has_must_scope_obligation(ok, active, depth.saturating_add(1))
+                    || self.has_must_scope_obligation(error, active, depth.saturating_add(1))
+            }
+            TyData::Nominal {
+                definition,
+                arguments,
+            } => {
+                if !active.insert(ty) {
+                    return false;
+                }
+                let parameters = self.analyzer.type_generic_params(definition);
+                let substitution = substitution_for(&parameters, &arguments);
+                let kind = self.analyzer.program.definitions[definition].kind.clone();
+                let contains = match kind {
+                    DefinitionKind::RefinedType(refined) => self
+                        .analyzer
+                        .typed
+                        .resolved_type_refs
+                        .get(refined.base)
+                        .copied()
+                        .is_some_and(|base| {
+                            let base = self.types().substitute(base, &substitution);
+                            self.has_must_scope_obligation(base, active, depth.saturating_add(1))
+                        }),
+                    DefinitionKind::Record(record) => record.fields.into_iter().any(|field| {
+                        let Some(Signature::Field { ty, .. }) =
+                            self.analyzer.typed.signatures.get(field).cloned()
+                        else {
+                            return false;
+                        };
+                        let field = self.types().substitute(ty, &substitution);
+                        self.has_must_scope_obligation(field, active, depth.saturating_add(1))
+                    }),
+                    DefinitionKind::Enum(enumeration) => {
+                        enumeration.variants.into_iter().any(|variant| {
+                            let Some(Signature::Variant { payload, .. }) =
+                                self.analyzer.typed.signatures.get(variant).cloned()
+                            else {
+                                return false;
+                            };
+                            payload.into_iter().any(|payload| {
+                                let payload = self.types().substitute(payload, &substitution);
+                                self.has_must_scope_obligation(
+                                    payload,
+                                    active,
+                                    depth.saturating_add(1),
+                                )
+                            })
+                        })
+                    }
+                    _ => false,
+                };
+                active.remove(&ty);
+                contains
+            }
+            TyData::Error
+            | TyData::Never
+            | TyData::Builtin(_)
+            | TyData::Task(_)
+            | TyData::Param(_)
+            | TyData::SelfType(_)
+            | TyData::Projection { .. }
+            | TyData::DynTarget(_)
+            | TyData::View { .. } => false,
+        }
     }
 
     fn resolve_bound_witnesses(
@@ -7391,6 +7589,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .map(|variant| (variant, owner))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_pattern_variant(
         &self,
         path: &Path,
@@ -7658,6 +7857,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn finite_pattern_constructors(
         &mut self,
         expected: TyId,
@@ -8123,7 +8323,6 @@ fn specialize_checked_rows(
                 specialized.extend(row.iter().skip(1).cloned());
                 Some(specialized)
             }
-            Some(CheckedPattern::Invalid) | None => None,
             _ => None,
         })
         .collect()
@@ -8298,10 +8497,8 @@ fn unify_type(
                     .zip(right)
                     .all(|(left, right)| unify_type(types, *left, *right, substitution))
         }
-        (TyData::Option(left), TyData::Option(right)) => {
-            unify_type(types, *left, *right, substitution)
-        }
-        (TyData::TextMap(left), TyData::TextMap(right)) => {
+        (TyData::Option(left), TyData::Option(right))
+        | (TyData::TextMap(left), TyData::TextMap(right)) => {
             unify_type(types, *left, *right, substitution)
         }
         (
