@@ -179,8 +179,8 @@ const INT_LIST_FIELD_CAPACITY: u32 = 2;
 // Checked MIR gives InOut/view carriers call-scoped lifetimes. Stack-record headers and nodes are
 // stable compiler-owned storage, and every ValueNode.value field is published in the synchronous
 // shadow-root frame while a safepoint can observe it. Copies that outlive this frame go through
-// `loom.runtime.clone` and receive managed nodes. Concurrent GC or FFI retention would require a
-// stronger boundary and therefore must not silently reuse this fast path.
+// the GC-aware runtime clone ABI and receive managed nodes. Concurrent GC or FFI retention would
+// require a stronger boundary and therefore must not silently reuse this fast path.
 fn is_stack_record_initializer(expression: &Expr, expected: TypeId) -> bool {
     match &expression.kind {
         ExprKind::Record {
@@ -1420,367 +1420,12 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     }
 
     fn emit_runtime_helpers(&self) -> Result<(), CodegenError> {
-        self.emit_clone_helpers()?;
         self.emit_unwrap_helper()?;
         self.emit_equal_helpers()?;
         self.emit_print_helper()
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_clone_helpers(&self) -> Result<(), CodegenError> {
-        let clone_type = self
-            .context
-            .void_type()
-            .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
-        let nodes_type = self
-            .ptr_type
-            .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
-        let clone =
-            self.module
-                .add_function("loom.runtime.clone", clone_type, Some(Linkage::Internal));
-        let clone_nodes = self.module.add_function(
-            "loom.runtime.clone_nodes",
-            nodes_type,
-            Some(Linkage::Internal),
-        );
-
-        let entry = self.context.append_basic_block(clone_nodes, "entry");
-        let loop_header = self.context.append_basic_block(clone_nodes, "loop");
-        let copy = self.context.append_basic_block(clone_nodes, "copy");
-        let first = self.context.append_basic_block(clone_nodes, "first");
-        let append = self.context.append_basic_block(clone_nodes, "append");
-        let advance = self.context.append_basic_block(clone_nodes, "advance");
-        let finished = self.context.append_basic_block(clone_nodes, "done");
-        self.builder.position_at_end(entry);
-        let source = parameter_pointer(clone_nodes, 0)?;
-        let count = parameter_int(clone_nodes, 1)?;
-        let source_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "nodes.source.slot")
-            .map_err(builder_error)?;
-        let remaining_slot = self
-            .builder
-            .build_alloca(self.i64_type, "nodes.remaining.slot")
-            .map_err(builder_error)?;
-        let head_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "nodes.head.slot")
-            .map_err(builder_error)?;
-        let tail_slot = self
-            .builder
-            .build_alloca(self.ptr_type, "nodes.tail.slot")
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(source_slot, source)
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(remaining_slot, count)
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(head_slot, self.ptr_type.const_null())
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(tail_slot, self.ptr_type.const_null())
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(loop_header)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(loop_header);
-        let remaining = self
-            .builder
-            .build_load(self.i64_type, remaining_slot, "nodes.remaining")
-            .map_err(builder_error)?
-            .into_int_value();
-        let exhausted = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                remaining,
-                self.i64_type.const_zero(),
-                "nodes.done",
-            )
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(exhausted, finished, copy)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(copy);
-        let source = self
-            .builder
-            .build_load(self.ptr_type, source_slot, "nodes.source")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        let target = call_pointer(
-            &self.builder,
-            self.native_gc_alloc_value_node(),
-            &[],
-            "node.clone",
-        )?;
-        let source_value = self.struct_pointer(
-            self.value_node_type,
-            source,
-            VALUE_NODE_FIELD_VALUE,
-            "source.value",
-        )?;
-        let target_value = self.struct_pointer(
-            self.value_node_type,
-            target,
-            VALUE_NODE_FIELD_VALUE,
-            "target.value",
-        )?;
-        self.builder
-            .build_call(
-                clone,
-                &[target_value.into(), source_value.into()],
-                "clone.value",
-            )
-            .map_err(builder_error)?;
-        self.store_pointer_field(
-            self.value_node_type,
-            target,
-            VALUE_NODE_FIELD_NEXT,
-            self.ptr_type.const_null(),
-        )?;
-        let head = self
-            .builder
-            .build_load(self.ptr_type, head_slot, "nodes.head")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        let head_empty = self
-            .builder
-            .build_is_null(head, "nodes.head.empty")
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(head_empty, first, append)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(first);
-        self.builder
-            .build_store(head_slot, target)
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(advance)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(append);
-        let tail = self
-            .builder
-            .build_load(self.ptr_type, tail_slot, "nodes.tail")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.store_pointer_field(self.value_node_type, tail, VALUE_NODE_FIELD_NEXT, target)?;
-        self.builder
-            .build_unconditional_branch(advance)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(advance);
-        self.builder
-            .build_store(tail_slot, target)
-            .map_err(builder_error)?;
-        let source_next = self.load_pointer_field(
-            self.value_node_type,
-            source,
-            VALUE_NODE_FIELD_NEXT,
-            "source.next",
-        )?;
-        self.builder
-            .build_store(source_slot, source_next)
-            .map_err(builder_error)?;
-        let remaining = self
-            .builder
-            .build_int_sub(
-                remaining,
-                self.i64_type.const_int(1, false),
-                "nodes.next.remaining",
-            )
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(remaining_slot, remaining)
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(loop_header)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(finished);
-        let head = self
-            .builder
-            .build_load(self.ptr_type, head_slot, "nodes.finished.head")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.builder
-            .build_return(Some(&head))
-            .map_err(builder_error)?;
-
-        let entry = self.context.append_basic_block(clone, "entry");
-        let aggregate = self.context.append_basic_block(clone, "aggregate");
-        let enumeration = self.context.append_basic_block(clone, "enum");
-        let refined = self.context.append_basic_block(clone, "refined");
-        let dynamic = self.context.append_basic_block(clone, "dynamic");
-        let outcome = self.context.append_basic_block(clone, "task.outcome");
-        let outcome_completed = self
-            .context
-            .append_basic_block(clone, "task.outcome.completed");
-        let done = self.context.append_basic_block(clone, "done");
-        self.builder.position_at_end(entry);
-        let target = parameter_pointer(clone, 0)?;
-        let source = parameter_pointer(clone, 1)?;
-        let value = self
-            .builder
-            .build_load(self.value_type, source, "clone.source")
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(target, value)
-            .map_err(builder_error)?;
-        let tag = self.load_i64_field(self.value_type, source, VALUE_FIELD_TAG, "clone.tag")?;
-        self.builder
-            .build_switch(
-                tag,
-                done,
-                &[
-                    (self.tag(VALUE_TAG_RECORD), aggregate),
-                    (self.tag(VALUE_TAG_CONSTRAINT_ERROR), aggregate),
-                    (self.tag(VALUE_TAG_TUPLE), aggregate),
-                    (self.tag(VALUE_TAG_LIST), aggregate),
-                    (self.tag(VALUE_TAG_ENUM), enumeration),
-                    (self.tag(VALUE_TAG_REFINED), refined),
-                    (self.tag(VALUE_TAG_DYN), dynamic),
-                    (self.tag(VALUE_TAG_TASK_OUTCOME), outcome),
-                ],
-            )
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(aggregate);
-        let count = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "field.count")?;
-        self.clone_data_chain(source, target, count, clone_nodes, done)?;
-
-        self.builder.position_at_end(enumeration);
-        let count =
-            self.load_i64_field(self.value_type, source, VALUE_FIELD_SCALAR, "payload.count")?;
-        self.clone_data_chain(source, target, count, clone_nodes, done)?;
-
-        self.builder.position_at_end(refined);
-        let source_inner =
-            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "refined.source")?;
-        let target_inner = call_pointer(
-            &self.builder,
-            self.native_gc_alloc_value(),
-            &[],
-            "refined.clone",
-        )?;
-        self.builder
-            .build_call(
-                clone,
-                &[target_inner.into(), source_inner.into()],
-                "clone.inner",
-            )
-            .map_err(builder_error)?;
-        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(dynamic);
-        let source_inner =
-            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "dyn.source")?;
-        let target_inner = call_pointer(
-            &self.builder,
-            self.native_gc_alloc_value(),
-            &[],
-            "dyn.clone",
-        )?;
-        self.builder
-            .build_call(
-                clone,
-                &[target_inner.into(), source_inner.into()],
-                "clone.dyn",
-            )
-            .map_err(builder_error)?;
-        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
-        self.store_i64_field(
-            self.value_type,
-            target,
-            VALUE_FIELD_SCALAR,
-            self.i64_type.const_zero(),
-        )?;
-        let flags = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "dyn.flags")?;
-        let mutable = self
-            .builder
-            .build_and(flags, self.tag(DYN_FLAG_MUTABLE), "dyn.mutable")
-            .map_err(builder_error)?;
-        self.store_i64_field(self.value_type, target, VALUE_FIELD_AUX, mutable)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(outcome);
-        let step = self.load_i64_field(self.value_type, source, VALUE_FIELD_AUX, "outcome.step")?;
-        let completed = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                step,
-                self.i64_type.const_int(TASK_STEP_COMPLETED, false),
-                "outcome.completed",
-            )
-            .map_err(builder_error)?;
-        self.builder
-            .build_conditional_branch(completed, outcome_completed, done)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(outcome_completed);
-        let source_inner =
-            self.load_pointer_field(self.value_type, source, VALUE_FIELD_DATA, "outcome.source")?;
-        let target_inner = call_pointer(
-            &self.builder,
-            self.native_gc_alloc_value(),
-            &[],
-            "outcome.clone",
-        )?;
-        self.builder
-            .build_call(
-                clone,
-                &[target_inner.into(), source_inner.into()],
-                "clone.outcome",
-            )
-            .map_err(builder_error)?;
-        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, target_inner)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .map_err(builder_error)?;
-
-        self.builder.position_at_end(done);
-        self.builder.build_return(None).map_err(builder_error)?;
-        Ok(())
-    }
-
-    fn clone_data_chain(
-        &self,
-        source: PointerValue<'ctx>,
-        target: PointerValue<'ctx>,
-        count: IntValue<'ctx>,
-        clone_nodes: FunctionValue<'ctx>,
-        done: inkwell::basic_block::BasicBlock<'ctx>,
-    ) -> Result<(), CodegenError> {
-        let source_data = self.load_pointer_field(
-            self.value_type,
-            source,
-            VALUE_FIELD_DATA,
-            "aggregate.source",
-        )?;
-        let data = call_pointer(
-            &self.builder,
-            clone_nodes,
-            &[source_data.into(), count.into()],
-            "aggregate.clone",
-        )?;
-        self.store_pointer_field(self.value_type, target, VALUE_FIELD_DATA, data)?;
-        self.builder
-            .build_unconditional_branch(done)
-            .map_err(builder_error)?;
-        Ok(())
-    }
-
     fn emit_unwrap_helper(&self) -> Result<(), CodegenError> {
         let function_type = self.ptr_type.fn_type(&[self.ptr_type.into()], false);
         let function = self.module.add_function(
@@ -2459,13 +2104,33 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         })
     }
 
-    fn native_gc_alloc_value_node(&self) -> FunctionValue<'ctx> {
+    fn native_gc_clone_value(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_gc_alloc_value_node")
+            .get_function("loom_gc_clone_value_v1")
             .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(&[], false);
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
                 self.module
-                    .add_function("loom_gc_alloc_value_node", function_type, None)
+                    .add_function("loom_gc_clone_value_v1", function_type, None)
+            })
+    }
+
+    fn native_gc_build_value_nodes(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_gc_build_value_nodes_v1")
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function("loom_gc_build_value_nodes_v1", function_type, None)
             })
     }
 
@@ -2496,9 +2161,14 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.module
             .get_function("loom_runtime_list_get")
             .unwrap_or_else(|| {
-                let function_type = self
-                    .ptr_type
-                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
                 self.module
                     .add_function("loom_runtime_list_get", function_type, None)
             })
@@ -2621,11 +2291,12 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.module
             .get_function("loom_runtime_text_map_get")
             .unwrap_or_else(|| {
-                let function_type = self.ptr_type.fn_type(
+                let function_type = self.context.i32_type().fn_type(
                     &[
                         self.ptr_type.into(),
                         self.ptr_type.into(),
                         self.i64_type.into(),
+                        self.ptr_type.into(),
                     ],
                     false,
                 );
@@ -2799,9 +2470,14 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.module
             .get_function("loom_runtime_process_environment")
             .unwrap_or_else(|| {
-                let function_type = self
-                    .ptr_type
-                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
                 self.module
                     .add_function("loom_runtime_process_environment", function_type, None)
             })
@@ -3636,10 +3312,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(ready);
-        let clone = self
-            .module
-            .get_function("loom.runtime.clone")
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
         for parameter in &source.params {
             let value = self.load_pointer_field(
                 self.arg_node_type,
@@ -3658,9 +3330,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 ],
                 "task.parameter.slot",
             )?;
-            self.builder
-                .build_call(clone, &[slot.into(), value.into()], "task.parameter.clone")
-                .map_err(builder_error)?;
+            self.clone_value_via_runtime(slot, value, "task.parameter.clone")?;
             let old = call_pointer(
                 &self.builder,
                 self.native_task_slot(),
@@ -3672,9 +3342,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 ],
                 "task.old.slot",
             )?;
-            self.builder
-                .build_call(clone, &[old.into(), value.into()], "task.old.clone")
-                .map_err(builder_error)?;
+            self.clone_value_via_runtime(old, value, "task.old.clone")?;
             argument = self.load_pointer_field(
                 self.arg_node_type,
                 argument,
@@ -4205,17 +3873,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             &[task.into()],
             "task.root.result",
         )?;
-        let clone = self
-            .module
-            .get_function("loom.runtime.clone")
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
-        self.builder
-            .build_call(
-                clone,
-                &[result.into(), task_result.into()],
-                "task.root.copy",
-            )
-            .map_err(builder_error)?;
+        self.clone_value_via_runtime(result, task_result, "task.root.copy")?;
+        let copy_success = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "task copy has no block"))?;
         self.branch(merge)?;
         self.builder.position_at_end(run_failed);
         self.builder
@@ -4234,7 +3896,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
         status.add_incoming(&[
             (&constructor_status, constructor_failed),
-            (&run_status, copy),
+            (&run_status, copy_success),
             (&run_status, run_failed),
         ]);
         Ok(status.as_basic_value().into_int_value())
@@ -4547,6 +4209,58 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
+    fn trap_on_runtime_status(
+        &self,
+        status: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "call has no function"))?;
+        let ok = self
+            .context
+            .append_basic_block(function, &self.unique(&format!("{name}.ok")));
+        let trap = self
+            .context
+            .append_basic_block(function, &self.unique(&format!("{name}.trap")));
+        let success = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_zero(),
+                &format!("{name}.status.ok"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(success, ok, trap)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(trap);
+        self.builder
+            .build_call(self.llvm_trap(), &[], "")
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(ok);
+        Ok(())
+    }
+
+    fn clone_value_via_runtime(
+        &self,
+        destination: PointerValue<'ctx>,
+        source: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let status = call_int(
+            &self.builder,
+            self.native_gc_clone_value(),
+            &[destination.into(), source.into()],
+            name,
+        )?;
+        self.trap_on_runtime_status(status, name)
+    }
+
     fn unique(&self, prefix: &str) -> String {
         let value = self.names.get();
         self.names.set(value + 1);
@@ -4845,15 +4559,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             backend.builder.position_at_end(body_start);
         }
         if !pending_snapshots.is_empty() {
-            let clone = backend
-                .module
-                .get_function("loom.runtime.clone")
-                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
             for (snapshot, parameter) in pending_snapshots {
-                backend
-                    .builder
-                    .build_call(clone, &[snapshot.into(), parameter.into()], "snapshot")
-                    .map_err(builder_error)?;
+                backend.clone_value_via_runtime(snapshot, parameter, "snapshot")?;
             }
         }
         let gc_root_states = vec![gc_permanent_roots.clone()];
@@ -5056,15 +4763,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             backend.builder.position_at_end(body_start);
         }
         if !pending_snapshots.is_empty() {
-            let clone = backend
-                .module
-                .get_function("loom.runtime.clone")
-                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
             for (snapshot, parameter) in pending_snapshots {
-                backend
-                    .builder
-                    .build_call(clone, &[snapshot.into(), parameter.into()], "snapshot")
-                    .map_err(builder_error)?;
+                backend.clone_value_via_runtime(snapshot, parameter, "snapshot")?;
             }
         }
 
@@ -5439,13 +5139,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?;
         }
         self.initialize_gc_root_frame(frame, descriptor, slots_array)?;
-        let status = call_int(
+        let push_status = call_int(
             &self.backend.builder,
             self.backend.native_gc_root_push(),
             &[frame.into()],
             "gc.root.push",
         )?;
-        self.trap_on_runtime_status(status, "gc.root.push")?;
+        self.trap_on_runtime_status(push_status, "gc.root.push")?;
         self.backend.branch(body_start)?;
         Ok(())
     }
@@ -6174,13 +5874,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 for local in locals {
                     self.activate_gc_local(*local);
                 }
-                let data = self.backend.load_pointer_field(
-                    self.backend.value_type,
-                    tuple,
-                    VALUE_FIELD_DATA,
-                    "tuple.data",
-                )?;
                 for (index, local) in locals.iter().enumerate() {
+                    // The previous element clone may collect and relocate the
+                    // tuple chain, so rederive the head for every projection.
+                    let data = self.backend.load_pointer_field(
+                        self.backend.value_type,
+                        tuple,
+                        VALUE_FIELD_DATA,
+                        "tuple.data",
+                    )?;
                     let index = u32::try_from(index).map_err(|_| {
                         CodegenError::new("ProgramTooLarge", "tuple binding index exceeds u32")
                     })?;
@@ -6777,6 +6479,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 }
                 let owned = self.alloc_value("dyn.owned");
                 self.clone_value(owned, source)?;
+                self.publish_gc_root_state()?;
                 let data = call_pointer(
                     &self.backend.builder,
                     self.backend.native_gc_alloc_value(),
@@ -6784,19 +6487,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "dyn.data",
                 )?;
                 self.shallow_copy_named(data, owned, "dyn.data.publish")?;
-                let proof_is_global = matches!(witness, WitnessRef::Concrete(_))
-                    || matches!(witness, WitnessRef::Apply { arguments, .. } if arguments.is_empty());
-                let witness = self.resolve_witness(witness)?;
-                let witness = if writeback.is_none() && !proof_is_global {
-                    call_pointer(
-                        &self.backend.builder,
-                        self.backend.native_gc_clone_witness(),
-                        &[witness.into()],
-                        "dyn.witness.owned",
-                    )?
-                } else {
-                    witness
-                };
+                // Publish the completely initialized fresh box before proof
+                // resolution/ownership can enter another runtime boundary.
                 self.initialize(destination, VALUE_TAG_DYN)?;
                 self.backend.store_i64_field(
                     self.backend.value_type,
@@ -6810,6 +6502,20 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     VALUE_FIELD_DATA,
                     data,
                 )?;
+                let proof_is_global = matches!(witness, WitnessRef::Concrete(_))
+                    || matches!(witness, WitnessRef::Apply { arguments, .. } if arguments.is_empty());
+                let witness = self.resolve_witness(witness)?;
+                let witness = if writeback.is_none() && !proof_is_global {
+                    self.publish_gc_root_state()?;
+                    call_pointer(
+                        &self.backend.builder,
+                        self.backend.native_gc_clone_witness(),
+                        &[witness.into()],
+                        "dyn.witness.owned",
+                    )?
+                } else {
+                    witness
+                };
                 self.backend.store_pointer_field(
                     self.backend.value_type,
                     destination,
@@ -6890,6 +6596,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn emit_resumable_await(
         &self,
         state: u32,
@@ -6980,6 +6687,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_return(Some(&step))
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(ready);
+        self.publish_gc_root_state()?;
         let write = call_int(
             &self.backend.builder,
             self.backend.native_task_write_join_result(),
@@ -8716,6 +8424,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_NOMINAL,
             self.backend.tag(u64::from(ty.0)),
         )?;
+        self.publish_gc_root_state()?;
         let inner = call_pointer(
             &self.backend.builder,
             self.backend.native_gc_alloc_value(),
@@ -8804,6 +8513,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let path = self.alloc_value("constraint.path");
         self.initialize(path, VALUE_TAG_LIST)?;
         let summary = self.alloc_value("constraint.summary");
+        self.publish_gc_root_state()?;
         let summary_status = call_int(
             &self.backend.builder,
             self.backend.native_value_summary(),
@@ -8951,30 +8661,49 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         &self,
         values: &[PointerValue<'ctx>],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let mut head = self.backend.ptr_type.const_null();
-        for value in values.iter().rev() {
-            let node = call_pointer(
-                &self.backend.builder,
-                self.backend.native_gc_alloc_value_node(),
-                &[],
-                "aggregate.node",
-            )?;
-            let node_value = self.backend.struct_pointer(
-                self.backend.value_node_type,
-                node,
-                VALUE_NODE_FIELD_VALUE,
-                "node.value",
-            )?;
-            self.shallow_copy(node_value, *value)?;
-            self.backend.store_pointer_field(
-                self.backend.value_node_type,
-                node,
-                VALUE_NODE_FIELD_NEXT,
-                head,
-            )?;
-            head = node;
+        if values.is_empty() {
+            return Ok(self.backend.ptr_type.const_null());
         }
-        Ok(head)
+        let root_scope = self.gc_root_scope();
+        let output = self.alloc_value("aggregate.nodes.output");
+        let result = (|| {
+            let array_type = self
+                .backend
+                .pointer_array_type(values.len(), "aggregate values")?;
+            let sources = self.alloc_entry(array_type, "aggregate.sources")?;
+            for (index, value) in values.iter().copied().enumerate() {
+                self.backend.store_pointer_field(
+                    array_type,
+                    sources,
+                    u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many aggregate values")
+                    })?,
+                    value,
+                )?;
+            }
+            self.publish_gc_root_state()?;
+            let count = u64::try_from(values.len())
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many aggregate values"))?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_gc_build_value_nodes(),
+                &[
+                    output.into(),
+                    sources.into(),
+                    self.backend.i64_type.const_int(count, false).into(),
+                ],
+                "aggregate.nodes.build",
+            )?;
+            self.trap_on_runtime_status(status, "aggregate.nodes.build")?;
+            self.backend.load_pointer_field(
+                self.backend.value_type,
+                output,
+                VALUE_FIELD_DATA,
+                "aggregate.nodes.head",
+            )
+        })();
+        self.end_gc_root_scope(root_scope);
+        result
     }
 
     fn populate_value_nodes(
@@ -9042,13 +8771,26 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 ));
             }
             let local_scope = self.gc_local_scope();
+            let root_scope = self.gc_root_scope();
+            // Pattern projection returns interior Value pointers. Materialize
+            // every binding before the first clone, because that clone may
+            // move the scrutinee and invalidate every remaining projection.
+            let stable_bindings = bindings
+                .into_iter()
+                .map(|binding| {
+                    let stable = self.alloc_value("match.binding.proxy");
+                    self.shallow_copy_named(stable, binding, "match.binding.publish")?;
+                    Ok(stable)
+                })
+                .collect::<Result<Vec<_>, CodegenError>>()?;
             let arm_result = (|| {
-                for (local, binding) in arm.bindings.iter().zip(bindings) {
+                for (local, binding) in arm.bindings.iter().zip(stable_bindings) {
                     self.activate_gc_local(*local);
                     self.clone_value(self.local(*local)?, binding)?;
                 }
                 self.emit_expr(&arm.value, destination)
             })();
+            self.end_gc_root_scope(root_scope);
             self.end_gc_local_scope(local_scope);
             let continues = arm_result?;
             if continues {
@@ -10104,6 +9846,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let (data, length) = self.text_parts(*text, "text.get")?;
                 let index = self.int_scalar(*index)?;
                 let scalar = self.alloc_value("text.scalar");
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_get(),
@@ -10116,6 +9859,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::TextConcat, [left, right]) => {
                 let (left_data, left_length) = self.text_parts(*left, "text.concat.left")?;
                 let (right_data, right_length) = self.text_parts(*right, "text.concat.right")?;
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_concat(),
@@ -10212,6 +9956,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let (left_data, left_length) = self.text_parts(left, "bytes.append.left")?;
                 let (right_data, right_length) = self.text_parts(right, "bytes.append.right")?;
                 let payload = self.alloc_value("bytes.append.payload");
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_bytes_append(),
@@ -10238,6 +9983,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let bytes = self.opaque_record_field(*bytes, "bytes.decode.payload")?;
                 let (data, length) = self.text_parts(bytes, "bytes.decode")?;
                 let decoded = self.alloc_value("bytes.decode.text");
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_bytes_decode_utf8(),
@@ -10341,6 +10087,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 let (base_data, base_length) = self.text_parts(base, "path.join.base")?;
                 let (child_data, child_length) = self.text_parts(child, "path.join.child")?;
                 let joined = self.alloc_value("path.join.payload");
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_path_join(),
@@ -10454,16 +10201,39 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::TextMapContains | Builtin::TextMapGet, [map, key]) => {
                 let (key_data, key_length) = self.text_parts(*key, "text.map.key")?;
-                let value = call_pointer(
+                let value = self.alloc_value("text.map.value");
+                self.publish_gc_root_state()?;
+                let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_map_get(),
-                    &[(*map).into(), key_data.into(), key_length.into()],
-                    "text.map.value",
+                    &[
+                        (*map).into(),
+                        key_data.into(),
+                        key_length.into(),
+                        value.into(),
+                    ],
+                    "text.map.get",
                 )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "text.map.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "TextMapRuntimeFault")?;
                 let found = self
                     .backend
                     .builder
-                    .build_is_not_null(value, "text.map.found")
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.backend.context.i32_type().const_int(1, false),
+                        "text.map.found",
+                    )
                     .map_err(builder_error)?;
                 if builtin == Builtin::TextMapContains {
                     self.store_bool(destination, found)?;
@@ -10494,6 +10264,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::TextMapInsert, [map, key, value]) => {
                 let owned = self.alloc_value("text.map.insert.owned");
                 self.clone_value(owned, *value)?;
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_map_insert(),
@@ -10510,6 +10281,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::TextMapRemove, [map, key]) => {
                 let (key_data, key_length) = self.text_parts(*key, "text.map.remove.key")?;
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_text_map_remove(),
@@ -10527,6 +10299,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::JsonParse, [text]) => {
                 let (data, length) = self.text_parts(*text, "json.parse")?;
                 let (result, json, error, map) = self.json_type_ids()?;
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_json_parse(),
@@ -10546,6 +10319,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::JsonFormat, [json]) => {
                 let (result, json_type, error, map) = self.json_type_ids()?;
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_json_format(),
@@ -11121,6 +10895,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<bool, CodegenError> {
         match (builtin, values) {
             (Builtin::ListAdd, [list, value]) => {
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_list_add(),
@@ -11163,16 +10938,34 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::ListGet, [list, index]) => {
                 let list = self.unwrap(*list)?;
                 let index = self.int_scalar(*index)?;
-                let element = call_pointer(
+                let element = self.alloc_value("list.get.value");
+                self.publish_gc_root_state()?;
+                let status = call_int(
                     &self.backend.builder,
                     self.backend.native_list_get(),
-                    &[list.into(), index.into()],
+                    &[list.into(), index.into(), element.into()],
                     "list.get",
                 )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "list.get.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ListRuntimeFault")?;
                 let found = self
                     .backend
                     .builder
-                    .build_is_not_null(element, "list.get.found")
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.backend.context.i32_type().const_int(1, false),
+                        "list.get.found",
+                    )
                     .map_err(builder_error)?;
                 let some = self.append_block("list.get.some");
                 let none = self.append_block("list.get.none");
@@ -11211,6 +11004,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<bool, CodegenError> {
         match (builtin, values) {
             (Builtin::ProcessArguments, []) => {
+                self.publish_gc_root_state()?;
                 let status = call_int(
                     &self.backend.builder,
                     self.backend.native_process_arguments(),
@@ -11232,16 +11026,34 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             (Builtin::ProcessEnvironment, [name]) => {
                 let (data, length) = self.text_parts(*name, "environment.name")?;
-                let value = call_pointer(
+                let value = self.alloc_value("environment.value");
+                self.publish_gc_root_state()?;
+                let status = call_int(
                     &self.backend.builder,
                     self.backend.native_process_environment(),
-                    &[data.into(), length.into()],
-                    "environment.value",
+                    &[data.into(), length.into(), value.into()],
+                    "environment.get",
                 )?;
+                let invalid = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        status,
+                        self.backend.context.i32_type().const_zero(),
+                        "environment.invalid",
+                    )
+                    .map_err(builder_error)?;
+                self.fail_if(invalid, "ProcessRuntimeFault")?;
                 let found = self
                     .backend
                     .builder
-                    .build_is_not_null(value, "environment.found")
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.backend.context.i32_type().const_int(1, false),
+                        "environment.found",
+                    )
                     .map_err(builder_error)?;
                 let some = self.append_block("environment.some");
                 let none = self.append_block("environment.none");
@@ -11252,15 +11064,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .map_err(builder_error)?;
 
                 self.backend.builder.position_at_end(some);
-                let text = self.alloc_value("environment.text");
-                self.initialize(text, VALUE_TAG_TEXT)?;
-                self.backend.store_pointer_field(
-                    self.backend.value_type,
-                    text,
-                    VALUE_FIELD_DATA,
-                    value,
-                )?;
-                self.emit_variant_from_pointers(TypeId(0), 1, &[text], destination)?;
+                self.emit_variant_from_pointers(TypeId(0), 1, &[value], destination)?;
                 self.backend.branch(merge)?;
 
                 self.backend.builder.position_at_end(none);
@@ -11349,6 +11153,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     }
                     _ => unreachable!("matched file open/create builtin"),
                 };
+                self.publish_gc_root_state()?;
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
@@ -11373,6 +11178,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     Builtin::SocketTryReadText => self.backend.native_socket_try_read_text(),
                     _ => unreachable!("matched I/O read builtin"),
                 };
+                self.publish_gc_root_state()?;
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
@@ -11398,6 +11204,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     Builtin::SocketTryWriteText => self.backend.native_socket_try_write_text(),
                     _ => unreachable!("matched I/O write builtin"),
                 };
+                self.publish_gc_root_state()?;
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
@@ -11444,6 +11251,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 } else {
                     self.backend.native_socket_connect()
                 };
+                self.publish_gc_root_state()?;
                 let task = call_pointer(
                     &self.backend.builder,
                     function,
@@ -11770,11 +11578,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let number = self.float_scalar(value)?;
-        let data_slot = self.alloc_temporary(self.backend.ptr_type, "format.data")?;
+        let formatted = self.alloc_value("format.float.value");
+        self.publish_gc_root_state()?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_format_float(),
-            &[number.into(), data_slot.into()],
+            &[number.into(), formatted.into()],
             "format.float",
         )?;
         let failed = self
@@ -11788,19 +11597,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )
             .map_err(builder_error)?;
         self.fail_if(failed, "NativeFloatFormatFailure")?;
-        let data = self
-            .backend
-            .builder
-            .build_load(self.backend.ptr_type, data_slot, "format.data.value")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        self.initialize(destination, VALUE_TAG_TEXT)?;
-        self.backend.store_pointer_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_DATA,
-            data,
-        )?;
+        self.shallow_copy_named(destination, formatted, "format.float.publish")?;
         Ok(true)
     }
 
@@ -12437,22 +12234,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         source: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
         let root_scope = self.gc_root_scope();
-        // `loom.runtime.clone` is a managed helper and may collect. Checked
-        // lowering supplies stable destinations; publish a stable source Value
-        // proxy so a heap interior pointer never crosses the helper boundary.
+        // The runtime helper may collect. Neither an interior source nor an
+        // interior destination is allowed to cross that boundary: clone into
+        // two compiler-owned, precisely rooted proxies and publish the result
+        // to its final destination only after the helper returns.
         let source_proxy = self.alloc_value("clone.source.proxy");
+        let output_proxy = self.alloc_value("clone.output.proxy");
         let result = (|| {
             self.shallow_copy_named(source_proxy, source, "clone.source.publish")?;
             self.publish_gc_root_state()?;
-            let clone = self
-                .backend
-                .module
-                .get_function("loom.runtime.clone")
-                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
-            self.backend
-                .builder
-                .build_call(clone, &[destination.into(), source_proxy.into()], "clone")
-                .map_err(builder_error)?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_gc_clone_value(),
+                &[output_proxy.into(), source_proxy.into()],
+                "clone",
+            )?;
+            self.trap_on_runtime_status(status, "clone")?;
+            self.shallow_copy_named(destination, output_proxy, "clone.output.publish")?;
             Ok(())
         })();
         self.end_gc_root_scope(root_scope);

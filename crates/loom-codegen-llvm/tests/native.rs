@@ -272,6 +272,130 @@ pub async fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn stable_output_runtime_abis_publish_roots_and_run() {
+    let source = r#"module stable_output_abi
+
+import standard.float.format_float
+import standard.process.environment
+
+pub fn main() Unit {
+    let formatted = format_float(2.5)
+    assert formatted == "2.5"
+
+    match "roots".get(1) {
+        Some(value) => {
+            assert value == "o"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    let values = ["zero", "one"]
+    match values.get(1) {
+        Some(value) => {
+            assert value == "one"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    let map = TextMap[Text]().insert("key", "value")
+    match map.get("key") {
+        Some(value) => {
+            assert value == "value"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    match environment("LOOM_STABLE_OUTPUT_TEST") {
+        Some(value) => {
+            assert value == "present"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+"#;
+    let project = tempfile::tempdir().expect("create stable-output ABI project");
+    std::fs::write(project.path().join("main.loom"), source)
+        .expect("write stable-output ABI source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load stable-output ABI project")
+        .snapshot()
+        .expect("analyze stable-output ABI project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(
+        snapshot.executable().expect("lower stable-output ABI MIR"),
+        &executable,
+        &options,
+    )
+    .expect("emit stable-output ABI executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read stable-output ABI IR");
+    let main = llvm_native_function(&llvm, "stable_output_abi_main");
+    for symbol in [
+        "@loom_runtime_format_float",
+        "@loom_runtime_text_get",
+        "@loom_runtime_list_get",
+        "@loom_runtime_text_map_get",
+        "@loom_runtime_process_environment",
+    ] {
+        assert!(main.contains(symbol), "missing {symbol}: {main}");
+        assert_gc_state_published_before(main, symbol);
+    }
+    assert!(
+        main.lines().any(|line| {
+            line.contains("call i32 @loom_runtime_list_get") && line.matches("ptr ").count() == 2
+        }),
+        "List.get did not use list/index/stable-output status ABI: {main}"
+    );
+    assert!(
+        main.lines().any(|line| {
+            line.contains("call i32 @loom_runtime_text_map_get")
+                && line.matches("ptr ").count() == 3
+        }),
+        "TextMap.get did not use map/key/length/stable-output status ABI: {main}"
+    );
+    assert!(
+        main.lines().any(|line| {
+            line.contains("call i32 @loom_runtime_process_environment")
+                && line.matches("ptr ").count() == 2
+        }),
+        "environment did not use name/length/stable-output status ABI: {main}"
+    );
+
+    let output = Command::new(executable)
+        .env("LOOM_STABLE_OUTPUT_TEST", "present")
+        .output()
+        .expect("run stable-output ABI executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn range_plan_removes_proved_checks_before_abi_selection_and_release_folds_code() {
     let source = r"module optimize
 
@@ -430,7 +554,7 @@ pub fn main() Int {
     assert!(fault_attributes.contains("noinline"), "{fault_attributes}");
     let contracted = llvm_native_function(&llvm, "scalar_int_contracted");
     assert!(
-        contracted.contains("call void @loom.runtime.clone"),
+        contracted.contains("call i32 @loom_gc_clone_value_v1"),
         "{contracted}"
     );
     assert!(llvm.contains("define internal i32 @loom.fn.2.scalar_int_main"));
@@ -682,8 +806,8 @@ pub fn main() Unit {{
     assert_balanced_gc_root_frame(large);
     let small_slots = gc_root_slot_count(small);
     let large_slots = gc_root_slot_count(large);
-    assert_eq!(small_slots, 2, "unexpected small root frame: {small}");
-    assert_eq!(large_slots, 2, "scalar elements grew root slots: {large}");
+    assert_eq!(small_slots, 3, "unexpected small root frame: {small}");
+    assert_eq!(large_slots, 3, "scalar elements grew root slots: {large}");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -775,11 +899,16 @@ pub fn main() Unit {
         descriptor.state_count * descriptor.bitmap_words,
         "{descriptor:?}\n{retain}"
     );
-    let clone_state = gc_state_before_call(retain, "@loom.runtime.clone", 0);
+    let clone_state = gc_state_before_call(retain, "@loom_gc_clone_value_v1", 0);
     let source_proxy = gc_root_slot_index(retain, "clone.source.proxy");
+    let output_proxy = gc_root_slot_index(retain, "clone.output.proxy");
     assert!(
         descriptor.is_live(clone_state, source_proxy),
         "clone source proxy is not rooted in its helper state: {descriptor:?}\n{retain}"
+    );
+    assert!(
+        descriptor.is_live(clone_state, output_proxy),
+        "clone output proxy is not rooted in its helper state: {descriptor:?}\n{retain}"
     );
     let source_call_state = gc_state_before_call(retain, "call i32 @loom.fn.", 0);
     assert!(
@@ -787,7 +916,7 @@ pub fn main() Unit {
         "dead clone source proxy leaked into a later source-call state: {descriptor:?}\n{retain}"
     );
     assert_gc_state_published_before(retain, "call i32 @loom.fn.");
-    assert_gc_state_published_before(retain, "@loom.runtime.clone");
+    assert_gc_state_published_before(retain, "@loom_gc_clone_value_v1");
     assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
 
     assert_emitted_main_succeeds(&project);
@@ -888,6 +1017,81 @@ pub fn main() Unit {
     );
     assert!(!llvm.contains("ptrtoint"), "{llvm}");
     assert!(!llvm.contains("inttoptr"), "{llvm}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn moving_gc_rederives_tuple_and_stages_all_match_bindings_before_clone() {
+    let source = r#"module moving_gc_projection_clone
+
+enum Payload {
+    Values(List[Text], Text)
+}
+
+fn values(count Int) List[Text] {
+    var values = List[Text]()
+    for index in 0..count {
+        values.add("relocate")
+        Unit
+    }
+    values
+}
+
+fn tupleRetainsSecond(count Int) Text {
+    let pair = (values(count), "tuple-kept")
+    let copied, retained = pair
+    let copiedCount = copied.length()
+    assert copiedCount == count
+    retained
+}
+
+fn matchRetainsSecond(count Int) Text {
+    let payload = Payload.Values(values(count), "match-kept")
+    match payload {
+        Payload.Values(copied, retained) => {
+            let copiedCount = copied.length()
+            assert copiedCount == count
+            retained
+        }
+    }
+}
+
+pub fn main() Unit {
+    let tupleValue = tupleRetainsSecond(4096)
+    assert tupleValue == "tuple-kept"
+    let matchValue = matchRetainsSecond(4096)
+    assert matchValue == "match-kept"
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let tuple = llvm_function(&llvm, "moving_gc_projection_clone_tupleRetainsSecond");
+    assert!(
+        tuple.matches("call i32 @loom_gc_clone_value_v1").count() >= 2,
+        "tuple destructuring must clone both elements: {tuple}"
+    );
+    assert!(
+        tuple
+            .lines()
+            .filter(|line| line.contains("%tuple.data") && line.contains("= load ptr"))
+            .count()
+            >= 2,
+        "tuple head must be reloaded after a preceding clone can collect: {tuple}"
+    );
+    assert_gc_state_published_before(tuple, "@loom_gc_clone_value_v1");
+
+    let matched = llvm_function(&llvm, "moving_gc_projection_clone_matchRetainsSecond");
+    assert!(
+        matched.matches("match.binding.proxy").count() >= 2,
+        "all derived match bindings must be staged in stable roots: {matched}"
+    );
+    assert!(
+        matched.matches("call i32 @loom_gc_clone_value_v1").count() >= 2,
+        "match must clone both staged bindings: {matched}"
+    );
+    assert_gc_state_published_before(matched, "@loom_gc_clone_value_v1");
 
     assert_emitted_main_succeeds(&project);
 }
@@ -1177,21 +1381,21 @@ pub fn main() Unit {
         "{record_method}"
     );
     assert!(
-        !record_method.contains("@loom.runtime.clone"),
+        !record_method.contains("@loom_gc_clone_value_v1"),
         "{record_method}"
     );
     assert_eq!(
         record_method
-            .matches("call ptr @loom_gc_alloc_value_node")
+            .matches("call i32 @loom_gc_build_value_nodes_v1")
             .count(),
-        2,
-        "the two managed result fields are materialized once after the loop: {record_method}"
+        1,
+        "the two managed result fields are built by one bounded runtime call: {record_method}"
     );
     let loop_exit = record_method
         .find("range.exit")
         .expect("record method has a loop exit");
     let first_materialization = record_method
-        .find("call ptr @loom_gc_alloc_value_node")
+        .find("call i32 @loom_gc_build_value_nodes_v1")
         .expect("record result is materialized");
     assert!(loop_exit < first_materialization, "{record_method}");
     let record_add = llvm_function(&llvm, "stack_loop_add");
@@ -1352,8 +1556,14 @@ pub async fn main() Unit {
         read_at[..get].contains("list.readonly.snapshot"),
         "{read_at}"
     );
-    assert!(!read_at[..get].contains("@loom.runtime.clone"), "{read_at}");
-    assert!(read_at[get..].contains("@loom.runtime.clone"), "{read_at}");
+    assert!(
+        !read_at[..get].contains("@loom_gc_clone_value_v1"),
+        "{read_at}"
+    );
+    assert!(
+        read_at[get..].contains("@loom_gc_clone_value_v1"),
+        "{read_at}"
+    );
     let option_match_branches = read_at
         .lines()
         .filter(|line| {
@@ -1632,7 +1842,7 @@ pub fn faultMain() Unit {
         assert!(!scan.contains("@loom_runtime_list_get"), "{scan}");
         assert!(!scan.contains("@loom_gc_alloc_value_node"), "{scan}");
         assert!(!scan.contains("list.get.owned"), "{scan}");
-        assert!(!scan.contains("@loom.runtime.clone"), "{scan}");
+        assert!(!scan.contains("@loom_gc_clone_value_v1"), "{scan}");
         assert!(
             !scan.contains("int.list.get.past.end"),
             "exact completed append range must omit per-element upper-bound checks: {scan}"
@@ -2159,8 +2369,8 @@ fn gc_root_descriptor(llvm: &str, function: &str) -> GcRootDescriptorIr {
             line.split_whitespace()
                 .find(|token| token.starts_with("@loom.gc.root.descriptor."))
         })
-        .map(|token| token.trim_end_matches(','))
-        .unwrap_or_else(|| panic!("function has no GC root descriptor: {function}"));
+        .unwrap_or_else(|| panic!("function has no GC root descriptor: {function}"))
+        .trim_end_matches(',');
     let descriptor = llvm
         .lines()
         .find(|line| line.starts_with(&format!("{descriptor_name} =")))
@@ -2168,8 +2378,8 @@ fn gc_root_descriptor(llvm: &str, function: &str) -> GcRootDescriptorIr {
     let fields = descriptor
         .split_once("%loom.GcRootDescriptor { ")
         .and_then(|(_, fields)| fields.split_once(" }").map(|(fields, _)| fields))
-        .map(|fields| fields.split(',').map(str::trim).collect::<Vec<_>>())
         .unwrap_or_else(|| panic!("malformed GC root descriptor: {descriptor}"));
+    let fields = fields.split(',').map(str::trim).collect::<Vec<_>>();
     assert_eq!(fields.len(), 6, "malformed descriptor: {descriptor}");
     let slot_count = parse_llvm_usize_field(fields[2], "i64", descriptor);
     let state_count = parse_llvm_usize_field(fields[3], "i64", descriptor);
@@ -2185,11 +2395,7 @@ fn gc_root_descriptor(llvm: &str, function: &str) -> GcRootDescriptorIr {
         .split("i64 ")
         .skip(1)
         .map(|value| {
-            let value = value
-                .split(|character: char| character == ',' || character == ']')
-                .next()
-                .unwrap_or_default()
-                .trim();
+            let value = value.split([',', ']']).next().unwrap_or_default().trim();
             parse_llvm_u64(value, bitmap)
         })
         .collect::<Vec<_>>();
@@ -2215,21 +2421,20 @@ fn parse_llvm_usize_field(field: &str, ty: &str, context: &str) -> usize {
 
 fn parse_llvm_u64(value: &str, context: &str) -> u64 {
     value.parse().unwrap_or_else(|_| {
-        value
+        let signed = value
             .parse::<i64>()
-            .map(|value| value as u64)
-            .unwrap_or_else(|_| panic!("malformed integer `{value}` in {context}"))
+            .unwrap_or_else(|_| panic!("malformed integer `{value}` in {context}"));
+        u64::from_ne_bytes(signed.to_ne_bytes())
     })
 }
 
 fn gc_state_before_call(function: &str, needle: &str, occurrence: usize) -> usize {
     let lines = function.lines().collect::<Vec<_>>();
-    let call = lines
+    let (call, _) = lines
         .iter()
         .enumerate()
         .filter(|(_, line)| line.contains("call ") && line.contains(needle))
         .nth(occurrence)
-        .map(|(index, _)| index)
         .unwrap_or_else(|| panic!("missing call #{occurrence} `{needle}`: {function}"));
     for line in lines[..call].iter().rev() {
         if !line.starts_with(char::is_whitespace) && line.contains(':') {
@@ -2808,9 +3013,14 @@ pub async fn main() Unit {
     assert!(llvm.contains("%loom.WitnessInstance = type"), "{llvm}");
     assert!(llvm.contains("@loom_task_capture_witnesses_v1"), "{llvm}");
     assert!(llvm.contains("@loom_task_witness_v1"), "{llvm}");
+    assert!(llvm.contains("@loom_gc_clone_value_v1"), "{llvm}");
+    assert!(llvm.contains("@loom_gc_build_value_nodes_v1"), "{llvm}");
     for legacy in [
         "%loom.WitnessNode",
         "@loom.runtime.concat_witnesses",
+        "@loom.runtime.clone",
+        "@loom.runtime.clone_nodes",
+        "@loom_gc_alloc_value_node",
         "@loom_gc_alloc_witness_node",
         "@loom_task_clone_witness",
     ] {
@@ -3136,6 +3346,27 @@ pub fn main() Unit {
     assert!(erase.contains("@loom_gc_clone_witness_v1"), "{erase}");
     assert!(erase.contains("witness.application"), "{erase}");
     assert!(erase.contains("witness.prerequisites"), "{erase}");
+    let data_allocation = erase
+        .find("@loom_gc_alloc_value")
+        .expect("owned dyn allocates its data box");
+    let witness_clone = erase
+        .find("@loom_gc_clone_witness_v1")
+        .expect("conditional proof is cloned");
+    let data_publication = erase
+        .find("dyn.data.publish.value")
+        .expect("owned dyn publishes its data box");
+    assert!(
+        erase[..data_allocation].contains("@loom_gc_clone_value_v1"),
+        "owned value must be cloned before its data box allocation: {erase}"
+    );
+    assert!(
+        !erase[data_allocation..].contains("@loom_gc_clone_value_v1"),
+        "MakeView retained the moving destination-before-clone order: {erase}"
+    );
+    assert!(data_allocation < data_publication, "{erase}");
+    assert!(data_publication < witness_clone, "{erase}");
+    assert_gc_state_published_before(erase, "@loom_gc_alloc_value");
+    assert_gc_state_published_before(erase, "@loom_gc_clone_witness_v1");
     assert!(llvm.contains("dyn.call"), "{llvm}");
     assert!(
         llvm.lines().any(|line| {
