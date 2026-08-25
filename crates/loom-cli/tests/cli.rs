@@ -1287,6 +1287,80 @@ fn test_and_run_execute_native_code() {
 }
 
 #[test]
+fn explicit_discard_closes_both_backend_cli_loops() {
+    let project = TestProject::new(
+        r"module discard_cli
+
+fn answer() Int {
+    42
+}
+
+async fn asynchronous_answer() Int {
+    Task.sleep(1).await
+    answer()
+}
+
+pub fn main() {
+    discard answer()
+}
+
+test async fn discards_awaited_value() {
+    discard asynchronous_answer().await
+}
+",
+    );
+
+    for backend in ["interpreter", "llvm"] {
+        for command in ["check", "test", "run"] {
+            let output = loomc()
+                .args(["--no-cache", "--backend", backend, command])
+                .arg(&project.0)
+                .output()
+                .expect("execute discard CLI command");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{backend} {command}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if command == "run" {
+                assert_eq!(output.stdout, b"Unit\n", "{backend} run");
+            }
+        }
+
+        let artifact = project.0.join(format!("discard-{backend}.artifact"));
+        let build = loomc()
+            .args(["--no-cache", "--backend", backend, "build", "--output"])
+            .arg(&artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build discard artifact");
+        assert_eq!(
+            build.status.code(),
+            Some(0),
+            "{backend} build: stdout={} stderr={}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        let output = loomc()
+            .args(["--backend", backend, "run", "--artifact"])
+            .arg(&artifact)
+            .output()
+            .expect("run discard artifact");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{backend} artifact: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"Unit\n", "{backend} artifact run");
+    }
+}
+
+#[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
         "module dynamic\n\nimport standard.int.parse_int\nimport standard.process.arguments\nimport standard.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() Unit {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n    Unit\n}\n",

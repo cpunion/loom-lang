@@ -22,6 +22,7 @@
 - rank-1 基本泛型；
 - 普通 `test`；
 - callable 省略返回类型时固定返回 `Unit`，不做返回类型推断；
+- 非 `Unit` 结果必须进入使用位置或写 `discard expression`；普通具体值默认可显式丢弃，`MustScope`/未消费 `Task` 及其递归包装除外；
 - `type Price = Float where self >= 0` 一类名义受约束类型；
 - proof-classified construction：`Price(10.0)` 静态成立时直接得到 `Price`，未知输入才得到 `Result[Price, ConstraintError]`；
 - proven contract elimination：有独立类型/路径依据的 `requires`、`ensures`、invariant 与 `assert` 不进入 checked MIR，unknown/failing 路径仍保留完整 fault/blame；

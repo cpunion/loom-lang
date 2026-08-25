@@ -2043,6 +2043,13 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     kind: StatementKind::Assert { condition },
                 });
             }
+            HirStatement::Discard(expression) => {
+                let expression = self.lower_suspendable_expr(*expression, output, true)?;
+                output.push(Statement {
+                    span: expression.span,
+                    kind: StatementKind::Evaluate(expression),
+                });
+            }
             HirStatement::Expr(expression) => {
                 let span = self.expr_span(*expression);
                 let kind = match self.body.expressions[*expression].clone() {

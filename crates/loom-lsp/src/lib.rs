@@ -995,6 +995,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "assert",
     "concept",
     "defer",
+    "discard",
     "dyn",
     "else",
     "enum",

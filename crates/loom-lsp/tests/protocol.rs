@@ -185,6 +185,7 @@ fn inspect(problem IoError, value Json) Unit {
         "try_open_read_path",
         "try_connect",
         "try_read_text",
+        "discard",
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
     }
