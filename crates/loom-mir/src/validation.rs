@@ -7956,7 +7956,11 @@ impl<'program> Validator<'program> {
                             );
                             state.temporary_loans.push(PlaceLoan {
                                 owner: place.clone(),
-                                mutable: true,
+                                // InOut uses a two-phase access. Later arguments may take a
+                                // readonly snapshot (for example `values.add(values.length())`),
+                                // but Move, write, mutable borrow, and another overlapping InOut
+                                // remain forbidden until the call begins.
+                                mutable: false,
                             });
                         }
                     }

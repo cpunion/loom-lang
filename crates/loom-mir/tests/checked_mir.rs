@@ -1940,7 +1940,7 @@ fn call_arguments_validate_inout_place_shape() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn inout_access_is_exclusive_until_every_later_argument_finishes() {
+fn inout_reservation_allows_reads_but_rejects_aliasing_later_arguments() {
     let view = view_type(true);
     let mut value_target = function(
         0,
@@ -2058,10 +2058,19 @@ fn inout_access_is_exclusive_until_every_later_argument_finishes() {
         witnesses: vec![empty_witness(0, Type::Int)],
         ..Program::default()
     });
-    for index in 0..4 {
+    assert!(
+        !errors.iter().any(|error| {
+            error.code == MirValidationCode::BorrowShape
+                && error.path.starts_with("functions[3].body.statements[0].")
+        }),
+        "{errors:#?}"
+    );
+    for index in 1..4 {
         assert!(errors.iter().any(|error| {
             error.code == MirValidationCode::BorrowShape
-                && error.path.contains(&format!("statements[{index}]"))
+                && error
+                    .path
+                    .starts_with(&format!("functions[3].body.statements[{index}]."))
         }));
     }
 }
