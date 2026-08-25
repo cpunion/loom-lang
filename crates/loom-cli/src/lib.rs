@@ -14,11 +14,12 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] <resolve|publish|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] [--runtime-bundle DIR --linker PROGRAM] <resolve|publish|runtime|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     publish --registry NAME [PATH] publish a package to a configured registry\n\
+    runtime export --output DIR export the embedded host runtime bundle\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
-    build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
+    build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--runtime-bundle DIR --linker PROGRAM] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
@@ -49,6 +50,9 @@ enum Command {
     },
     Publish {
         registry: String,
+    },
+    RuntimeExport {
+        output: PathBuf,
     },
     Check,
     Build {
@@ -90,8 +94,43 @@ struct Options {
     cache_dir: Option<PathBuf>,
     project: ProjectOptions,
     target_triple: Option<String>,
+    runtime_bundle: Option<PathBuf>,
+    linker: Option<PathBuf>,
     optimization: loom_codegen_llvm::OptimizationProfile,
     program_arguments: Vec<String>,
+}
+
+enum NativeLinkPlan {
+    EmbeddedHost,
+    RuntimeBundle {
+        bundle: Box<loom_codegen_llvm::RuntimeBundle>,
+        linker: loom_codegen_llvm::RuntimeLinker,
+    },
+}
+
+impl NativeLinkPlan {
+    fn linker_identity(&self) -> Result<String, loom_codegen_llvm::CodegenError> {
+        match self {
+            Self::EmbeddedHost => loom_codegen_llvm::native_linker_identity(),
+            Self::RuntimeBundle { linker, .. } => Ok(linker.identity().to_owned()),
+        }
+    }
+
+    fn runtime_identity(&self) -> String {
+        match self {
+            Self::EmbeddedHost => loom_codegen_llvm::native_runtime_identity(),
+            Self::RuntimeBundle { bundle, .. } => bundle.identity().to_owned(),
+        }
+    }
+
+    fn link(&self, object: &Path, output: &Path) -> Result<(), loom_codegen_llvm::CodegenError> {
+        match self {
+            Self::EmbeddedHost => loom_codegen_llvm::link_native_object(object, output),
+            Self::RuntimeBundle { bundle, linker } => {
+                loom_codegen_llvm::link_object_with_runtime_bundle(object, output, bundle, linker)
+            }
+        }
+    }
 }
 
 enum ParsedArgs {
@@ -466,6 +505,7 @@ pub fn run(
     match &options.command {
         Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
         Command::Publish { registry } => run_publish(&options, registry, stdout, stderr),
+        Command::RuntimeExport { output } => run_runtime_export(&options, output, stdout, stderr),
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
         Command::Cache { prune } => run_cache(&options, *prune, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
@@ -554,7 +594,7 @@ fn run_resolve(
         write_json_line(
             stdout,
             &json!({
-                "schema_version": 1,
+                "schema_version": loom_codegen_llvm::RUNTIME_BUNDLE_SCHEMA_VERSION,
                 "category": "dependency_resolution",
                 "status": "ok",
                 "packages": host.project().packages().count(),
@@ -616,6 +656,46 @@ fn run_publish(
     Ok(EXIT_SUCCESS)
 }
 
+fn run_runtime_export(
+    options: &Options,
+    output: &Path,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<i32> {
+    let exported = match loom_codegen_llvm::export_native_runtime_bundle(output) {
+        Ok(exported) => exported,
+        Err(error) => {
+            emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    if options.json {
+        write_json_line(
+            stdout,
+            &json!({
+                "schema_version": 1,
+                "category": "runtime_bundle_export",
+                "status": "ok",
+                "root": exported.root,
+                "manifest": exported.manifest,
+                "archive": exported.archive,
+                "target_triple": exported.target_triple,
+                "data_layout": exported.data_layout,
+                "runtime_abi": exported.runtime_abi,
+                "archive_sha256": exported.archive_sha256,
+            }),
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "exported runtime bundle for {} to {}",
+            exported.target_triple,
+            exported.root.display()
+        )?;
+    }
+    Ok(EXIT_SUCCESS)
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_build(
     options: &Options,
@@ -665,6 +745,7 @@ fn run_build(
     if let BuildTarget::Library(name) = &target {
         if emit == BuildEmit::Object
             || options.target_triple.is_some()
+            || options.runtime_bundle.is_some()
             || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
         {
             emit_tool_error(
@@ -672,7 +753,7 @@ fn run_build(
                 stdout,
                 stderr,
                 "LibraryTargetIsPortable",
-                "library targets already emit portable checked MIR and do not accept --release, --emit object, or --target-triple",
+                "library targets already emit portable checked MIR and do not accept --release, --emit object, --target-triple, or runtime link options",
             )?;
             return Ok(EXIT_USAGE);
         }
@@ -709,12 +790,17 @@ fn run_build(
         emit_build_result(options, stdout, &output)?;
         return Ok(EXIT_SUCCESS);
     }
-    if options.backend == Backend::Llvm
-        && let Err(error) = loom_codegen_llvm::validate_native_link_target(&emit_options)
-    {
-        emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-        return Ok(EXIT_USAGE);
-    }
+    let native_link = if options.backend == Backend::Llvm {
+        match prepare_native_link_plan(options, &emit_options) {
+            Ok(link) => Some(link),
+            Err(error) => {
+                emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
+                return Ok(EXIT_USAGE);
+            }
+        }
+    } else {
+        None
+    };
     let artifact_key = final_artifact_key(
         &compilation,
         program,
@@ -722,12 +808,15 @@ fn run_build(
         "run",
         Some(&entry),
         Some(&emit_options),
+        native_link.as_ref(),
     );
     match restore_cached_artifact(
         &compilation,
         artifact_key.as_ref(),
         &output,
         options.backend == Backend::Llvm,
+        options.backend == Backend::Llvm
+            && loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()),
         options,
         stdout,
     )? {
@@ -754,6 +843,7 @@ fn run_build(
                 program,
                 &output,
                 &emit_options,
+                native_link.as_ref(),
                 options,
                 stdout,
             )? {
@@ -806,6 +896,7 @@ fn build_library(
         compilation,
         artifact_key.as_ref(),
         output,
+        false,
         false,
         options,
         stdout,
@@ -932,11 +1023,13 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             "tests",
             None,
             Some(&emit_options),
+            None,
         );
         match restore_cached_artifact(
             &compilation,
             artifact_key.as_ref(),
             &executable,
+            true,
             true,
             options,
             stdout,
@@ -961,6 +1054,7 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             program,
             &executable,
             &emit_options,
+            None,
             options,
             stdout,
         )? {
@@ -1044,11 +1138,13 @@ fn run_program(
                 "run",
                 Some(&entry),
                 Some(&emit_options),
+                None,
             );
             match restore_cached_artifact(
                 &compilation,
                 artifact_key.as_ref(),
                 &executable,
+                true,
                 true,
                 options,
                 stdout,
@@ -1079,6 +1175,7 @@ fn run_program(
                 program,
                 &executable,
                 &emit_options,
+                None,
                 options,
                 stdout,
             )? {
@@ -1146,11 +1243,13 @@ fn run_debug(
         "debug",
         Some(&entry),
         Some(&emit_options),
+        None,
     );
     let restored = match restore_cached_artifact(
         &compilation,
         artifact_key.as_ref(),
         &executable,
+        true,
         true,
         options,
         stdout,
@@ -1173,6 +1272,7 @@ fn run_debug(
             program,
             &executable,
             &emit_options,
+            None,
             options,
             stdout,
         )? {
@@ -1841,19 +1941,32 @@ fn final_artifact_key(
     mode: &str,
     entry: Option<&str>,
     emit_options: Option<&loom_codegen_llvm::EmitOptions>,
+    native_link: Option<&NativeLinkPlan>,
 ) -> Option<CacheKey> {
     let (parent, toolchain, runtime) = match backend {
-        Backend::Llvm => (
-            target_object_key(compilation, program, emit_options?)?,
-            format!(
-                "{};debug={}",
-                loom_codegen_llvm::native_linker_identity().ok()?,
-                loom_codegen_llvm::native_debug_tool_identity()
-                    .ok()?
-                    .unwrap_or_else(|| "embedded-elf-dwarf".to_owned())
-            ),
-            loom_codegen_llvm::native_runtime_identity(),
-        ),
+        Backend::Llvm => {
+            let emit_options = emit_options?;
+            let linker = native_link.map_or_else(
+                || loom_codegen_llvm::native_linker_identity().ok(),
+                |link| link.linker_identity().ok(),
+            )?;
+            let debug =
+                if loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()) {
+                    loom_codegen_llvm::native_debug_tool_identity()
+                        .ok()?
+                        .unwrap_or_else(|| "embedded-elf-dwarf".to_owned())
+                } else {
+                    "foreign-target-no-host-debug-companion".to_owned()
+                };
+            (
+                target_object_key(compilation, program, emit_options)?,
+                format!("{linker};debug={debug}"),
+                native_link.map_or_else(
+                    loom_codegen_llvm::native_runtime_identity,
+                    NativeLinkPlan::runtime_identity,
+                ),
+            )
+        }
         Backend::Interpreter => (
             compilation.key()?.clone(),
             "loom-interpreted-artifact-writer-v2".to_owned(),
@@ -1863,7 +1976,7 @@ fn final_artifact_key(
     Some(PersistentCache::derived_key(
         &parent,
         &[
-            ("layer", "final-artifact-v1"),
+            ("layer", "final-artifact-v2"),
             ("mode", mode),
             ("entry", entry.unwrap_or("")),
             ("artifact-toolchain", &toolchain),
@@ -1917,6 +2030,24 @@ fn configured_emit_options(
         .with_optimization(options.optimization)
 }
 
+fn prepare_native_link_plan(
+    options: &Options,
+    emit_options: &loom_codegen_llvm::EmitOptions,
+) -> Result<NativeLinkPlan, loom_codegen_llvm::CodegenError> {
+    if let (Some(bundle), Some(linker)) = (&options.runtime_bundle, &options.linker) {
+        let target = loom_codegen_llvm::target_identity(
+            emit_options.target_triple.as_deref(),
+            emit_options.optimization,
+        )?;
+        return Ok(NativeLinkPlan::RuntimeBundle {
+            bundle: Box::new(loom_codegen_llvm::RuntimeBundle::load(bundle, &target)?),
+            linker: loom_codegen_llvm::RuntimeLinker::load(linker)?,
+        });
+    }
+    loom_codegen_llvm::validate_native_link_target(emit_options)?;
+    Ok(NativeLinkPlan::EmbeddedHost)
+}
+
 fn emit_options_with_debug(
     compilation: &Compilation,
     emit_options: &loom_codegen_llvm::EmitOptions,
@@ -1939,10 +2070,13 @@ fn emit_native_with_cache(
     program: &loom_mir::Program,
     output: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
+    native_link: Option<&NativeLinkPlan>,
     options: &Options,
     stdout: &mut dyn Write,
 ) -> io::Result<Result<(), loom_codegen_llvm::CodegenError>> {
-    if let Err(error) = loom_codegen_llvm::validate_native_link_target(emit_options) {
+    if native_link.is_none()
+        && let Err(error) = loom_codegen_llvm::validate_native_link_target(emit_options)
+    {
         return Ok(Err(error));
     }
     let directory = tempfile::tempdir()?;
@@ -1952,10 +2086,18 @@ fn emit_native_with_cache(
     {
         return Ok(Err(error));
     }
-    if let Err(error) = loom_codegen_llvm::link_native_object(&object, output) {
+    let linked = native_link.map_or_else(
+        || loom_codegen_llvm::link_native_object(&object, output),
+        |link| link.link(&object, output),
+    );
+    if let Err(error) = linked {
         return Ok(Err(error));
     }
-    Ok(loom_codegen_llvm::emit_native_debug_companion(output))
+    if loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()) {
+        Ok(loom_codegen_llvm::emit_native_debug_companion(output))
+    } else {
+        Ok(Ok(()))
+    }
 }
 
 fn emit_object_with_cache(
@@ -2020,6 +2162,7 @@ fn restore_cached_artifact(
     key: Option<&CacheKey>,
     output: &Path,
     executable: bool,
+    debug_companion: bool,
     options: &Options,
     stdout: &mut dyn Write,
 ) -> io::Result<Result<bool, String>> {
@@ -2043,7 +2186,7 @@ fn restore_cached_artifact(
         )?;
         return Ok(Ok(false));
     };
-    let debug_companion = if executable {
+    let debug_companion = if debug_companion {
         if let Some(path) = loom_codegen_llvm::native_debug_companion_path(output) {
             let CacheLookup::Hit(debug_bytes) = cache.load_debug_companion(key) else {
                 emit_cache_result(
@@ -2358,6 +2501,8 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
         loom_codegen_llvm::OptimizationProfile::Development
     };
     let target_triple = take_option(&mut strings, "--target-triple")?;
+    let runtime_bundle = take_option(&mut strings, "--runtime-bundle")?.map(PathBuf::from);
+    let linker = take_option(&mut strings, "--linker")?.map(PathBuf::from);
     let features = parse_feature_list(take_option(&mut strings, "--features")?)?;
     let no_default_features = take_flag(&mut strings, "--no-default-features");
     let locked = take_flag(&mut strings, "--locked");
@@ -2395,6 +2540,8 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
             offline,
         },
         target_triple,
+        runtime_bundle,
+        linker,
         optimization,
         program_arguments,
     };
@@ -2415,6 +2562,22 @@ fn parse_command(
             registry: take_option(arguments, "--registry")?
                 .ok_or_else(|| "publish requires --registry NAME".to_owned())?,
         },
+        "runtime" => {
+            let operation = arguments
+                .first()
+                .ok_or_else(|| "runtime requires `export`".to_owned())?
+                .clone();
+            arguments.remove(0);
+            match operation.as_str() {
+                "export" => Command::RuntimeExport {
+                    output: PathBuf::from(
+                        take_option(arguments, "--output")?
+                            .ok_or_else(|| "runtime export requires --output DIR".to_owned())?,
+                    ),
+                },
+                other => return Err(format!("unknown runtime operation `{other}`")),
+            }
+        }
         "check" => Command::Check,
         "build" => {
             let emit = match take_option(arguments, "--emit")?.as_deref() {
@@ -2469,6 +2632,7 @@ fn parse_command(
     Ok(command)
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<(), String> {
     let command = &options.command;
     if !options.program_arguments.is_empty()
@@ -2481,6 +2645,9 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     }
     if remaining.len() > 1 {
         return Err("expected at most one PATH".to_owned());
+    }
+    if matches!(command, Command::RuntimeExport { .. }) && !remaining.is_empty() {
+        return Err("runtime export does not accept a source PATH".to_owned());
     }
     validate_codegen_options(options)?;
     if options.target.is_some()
@@ -2505,6 +2672,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             command,
             Command::Format { .. }
                 | Command::Publish { .. }
+                | Command::RuntimeExport { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2529,6 +2697,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
+                | Command::RuntimeExport { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
@@ -2544,6 +2713,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
+                | Command::RuntimeExport { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2588,6 +2758,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
+                | Command::RuntimeExport { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
@@ -2599,6 +2770,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
     }
     if options.backend == Backend::Interpreter
         && (matches!(command, Command::Debug { .. })
+            || matches!(command, Command::RuntimeExport { .. })
             || options.target_triple.is_some()
             || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
             || matches!(
@@ -2610,12 +2782,31 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             ))
     {
         return Err(
-            "debug, --release, --target-triple, and --emit object require the LLVM backend"
+            "runtime export, debug, --release, --target-triple, and --emit object require the LLVM backend"
                 .to_owned(),
         );
     }
     if options.json && matches!(command, Command::Debug { .. }) {
         return Err("debug is interactive and does not accept --json".to_owned());
+    }
+    if options.runtime_bundle.is_some() != options.linker.is_some() {
+        return Err("--runtime-bundle and --linker must be provided together".to_owned());
+    }
+    if options.runtime_bundle.is_some()
+        && !matches!(
+            command,
+            Command::Build {
+                emit: BuildEmit::Executable,
+                ..
+            }
+        )
+    {
+        return Err(
+            "--runtime-bundle and --linker are only valid for LLVM executable builds".to_owned(),
+        );
+    }
+    if options.runtime_bundle.is_some() && options.backend != Backend::Llvm {
+        return Err("--runtime-bundle and --linker require the LLVM backend".to_owned());
     }
     Ok(())
 }

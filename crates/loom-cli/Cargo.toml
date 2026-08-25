@@ -22,5 +22,8 @@ tempfile.workspace = true
 [build-dependencies]
 sha2.workspace = true
 
+[dev-dependencies]
+sha2.workspace = true
+
 [lints]
 workspace = true

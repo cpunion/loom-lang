@@ -9,6 +9,7 @@ mod codegen;
 mod emitter;
 mod error;
 mod reachability;
+mod runtime_bundle;
 mod target;
 
 pub use codegen::{
@@ -17,6 +18,10 @@ pub use codegen::{
 };
 pub use error::CodegenError;
 pub use reachability::{ReachableProgram, Roots, analyze_reachability};
+pub use runtime_bundle::{
+    RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RuntimeBundle, RuntimeBundleExport,
+    RuntimeLinker, export_native_runtime_bundle, link_object_with_runtime_bundle,
+};
 pub use target::{
     CPU_FEATURES, CPU_POLICY, DEVELOPMENT_OPTIMIZATION_PIPELINE, NATIVE_RUNTIME_ABI,
     NativeTargetIdentity, OptimizationProfile, RELEASE_OPTIMIZATION_PIPELINE, RELOCATION_MODE,

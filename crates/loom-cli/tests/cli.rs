@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use sha2::{Digest as _, Sha256};
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -58,6 +61,68 @@ impl Drop for TestProject {
 
 fn loomc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
+}
+
+#[cfg(unix)]
+fn write_fake_runtime_bundle(root: &std::path::Path, archive: &[u8]) {
+    fs::create_dir_all(root).expect("create fake runtime bundle");
+    let target = loom_codegen_llvm::target_identity(
+        Some(CROSS_TRIPLE),
+        loom_codegen_llvm::OptimizationProfile::Development,
+    )
+    .expect("cross target identity");
+    let archive_sha256 = format!("{:x}", Sha256::digest(archive));
+    fs::write(root.join("runtime.a"), archive).expect("write fake runtime archive");
+    fs::write(
+        root.join(loom_codegen_llvm::RUNTIME_BUNDLE_MANIFEST),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": loom_codegen_llvm::RUNTIME_BUNDLE_SCHEMA_VERSION,
+            "target_triple": target.triple,
+            "data_layout": target.data_layout,
+            "runtime_abi": loom_codegen_llvm::NATIVE_RUNTIME_ABI,
+            "archive": "runtime.a",
+            "archive_sha256": archive_sha256,
+            "link_args": ["-loom-system-one", "-loom-system-two"],
+        }))
+        .expect("encode fake runtime manifest"),
+    )
+    .expect("write fake runtime manifest");
+}
+
+#[cfg(unix)]
+fn write_fake_linker(project: &TestProject, marker: &str) {
+    project.write(
+        "fake-linker",
+        &format!(
+            r#"#!/bin/sh
+# {marker}
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+    printf 'loom fake linker v1\n'
+    exit 0
+fi
+log=${{LOOM_FAKE_LINK_LOG:?}}
+object_copy=${{LOOM_FAKE_OBJECT_COPY:?}}
+: > "$log"
+cp "$1" "$object_copy"
+output=
+while [ "$#" -gt 0 ]; do
+    argument=$1
+    shift
+    printf '%s\n' "$argument" >> "$log"
+    if [ "$argument" = "-o" ]; then
+        output=$1
+        shift
+        printf '%s\n' "$output" >> "$log"
+    fi
+done
+[ -n "$output" ]
+printf '#!/bin/sh\nexit 0\n' > "$output"
+chmod 755 "$output"
+"#,
+        ),
+    );
+    project.make_executable("fake-linker");
 }
 
 #[derive(Debug)]
@@ -643,6 +708,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn library_targets_build_portable_validated_artifacts() {
     let project = TestProject::empty();
     project.write(
@@ -765,6 +831,7 @@ fn library_targets_build_portable_validated_artifacts() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() {
     let fixture = RegistryFixture::spawn(5);
     let project = TestProject::empty();
@@ -1465,6 +1532,213 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
         .expect("reject cross executable link");
     assert_eq!(cross_link.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&cross_link.stdout).contains("CrossLinkUnavailable"));
+}
+
+#[cfg(unix)]
+#[test]
+fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let bundle = project.0.join("host-runtime");
+    let exported = loomc()
+        .args(["--json", "runtime", "export", "--output"])
+        .arg(&bundle)
+        .output()
+        .expect("export host runtime bundle");
+    assert_eq!(
+        exported.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&exported.stdout),
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let export_record =
+        json_record(&exported.stdout, "runtime_bundle_export").expect("runtime export record");
+    assert_eq!(
+        export_record
+            .get("archive_sha256")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len),
+        Some(64)
+    );
+
+    let executable = project.0.join("host-bundle-program");
+    let built = loomc()
+        .args(["--json", "--runtime-bundle"])
+        .arg(&bundle)
+        .arg("--linker")
+        .arg(std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into()))
+        .args(["build", "--output"])
+        .arg(&executable)
+        .arg(&project.0)
+        .output()
+        .expect("link host bundle with explicit linker");
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&built.stdout),
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(
+        Command::new(&executable)
+            .output()
+            .expect("run host bundle executable")
+            .status
+            .success()
+    );
+
+    let mismatch = loomc()
+        .args([
+            "--json",
+            "--target-triple",
+            CROSS_TRIPLE,
+            "--runtime-bundle",
+        ])
+        .arg(&bundle)
+        .arg("--linker")
+        .arg(std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into()))
+        .args(["build", "--output"])
+        .arg(project.0.join("mismatched-target"))
+        .arg(&project.0)
+        .output()
+        .expect("reject host runtime for foreign object");
+    assert_eq!(mismatch.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&mismatch.stdout).contains("RuntimeBundleTargetMismatch"));
+
+    let unpaired = loomc()
+        .arg("--runtime-bundle")
+        .arg(&bundle)
+        .arg("build")
+        .arg(&project.0)
+        .output()
+        .expect("reject an unpaired runtime bundle");
+    assert_eq!(unpaired.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&unpaired.stderr).contains("must be provided together"));
+
+    let missing_output = loomc()
+        .args(["runtime", "export"])
+        .output()
+        .expect("reject runtime export without an output");
+    assert_eq!(missing_output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing_output.stderr).contains("requires --output DIR"));
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn foreign_runtime_bundle_fake_linker_and_final_cache_use_all_toolchain_identities() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let bundle_one = project.0.join("runtime-one");
+    write_fake_runtime_bundle(&bundle_one, b"foreign runtime archive one");
+    write_fake_linker(&project, "linker identity one");
+    let linker = project.0.join("fake-linker");
+    let link_log = project.0.join("link-arguments");
+    let object_copy = project.0.join("linked-target-object");
+
+    let build = |bundle: &std::path::Path, output: &std::path::Path| {
+        loomc()
+            .args([
+                "--json",
+                "--target-triple",
+                CROSS_TRIPLE,
+                "--runtime-bundle",
+            ])
+            .arg(bundle)
+            .arg("--linker")
+            .arg(&linker)
+            .args(["build", "--output"])
+            .arg(output)
+            .arg(&project.0)
+            .env("LOOM_FAKE_LINK_LOG", &link_log)
+            .env("LOOM_FAKE_OBJECT_COPY", &object_copy)
+            .output()
+            .expect("cross link with fake linker")
+    };
+
+    let first_output = project.0.join("foreign-one");
+    let first = build(&bundle_one, &first_output);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        cache_status(&first.stdout, "final_artifact").as_deref(),
+        Some("miss")
+    );
+    assert!(
+        fs::read(&object_copy)
+            .expect("cross object copy")
+            .starts_with(b"\x7fELF")
+    );
+    let arguments = fs::read_to_string(&link_log).expect("deterministic linker arguments");
+    let arguments = arguments.lines().collect::<Vec<_>>();
+    assert_eq!(arguments.len(), 6, "{arguments:#?}");
+    assert!(arguments[0].ends_with("loom-target.o"), "{arguments:#?}");
+    assert_eq!(
+        arguments[1],
+        fs::canonicalize(bundle_one.join("runtime.a"))
+            .expect("canonical runtime archive")
+            .to_string_lossy()
+    );
+    assert_eq!(
+        &arguments[2..5],
+        ["-loom-system-one", "-loom-system-two", "-o"]
+    );
+    let staged_output = std::path::Path::new(arguments[5]);
+    assert_eq!(staged_output.parent(), first_output.parent());
+    assert!(
+        staged_output
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".loom-link-")),
+        "{arguments:#?}"
+    );
+    assert!(
+        !staged_output.exists(),
+        "staging path must be atomically moved"
+    );
+    assert!(
+        first_output.exists(),
+        "requested output must be materialized"
+    );
+
+    let cached = build(&bundle_one, &project.0.join("foreign-cached"));
+    assert_eq!(cached.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&cached.stdout, "final_artifact").as_deref(),
+        Some("hit")
+    );
+    assert_eq!(
+        cache_key(&first.stdout, "final_artifact"),
+        cache_key(&cached.stdout, "final_artifact")
+    );
+
+    write_fake_linker(&project, "linker identity two");
+    let changed_linker = build(&bundle_one, &project.0.join("foreign-linker-two"));
+    assert_eq!(changed_linker.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&changed_linker.stdout, "final_artifact").as_deref(),
+        Some("miss")
+    );
+    assert_ne!(
+        cache_key(&first.stdout, "final_artifact"),
+        cache_key(&changed_linker.stdout, "final_artifact")
+    );
+
+    let bundle_two = project.0.join("runtime-two");
+    write_fake_runtime_bundle(&bundle_two, b"foreign runtime archive two");
+    let changed_runtime = build(&bundle_two, &project.0.join("foreign-runtime-two"));
+    assert_eq!(changed_runtime.status.code(), Some(0));
+    assert_eq!(
+        cache_status(&changed_runtime.stdout, "final_artifact").as_deref(),
+        Some("miss")
+    );
+    assert_ne!(
+        cache_key(&changed_linker.stdout, "final_artifact"),
+        cache_key(&changed_runtime.stdout, "final_artifact")
+    );
 }
 
 #[test]
