@@ -585,7 +585,7 @@ TaskWait       := "Task" "." ("waitReadable" | "waitWritable") "(" Expression ")
 
 `pub async fn` 合法；method/concept requirement 的 async 形式当前拒绝。`scoped` 不与 `let`/`var` 连写。显式类型仍写 `scoped name Type = value`，不增加 `name: Type`。
 
-parser recovery 的 declaration start set 必须识别 `async fn`、`pub async fn`、`test async fn`；block recovery 必须识别 `scoped` 与 `defer`。`.await`、call/member 与独立的 `?` 共用 postfix chain 和 nesting budget，并保持输入 lossless；旧前缀 `await task` 只是非法语法，按普通 `UnexpectedToken` 诊断，不设置迁移专用错误码，也不得进入 checked program。`a.await?` 合法，`a.await!` 不定义为 unwrap 或 fault 运算符。
+parser recovery 的 declaration start set 必须识别 `async fn`、`pub async fn`、`test async fn`；block recovery 必须识别 `scoped`、`defer` 与 `discard`。`.await`、call/member 与独立的 `?` 共用 postfix chain 和 nesting budget，并保持输入 lossless；旧前缀 `await task` 只是非法语法，按普通 `UnexpectedToken` 诊断，不设置迁移专用错误码，也不得进入 checked program。`a.await?` 合法，`a.await!` 不定义为 unwrap 或 fault 运算符。
 
 当前 checker 只发布已验证的 async 形状；不支持的 async method/concept requirement、contract/interface-cross-await 形状必须给出 source diagnostic。线性表达式中的后缀 await 会在 MIR lowering 时按求值顺序提取成隐藏 suspension binding，因此 `task.await.decode()`、`task.await + 1` 与 `task.await?` 可恢复执行；if/match/block 内的 await 保留自己的 numbered state，并由同一 resume dispatch 恢复。`?` 仅接受 `Result[T, E]`，要求当前 callable 返回错误类型完全相同的 `Result[_, E]`，并降低为显式 `Ok/Err` 分支；`Err` 复用普通 return 路径，因此执行全部词法 cleanup。`Task.sleep(milliseconds)`、`Task.waitReadable(fd)` 与 `Task.waitWritable(fd)` 都构造可存储 Task；descriptor 仅在 registration 生命周期内被借用，runtime 不负责关闭。固定异构 Task 参数产生 tuple，单个同构 task list 产生 list；`all/settled/any/race` 共享真实 JoinState、取消与 drain。LLVM safepoint 上的精确 moving collector 会重写跨 await frame roots。
 
