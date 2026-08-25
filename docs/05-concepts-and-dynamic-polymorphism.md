@@ -2,7 +2,7 @@
 
 状态：Confirmed Normative Design + LLVM C1 Executable Reference
 
-日期：2026-08-25
+日期：2026-08-26
 
 本文规定 Loom 唯一的行为抽象 `concept`、静态泛型约束、默认接口参数和显式 `dyn C`。本版不引入所有权、借用、生命周期、`view[...]`、`box[...]` 或 `shared[...]` 语法。
 
@@ -193,11 +193,21 @@ source Source[Item = Int]
 
 不满足时在 concept 定义处报告，而不是让各调用点偶然得到不同结论。
 
-`dyn C` 是普通一等值，可以存储、复制、嵌套和返回。普通 copy 产生独立的逻辑值及同一份不可变 conformance proof；复制后的可变 receiver 不得通过隐藏别名改变原副本。对象地址、临时写回地址和 proof layout 都不可观察。
+`dyn C` 是普通一等值，可以存储、复制、嵌套和返回。普通 copy 产生独立的逻辑值及同一份不可变 conformance proof；复制后的可变 receiver 不得通过隐藏别名改变原副本。对象地址、call-scoped carrier storage 和 proof layout 都不可观察。
 
 上述“普通一等值”不允许类型擦除隐藏 Core 0.3 的资源或任务 obligation。concrete source 若具有直接或递归 `MustScope` obligation、是未消费 `Task`，或其泛型形状尚不能证明不含两者，则不得适配成可自由保存或 discard 的 `dyn C`。checker 必须在建立 erased interface 时拒绝，而不是等到 `discard dyn_value` 后丢失 concrete obligation；Core 没有运行时 obligation registry，也不借此引入 ownership、borrow 或 move carrier。
 
-对已经存储的 `dyn C` 调用 `mut self` requirement，receiver 必须是 `var` place，修改该接口值内部的 concrete data。同步函数的 concrete `var T` 实参自动适配到 mutable 接口参数时，编译器可以使用仅覆盖该次调用的写回载体，正常返回后把修改写回原 place。该载体只存在于 checked MIR/backend，不能被存储、返回、嵌套或跨 `.await`；源码仍不暴露 borrow、lifetime、`&mut` 或 token。异步调用的接口参数按拥有值复制进 Task frame，不保留指向 caller place 的写回地址。
+因此，即使 conditional witness 已能完整传递，下面的通用擦除仍必须拒绝：
+
+```loom
+fn erase[T: Display](value T) dyn Display {
+    value
+}
+```
+
+`T: Display` 只证明 conformance，不证明任意 `T` 都没有递归 `MustScope` 或 Task obligation。当前源码也没有“不含资源/任务”的通用 bound；只有 checker 对 concrete source 形状已精确证明安全时，才能建立 `dyn C`。
+
+对已经存储的 `dyn C` 调用 `mut self` requirement，receiver 必须是 `var` place，修改该接口值内部的 concrete data。同步函数的 concrete `var T` 实参自动适配到 mutable 接口参数时，编译器使用仅覆盖该次调用的 stable proxy/copy-in-copy-out carrier，正常返回后把修改提交回原 place。该 carrier 是 checked MIR/backend 所有的临时稳定 storage，不是嵌入 `dyn` 值的 caller 裸地址，不能被存储、返回、嵌套或跨 `.await`；源码仍不暴露 borrow、lifetime、`&mut` 或 token。异步调用的接口参数按拥有值复制进 Task frame，不保留 caller place 的回写 carrier。
 
 ## 8. 表示与派发
 
@@ -210,9 +220,28 @@ source Source[Item = Int]
 - 在间接派发仍存在时，使用当前 LLVM C1 的 compiler-private data/witness pair；
 - 对单一 live implementation 使用专用 thunk，或让优化器消除未使用的 table/slot。
 
-优化顺序固定为：先去虚化并消除接口表示，再特化调用签名只传仍未知的部分，其次传递分离的 SSA data/proof，最后才物化 pair。把接口值压成一个指针不是独立目标；对象头、existential box、inline container 或 tagged pointer 只是把另一部分信息移到别处。当前 LLVM C1 为真正存活的一等接口值使用 GC-managed concrete value 加 witness，调用期写回信息仍是短生命周期 compiler-private 状态；后端可基于实测改成单指针或其他布局，但不得改变复制隔离、派发、DCE 或 fault 语义。
+优化顺序固定为：先去虚化并消除接口表示，再特化调用签名只传仍未知的部分，其次传递分离的 SSA data/proof，最后才物化 pair。把接口值压成一个指针不是独立目标；对象头、existential box、inline container 或 tagged pointer 只是把另一部分信息移到别处。当前 LLVM C1 为真正存活的一等接口值使用 GC-managed concrete value 加 witness，mutable call carrier 仍是短生命周期 compiler-private 状态；后端可基于实测改成单指针或其他布局，但不得改变复制隔离、派发、DCE 或 fault 语义。
 
-witness 可以降低成 table，也可以降低成单独函数引用或被完全常量折叠。若使用 table，它由 `(concrete type, concept, associated bindings)` 决定，并且只允许引用该 concept 的 live method slots 与必要 proof metadata。concrete record 不嵌入 C++ 风格 vptr；派发不依赖 Java 对象头、GC、class loader、反射或全局 conformance registry。
+witness 可以降低成 table，也可以降低成单独函数引用或被完全常量折叠。当前 LLVM C1 物化为两层 compiler-private 表示：
+
+```text
+WitnessDescriptor {
+    prerequisite_count,
+    method_count,
+    methods,                 // concept-local dense live slots
+}
+
+WitnessInstance {
+    descriptor,
+    prerequisites,           // ordered contiguous proof-pointer array
+}
+```
+
+descriptor 和 method array 是 process-lifetime compiler globals；每个 concept 为本产物中真正可达的 requirements 编排自己的稠密 slots。instance 只指向 descriptor 和按声明顺序存放的连续 prerequisite pointer array，conditional application 保留 proof DAG 共享。这些布局不含 concrete type id、concept id 或运行时查找键。
+
+无 prerequisite 的 concrete proof 可直接是 immutable global instance；同步临时 conditional proof 可以是 stack instance。需要成为 owned `dyn C` 的非全局 proof 会以单次事务深拷贝进入非移动 GC proof arena，collector 从 live `dyn` 的 witness 根递归 mark 并 sweep；跨 `.await` 的隐藏 proof 则按 Task 拥有的独立 proof slots 与 arena 保存。两种 clone 都只在本次操作中保留 source map，不持久缓存栈地址。
+
+concrete record 不嵌入 C++ 风格 vptr；派发不依赖 Java 对象头、class loader、反射或全局 conformance registry。
 
 layout、slot order、symbol name 和是否存在 materialized interface object 都是 compiler-private，不承诺 FFI/plugin 稳定性。任何表示都必须保持相同的值、mutation、ConstraintError、ContractFault 和 RuntimeFault。
 

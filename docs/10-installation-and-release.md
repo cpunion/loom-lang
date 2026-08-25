@@ -13,16 +13,18 @@ SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从�
 与 linker identity 纳入缓存。仅需要 relocatable object 时不需要 runtime bundle。
 
 当前 universal `Value` lowering 只支持 64-bit pointer target；这是当前 compiler/runtime-private
-表示限制，不是对旧 Value 布局兼容性的承诺。32-bit triple 在产生 object 前以
-`UnsupportedNativePointerWidth` fail closed。当前 native runtime ABI 总版本是 v3，其精确 identity 为
-`loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。
+表示边界。32-bit triple 在产生 object 前以
+`UnsupportedNativePointerWidth` fail closed。当前 native runtime ABI 总版本是 v5，coroutine/task ABI
+是 v2，witness ABI 是 v1；其精确 identity 为
+`loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v5/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3`。
 
-v3 把 managed `Heap` 的所有权固定在 `LoomRuntime`：需要 runtime 的同步 root 只创建 Runtime，
-async root 才附加 Executor，reactor 与 blocking-I/O worker 均懒初始化；pure/no-fault primitive-scalar
-root 不创建隐藏 context。旧 `loom_executor_create`、`loom_gc_activate_executor`/
-`loom_gc_deactivate_executor`、`loom_executor_raise_fault`、`loom_executor_runtime_v1` 和
-`loom_runtime_heap_v1` ABI 已删除且没有 shim。旧 runtime bundle 即使 archive 本身仍可链接，
-也必须先因 ABI identity 不匹配而拒绝，不能与当前 codegen 混用。
+v5 保留 `runtime-v1` 的 Runtime lifecycle：managed heap 由 `LoomRuntime` 拥有，async root 才附加
+Executor，reactor 与 blocking-I/O worker 均懒初始化，pure/no-fault primitive-scalar root 不创建
+隐藏 context。`task-v2` 为 coroutine descriptor 增加独立 proof count/slots/arena；`witness-v1`
+固定 compiler-private compact descriptor/instance 边界；`gc-v5` 追踪并 sweep owned `dyn` 的非移动
+proof arena。`shadow-stack-v1` 表示 runtime 端 precise synchronous root frame 与 safepoint protocol 已版本化，
+不表示 LLVM 同步 root-frame 发射与 safepoint poll 已接入；该 moving-GC codegen 阶段仍在开发。
+bundle identity 必须与上述字符串精确一致。
 
 ## LLVM 19
 

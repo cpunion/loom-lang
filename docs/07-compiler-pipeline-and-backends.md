@@ -2,7 +2,7 @@
 
 状态：Normative Toolchain Design + Core 0.1–0.3 LLVM/Package/Cache C1 Reference
 
-日期：2026-08-25
+日期：2026-08-26
 
 本文固定从普通 `.loom` 源码到 native executable 的完整流程。范围只含源码、静态类型、受约束值/合同、concept、多态、自动内存管理、词法清理、结构化 Task、编译产物和工具链；不含 live、AST 编辑、AOP、operator runtime 或所有权语法。Core 0.3 的语言语义见 [GC、词法清理与异步任务定案](08-memory-cleanup-and-async.md)。
 
@@ -26,7 +26,7 @@ source files
 
 `checked MIR` 是唯一可信后端输入。后端不得重新猜名字、conformance、associated type、合同顺序或 mutability；MIR validator 失败属于 compiler defect，不能降级执行。
 
-validator 还在 artifact/cache 边界复核可由 MIR 类型形状证明的 obligation：`Evaluate` 不得丢弃直接或递归携带 `Task`、预置 `File`/`Socket` 或未解析泛型义务的值，`MakeView` 也不得把这些义务擦除进 `dyn`。用户定义的 `MustScope` 仍由 sema 保证，因为当前 MIR 没有可独立恢复的 canonical `MustScope` concept identity；在该 identity 进入 MIR 前，validator 不得靠 concept 名字猜测。
+validator 还在 artifact/cache 边界复核可由 MIR 类型形状证明的 obligation：`Evaluate` 不得丢弃直接或递归携带 `Task`、预置 `File`/`Socket` 或未解析泛型义务的值，`MakeView` 也不得把这些义务擦除进 `dyn`。因此 `fn erase[T: C](value T) dyn C` 仍会 fail closed：`T: C` 只提供 conformance proof，没有证明未知 `T` 不隐藏 `MustScope` 或 Task obligation。用户定义的 `MustScope` 仍由 sema 保证，因为当前 MIR 没有可独立恢复的 canonical `MustScope` concept identity；在该 identity 进入 MIR 前，validator 不得靠 concept 名字猜测。
 
 当前 crate 边界：
 
@@ -145,13 +145,19 @@ InstanceKey = (
 
 ### 函数
 
-当前 universal `Value` body 使用统一调用形状：
+当前 universal `Value` body 使用五个 pointer operand 的统一调用形状：
 
 ```text
-status fn(out_value, argument_nodes, witness_nodes, context)
+status fn(
+    out_value,
+    argument_nodes,
+    conformance_proofs,
+    requirement_proofs,
+    context,
+)
 ```
 
-正常返回写入 `out_value` 并返回 0；ContractFault/RuntimeFault 走非零 status。需要 context 时，同步路径传入 `LoomRuntime`，async resume 路径传入 `LoomExecutor`；runtime 只通过 versioned context ABI 解析它。业务 `Result.Err` 仍是普通返回值，绝不与 status 混淆。该调用形状只是当前 lowering，不承诺旧 bundle 或未来 native library 的布局兼容。
+两个 proof operand 都是定长、稠密、按签名顺序索引的 pointer array：前者是 conformance 自身的 conditional prerequisite prefix，后者是该次 requirement/call 新增的 proof suffix；空 array 使用 null pointer。正常返回写入 `out_value` 并返回 0；ContractFault/RuntimeFault 走非零 status。需要 context 时，同步路径传入 `LoomRuntime`，async resume 路径传入 `LoomExecutor`；runtime 只通过 versioned context ABI 解析它。业务 `Result.Err` 仍是普通返回值，绝不与 status 混淆。该调用形状只是当前 lowering，不承诺作为 public native library ABI。
 
 eligible concrete `Int` 函数按 requirement summary 使用两种私有调用形状：
 
@@ -174,23 +180,25 @@ root context 由 invocation summary 与实际 ABI 共同决定：
 
 `LoomRuntime` 始终拥有 `LoomHeap`；Executor 只借用该稳定 Runtime，并拥有 task/join/ready-queue 调度状态。OS reactor 在首次 wait registration 时初始化，blocking file/socket worker mailbox 在首次需要 worker 时初始化，因此 async root 本身不等于预先创建 kqueue/epoll 或 worker。root 先消费可能引用 heap 的结果，再按 Executor destroy → Runtime deactivate → Runtime destroy 的顺序清理；Runtime activation 或 Executor attachment 失败也走有界清理路径。Task fault record 实行 first-fault-wins：第一次成功记录的 code/message/detail 是 primary fault，后续 fault record 返回成功以让 unwind cleanup 继续，但不会覆盖该记录；当前 ABI 不向源码暴露 suppressed fault 列表。
 
-当前 native runtime ABI 总版本是 v3，精确 identity 为 `loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。旧 executor-owned runtime 入口 `loom_executor_create`、executor GC activation 入口 `loom_gc_activate_executor`/`loom_gc_deactivate_executor`、executor fault 入口 `loom_executor_raise_fault`，以及 `loom_executor_runtime_v1`/`loom_runtime_heap_v1` introspection 入口均已删除；当前 codegen 使用 `loom_runtime_create_v1`、`loom_runtime_activate_v1`、`loom_runtime_deactivate_v1`、`loom_runtime_destroy_v1`、`loom_executor_create_for_runtime_v1` 与 `loom_context_raise_fault_v1`。没有兼容 shim，旧 runtime bundle 必须因 identity 不匹配而拒绝。
+当前 native runtime ABI 总版本是 v5，coroutine/task ABI 是 v2，witness ABI 是 v1；精确 identity 为 `loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v1/gc-v5/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v3`。`runtime-v1` 保留现有 Runtime lifecycle symbol names，不代表总 ABI 停在 v1。当前 codegen 使用 Runtime lifecycle/attach-Executor/context-fault 入口，并通过 `loom_gc_clone_witness_v1`、`loom_task_capture_witnesses_v1` 与 `loom_task_witness_v1` 管理 owned proof。bundle identity 必须精确匹配。
 
 ### 接口
 
-`dyn C` 在 checked MIR 中表示 concrete data 与已选 conformance proof 一起流动，不规定 LLVM 类型或内存布局。它是可返回、可存储、可嵌套的一等值；普通 copy 深复制 logical data，proof 可安全共享。静态可知调用直接落到 implementation；后端也可以把 data/proof 拆成 SSA 参数或完全消除接口值。当前 C1 只在间接调用幸存时使用 GC-managed data/witness 表示，并沿用同一内部函数签名。同步 concrete-to-mutable-interface 参数另带不可逃逸的临时写回地址；异步参数只捕获 owned copy。
+`dyn C` 在 checked MIR 中表示 concrete data 与已选 conformance proof 一起流动，不规定 LLVM 类型或内存布局。它是可返回、可存储、可嵌套的一等值；普通 copy 深复制 logical data，proof 可安全共享。静态可知调用直接落到 implementation；后端也可以把 data/proof 拆成 SSA 参数或完全消除接口值。当前 C1 只在间接调用幸存时使用 GC-managed data/witness 表示，并使用上节分离的 conformance/requirement proof arrays。同步 concrete-to-mutable-interface 参数使用 call-scoped stable proxy/copy-in-copy-out carrier，而不是把 caller 裸地址嵌入 `dyn`；异步参数只捕获 owned copy。
 
-witness table 不是语言必须存在的对象。若当前后端选择物化它，只允许为 live requirement slot 引用 method。root/witness reachability 在表示选择之前完成，因此 DCE 不依赖 fat-pointer、table prefix、运行时 type id 或 registry。
+witness table 不是语言必须存在的对象。当前 64-bit compiler-private 布局是 `WitnessDescriptor { prerequisite_count: u64, method_count: u64, methods: pointer }`（size 24, align 8）与 `WitnessInstance { descriptor: pointer, prerequisites: pointer }`（size 16, align 8）。descriptor 和 concept-local method array 是 immutable globals；每个 concept 对本产物中可达的 method requirements 编排自己的稠密 slots。instance 的 prerequisites 是有序连续 proof-pointer array，conditional proof 保留 DAG 共享；该表示不包含运行时 type/concept id 或持久 source-address cache。root/witness reachability 在表示选择之前完成，因此 DCE 不依赖 fat-pointer、table prefix、运行时 type id 或 registry。
 
 后端优化优先级是：去虚化/内联 → 调用签名特化 → 分离 SSA data/proof → 必要时物化 pair。单指针表示不作为 KPI；目标 ABI 或实测结果确有收益时，可以局部选择 box/header/inline/tagged representation，但不得改变显式 conformance、值复制、proof flow、fault 或 DCE 结果。
 
 ### managed object 与 GC
 
-Core 0.3 的 native ABI 使用 compiler/runtime-private layout tag、精确 frame slots、safepoint 和 root protocol；它们不进入源码或稳定 library ABI。当前 stackless lowering 只在一次 `resume` 返回之后收集，因此所有跨 safepoint live value 都已位于 Task frame/result roots，不需要让裸 SSA 地址跨越 safepoint。`LoomRuntime` 拥有的 collector 追踪 `Value` 与 aggregate `ValueNode`，回收不可达对象、复制存活对象并重写 frame/runtime roots；Task 指针和 immutable witness metadata 留在非移动区。native local `List[Int]` storage 只含非 managed `i64` 并由生成代码显式释放，不进入 trace 集合。runtime fixture 会保存旧地址并验证根被改写、垃圾被回收，同时 differential tests 保持 value copy、equality、contract、concept dispatch 与 fault 一致。
+已落地的 runtime collector 追踪 `Value`、aggregate `ValueNode` 与 managed `Text`，回收不可达对象、复制存活对象并重写已登记 roots。owned `dyn` 的非全局 proof 使用独立的非移动 mark-sweep proof arena：`loom_gc_clone_witness_v1` 以单次事务 worklist 深拷贝 prerequisite DAG，GC 从 live `dyn` 的 witness 字段追踪并 sweep proof instances。proof allocation 进入 GC live/reclaimed/threshold 统计，但 proof 地址不 relocation。native local `List[Int]` storage 只含非 managed `i64` 并由生成代码显式释放，不进入 trace 集合。
+
+runtime 侧 `shadow-stack-v1` 已定义 precise synchronous root descriptor/frame、push/pop 与 safepoint 入口；但当前 LLVM 同步函数还没有发射并接入这些 root frames/safepoint polls。因此当前可宣称的 moving collection 闭环是 Executor 在 `resume` 返回后以 Task slots/results 为 roots 的 async 边界；完整 LLVM synchronous moving-GC codegen 仍属下一阶段，不能因 runtime ABI 已存在而标记为已完成。
 
 ### Task 与 coroutine
 
-`Task[T]` 是单个 managed pointer。每个 reachable async constructor 形成对 compiler-generated `resume`、`cancel`、`trace` 和 frame/result descriptor 的闭合边；descriptor 类似静态 witness table，但不是用户 concept、fat-pointer 第二字段或 runtime registry。
+`Task[T]` 是单个 managed pointer。每个 reachable async constructor 形成对 compiler-generated `resume`、`cancel`、`trace` 和 frame/result descriptor 的闭合边；descriptor 类似静态 witness table，但不是用户 concept、fat-pointer 第二字段或 runtime registry。coroutine descriptor v2 另有 `witness_count`；constructor 通过 `loom_task_capture_witnesses_v1` 一次性验证并深拷贝所有隐藏 proof roots 到 Task 私有的非移动 arena，`resume`/`cancel` 通过 `loom_task_witness_v1` 按稠密 index 访问独立 proof slots。proof slots 与 universal `Value` frame slots 独立，源栈 instance 只需存活到 capture 返回。
 
 Loom MIR 先把 async body降低成 numbered suspension/cancellation states，再由 LLVM 发射普通 control flow。后端不直接采用 Rust `Future`/`Pin` 表面，也不把 C++ `promise_type` customization 暴露给语言。join node 与 ready queue 属于附加到 root Runtime 的 Executor，wait registration 属于其惰性 reactor；child completion 只能 enqueue waiter，不能在 runtime callback 栈上直接重入 continuation。
 
@@ -398,7 +406,7 @@ Core 0.3 的新增关门条件：
 13. Pending task 使用 wait registration/ready queue，不忙轮询；
 14. static tuple join 与 dynamic list join 保持 input-order result layout；
 15. `all/any/race` 的 sibling cancellation 在返回前 drain cleanup；
-16. moving GC 能重定位 coroutine frame/results，同时不改变 Task identity、合同或 concept behavior；
+16. async scheduler safepoint 能重定位 Task slots/results 引用的 managed objects，同时不改变 Task identity、proof address、合同或 concept behavior；
 17. async descriptor 和 join runtime edge进入 root graph，未构造的 task/conformance 仍可被 DCE；
 18. manifest path dependency、SemVer、cycle、bin/test target 与稳定 dependency source label 通过 driver/CLI 回归；
 19. cache relocation identity 不含绝对路径，内容变化 miss，损坏 blob 安全 miss/修复，第二次 checked-MIR/final-artifact 构建真实 hit。
@@ -408,3 +416,6 @@ Core 0.3 的新增关门条件：
 23. POD record 的私有栈节点在 whole-value copy/call/return 边界物化独立 managed chain，基准 hot loop 经 SROA 后没有字段内存流量或 node allocation；
 24. native `List[Int]` 的 canonical append SSA、exact-length scan proof、保守 fallback、fault 后 header/drop 一致性与 checked checksum 均有 development/release/native 回归；
 25. terminal fault/status edge 的 cold-layout hints 不污染普通业务分支，Task 第二次 fault record 不覆盖 primary fault。
+26. concept-local reachable method slots、conditional proof DAG 的 owned `dyn` clone/GC sweep，以及 Task proof capture/access 均有 native/runtime 回归。
+
+LLVM synchronous root-frame 发射和 safepoint poll 尚未进入上述已通过集合；它们必须在 moving-GC codegen 阶段以同步分配/调用/循环的真实 native 回归单独关门。
