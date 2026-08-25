@@ -1437,6 +1437,7 @@ fn run_format(
                 options.json,
                 stdout,
                 stderr,
+                Some(snapshot.sources()),
             )?;
             continue;
         }
@@ -1467,6 +1468,7 @@ fn run_format(
             options.json,
             stdout,
             stderr,
+            Some(snapshot.sources()),
         )?;
     }
     for path in &changed {
@@ -2138,6 +2140,7 @@ fn emit_source_diagnostics(
         json_output,
         stdout,
         stderr,
+        Some(compilation.sources()),
     )?;
     Ok(compilation.has_errors())
 }
@@ -2147,6 +2150,7 @@ fn emit_records(
     json_output: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    sources: Option<&SourceMap>,
 ) -> io::Result<()> {
     for record in records {
         if json_output {
@@ -2155,7 +2159,14 @@ fn emit_records(
                 &serde_json::to_value(record).map_err(io::Error::other)?,
             )?;
         } else {
-            writeln!(stderr, "{}", record.human())?;
+            writeln!(
+                stderr,
+                "{}",
+                sources.map_or_else(
+                    || record.human(),
+                    |sources| record.human_with_source(sources)
+                )
+            )?;
         }
     }
     Ok(())

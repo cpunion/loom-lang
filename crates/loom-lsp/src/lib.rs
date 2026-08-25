@@ -4,7 +4,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use loom_core::{Diagnostic, FileId, Severity};
-use loom_driver::{AnalysisHost, AnalysisSnapshot, Position, SourceMap, is_valid_identifier};
+use loom_driver::{
+    AnalysisHost, AnalysisSnapshot, Position, SourceMap, format_source, is_valid_identifier,
+};
 use serde_json::{Value, json};
 
 const INVALID_REQUEST: i64 = -32600;
@@ -40,10 +42,15 @@ pub fn run(reader: impl BufRead, writer: impl Write) -> io::Result<()> {
 struct Server<R, W> {
     reader: R,
     writer: W,
-    host: Option<AnalysisHost>,
-    open_documents: BTreeMap<String, PathBuf>,
+    hosts: BTreeMap<PathBuf, AnalysisHost>,
+    open_documents: BTreeMap<String, OpenDocument>,
     published_uris: BTreeSet<String>,
     shutdown_requested: bool,
+}
+
+struct OpenDocument {
+    path: PathBuf,
+    text: String,
 }
 
 impl<R: BufRead, W: Write> Server<R, W> {
@@ -51,7 +58,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         Self {
             reader,
             writer,
-            host: None,
+            hosts: BTreeMap::new(),
             open_documents: BTreeMap::new(),
             published_uris: BTreeSet::new(),
             shutdown_requested: false,
@@ -89,9 +96,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 let Some(id) = id else {
                     return Ok(false);
                 };
-                match initialize_root(&params).and_then(AnalysisHost::new) {
-                    Ok(host) => {
-                        self.host = Some(host);
+                match initialize_roots(&params).and_then(open_workspace_hosts) {
+                    Ok(hosts) => {
+                        self.hosts = hosts;
                         self.respond(
                             id,
                             json!({
@@ -106,10 +113,20 @@ impl<R: BufRead, W: Write> Server<R, W> {
                                     "definitionProvider": true,
                                     "referencesProvider": true,
                                     "renameProvider": {"prepareProvider": true},
+                                    "documentFormattingProvider": true,
                                     "hoverProvider": true,
                                     "completionProvider": {"triggerCharacters": ["."]},
                                     "documentSymbolProvider": true,
-                                    "workspaceSymbolProvider": true
+                                    "workspaceSymbolProvider": true,
+                                    "workspace": {
+                                        "workspaceFolders": {
+                                            "supported": true,
+                                            "changeNotifications": true
+                                        },
+                                        "didChangeWatchedFiles": {
+                                            "dynamicRegistration": false
+                                        }
+                                    }
                                 },
                                 "serverInfo": {
                                     "name": "loom-lsp",
@@ -142,6 +159,8 @@ impl<R: BufRead, W: Write> Server<R, W> {
             "textDocument/didOpen" => self.did_open(&params)?,
             "textDocument/didChange" => self.did_change(&params)?,
             "textDocument/didClose" => self.did_close(&params)?,
+            "workspace/didChangeWatchedFiles" => self.did_change_watched_files(&params)?,
+            "workspace/didChangeWorkspaceFolders" => self.did_change_workspace_folders(&params)?,
             "textDocument/diagnostic" => {
                 if let Some(id) = id {
                     self.document_diagnostic(id, &params)?;
@@ -187,6 +206,11 @@ impl<R: BufRead, W: Write> Server<R, W> {
                     self.rename(id, &params)?;
                 }
             }
+            "textDocument/formatting" => {
+                if let Some(id) = id {
+                    self.formatting(id, &params)?;
+                }
+            }
             _ => {
                 if let Some(id) = id {
                     self.respond_error(
@@ -212,16 +236,26 @@ impl<R: BufRead, W: Write> Server<R, W> {
             Ok(path) => path,
             Err(error) => return self.log_error(&error),
         };
-        let Some(host) = self.host.as_mut() else {
+        let Some(workspace) = self.workspace_for_path(&path) else {
             return self.log_error("server has not been initialized");
         };
+        let host = self
+            .hosts
+            .get_mut(&workspace)
+            .expect("selected workspace host exists");
         let path = match host.resolve_path(&path) {
             Ok(path) => path,
             Err(error) => return self.log_error(&error.to_string()),
         };
         host.set_overlay(&path, text)
             .expect("a resolved project path remains inside the project");
-        self.open_documents.insert(uri.to_owned(), path);
+        self.open_documents.insert(
+            uri.to_owned(),
+            OpenDocument {
+                path,
+                text: text.to_owned(),
+            },
+        );
         self.publish_diagnostics()
     }
 
@@ -244,16 +278,23 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let path = self
             .open_documents
             .get(uri)
-            .cloned()
+            .map(|document| document.path.clone())
             .or_else(|| file_uri_to_path(uri).ok());
         let Some(path) = path else {
             return self.log_error("didChange URI is not a valid file URI");
         };
-        let Some(host) = self.host.as_mut() else {
+        let Some(workspace) = self.workspace_for_path(&path) else {
             return self.log_error("server has not been initialized");
         };
+        let host = self
+            .hosts
+            .get_mut(&workspace)
+            .expect("selected workspace host exists");
         if let Err(error) = host.set_overlay(path, text) {
             return self.log_error(&error.to_string());
+        }
+        if let Some(document) = self.open_documents.get_mut(uri) {
+            document.text = text.to_owned();
         }
         self.publish_diagnostics()
     }
@@ -262,20 +303,96 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(uri) = pointer_str(params, "/textDocument/uri") else {
             return self.log_error("didClose is missing textDocument.uri");
         };
-        if let Some(path) = self.open_documents.remove(uri)
-            && let Some(host) = self.host.as_mut()
-            && let Err(error) = host.clear_overlay(path)
+        if let Some(document) = self.open_documents.remove(uri)
+            && let Some(workspace) = self.workspace_for_path(&document.path)
+            && let Some(host) = self.hosts.get_mut(&workspace)
+            && let Err(error) = host.clear_overlay(document.path)
         {
             self.log_error(&error.to_string())?;
         }
         self.publish_diagnostics()
     }
 
+    fn did_change_watched_files(&mut self, params: &Value) -> io::Result<()> {
+        let Some(changes) = params.get("changes").and_then(Value::as_array) else {
+            return self.log_error("didChangeWatchedFiles is missing changes");
+        };
+        let mut affected = BTreeSet::new();
+        for change in changes {
+            let Some(uri) = change.get("uri").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(path) = file_uri_to_path(uri) else {
+                continue;
+            };
+            let watched = path
+                .file_name()
+                .is_some_and(|name| name == "loom.toml" || name == "loom.lock")
+                || path
+                    .extension()
+                    .is_some_and(|extension| extension == "loomlib");
+            if watched && let Some(workspace) = self.workspace_for_path(&path) {
+                affected.insert(workspace);
+            }
+        }
+        for workspace in affected {
+            if let Err(message) = self.reload_workspace(&workspace) {
+                self.log_error(&message)?;
+            }
+        }
+        self.publish_diagnostics()
+    }
+
+    fn did_change_workspace_folders(&mut self, params: &Value) -> io::Result<()> {
+        if let Some(removed) = params.pointer("/event/removed").and_then(Value::as_array) {
+            for folder in removed {
+                let Some(uri) = folder.get("uri").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Ok(path) = file_uri_to_path(uri) else {
+                    continue;
+                };
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                self.hosts.remove(&canonical);
+            }
+        }
+        if let Some(added) = params.pointer("/event/added").and_then(Value::as_array) {
+            for folder in added {
+                let Some(uri) = folder.get("uri").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Ok(path) = file_uri_to_path(uri) else {
+                    self.log_error("workspace folder URI is not a local file URI")?;
+                    continue;
+                };
+                match AnalysisHost::new(&path) {
+                    Ok(mut host) => {
+                        replay_open_documents(&mut host, &self.open_documents);
+                        self.hosts.insert(host.root().to_path_buf(), host);
+                    }
+                    Err(error) => self.log_error(&format!(
+                        "cannot open workspace folder {}: {error}",
+                        path.display()
+                    ))?,
+                }
+            }
+        }
+        self.publish_diagnostics()
+    }
+
+    fn reload_workspace(&mut self, workspace: &Path) -> Result<(), String> {
+        let mut host = AnalysisHost::new(workspace)
+            .map_err(|error| format!("cannot reload workspace {}: {error}", workspace.display()))?;
+        replay_open_documents(&mut host, &self.open_documents);
+        self.hosts.insert(host.root().to_path_buf(), host);
+        Ok(())
+    }
+
     fn document_diagnostic(&mut self, id: Value, params: &Value) -> io::Result<()> {
         let Some(uri) = pointer_str(params, "/textDocument/uri") else {
             return self.respond_error(id, INVALID_PARAMS, "missing textDocument.uri", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         let items = diagnostics_for_uri(&snapshot, uri);
@@ -286,7 +403,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some((uri, position)) = text_position(params) else {
             return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
@@ -298,12 +415,12 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(symbol.definition.file) else {
             return self.respond(id, Value::Null);
         };
-        if !source.is_root_package() {
+        if source.is_embedded_dependency() {
             return self.respond_error(
                 id,
                 INVALID_REQUEST,
-                "dependency sources are read-only",
-                Some(json!({"code": "DependencySourceReadOnly"})),
+                "portable library implementation sources are compiler-private",
+                Some(json!({"code": "DependencyArtifactOpaque"})),
             );
         }
         self.respond(
@@ -322,7 +439,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some((uri, position)) = text_position(params) else {
             return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
@@ -350,7 +467,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .pointer("/context/includeDeclaration")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         if snapshot.has_errors() {
@@ -366,6 +483,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .into_iter()
             .filter_map(|reference| {
                 let source = snapshot.sources().document(reference.span.file)?;
+                if source.is_embedded_dependency() {
+                    return None;
+                }
                 Some(json!({
                     "uri": self.uri_for_path(source.absolute_path()),
                     "range": source.utf16_range(
@@ -382,7 +502,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some((uri, position)) = text_position(params) else {
             return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         let Some((file, byte)) = file_and_byte(&snapshot, uri, position) else {
@@ -424,7 +544,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(uri) = pointer_str(params, "/textDocument/uri") else {
             return self.respond_error(id, INVALID_PARAMS, "missing textDocument.uri", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         let Ok(path) = file_uri_to_path(uri) else {
@@ -436,6 +556,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(file) else {
             return self.respond(id, json!([]));
         };
+        if source.is_embedded_dependency() {
+            return self.respond(id, json!([]));
+        }
         let symbols = snapshot
             .document_symbols(file)
             .into_iter()
@@ -460,33 +583,71 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_lowercase();
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
-            return Ok(());
+        if self.hosts.is_empty() {
+            return self.respond_error(
+                id,
+                SERVER_NOT_INITIALIZED,
+                "server has not been initialized",
+                None,
+            );
+        }
+        let snapshots = self
+            .hosts
+            .values()
+            .map(AnalysisHost::snapshot)
+            .collect::<Result<Vec<_>, _>>();
+        let snapshots = match snapshots {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                return self.respond_error(
+                    id,
+                    INVALID_REQUEST,
+                    &format!("cannot build workspace snapshot: {error}"),
+                    None,
+                );
+            }
         };
-        let symbols = snapshot
-            .symbols()
-            .into_iter()
-            .filter(|symbol| {
-                query.is_empty()
-                    || symbol.name.to_lowercase().contains(&query)
-                    || symbol.module.to_lowercase().contains(&query)
-            })
-            .filter_map(|symbol| {
-                let source = snapshot.sources().document(symbol.definition.file)?;
-                Some(json!({
-                    "name": symbol.name,
-                    "kind": symbol_kind(symbol.kind),
-                    "location": {
-                        "uri": self.uri_for_path(source.absolute_path()),
-                        "range": source.utf16_range(
-                            symbol.definition.range.start,
-                            symbol.definition.range.end
-                        )
-                    },
-                    "containerName": symbol.module
-                }))
-            })
-            .collect::<Vec<_>>();
+        let mut symbols = Vec::new();
+        for snapshot in &snapshots {
+            symbols.extend(
+                snapshot
+                    .symbols()
+                    .into_iter()
+                    .filter(|symbol| {
+                        query.is_empty()
+                            || symbol.name.to_lowercase().contains(&query)
+                            || symbol.module.to_lowercase().contains(&query)
+                    })
+                    .filter_map(|symbol| {
+                        let source = snapshot.sources().document(symbol.definition.file)?;
+                        if source.is_embedded_dependency() {
+                            return None;
+                        }
+                        Some(json!({
+                            "name": symbol.name,
+                            "kind": symbol_kind(symbol.kind),
+                            "location": {
+                                "uri": self.uri_for_path(source.absolute_path()),
+                                "range": source.utf16_range(
+                                    symbol.definition.range.start,
+                                    symbol.definition.range.end
+                                )
+                            },
+                            "containerName": symbol.module
+                        }))
+                    }),
+            );
+        }
+        symbols.sort_by(|left, right| {
+            left.get("name")
+                .and_then(Value::as_str)
+                .cmp(&right.get("name").and_then(Value::as_str))
+                .then(
+                    left.pointer("/location/uri")
+                        .and_then(Value::as_str)
+                        .cmp(&right.pointer("/location/uri").and_then(Value::as_str)),
+                )
+        });
         self.respond(id, json!(symbols))
     }
 
@@ -494,7 +655,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some((uri, position)) = text_position(params) else {
             return self.respond_error(id, INVALID_PARAMS, "missing text document position", None);
         };
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         if snapshot.has_errors() {
@@ -509,6 +670,14 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(symbol.definition.file) else {
             return self.respond(id, Value::Null);
         };
+        if !source.is_root_package() {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "dependency sources are read-only",
+                Some(json!({"code": "DependencySourceReadOnly"})),
+            );
+        }
         self.respond(
             id,
             json!({
@@ -536,7 +705,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 None,
             );
         }
-        let Some(snapshot) = self.snapshot_or_error(id.clone())? else {
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
             return Ok(());
         };
         if snapshot.has_errors() {
@@ -568,6 +737,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
             let Some(source) = snapshot.sources().document(reference.span.file) else {
                 continue;
             };
+            if !source.is_root_package() {
+                continue;
+            }
             let uri = self.uri_for_path(source.absolute_path());
             let edits = changes.entry(uri).or_insert_with(|| json!([]));
             let Some(edits) = edits.as_array_mut() else {
@@ -584,6 +756,62 @@ impl<R: BufRead, W: Write> Server<R, W> {
         self.respond(id, json!({"changes": changes}))
     }
 
+    fn formatting(&mut self, id: Value, params: &Value) -> io::Result<()> {
+        let Some(uri) = pointer_str(params, "/textDocument/uri") else {
+            return self.respond_error(id, INVALID_PARAMS, "missing textDocument.uri", None);
+        };
+        let Some(snapshot) = self.snapshot_for_uri(id.clone(), uri)? else {
+            return Ok(());
+        };
+        let Ok(path) = file_uri_to_path(uri) else {
+            return self.respond_error(id, INVALID_PARAMS, "invalid textDocument.uri", None);
+        };
+        let Some(file) = snapshot.sources().file_id(&path) else {
+            return self.respond(id, json!([]));
+        };
+        let Some(source) = snapshot.sources().document(file) else {
+            return self.respond(id, json!([]));
+        };
+        if !source.is_root_package() {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "dependency sources are read-only",
+                Some(json!({"code": "DependencySourceReadOnly"})),
+            );
+        }
+        let Some(text) = source.text() else {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "source is not valid UTF-8",
+                Some(json!({"code": "InvalidUtf8"})),
+            );
+        };
+        let formatted = format_source(file, text);
+        if !formatted.diagnostics.is_empty() {
+            return self.respond_error(
+                id,
+                INVALID_REQUEST,
+                "formatting requires syntactically valid source",
+                Some(json!({"code": "FormatSourceHasErrors"})),
+            );
+        }
+        if !formatted.changed_from(text) {
+            return self.respond(id, json!([]));
+        }
+        self.respond(
+            id,
+            json!([{
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": source.utf16_position(source.byte_len())
+                },
+                "newText": formatted.text
+            }]),
+        )
+    }
+
     fn incomplete_index(&mut self, id: Value) -> io::Result<()> {
         self.respond_error(
             id,
@@ -594,22 +822,32 @@ impl<R: BufRead, W: Write> Server<R, W> {
     }
 
     fn publish_diagnostics(&mut self) -> io::Result<()> {
-        let snapshot = match self.host.as_ref().map(AnalysisHost::snapshot) {
-            Some(Ok(snapshot)) => snapshot,
-            Some(Err(error)) => return self.log_error(&error.to_string()),
-            None => return self.log_error("server has not been initialized"),
-        };
+        if self.hosts.is_empty() {
+            return self.log_error("server has not been initialized");
+        }
+        let mut snapshots = Vec::with_capacity(self.hosts.len());
+        for host in self.hosts.values() {
+            match host.snapshot() {
+                Ok(snapshot) => snapshots.push(snapshot),
+                Err(error) => return self.log_error(&error.to_string()),
+            }
+        }
         let mut current = BTreeSet::new();
-        for source in snapshot.sources().documents() {
-            let uri = self.uri_for_path(source.absolute_path());
-            current.insert(uri.clone());
-            self.notify(
-                "textDocument/publishDiagnostics",
-                json!({
-                    "uri": uri,
-                    "diagnostics": diagnostics_for_file(&snapshot, source.id())
-                }),
-            )?;
+        for snapshot in &snapshots {
+            for source in snapshot.sources().documents() {
+                if source.is_embedded_dependency() {
+                    continue;
+                }
+                let uri = self.uri_for_path(source.absolute_path());
+                current.insert(uri.clone());
+                self.notify(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri,
+                        "diagnostics": diagnostics_for_file(snapshot, source.id())
+                    }),
+                )?;
+            }
         }
         let stale = self
             .published_uris
@@ -629,12 +867,32 @@ impl<R: BufRead, W: Write> Server<R, W> {
     fn uri_for_path(&self, path: &Path) -> String {
         self.open_documents
             .iter()
-            .find_map(|(uri, open_path)| (open_path == path).then(|| uri.clone()))
+            .find_map(|(uri, document)| (document.path == path).then(|| uri.clone()))
             .unwrap_or_else(|| path_to_file_uri(path))
     }
 
-    fn snapshot_or_error(&mut self, id: Value) -> io::Result<Option<AnalysisSnapshot>> {
-        let Some(host) = self.host.as_ref() else {
+    fn workspace_for_path(&self, path: &Path) -> Option<PathBuf> {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.hosts
+            .iter()
+            .filter_map(|(workspace, host)| {
+                let matched_depth = std::iter::once(workspace.as_path())
+                    .chain(host.project().packages().map(|package| package.root()))
+                    .filter(|root| path.starts_with(root))
+                    .map(|root| root.components().count())
+                    .max()?;
+                Some((
+                    matched_depth,
+                    workspace.components().count(),
+                    workspace.clone(),
+                ))
+            })
+            .max_by_key(|(matched_depth, workspace_depth, _)| (*matched_depth, *workspace_depth))
+            .map(|(_, _, workspace)| workspace)
+    }
+
+    fn snapshot_for_uri(&mut self, id: Value, uri: &str) -> io::Result<Option<AnalysisSnapshot>> {
+        if self.hosts.is_empty() {
             self.respond_error(
                 id,
                 SERVER_NOT_INITIALIZED,
@@ -642,7 +900,24 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 None,
             )?;
             return Ok(None);
+        }
+        let Ok(path) = file_uri_to_path(uri) else {
+            self.respond_error(id, INVALID_PARAMS, "invalid textDocument.uri", None)?;
+            return Ok(None);
         };
+        let Some(workspace) = self.workspace_for_path(&path) else {
+            self.respond_error(
+                id,
+                INVALID_PARAMS,
+                "text document does not belong to an open workspace",
+                Some(json!({"code": "WorkspaceNotOpen"})),
+            )?;
+            return Ok(None);
+        };
+        let host = self
+            .hosts
+            .get(&workspace)
+            .expect("selected workspace host exists");
         match host.snapshot() {
             Ok(snapshot) => Ok(Some(snapshot)),
             Err(error) => {
@@ -780,18 +1055,58 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
         .map_err(io::Error::other)
 }
 
-fn initialize_root(params: &Value) -> Result<PathBuf, loom_driver::DriverError> {
-    if let Some(uri) = params.get("rootUri").and_then(Value::as_str) {
-        return file_uri_to_path(uri)
-            .map_err(|message| loom_driver::DriverError::InvalidRoot(message.into()));
+fn initialize_roots(params: &Value) -> Result<Vec<PathBuf>, loom_driver::DriverError> {
+    let mut roots = params
+        .get("workspaceFolders")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|folder| folder.get("uri").and_then(Value::as_str))
+        .map(|uri| {
+            file_uri_to_path(uri)
+                .map_err(|message| loom_driver::DriverError::InvalidRoot(message.into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if roots.is_empty() {
+        if let Some(uri) = params.get("rootUri").and_then(Value::as_str) {
+            roots.push(
+                file_uri_to_path(uri)
+                    .map_err(|message| loom_driver::DriverError::InvalidRoot(message.into()))?,
+            );
+        } else if let Some(path) = params.get("rootPath").and_then(Value::as_str) {
+            roots.push(PathBuf::from(path));
+        } else {
+            roots.push(
+                std::env::current_dir().map_err(|source| loom_driver::DriverError::Io {
+                    path: PathBuf::from("."),
+                    source,
+                })?,
+            );
+        }
     }
-    if let Some(path) = params.get("rootPath").and_then(Value::as_str) {
-        return Ok(PathBuf::from(path));
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn open_workspace_hosts(
+    roots: Vec<PathBuf>,
+) -> Result<BTreeMap<PathBuf, AnalysisHost>, loom_driver::DriverError> {
+    let mut hosts = BTreeMap::new();
+    for root in roots {
+        let host = AnalysisHost::new(root)?;
+        hosts.insert(host.root().to_path_buf(), host);
     }
-    std::env::current_dir().map_err(|source| loom_driver::DriverError::Io {
-        path: PathBuf::from("."),
-        source,
-    })
+    Ok(hosts)
+}
+
+fn replay_open_documents(host: &mut AnalysisHost, documents: &BTreeMap<String, OpenDocument>) {
+    let root = host.root().to_path_buf();
+    for document in documents.values() {
+        if document.path.starts_with(&root) {
+            let _ = host.set_overlay(&document.path, document.text.clone());
+        }
+    }
 }
 
 fn diagnostics_for_uri(snapshot: &AnalysisSnapshot, uri: &str) -> Vec<Value> {

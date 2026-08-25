@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use loom_core::{Diagnostic, Severity, Span};
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,63 @@ impl DiagnosticRecord {
             self.code,
             self.message
         )
+    }
+
+    /// Renders a compact compiler diagnostic with a source line, underline,
+    /// related locations, and notes. JSON output remains the stable machine
+    /// contract; this rendering is intentionally human-oriented.
+    #[must_use]
+    pub fn human_with_source(&self, sources: &SourceMap) -> String {
+        let mut output = self.human();
+        if let Some(source) = sources
+            .documents()
+            .iter()
+            .find(|source| source.relative_path() == self.primary_span.path)
+            .filter(|source| !source.is_embedded_dependency())
+            && let Some(text) = source.text()
+            && let Some(line) = text.lines().nth(
+                usize::try_from(self.primary_span.start_line.saturating_sub(1))
+                    .unwrap_or(usize::MAX),
+            )
+        {
+            let line_number = self.primary_span.start_line;
+            let gutter_width = line_number.to_string().len();
+            let _ = write!(output, "\n{line_number:>gutter_width$} | {line}\n");
+            let line_width = u32::try_from(line.chars().count()).unwrap_or(u32::MAX);
+            let start = self
+                .primary_span
+                .start_column
+                .saturating_sub(1)
+                .min(line_width);
+            let end = if self.primary_span.end_line == self.primary_span.start_line {
+                self.primary_span.end_column.saturating_sub(1)
+            } else {
+                line_width
+            }
+            .min(line_width);
+            let width = end.saturating_sub(start).max(1).min(line_width.max(1));
+            let _ = write!(
+                output,
+                "{space:>gutter_width$} | {indent}{carets}",
+                space = "",
+                indent = " ".repeat(usize::try_from(start).unwrap_or(0)),
+                carets = "^".repeat(usize::try_from(width).unwrap_or(1)),
+            );
+        }
+        for related in &self.related {
+            let _ = write!(
+                output,
+                "\n  = {}:{}:{}: {}",
+                related.span.path,
+                related.span.start_line,
+                related.span.start_column,
+                related.label
+            );
+        }
+        for note in &self.notes {
+            let _ = write!(output, "\n  = note: {note}");
+        }
+        output
     }
 }
 

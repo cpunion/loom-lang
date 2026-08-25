@@ -122,6 +122,7 @@ pub struct SourceDocument {
     relative_path: String,
     package: Option<PackageId>,
     is_root_package: bool,
+    embedded_dependency: bool,
     text: Option<String>,
     byte_len: u32,
     line_starts: Vec<u32>,
@@ -154,6 +155,13 @@ impl SourceDocument {
     #[must_use]
     pub const fn is_root_package(&self) -> bool {
         self.is_root_package
+    }
+
+    /// Whether this document is a compiler-private source payload decoded from
+    /// a `.loomlib`, rather than a user-navigable file on disk.
+    #[must_use]
+    pub const fn is_embedded_dependency(&self) -> bool {
+        self.embedded_dependency
     }
 
     /// Returns source text, or `None` when the file contains invalid UTF-8.
@@ -346,6 +354,7 @@ impl SourceMap {
             paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
+            let embedded_dependency = embedded_text.is_some();
             let bytes = if let Some(text) = overlays.get(&path) {
                 text.as_bytes().to_vec()
             } else if let Some(text) = embedded_text {
@@ -381,6 +390,7 @@ impl SourceMap {
                 relative_path,
                 package,
                 is_root_package,
+                embedded_dependency,
                 text,
                 byte_len,
                 line_starts,

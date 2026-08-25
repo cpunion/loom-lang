@@ -5,9 +5,10 @@ use std::sync::{Arc, Barrier};
 
 use loom_core::{FileId, Span};
 use loom_driver::{
-    AnalysisHost, CacheContext, CacheLookup, LockMode, PersistentCache, PipelineStage, Position,
-    ProjectGraph, ProjectOptions, SymbolId, TargetKind, decode_library_artifact,
-    discover_loom_files, encode_library_artifact, format_source,
+    AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LockMode, PersistentCache,
+    PipelineStage, Position, ProjectGraph, ProjectOptions, RelatedDiagnostic, SpanRecord, SymbolId,
+    TargetKind, decode_library_artifact, discover_loom_files, encode_library_artifact,
+    format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -64,6 +65,73 @@ fn portable_cache_context() -> CacheContext {
         optimization: "none".to_owned(),
         contract_mode: "checked".to_owned(),
     }
+}
+
+#[test]
+fn human_diagnostics_use_scalar_columns_and_keep_machine_records_stable() {
+    let project = TestProject::new();
+    project.write(
+        "main.loom",
+        "module demo\n\npub fn main() Unit {\n    let 价格 = 1\n    Unit\n}\n",
+    );
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open source")
+        .snapshot()
+        .expect("load source map");
+    let span = |start_line, start_column, end_line, end_column| SpanRecord {
+        path: "main.loom".to_owned(),
+        start_byte: 0,
+        end_byte: 0,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    };
+    let record = DiagnosticRecord {
+        schema_version: 1,
+        category: "diagnostic".to_owned(),
+        severity: "error".to_owned(),
+        code: "Example".to_owned(),
+        message: "example failure".to_owned(),
+        primary_span: span(4, 9, 4, 11),
+        related: vec![
+            RelatedDiagnostic {
+                label: "first relation".to_owned(),
+                span: span(1, 1, 1, 7),
+            },
+            RelatedDiagnostic {
+                label: "second relation".to_owned(),
+                span: span(5, 5, 5, 9),
+            },
+        ],
+        notes: vec!["first note".to_owned(), "second note".to_owned()],
+        details: Default::default(),
+    };
+    let json_before = serde_json::to_value(&record).expect("serialize stable JSON record");
+    let human = record.human_with_source(snapshot.sources());
+    assert!(human.contains("4 |     let 价格 = 1"), "{human}");
+    assert!(human.contains("  |         ^^"), "{human}");
+    let first_relation = human.find("first relation").expect("first relation");
+    let second_relation = human.find("second relation").expect("second relation");
+    let first_note = human.find("first note").expect("first note");
+    let second_note = human.find("second note").expect("second note");
+    assert!(first_relation < second_relation);
+    assert!(second_relation < first_note);
+    assert!(first_note < second_note);
+    assert_eq!(
+        serde_json::to_value(&record).expect("serialize unchanged JSON record"),
+        json_before
+    );
+
+    let multiline = DiagnosticRecord {
+        primary_span: span(4, 9, 5, 5),
+        related: Vec::new(),
+        notes: Vec::new(),
+        ..record
+    }
+    .human_with_source(snapshot.sources());
+    assert!(multiline.contains("  |         ^^^^^^"), "{multiline}");
+    assert!(!multiline.contains("    Unit"), "{multiline}");
 }
 
 #[test]
@@ -272,6 +340,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         .iter()
         .find(|source| !source.is_root_package())
         .expect("embedded dependency source");
+    assert!(dependency.is_embedded_dependency());
     assert_eq!(
         dependency.relative_path(),
         "deps/utility@1.2.0/src/math.loom"

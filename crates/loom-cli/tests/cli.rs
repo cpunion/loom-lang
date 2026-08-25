@@ -97,6 +97,52 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
 }
 
 #[test]
+fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
+    let project =
+        TestProject::new("module demo\n\npub fn main() Unit {\n    missing()\n    Unit\n}\n");
+    let human = loomc()
+        .arg("check")
+        .arg(&project.0)
+        .output()
+        .expect("run human check");
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8(human.stderr).expect("UTF-8 human diagnostics");
+    assert!(stderr.contains("4 |     missing()"), "{stderr}");
+    assert!(stderr.contains('^'), "{stderr}");
+
+    let machine = loomc()
+        .args(["--json", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("run JSON check");
+    assert_eq!(machine.status.code(), Some(1));
+    assert!(machine.stderr.is_empty(), "{:?}", machine.stderr);
+    let record = json_record(&machine.stdout, "diagnostic").expect("JSON diagnostic record");
+    let mut fields = record
+        .as_object()
+        .expect("diagnostic object")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        [
+            "category",
+            "code",
+            "details",
+            "message",
+            "notes",
+            "primary_span",
+            "related",
+            "schema_version",
+            "severity",
+        ]
+    );
+    assert_eq!(record.get("schema_version"), Some(&serde_json::json!(1)));
+}
+
+#[test]
 fn native_and_interpreter_failures_share_the_structured_json_schema() {
     let project = TestProject::new(
         "module fault_parity\n\npub fn main() Unit {\n    assert false\n    Unit\n}\n",
@@ -509,11 +555,11 @@ fn library_targets_build_portable_validated_artifacts() {
 
     project.write(
         "consumer/loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n[[target]]\nname = \"consumer-tests\"\nkind = \"test\"\n",
     );
     project.write(
         "consumer/src/main.loom",
-        "module consumer\n\nimport sample.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n",
+        "module consumer\n\nimport sample.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
     );
     fs::remove_dir_all(project.0.join("src")).expect("remove producer sources");
     let consumed = loomc()
@@ -529,6 +575,33 @@ fn library_targets_build_portable_validated_artifacts() {
         String::from_utf8_lossy(&consumed.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&consumed.stdout), "Unit\n");
+
+    for command in ["check", "test"] {
+        let verified = loomc()
+            .arg(command)
+            .arg(project.0.join("consumer"))
+            .output()
+            .expect("verify artifact consumer with LLVM backend");
+        assert_eq!(
+            verified.status.code(),
+            Some(0),
+            "command={command} stdout={} stderr={}",
+            String::from_utf8_lossy(&verified.stdout),
+            String::from_utf8_lossy(&verified.stderr)
+        );
+    }
+    let native = loomc()
+        .args(["run", "--target", "consumer"])
+        .arg(project.0.join("consumer"))
+        .output()
+        .expect("run artifact consumer with LLVM backend");
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
 }
 
 #[test]
