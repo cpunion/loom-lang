@@ -550,6 +550,11 @@ impl<'ctx> RootContext<'ctx> {
     }
 }
 
+struct NativeFunctionDecl<'ctx> {
+    function: FunctionValue<'ctx>,
+    signature: NativeSignature,
+}
+
 struct Backend<'ctx, 'program> {
     context: &'ctx Context,
     program: &'program Program,
@@ -579,8 +584,7 @@ struct Backend<'ctx, 'program> {
     loom_function_type: FunctionType<'ctx>,
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
-    scalar_int_functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
-    native_signatures: BTreeMap<FunctionId, NativeSignature>,
+    native_functions: BTreeMap<FunctionId, NativeFunctionDecl<'ctx>>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
@@ -878,8 +882,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             loom_function_type,
             task_resume_type,
             functions: BTreeMap::new(),
-            scalar_int_functions: BTreeMap::new(),
-            native_signatures: BTreeMap::new(),
+            native_functions: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -898,7 +901,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             if source.is_async {
                 self.emit_async_constructor(*function)?;
                 self.emit_async_resume(*function)?;
-            } else if self.scalar_int_functions.contains_key(function) {
+            } else if self.native_functions.contains_key(function) {
                 self.emit_scalar_int_function(*function)?;
                 self.emit_scalar_int_wrapper(*function)?;
             } else {
@@ -978,8 +981,13 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     source.span.file.0,
                     source.span.range.start,
                 )?;
-                self.scalar_int_functions.insert(*id, scalar);
-                self.native_signatures.insert(*id, signature);
+                self.native_functions.insert(
+                    *id,
+                    NativeFunctionDecl {
+                        function: scalar,
+                        signature,
+                    },
+                );
             }
             if source.is_async {
                 let resume = self.module.add_function(
@@ -3313,7 +3321,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             CodegenError::new("InvalidFunctionReference", "integer function is missing")
         })?;
         self.set_debug_location(
-            self.scalar_int_functions[&id],
+            self.native_functions[&id].function,
             source.span.file.0,
             source.span.range.start,
         );
@@ -3336,7 +3344,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_store(output, self.value_type.const_zero())
             .map_err(builder_error)?;
 
-        let signature = &self.native_signatures[&id];
+        let declaration = &self.native_functions[&id];
+        let signature = &declaration.signature;
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
             source.params.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
@@ -3366,7 +3375,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
             call_int(
                 &self.builder,
-                self.scalar_int_functions[&id],
+                declaration.function,
                 &call_arguments,
                 "integer.call",
             )?
@@ -3374,7 +3383,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             call_arguments.push(parameter_pointer(wrapper, 3)?.into());
             let (status, scalar) = call_scalar_int(
                 &self.builder,
-                self.scalar_int_functions[&id],
+                declaration.function,
                 &call_arguments,
                 "integer.call",
             )?;
@@ -3584,11 +3593,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         // Universal Value bodies may hide representation allocations even
         // when their source operations look pure, so they retain a standalone
         // runtime until their typed layout exists.
-        if self
-            .native_signatures
-            .get(&root)
-            .is_some_and(|signature| signature.effect() == NativeEffectAbi::PureNoFault)
-            && requirements.is_pure_no_fault()
+        if self.native_functions.get(&root).is_some_and(|declaration| {
+            declaration.signature.effect() == NativeEffectAbi::PureNoFault
+        }) && requirements.is_pure_no_fault()
         {
             return Ok(RootContextPlan::None);
         }
@@ -4563,8 +4570,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "non-integer function selected for the scalar integer ABI",
             ));
         }
-        let function = backend.scalar_int_functions[&id];
-        let signature = &backend.native_signatures[&id];
+        let declaration = &backend.native_functions[&id];
+        let function = declaration.function;
+        let signature = &declaration.signature;
         let runtime_context = if signature.effect() == NativeEffectAbi::RuntimeStatus {
             let context_index = u32::try_from(source.params.len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
@@ -8332,7 +8340,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return self.emit_builtin(*builtin, arguments, destination);
         }
         if let CallTarget::Direct(function) = target
-            && self.backend.scalar_int_functions.contains_key(function)
+            && self.backend.native_functions.contains_key(function)
         {
             return self.emit_scalar_int_call(*function, arguments, witnesses, destination);
         }
@@ -8498,7 +8506,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
         };
-        let signature = &self.backend.native_signatures[&function];
+        let declaration = &self.backend.native_functions[&function];
+        let signature = &declaration.signature;
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
             values.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
@@ -8517,7 +8526,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
             call_int(
                 &self.backend.builder,
-                self.backend.scalar_int_functions[&function],
+                declaration.function,
                 &call_arguments,
                 "integer.call",
             )?
@@ -8525,7 +8534,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             call_arguments.push(self.runtime_context.into());
             let (status, scalar) = call_scalar_int(
                 &self.backend.builder,
-                self.backend.scalar_int_functions[&function],
+                declaration.function,
                 &call_arguments,
                 "integer.call",
             )?;
