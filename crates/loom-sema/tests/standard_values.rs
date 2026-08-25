@@ -358,6 +358,18 @@ async fn extractedButNotScoped(path Text) Unit {
     Unit
 }
 
+async fn usedAfterScopedTransfer(path Text) Unit {
+    match try_open_read(path).await {
+        Ok(file) => {
+            scoped resource = file
+            let duplicate = file
+            Unit
+        }
+        Err(_) => Unit
+    }
+    Unit
+}
+
 async fn passed(path Text) Unit {
     consume(try_open_read(path).await)
     Unit
@@ -383,6 +395,10 @@ async fn aggregate() Unit {
     );
     assert!(
         codes.contains(&"MustScopeArgumentNotAllowed"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        codes.contains(&"MustScopeAlreadyTransferred"),
         "{diagnostics:#?}"
     );
 }

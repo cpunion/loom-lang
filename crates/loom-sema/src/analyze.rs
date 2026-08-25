@@ -2043,6 +2043,7 @@ struct BodyChecker<'a, 'program> {
     borrows: Vec<ActiveBorrow>,
     scoped_locals: BTreeSet<LocalId>,
     pending_must_scope_locals: BTreeSet<LocalId>,
+    transferred_must_scope_locals: BTreeSet<LocalId>,
     active_no_suspend: Vec<(LocalId, RegionId, Span)>,
     task_local_uses: BTreeSet<LocalId>,
     cleanup_depth: u32,
@@ -2076,6 +2077,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             borrows: Vec::new(),
             scoped_locals: BTreeSet::new(),
             pending_must_scope_locals: BTreeSet::new(),
+            transferred_must_scope_locals: BTreeSet::new(),
             active_no_suspend: Vec::new(),
             task_local_uses: BTreeSet::new(),
             cleanup_depth: 0,
@@ -2527,9 +2529,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             for scope in self.scopes.iter().rev() {
                 if let Some(local) = scope.get(name) {
                     let local = *local;
+                    if self.transferred_must_scope_locals.contains(&local) {
+                        self.error_at(
+                            "MustScopeAlreadyTransferred",
+                            "this resource was already transferred into a scoped binding",
+                            expression,
+                        );
+                    }
                     if self.pending_must_scope_locals.contains(&local) {
                         if self.scoped_initializer == Some(expression) {
                             self.pending_must_scope_locals.remove(&local);
+                            self.transferred_must_scope_locals.insert(local);
                         } else {
                             self.error_at(
                                 "MustScopeRequiresScoped",
