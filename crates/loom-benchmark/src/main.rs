@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -14,6 +14,10 @@ const DEFAULT_WARMUPS: usize = 3;
 const DEFAULT_RUNS: usize = 10;
 const THROUGHPUT_WARMUPS: usize = 2;
 const THROUGHPUT_RUNS: usize = 5;
+const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
+const STANDARD_TIMEOUT: Duration = Duration::from_secs(30);
+const THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(60);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Clone, Copy)]
 struct CaseSpec {
@@ -99,6 +103,14 @@ impl BenchmarkProfile {
             Self::Throughput => THROUGHPUT_RUNS,
         }
     }
+
+    const fn default_timeout(self) -> Duration {
+        match self {
+            Self::Standard => STANDARD_TIMEOUT,
+            Self::Quick => QUICK_TIMEOUT,
+            Self::Throughput => THROUGHPUT_TIMEOUT,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -107,6 +119,7 @@ struct Config {
     allow_busy_host: bool,
     warmups: usize,
     runs: usize,
+    invocation_timeout: Duration,
     output: Option<PathBuf>,
     selected_cases: Vec<String>,
 }
@@ -199,6 +212,7 @@ struct ConfigReport {
     busy_host_override: bool,
     warmups: usize,
     measured_runs: usize,
+    invocation_timeout_ms: u64,
     optimization_policy: &'static str,
     execution_order: &'static str,
 }
@@ -288,6 +302,7 @@ fn run() -> Result<(), String> {
             case_index,
             config.warmups,
             config.runs,
+            config.invocation_timeout,
             &workspace,
         )?);
     }
@@ -308,6 +323,7 @@ fn run() -> Result<(), String> {
             busy_host_override: config.allow_busy_host,
             warmups: config.warmups,
             measured_runs: config.runs,
+            invocation_timeout_ms: duration_millis(config.invocation_timeout),
             optimization_policy: "native release/O2, no cross-language LTO assumption",
             execution_order: "rotated by case and round to reduce fixed-order bias",
         },
@@ -334,6 +350,7 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
     let mut allow_busy_host = false;
     let mut warmups = None;
     let mut runs = None;
+    let mut invocation_timeout = None;
     let mut output = None;
     let mut selected_cases = Vec::new();
     let mut arguments = arguments.into_iter();
@@ -348,6 +365,9 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
                 warmups = Some(parse_count("--warmups", arguments.next())?);
             }
             Some("--runs") => runs = Some(parse_count("--runs", arguments.next())?),
+            Some("--timeout-seconds") => {
+                invocation_timeout = Some(parse_timeout(arguments.next())?);
+            }
             Some("--output") => {
                 output = Some(PathBuf::from(
                     arguments
@@ -374,6 +394,7 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
     }
     let warmups = warmups.unwrap_or(profile.default_warmups());
     let runs = runs.unwrap_or(profile.default_runs());
+    let invocation_timeout = invocation_timeout.unwrap_or(profile.default_timeout());
     if runs == 0 {
         return Err("--runs must be greater than zero".to_owned());
     }
@@ -382,9 +403,20 @@ fn parse_config(arguments: impl IntoIterator<Item = OsString>) -> Result<Config,
         allow_busy_host,
         warmups,
         runs,
+        invocation_timeout,
         output,
         selected_cases,
     })
+}
+
+fn parse_timeout(value: Option<OsString>) -> Result<Duration, String> {
+    let seconds = parse_count("--timeout-seconds", value)?;
+    if seconds == 0 {
+        return Err("--timeout-seconds must be greater than zero".to_owned());
+    }
+    let seconds = u64::try_from(seconds)
+        .map_err(|_| "--timeout-seconds is too large for this platform".to_owned())?;
+    Ok(Duration::from_secs(seconds))
 }
 
 fn select_profile(
@@ -415,7 +447,7 @@ fn parse_count(flag: &str, value: Option<OsString>) -> Result<usize, String> {
 fn print_help() {
     println!(
         "usage: loom-benchmark [--quick | --throughput] [--allow-busy-host]\n\
-         \x20                      [--warmups N] [--runs N]\n\
+         \x20                      [--warmups N] [--runs N] [--timeout-seconds N]\n\
          \x20                      [--case NAME] [--output FILE]\n\
          \n\
          Builds Loom, Go, Rust, C, and C++ fixtures once, validates every checksum,\n\
@@ -631,6 +663,7 @@ fn measure_case(
     case_index: usize,
     warmups: usize,
     runs: usize,
+    invocation_timeout: Duration,
     workspace: &Path,
 ) -> Result<CaseReport, String> {
     let mut samples = languages
@@ -644,6 +677,7 @@ fn measure_case(
                 case.name,
                 scale,
                 expected,
+                invocation_timeout,
                 workspace,
             )?;
         }
@@ -651,7 +685,14 @@ fn measure_case(
     for round in 0..runs {
         for language_index in rotated_indices(languages.len(), case_index + round) {
             let language = &languages[language_index];
-            let duration = run_fixture(language, case.name, scale, expected, workspace)?;
+            let duration = run_fixture(
+                language,
+                case.name,
+                scale,
+                expected,
+                invocation_timeout,
+                workspace,
+            )?;
             samples
                 .get_mut(language.language)
                 .expect("all language sample buckets exist")
@@ -707,20 +748,22 @@ fn run_fixture(
     case: &str,
     scale: i64,
     expected: i64,
+    timeout: Duration,
     workspace: &Path,
 ) -> Result<Duration, String> {
     let scale = scale.to_string();
     let expected = expected.to_string();
     let started = Instant::now();
-    let output = Command::new(&language.executable)
+    let action = format!("execute {} {case}", language.language);
+    let mut command = Command::new(&language.executable);
+    command
         .args([case, &scale, &expected])
         .envs(language.runtime_environment.iter().copied())
         .env("LC_ALL", "C")
-        .current_dir(workspace)
-        .output()
-        .map_err(|error| format!("execute {} {case}: {error}", language.language))?;
+        .current_dir(workspace);
+    let output = output_with_timeout(&mut command, timeout, &action)?;
     let elapsed = started.elapsed();
-    require_success(output, &format!("execute {} {case}", language.language)).and_then(|stdout| {
+    require_success(output, &action).and_then(|stdout| {
         if stdout == "Unit\n" {
             Ok(elapsed)
         } else {
@@ -734,6 +777,52 @@ fn run_fixture(
 
 fn rotated_indices(length: usize, rotation: usize) -> impl Iterator<Item = usize> {
     (0..length).map(move |offset| (rotation + offset) % length)
+}
+
+fn output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    action: &str,
+) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{action}: {error}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("collect {action} output: {error}"));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("poll {action}: {error}"));
+            }
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            let kill_error = child.kill().err();
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("collect timed-out {action} output: {error}"))?;
+            let kill_note = kill_error.map_or_else(
+                || "process killed and reaped".to_owned(),
+                |error| format!("kill reported {error}"),
+            );
+            return Err(format!(
+                "{action} timed out after {} ms ({kill_note})\nstdout:\n{}\nstderr:\n{}",
+                duration_millis(timeout),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        std::thread::sleep(CHILD_POLL_INTERVAL.min(timeout - elapsed));
+    }
 }
 
 fn execute_command(
@@ -950,6 +1039,10 @@ fn nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn ns_to_ms(nanoseconds: u64) -> f64 {
     nanoseconds as f64 / 1_000_000.0
@@ -958,10 +1051,13 @@ fn ns_to_ms(nanoseconds: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
     use super::{
-        BenchmarkProfile, CASES, fib_checksum, lcg_final_checksum, list_checksum, nearest_rank,
-        parse_config, parse_first_number, summarize,
+        BenchmarkProfile, CASES, CaseReport, ConfigReport, HostReport, REPORT_KIND, REPORT_WARNING,
+        Report, RuntimeReport, fib_checksum, lcg_final_checksum, list_checksum, nearest_rank,
+        output_with_timeout, parse_config, parse_first_number, reject_busy_measured_run, summarize,
     };
 
     #[test]
@@ -985,17 +1081,175 @@ mod tests {
                 .collect::<Vec<_>>(),
             [100_000_000, 100_000_000, 10_000_000, 40]
         );
-        for case in CASES {
-            (case.checksum)(config.profile.scale(*case))
-                .expect("throughput checksum must fit Loom Int");
+        for (case, expected) in
+            CASES
+                .iter()
+                .zip([373_370_831, 51_149_901_696, 5_114_877_120, 102_334_155])
+        {
+            assert_eq!((case.checksum)(config.profile.scale(*case)), Ok(expected));
         }
     }
 
     #[test]
     fn benchmark_profiles_are_mutually_exclusive() {
-        let error = parse_config([OsString::from("--quick"), OsString::from("--throughput")])
-            .expect_err("profile combination must fail");
-        assert!(error.contains("mutually exclusive"), "{error}");
+        for flags in [
+            ["--quick", "--throughput"],
+            ["--throughput", "--quick"],
+            ["--quick", "--quick"],
+            ["--throughput", "--throughput"],
+        ] {
+            let error =
+                parse_config(flags.map(OsString::from)).expect_err("profile combination must fail");
+            assert!(error.contains("mutually exclusive"), "{error}");
+        }
+    }
+
+    #[test]
+    fn busy_host_guard_covers_standard_and_throughput_only() {
+        let busy = HostReport {
+            os: "test",
+            architecture: "test",
+            cpu: "test".into(),
+            logical_cpus: 4,
+            load_average_1m_before_build: Some(3.01),
+        };
+        let idle = HostReport {
+            load_average_1m_before_build: Some(3.0),
+            ..HostReport {
+                os: "test",
+                architecture: "test",
+                cpu: "test".into(),
+                logical_cpus: 4,
+                load_average_1m_before_build: None,
+            }
+        };
+        let standard = parse_config([]).expect("standard config");
+        let throughput = parse_config([OsString::from("--throughput")]).expect("throughput config");
+        let quick = parse_config([OsString::from("--quick")]).expect("quick config");
+        let override_config = parse_config([
+            OsString::from("--throughput"),
+            OsString::from("--allow-busy-host"),
+        ])
+        .expect("busy override config");
+
+        assert!(reject_busy_measured_run(&standard, &busy).is_err());
+        assert!(reject_busy_measured_run(&throughput, &busy).is_err());
+        assert!(reject_busy_measured_run(&quick, &busy).is_ok());
+        assert!(reject_busy_measured_run(&override_config, &busy).is_ok());
+        assert!(reject_busy_measured_run(&standard, &idle).is_ok());
+    }
+
+    #[test]
+    fn timeout_override_is_positive_and_profile_defaults_are_stable() {
+        assert_eq!(
+            parse_config([])
+                .expect("standard config")
+                .invocation_timeout,
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_config([OsString::from("--quick")])
+                .expect("quick config")
+                .invocation_timeout,
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            parse_config([OsString::from("--throughput")])
+                .expect("throughput config")
+                .invocation_timeout,
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            parse_config([
+                OsString::from("--throughput"),
+                OsString::from("--timeout-seconds"),
+                OsString::from("7"),
+            ])
+            .expect("timeout override")
+            .invocation_timeout,
+            Duration::from_secs(7)
+        );
+        assert!(parse_config([OsString::from("--timeout-seconds"), OsString::from("0"),]).is_err());
+    }
+
+    #[test]
+    fn report_json_records_profile_scale_checksum_timeout_and_raw_samples() {
+        let report = Report {
+            schema_version: 1,
+            kind: REPORT_KIND,
+            status: "passed",
+            warning: REPORT_WARNING,
+            generated_at_unix_ms: 0,
+            host: HostReport {
+                os: "test",
+                architecture: "test",
+                cpu: "test".into(),
+                logical_cpus: 4,
+                load_average_1m_before_build: Some(1.0),
+            },
+            config: ConfigReport {
+                profile: "throughput",
+                busy_host_override: false,
+                warmups: 2,
+                measured_runs: 5,
+                invocation_timeout_ms: 60_000,
+                optimization_policy: "test",
+                execution_order: "test",
+            },
+            toolchains: Vec::new(),
+            cases: vec![CaseReport {
+                name: "list_build_scan",
+                description: "test",
+                scale: 10_000_000,
+                expected_checksum: 5_114_877_120,
+                results: vec![RuntimeReport {
+                    language: "loom",
+                    samples_ns: vec![10, 11],
+                    minimum_ms: 0.000_010,
+                    p05_ms: 0.000_010,
+                    median_ms: 0.000_010,
+                    mean_ms: 0.000_010,
+                    p95_ms: 0.000_011,
+                    maximum_ms: 0.000_011,
+                    relative_to_fastest_median: 1.0,
+                }],
+            }],
+        };
+        let json = serde_json::to_value(report).expect("serialize report");
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["config"]["profile"], "throughput");
+        assert_eq!(json["config"]["invocationTimeoutMs"], 60_000);
+        assert_eq!(json["cases"][0]["scale"], 10_000_000);
+        assert_eq!(json["cases"][0]["expectedChecksum"], 5_114_877_120_i64);
+        assert_eq!(
+            json["cases"][0]["results"][0]["samplesNs"],
+            serde_json::json!([10, 11])
+        );
+    }
+
+    #[test]
+    fn timeout_child() {
+        if std::env::var_os("LOOM_BENCH_TIMEOUT_CHILD").is_some() {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn timed_out_children_are_killed_and_reaped() {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .args(["--exact", "tests::timeout_child"])
+            .env("LOOM_BENCH_TIMEOUT_CHILD", "1");
+        let started = Instant::now();
+        let error = output_with_timeout(
+            &mut command,
+            Duration::from_millis(20),
+            "timeout test child",
+        )
+        .expect_err("child must time out");
+        assert!(error.contains("timed out after 20 ms"), "{error}");
+        assert!(error.contains("process killed and reaped"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
