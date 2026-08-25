@@ -219,6 +219,23 @@ fn conditional_conformance_builds_recursive_proof_application() {
             .iter()
             .any(|witness| !witness.prerequisites.is_empty())
     );
+    for witness in &program.witnesses {
+        for method in witness.methods.values() {
+            assert_eq!(
+                program.functions[method.0 as usize].witness_prefix_count,
+                u32::try_from(witness.prerequisites.len()).expect("test witness arity")
+            );
+        }
+    }
+    assert!(program.functions.iter().all(|function| {
+        let is_witness_method = program.witnesses.iter().any(|witness| {
+            witness
+                .methods
+                .values()
+                .any(|method| *method == function.id)
+        });
+        is_witness_method || function.witness_prefix_count == 0
+    }));
     assert!(format!("{program:#?}").contains("Apply"));
 }
 
@@ -387,9 +404,31 @@ fn receiverless_static_requirement_carries_an_explicit_dispatch_type() {
 
 #[test]
 fn requirement_method_bound_associated_projection_is_preserved() {
-    compile_and_validate(
+    let program = compile_and_validate(
         "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nconcept Mapper {\n    method map[U: Source](self, source U) U.Item\n}\n\nrecord Identity {}\n\nimpl Mapper for Identity {\n    method map[U: Source](self, source U) U.Item { source.first() }\n}\n",
     );
+    let mapper = program
+        .concepts
+        .iter()
+        .find(|concept| concept.name == "Mapper")
+        .expect("Mapper concept");
+    let witness = program
+        .witnesses
+        .iter()
+        .find(|witness| witness.concept == mapper.id)
+        .expect("Mapper witness");
+    let method = program
+        .functions
+        .iter()
+        .find(|function| {
+            witness
+                .methods
+                .values()
+                .any(|candidate| *candidate == function.id)
+        })
+        .expect("Mapper method");
+    assert_eq!(method.witness_prefix_count, 0);
+    assert_eq!(method.witness_params.len(), 1);
 }
 
 #[test]

@@ -74,6 +74,21 @@ impl C for R {
     );
     assert_eq!(program.requirements.len(), 1);
     assert_eq!(program.requirements[0].return_ty, RequirementType::Unit);
+    for name in [
+        "omitted",
+        "omittedAsync",
+        "omittedTest",
+        "explicit",
+        "contracted",
+        "inherent",
+    ] {
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name.rsplit('.').next() == Some(name))
+            .unwrap_or_else(|| panic!("missing lowered function {name}"));
+        assert_eq!(function.witness_prefix_count, 0, "{name}");
+    }
     assert!(program.functions.iter().any(|function| {
         function
             .body

@@ -153,6 +153,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
             suspension_points: Vec::new(),
             params: Vec::new(),
             witness_params: Vec::new(),
+            witness_prefix_count: 0,
             locals: vec![LocalDecl {
                 id: LocalId(0),
                 name: "display".into(),
@@ -500,6 +501,7 @@ fn root_function() -> Function {
             span: Default::default(),
         }],
         witness_params: Vec::new(),
+        witness_prefix_count: 0,
         locals: Vec::new(),
         return_ty: Type::Unit,
         receiver: None,
@@ -622,6 +624,7 @@ fn unit_function(id: FunctionId, name: &str) -> Function {
         suspension_points: Vec::new(),
         params: Vec::new(),
         witness_params: Vec::new(),
+        witness_prefix_count: 0,
         locals: Vec::new(),
         return_ty: Type::Unit,
         receiver: None,

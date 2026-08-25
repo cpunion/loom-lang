@@ -829,6 +829,7 @@ mod tests {
             suspension_points: Vec::new(),
             params: Vec::new(),
             witness_params: Vec::new(),
+            witness_prefix_count: 0,
             locals: vec![
                 LocalDecl {
                     id: LIST,

@@ -537,6 +537,35 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
+    fn lower_witness_prefix_count(
+        &self,
+        kind: &DefinitionKind,
+        signature: &loom_sema::CallableSignature,
+        span: Span,
+    ) -> LowerResult<u32> {
+        let DefinitionKind::Method(method) = kind else {
+            return match kind {
+                DefinitionKind::Function(_) | DefinitionKind::Test(_) => Ok(0),
+                _ => Err(defect(
+                    "non-callable definition received a MIR function id",
+                    span,
+                )),
+            };
+        };
+        if !matches!(
+            self.hir.definitions[method.owner].kind,
+            DefinitionKind::Conformance(_)
+        ) {
+            return Ok(0);
+        }
+        let prefix = signature
+            .bounds
+            .len()
+            .checked_sub(signature.call_bounds.len())
+            .ok_or_else(|| defect("call-bound metadata exceeds all callable bounds", span))?;
+        u32::try_from(prefix).map_err(|_| defect("too many conformance witness parameters", span))
+    }
+
     fn lower_functions(&self) -> LowerResult<Vec<Function>> {
         let mut functions = Vec::with_capacity(self.indices.functions.len());
         for (definition, source) in self.hir.definitions.iter() {
@@ -584,6 +613,8 @@ impl<'a> Compiler<'a> {
             if id.0 as usize != functions.len() {
                 return Err(defect("MIR function id allocation is not dense", span));
             }
+            let witness_prefix_count =
+                self.lower_witness_prefix_count(&source.kind, signature, span)?;
             let mut function = Function {
                 id,
                 name,
@@ -604,6 +635,7 @@ impl<'a> Compiler<'a> {
                         )
                     })
                     .collect::<LowerResult<_>>()?,
+                witness_prefix_count,
                 locals,
                 return_ty: self.lower_ty(signature.return_ty, &builder.parameters, span)?,
                 receiver,

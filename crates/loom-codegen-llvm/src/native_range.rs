@@ -2626,6 +2626,7 @@ mod tests {
             suspension_points: Vec::new(),
             params,
             witness_params: Vec::new(),
+            witness_prefix_count: 0,
             locals,
             return_ty,
             receiver: None,

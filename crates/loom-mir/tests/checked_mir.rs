@@ -65,6 +65,7 @@ fn function(
         suspension_points: Vec::new(),
         params,
         witness_params: Vec::new(),
+        witness_prefix_count: 0,
         locals,
         return_ty,
         receiver: None,
@@ -1824,6 +1825,41 @@ fn artifact_rejects_pre_expression_identity_version_fifteen_before_body_decode()
 }
 
 #[test]
+fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(16);
+    value["program"] = serde_json::json!("version 16 has no witness proof segmentation");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 16 must fail at the header boundary");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected,
+            found: 16
+        } if expected == INTERPRETED_ARTIFACT_VERSION
+    ));
+}
+
+#[test]
+fn artifact_version_seventeen_requires_explicit_witness_segmentation() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["program"]["functions"]
+        .as_array_mut()
+        .and_then(|functions| functions.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|function| function.remove("witness_prefix_count"))
+        .expect("encoded function witness segmentation field");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 17 function segmentation is required");
+    assert!(matches!(
+        error,
+        ArtifactError::Malformed(message) if message.contains("witness_prefix_count")
+    ));
+}
+
+#[test]
 fn artifact_rejects_language_version_mismatch_before_program_decode() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
@@ -2358,6 +2394,7 @@ fn conditional_concept_program() -> Program {
     boxed_equal.type_parameters = 1;
     boxed_equal.receiver = Some(Receiver::Readonly);
     boxed_equal.witness_params.push(prerequisite.clone());
+    boxed_equal.witness_prefix_count = 1;
 
     let caller = function(
         2,
@@ -2464,6 +2501,45 @@ fn conditional_witness_apply_is_checked_as_a_recursive_proof_tree() {
         arguments: Vec::new(),
     };
     assert!(validation_errors(&wrong_arity).contains(MirValidationCode::WitnessArity));
+}
+
+#[test]
+fn witness_method_proofs_are_partitioned_into_conformance_and_requirement_segments() {
+    let program = conditional_concept_program();
+    validate_program(&program).expect("valid partitioned witness method proofs");
+    assert_eq!(program.functions[0].witness_prefix_count, 0);
+    assert_eq!(program.functions[1].witness_prefix_count, 1);
+
+    let mut wrong_prefix = program.clone();
+    wrong_prefix.functions[1].witness_prefix_count = 0;
+    let errors = validation_errors(&wrong_prefix);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::WitnessArity && error.path.contains("witness_prefix_count")
+    }));
+
+    let mut oversized_prefix = program.clone();
+    oversized_prefix.functions[1].witness_prefix_count = 2;
+    let errors = validation_errors(&oversized_prefix);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::WitnessArity
+            && error.message.contains("exceeds the function")
+    }));
+
+    let mut non_witness_prefix = program;
+    non_witness_prefix.functions[2].witness_prefix_count = 1;
+    non_witness_prefix.functions[2]
+        .witness_params
+        .push(WitnessParam {
+            target: Type::Int,
+            concept: ConceptId(0),
+            bindings: BTreeMap::new(),
+            span: span(),
+        });
+    let errors = validation_errors(&non_witness_prefix);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::WitnessShape
+            && error.message.contains("only witness methods")
+    }));
 }
 
 #[test]

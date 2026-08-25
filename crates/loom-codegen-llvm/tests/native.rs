@@ -1713,6 +1713,7 @@ fn unit_program() -> Program {
         suspension_points: Vec::new(),
         params: Vec::new(),
         witness_params: Vec::new(),
+        witness_prefix_count: 0,
         locals: Vec::new(),
         return_ty: Type::Unit,
         receiver: None,

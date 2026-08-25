@@ -584,6 +584,7 @@ mod tests {
                 span: Default::default(),
             }],
             witness_params: Vec::new(),
+            witness_prefix_count: 0,
             locals: Vec::new(),
             return_ty: Type::Int,
             receiver: None,

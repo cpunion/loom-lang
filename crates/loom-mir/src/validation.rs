@@ -1781,6 +1781,46 @@ impl<'program> Validator<'program> {
                     expected_witness_params.push(parameter);
                 }
             }
+            match u32::try_from(witness.prerequisites.len()) {
+                Ok(expected_prefix_count)
+                    if function.witness_prefix_count != expected_prefix_count =>
+                {
+                    self.push(
+                        MirValidationCode::WitnessArity,
+                        format!(
+                            "witness method declares {} conformance proof parameter(s), but its witness requires {expected_prefix_count}",
+                            function.witness_prefix_count
+                        ),
+                        function.span,
+                        format!("{method_path}.witness_prefix_count"),
+                    );
+                }
+                Err(_) => self.push(
+                    MirValidationCode::WitnessArity,
+                    "witness prerequisite count exceeds the representable function proof prefix",
+                    function.span,
+                    format!("{method_path}.witness_prefix_count"),
+                ),
+                Ok(_) => {}
+            }
+            let actual_suffix_count = usize::try_from(function.witness_prefix_count)
+                .ok()
+                .and_then(|prefix| function.witness_params.len().checked_sub(prefix));
+            if actual_suffix_count != Some(requirement_def.witness_params.len()) {
+                let actual_suffix = actual_suffix_count.map_or_else(
+                    || "no valid segment because its prefix exceeds the total".to_owned(),
+                    |count| format!("{count} parameter(s)"),
+                );
+                self.push(
+                    MirValidationCode::WitnessArity,
+                    format!(
+                        "witness method proof suffix has {actual_suffix}, but its requirement requires {} parameter(s)",
+                        requirement_def.witness_params.len()
+                    ),
+                    function.span,
+                    format!("{method_path}.witness_params"),
+                );
+            }
             if function.witness_params.len() != expected_witness_params.len() {
                 self.push(
                     MirValidationCode::WitnessArity,
@@ -2267,6 +2307,34 @@ impl<'program> Validator<'program> {
     #[allow(clippy::too_many_lines)]
     fn validate_function(&mut self, function: &Function, path: &str) {
         self.validate_expression_ids(function, path);
+        let witness_prefix_count =
+            usize::try_from(function.witness_prefix_count).unwrap_or(usize::MAX);
+        if witness_prefix_count > function.witness_params.len() {
+            self.push(
+                MirValidationCode::WitnessArity,
+                format!(
+                    "witness proof prefix {} exceeds the function's {} proof parameter(s)",
+                    function.witness_prefix_count,
+                    function.witness_params.len()
+                ),
+                function.span,
+                format!("{path}.witness_prefix_count"),
+            );
+        }
+        let is_witness_method = self.program.witnesses.iter().any(|witness| {
+            witness
+                .methods
+                .values()
+                .any(|method| *method == function.id)
+        });
+        if !is_witness_method && function.witness_prefix_count != 0 {
+            self.push(
+                MirValidationCode::WitnessShape,
+                "only witness methods may declare a conformance proof prefix",
+                function.span,
+                format!("{path}.witness_prefix_count"),
+            );
+        }
         for (index, parameter) in function.params.iter().enumerate() {
             self.validate_type(
                 &parameter.ty,

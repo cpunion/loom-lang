@@ -308,6 +308,10 @@ pub struct Function {
     pub suspension_points: Vec<SuspensionPoint>,
     pub params: Vec<LocalDecl>,
     pub witness_params: Vec<WitnessParam>,
+    /// Number of leading proof parameters owned by the enclosing
+    /// conformance. The remaining suffix is owned by the implemented
+    /// requirement. Non-witness functions always use zero.
+    pub witness_prefix_count: u32,
     pub locals: Vec<LocalDecl>,
     pub return_ty: Type,
     pub receiver: Option<Receiver>,
