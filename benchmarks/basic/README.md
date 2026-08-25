@@ -9,7 +9,7 @@
 | case | 默认规模 | 主要路径 | 可观察 checksum |
 |---|---:|---|---|
 | `int_lcg` | 2,000,000 | 有界 `Int` 乘除和循环 | 最终 LCG state |
-| `record_method` | 500,000 | 函数内 POD record method、SROA 与周期整数累计 | `total` 和 `calls` |
+| `record_method` | 500,000 | 跨函数 POD result/`mut self` InOut、SROA 与周期整数累计 | `total` 和 `calls` |
 | `list_build_scan` | 10,000 | 从空 List 几何增长，再按已证明的 exact length 扫描 | 元素和与长度 |
 | `fib_recursive` | 32 | 非尾递归函数调用 | Fibonacci 值 |
 
@@ -17,11 +17,11 @@
 
 Text 拼接和 `dyn` 分派没有放入 v1：各语言的字符串表示、分配策略、虚调用去虚化条件并不天然等价。它们应在 ABI/layout 优化阶段用单独、明确语义的 case 加入。
 
-默认规模按当前 Loom 实现校准，使标准矩阵能在开发机上有界完成；它们不是成熟实现的吞吐上限。`record_method` 当前命中函数内 POD record 快路：字段位于有预算的入口栈节点，release 由 SROA 提升为 SSA；whole-value copy/call/return 才物化独立 managed chain，因此仍保留值复制隔离。它不代表跨函数 POD record typed ABI 已完成。
+默认规模按当前 Loom 实现校准，使标准矩阵能在开发机上有界完成；它们不是成熟实现的吞吐上限。`record_method` 当前命中跨函数 POD 首阶段：producer 以 first-class LLVM `{i64, i64}` aggregate 返回，`counter.add` 通过 call-scoped `mut self` InOut pointer 调用，private 热路不 clone/build managed chain；release 可以内联/SROA 并删除未引用的 universal fallback。whole-value copy 或普通参数、readonly/contract/generic 等 universal boundary 仍物化独立 managed value，因此继续保持值复制和 moving-GC 语义。这不代表一般 aggregate ABI 已完成。
 
 `list_build_scan` 曾用于定位整表 receiver clone 与链式 add/get 叠加产生的 O(n²) 退化；当前源码满足同步、不逃逸局部 `List[Int]` 的保守形状检查，因此 LLVM 使用 compiler-private contiguous `{data, len, cap}` storage。canonical append loop 在 preheader 读取 header 并以 SSA/phi 携带 data/len/cap，非增长迭代不再重载 header，reserve 成功后只重载 data/cap，element store 后立即提交 len；仍然从空 list 几何增长，不做预 reserve。随后零起点 scan 与 build 使用同一稳定 end，且直接穷尽匹配 `Option[Int]`，因此 exact-length proof 可以删除逐元素 upper-bound 与不可达 `None` edge；独立的 checked checksum 仍然保留。storage 不经过 GC，所有退出路径显式释放。exact proof 的 direct/Unit shape、end、binder 或同一 list 不变性无法证明时保留 checked generic-native get；只有 native-storage eligibility 失败才回退当前 universal `Value` lowering。
 
-这些 case 固定的是当前 compiler-private 热路，不是统一容器/record ABI。`NativeLayout` catalog 已统一 scalar 与当前 direct-primitive POD record 的物理分类，record 栈存储候选复用它；private callable selector 仍只支持 scalar `Int`。List/其他布局、跨函数 POD record ABI 和含 managed element 的 generic List layout 仍待后续扩展。每个 case 内五种语言继续使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
+这些 case 固定的是当前 compiler-private 热路，不是统一容器/record ABI。`NativeLayout` catalog 已统一 scalar 与 direct-primitive POD record 的物理分类；private callable selector 支持 scalar 以及 POD result/`mut self` InOut，并为 native 与 universal body 分开计算 requirement。universal fallback 是当前不兼容 aggregate 边界的语义实现，不是历史兼容层。普通 POD 参数、readonly receiver、合同/invariant 和 fib assumed body 仍是 P0；List/managed generic layout、统一 clone/trace/drop plan 与 machine-instance identity 仍待扩展。每个 case 内五种语言继续使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
 
 ## 运行
 
