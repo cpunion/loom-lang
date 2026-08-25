@@ -30,8 +30,8 @@ mod value;
 mod witness;
 
 pub use gc::{
-    activate_runtime_v1, clone_witness_v1, deactivate_runtime_v1, root_pop_v1, root_push_v1,
-    safepoint_v1,
+    activate_runtime_v1, build_value_nodes_v1, clone_value_v1, clone_witness_v1,
+    deactivate_runtime_v1, root_pop_v1, root_push_v1, safepoint_v1,
 };
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use value::value_summary;
@@ -64,9 +64,9 @@ pub use standard::{
 };
 
 pub use loom_runtime_abi::{
-    COROUTINE_ABI_VERSION, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX,
-    FAULT_SCHEMA_VERSION, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK,
-    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
+    COROUTINE_ABI_VERSION, DYN_FLAG_MUTABLE, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON,
+    FAULT_JSON_PREFIX, FAULT_SCHEMA_VERSION, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT,
+    GC_OK, GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
     LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
     LoomGcRootDescriptor, LoomGcRootFrame, LoomLayoutDescriptor, LoomWitnessDescriptor,
     LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, READY_CLOSED, READY_COMPLETED, READY_ERROR,

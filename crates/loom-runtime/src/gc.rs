@@ -14,12 +14,12 @@ use std::ptr;
 use std::sync::atomic::Ordering;
 
 use loom_runtime_abi::{
-    GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK, GC_ROOT_FRAME_LINKED,
-    GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame, LoomWitnessInstance,
-    SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, VALUE_SLOT_WORDS, VALUE_TAG_CONSTRAINT_ERROR,
-    VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED,
-    VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_WORD_AUX, VALUE_WORD_DATA,
-    VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
+    DYN_FLAG_MUTABLE, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK,
+    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame,
+    LoomWitnessInstance, SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, VALUE_SLOT_WORDS,
+    VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
+    VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_WORD_AUX,
+    VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
 
 use crate::reactor::LoomExecutor;
@@ -747,6 +747,495 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
     }
 }
 
+const CLONE_ROOT_COUNT: usize = 6;
+const BUILD_ROOT_COUNT: usize = 3;
+const CLONE_ROOT_SOURCE: usize = 0;
+const CLONE_ROOT_OUTPUT: usize = 1;
+const CLONE_ROOT_CURSOR: usize = 2;
+const CLONE_ROOT_TAIL: usize = 3;
+const CLONE_ROOT_CHILD_SOURCE: usize = 4;
+const CLONE_ROOT_CHILD_RESULT: usize = 5;
+
+static CLONE_ROOT_BITMAP: [u64; 1] = [(1_u64 << CLONE_ROOT_COUNT) - 1];
+static BUILD_ROOT_BITMAP: [u64; 1] = [(1_u64 << BUILD_ROOT_COUNT) - 1];
+
+/// A root descriptor contains a pointer, so Rust does not infer `Sync`. These
+/// two instances point only at immutable process-lifetime bitmap arrays.
+struct SharedRootDescriptor(LoomGcRootDescriptor);
+
+// SAFETY: the wrapped descriptors and the bitmap storage they reference are
+// immutable process-lifetime statics.
+unsafe impl Sync for SharedRootDescriptor {}
+
+static CLONE_ROOT_DESCRIPTOR: SharedRootDescriptor = SharedRootDescriptor(LoomGcRootDescriptor {
+    abi_version: SHADOW_STACK_ABI_VERSION,
+    flags: 0,
+    slot_count: CLONE_ROOT_COUNT as u64,
+    state_count: 1,
+    live_bitmap_words: 1,
+    live_bitmaps: CLONE_ROOT_BITMAP.as_ptr(),
+});
+
+static BUILD_ROOT_DESCRIPTOR: SharedRootDescriptor = SharedRootDescriptor(LoomGcRootDescriptor {
+    abi_version: SHADOW_STACK_ABI_VERSION,
+    flags: 0,
+    slot_count: BUILD_ROOT_COUNT as u64,
+    state_count: 1,
+    live_bitmap_words: 1,
+    live_bitmaps: BUILD_ROOT_BITMAP.as_ptr(),
+});
+
+#[derive(Clone, Copy)]
+enum BoxCloneKind {
+    Refined,
+    Dynamic,
+    CompletedOutcome,
+}
+
+#[derive(Clone, Copy)]
+enum ClonePhase {
+    Dispatch,
+    Aggregate,
+    AwaitAggregateChild,
+    AwaitBoxChild(BoxCloneKind),
+    Done,
+}
+
+/// One non-moving explicit clone continuation. Each work item owns a precise
+/// shadow-stack frame, so arbitrary Loom nesting consumes heap work storage
+/// rather than the native call stack. `Box<CloneWork>` keeps every slot and
+/// the intrusive frame header address-stable while linked.
+struct CloneWork {
+    roots: [ValueSlot; CLONE_ROOT_COUNT],
+    slots: [*mut c_void; CLONE_ROOT_COUNT],
+    frame: LoomGcRootFrame,
+    phase: ClonePhase,
+}
+
+impl CloneWork {
+    unsafe fn new(source: *const ValueSlot) -> Option<Box<Self>> {
+        if source.is_null() {
+            return None;
+        }
+        // No Loom safepoint is permitted before this shallow copy and the
+        // resulting local root frame is linked.
+        let source = unsafe { *source };
+        let mut work = Box::new(Self {
+            roots: [ValueSlot::default(); CLONE_ROOT_COUNT],
+            slots: [ptr::null_mut(); CLONE_ROOT_COUNT],
+            frame: LoomGcRootFrame {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const CLONE_ROOT_DESCRIPTOR.0,
+                slots: ptr::null(),
+                previous: ptr::null_mut(),
+            },
+            phase: ClonePhase::Dispatch,
+        });
+        work.roots[CLONE_ROOT_SOURCE] = source;
+        for index in 0..CLONE_ROOT_COUNT {
+            work.slots[index] = (&raw mut work.roots[index]).cast();
+        }
+        work.frame.slots = work.slots.as_ptr();
+        Some(work)
+    }
+
+    fn frame_pointer(&mut self) -> *mut LoomGcRootFrame {
+        &raw mut self.frame
+    }
+}
+
+fn synthetic_list(head: *mut ValueNode, count: u64) -> ValueSlot {
+    let mut value = ValueSlot::default();
+    value.words[VALUE_WORD_TAG] = VALUE_TAG_LIST;
+    value.words[VALUE_WORD_AUX] = count;
+    value.words[VALUE_WORD_DATA] = head as u64;
+    value
+}
+
+/// Clone/build helpers poll before each managed allocation. The allocator
+/// itself remains no-GC in this migration stage, guaranteeing that its fresh
+/// pointer stays valid until the caller fully initializes and publishes it.
+fn poll_before_helper_allocation() -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    // Unlike the public safepoint, the helper hot path can inspect the active
+    // heap budget directly. Avoid validating an arbitrarily deep explicit
+    // work-frame chain on every allocation while it remains below threshold.
+    // One fixed-size Value/ValueNode allocation may cross the threshold; the
+    // next helper allocation observes that debt before allocating again.
+    let should_collect =
+        unsafe { (*runtime).heap.allocation_charge >= (*runtime).heap.next_gc_threshold };
+    #[cfg(test)]
+    let should_collect = should_collect || unsafe { (*runtime).heap.collect_on_every_poll };
+    if !should_collect {
+        return GC_OK;
+    }
+    // SAFETY: helper frames have published all live Values before reaching
+    // this allocation boundary.
+    unsafe { collect_active_runtime(runtime, false) }
+}
+
+unsafe fn pop_clone_work(work: &mut CloneWork) -> i32 {
+    unsafe { root_pop_v1(work.frame_pointer()) }
+}
+
+unsafe fn unwind_clone_work(stack: &mut Vec<Box<CloneWork>>, output: *mut ValueSlot) -> i32 {
+    if !output.is_null() {
+        // No collection occurs while the linked frames are unwound.
+        unsafe { output.write(ValueSlot::default()) };
+    }
+    while let Some(work) = stack.last_mut() {
+        let status = unsafe { pop_clone_work(work) };
+        if status != GC_OK {
+            return status;
+        }
+        stack.pop();
+    }
+    GC_OK
+}
+
+unsafe fn start_clone_child(stack: &mut Vec<Box<CloneWork>>, source: *const ValueSlot) -> i32 {
+    let Some(mut child) = (unsafe { CloneWork::new(source) }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let status = unsafe { root_push_v1(child.frame_pointer()) };
+    if status != GC_OK {
+        return status;
+    }
+    stack.push(child);
+    GC_OK
+}
+
+unsafe fn finish_clone_child(stack: &mut Vec<Box<CloneWork>>) -> i32 {
+    if stack.len() < 2 {
+        return GC_FRAME_ORDER;
+    }
+    let child_result = {
+        let child = stack.last().unwrap_or_else(|| unreachable!());
+        child.roots[CLONE_ROOT_OUTPUT]
+    };
+    let parent_index = stack.len() - 2;
+    stack[parent_index].roots[CLONE_ROOT_CHILD_RESULT] = child_result;
+    let status = {
+        let child = stack.last_mut().unwrap_or_else(|| unreachable!());
+        unsafe { pop_clone_work(child) }
+    };
+    if status == GC_OK {
+        stack.pop();
+    }
+    status
+}
+
+fn aggregate_count(value: &ValueSlot) -> Option<u64> {
+    match value.words[VALUE_WORD_TAG] {
+        VALUE_TAG_RECORD | VALUE_TAG_CONSTRAINT_ERROR | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
+            Some(value.words[VALUE_WORD_AUX])
+        }
+        VALUE_TAG_ENUM => Some(value.words[VALUE_WORD_SCALAR]),
+        _ => None,
+    }
+}
+
+/// Deep-clones one universal Value into caller-owned stable storage.
+///
+/// `source` may be an interior pointer into the moving heap because it is read
+/// exactly once before any safepoint. `output` must be an address-stable Value
+/// slot which the caller keeps live across this call. The implementation uses
+/// an explicit non-moving work stack and never keeps a heap-derived pointer
+/// across a helper allocation poll.
+#[unsafe(export_name = "loom_gc_clone_value_v1")]
+#[allow(clippy::too_many_lines)]
+pub unsafe extern "C" fn clone_value_v1(output: *mut c_void, source: *const c_void) -> i32 {
+    let output = output.cast::<ValueSlot>();
+    let source = source.cast::<ValueSlot>();
+    if output.is_null() || source.is_null() || active_runtime_pointer().is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    // Preserve aliasing input before initializing the stable result slot.
+    let Some(mut top) = (unsafe { CloneWork::new(source) }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    unsafe { output.write(ValueSlot::default()) };
+    let status = unsafe { root_push_v1(top.frame_pointer()) };
+    if status != GC_OK {
+        return status;
+    }
+    let mut stack = vec![top];
+
+    let status = loop {
+        let phase = stack.last().map_or(ClonePhase::Done, |work| work.phase);
+        match phase {
+            ClonePhase::Dispatch => {
+                let work = stack.last_mut().unwrap_or_else(|| unreachable!());
+                let source = work.roots[CLONE_ROOT_SOURCE];
+                work.roots[CLONE_ROOT_OUTPUT] = source;
+                if let Some(count) = aggregate_count(&source) {
+                    work.roots[CLONE_ROOT_CURSOR] =
+                        synthetic_list(source.words[VALUE_WORD_DATA] as *mut ValueNode, count);
+                    work.roots[CLONE_ROOT_OUTPUT] = synthetic_list(ptr::null_mut(), 0);
+                    work.phase = ClonePhase::Aggregate;
+                    continue;
+                }
+                let kind = match source.words[VALUE_WORD_TAG] {
+                    VALUE_TAG_REFINED => Some(BoxCloneKind::Refined),
+                    VALUE_TAG_DYN => Some(BoxCloneKind::Dynamic),
+                    VALUE_TAG_TASK_OUTCOME
+                        if source.words[VALUE_WORD_AUX] == TASK_COMPLETED as u64 =>
+                    {
+                        Some(BoxCloneKind::CompletedOutcome)
+                    }
+                    _ => None,
+                };
+                let Some(kind) = kind else {
+                    work.phase = ClonePhase::Done;
+                    continue;
+                };
+                let inner = source.words[VALUE_WORD_DATA] as *const ValueSlot;
+                if inner.is_null() {
+                    break GC_INVALID_ARGUMENT;
+                }
+                // The inner pointer is consumed before any safepoint. Its
+                // shallow copy becomes a precise parent-frame root.
+                work.roots[CLONE_ROOT_CHILD_SOURCE] = unsafe { *inner };
+                work.phase = ClonePhase::AwaitBoxChild(kind);
+                let child_source = &raw const work.roots[CLONE_ROOT_CHILD_SOURCE];
+                let status = unsafe { start_clone_child(&mut stack, child_source) };
+                if status != GC_OK {
+                    break status;
+                }
+            }
+            ClonePhase::Aggregate => {
+                let work = stack.last_mut().unwrap_or_else(|| unreachable!());
+                let remaining = work.roots[CLONE_ROOT_CURSOR].words[VALUE_WORD_AUX];
+                if remaining == 0 {
+                    if work.roots[CLONE_ROOT_CURSOR].words[VALUE_WORD_DATA] != 0 {
+                        break GC_INVALID_ARGUMENT;
+                    }
+                    let head = work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_DATA];
+                    let expected = aggregate_count(&work.roots[CLONE_ROOT_SOURCE])
+                        .unwrap_or_else(|| unreachable!());
+                    if work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_AUX] != expected {
+                        break GC_INVALID_ARGUMENT;
+                    }
+                    work.roots[CLONE_ROOT_OUTPUT] = work.roots[CLONE_ROOT_SOURCE];
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_DATA] = head;
+                    work.phase = ClonePhase::Done;
+                    continue;
+                }
+                let node = work.roots[CLONE_ROOT_CURSOR].words[VALUE_WORD_DATA] as *const ValueNode;
+                if node.is_null() {
+                    break GC_INVALID_ARGUMENT;
+                }
+                // Consume every derived source address before a child can
+                // poll. Advancing the cursor first leaves only precise Value
+                // roots live across the nested clone.
+                let node_ref = unsafe { &*node };
+                work.roots[CLONE_ROOT_CHILD_SOURCE] = node_ref.value;
+                work.roots[CLONE_ROOT_CURSOR].words[VALUE_WORD_DATA] = node_ref.next as u64;
+                work.roots[CLONE_ROOT_CURSOR].words[VALUE_WORD_AUX] = remaining - 1;
+                work.phase = ClonePhase::AwaitAggregateChild;
+                let child_source = &raw const work.roots[CLONE_ROOT_CHILD_SOURCE];
+                let status = unsafe { start_clone_child(&mut stack, child_source) };
+                if status != GC_OK {
+                    break status;
+                }
+            }
+            ClonePhase::AwaitAggregateChild => {
+                let status = poll_before_helper_allocation();
+                if status != GC_OK {
+                    break status;
+                }
+                let node = allocate_value_node().cast::<ValueNode>();
+                if node.is_null() {
+                    break GC_INVALID_ARGUMENT;
+                }
+                let work = stack.last_mut().unwrap_or_else(|| unreachable!());
+                // The poll may have relocated every managed pointer, so only
+                // reloaded root values are used below.
+                unsafe {
+                    (*node).value = work.roots[CLONE_ROOT_CHILD_RESULT];
+                    (*node).next = ptr::null_mut();
+                }
+                let built = work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_AUX];
+                if built == 0 {
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_DATA] = node as u64;
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_AUX] = 1;
+                    work.roots[CLONE_ROOT_TAIL] = synthetic_list(node, 1);
+                } else {
+                    let tail = work.roots[CLONE_ROOT_TAIL].words[VALUE_WORD_DATA] as *mut ValueNode;
+                    if tail.is_null() {
+                        break GC_INVALID_ARGUMENT;
+                    }
+                    // No safepoint is permitted between linking the initialized
+                    // node and publishing the matching count/tail state.
+                    unsafe { (*tail).next = node };
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_AUX] = built
+                        .checked_add(1)
+                        .unwrap_or_else(|| std::process::abort());
+                    work.roots[CLONE_ROOT_TAIL].words[VALUE_WORD_DATA] = node as u64;
+                }
+                work.roots[CLONE_ROOT_CHILD_RESULT] = ValueSlot::default();
+                work.phase = ClonePhase::Aggregate;
+            }
+            ClonePhase::AwaitBoxChild(kind) => {
+                let status = poll_before_helper_allocation();
+                if status != GC_OK {
+                    break status;
+                }
+                let boxed = allocate_value().cast::<ValueSlot>();
+                if boxed.is_null() {
+                    break GC_INVALID_ARGUMENT;
+                }
+                let work = stack.last_mut().unwrap_or_else(|| unreachable!());
+                unsafe { boxed.write(work.roots[CLONE_ROOT_CHILD_RESULT]) };
+                work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_DATA] = boxed as u64;
+                if matches!(kind, BoxCloneKind::Dynamic) {
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_SCALAR] = 0;
+                    work.roots[CLONE_ROOT_OUTPUT].words[VALUE_WORD_AUX] &= DYN_FLAG_MUTABLE;
+                }
+                work.roots[CLONE_ROOT_CHILD_RESULT] = ValueSlot::default();
+                work.phase = ClonePhase::Done;
+            }
+            ClonePhase::Done => {
+                if stack.len() == 1 {
+                    unsafe { output.write(stack[0].roots[CLONE_ROOT_OUTPUT]) };
+                    let status = {
+                        let top = stack.last_mut().unwrap_or_else(|| unreachable!());
+                        unsafe { pop_clone_work(top) }
+                    };
+                    if status == GC_OK {
+                        stack.pop();
+                    }
+                    break status;
+                }
+                let status = unsafe { finish_clone_child(&mut stack) };
+                if status != GC_OK {
+                    break status;
+                }
+            }
+        }
+    };
+
+    if status == GC_OK {
+        return GC_OK;
+    }
+    let unwind_status = unsafe { unwind_clone_work(&mut stack, output) };
+    if unwind_status == GC_OK {
+        status
+    } else {
+        unwind_status
+    }
+}
+
+/// Builds one `ValueNode` chain from an immutable array of stable Value-slot
+/// pointers. Elements are shallow-moved into fresh nodes in source order.
+/// Every source pointer must remain address-stable and GC-updatable for the
+/// duration of the call; the output is a synthetic List root containing the
+/// finished head and count.
+#[unsafe(export_name = "loom_gc_build_value_nodes_v1")]
+pub unsafe extern "C" fn build_value_nodes_v1(
+    output: *mut c_void,
+    sources: *const *const c_void,
+    count: u64,
+) -> i32 {
+    let output = output.cast::<ValueSlot>();
+    if output.is_null() || active_runtime_pointer().is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let Ok(count) = usize::try_from(count) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if count == 0 {
+        unsafe { output.write(synthetic_list(ptr::null_mut(), 0)) };
+        return GC_OK;
+    }
+    if sources.is_null() || count > isize::MAX as usize / size_of::<*const c_void>() {
+        return GC_INVALID_ARGUMENT;
+    }
+    for index in 0..count {
+        let source = unsafe { *sources.add(index) }.cast::<ValueSlot>();
+        if source.is_null() || source == output {
+            return GC_INVALID_ARGUMENT;
+        }
+    }
+
+    unsafe { output.write(synthetic_list(ptr::null_mut(), 0)) };
+    let mut tail = synthetic_list(ptr::null_mut(), 0);
+    let mut source_scratch = ValueSlot::default();
+    let slots = [
+        output.cast::<c_void>(),
+        (&raw mut tail).cast::<c_void>(),
+        (&raw mut source_scratch).cast::<c_void>(),
+    ];
+    let mut frame = LoomGcRootFrame {
+        abi_version: SHADOW_STACK_ABI_VERSION,
+        flags: 0,
+        state: 0,
+        descriptor: &raw const BUILD_ROOT_DESCRIPTOR.0,
+        slots: slots.as_ptr(),
+        previous: ptr::null_mut(),
+    };
+    let status = unsafe { root_push_v1(&raw mut frame) };
+    if status != GC_OK {
+        unsafe { output.write(ValueSlot::default()) };
+        return status;
+    }
+
+    let mut status = GC_OK;
+    for index in 0..count {
+        let source = unsafe { *sources.add(index) }.cast::<ValueSlot>();
+        // The caller contract makes this address stable across prior polls.
+        // Copy it before the next allocation boundary.
+        source_scratch = unsafe { *source };
+        status = poll_before_helper_allocation();
+        if status != GC_OK {
+            break;
+        }
+        let node = allocate_value_node().cast::<ValueNode>();
+        if node.is_null() {
+            status = GC_INVALID_ARGUMENT;
+            break;
+        }
+        unsafe {
+            (*node).value = source_scratch;
+            (*node).next = ptr::null_mut();
+        }
+        let built = unsafe { (*output).words[VALUE_WORD_AUX] };
+        if built == 0 {
+            unsafe {
+                (*output).words[VALUE_WORD_DATA] = node as u64;
+                (*output).words[VALUE_WORD_AUX] = 1;
+            }
+            tail = synthetic_list(node, 1);
+        } else {
+            let tail_pointer = tail.words[VALUE_WORD_DATA] as *mut ValueNode;
+            if tail_pointer.is_null() {
+                status = GC_INVALID_ARGUMENT;
+                break;
+            }
+            unsafe { (*tail_pointer).next = node };
+            unsafe {
+                (*output).words[VALUE_WORD_AUX] = built
+                    .checked_add(1)
+                    .unwrap_or_else(|| std::process::abort());
+            }
+            tail.words[VALUE_WORD_DATA] = node as u64;
+        }
+    }
+    if status == GC_OK && unsafe { (*output).words[VALUE_WORD_AUX] } != count as u64 {
+        status = GC_INVALID_ARGUMENT;
+    }
+    if status != GC_OK {
+        unsafe { output.write(ValueSlot::default()) };
+    }
+    let pop_status = unsafe { root_pop_v1(&raw mut frame) };
+    if status == GC_OK { pop_status } else { status }
+}
+
 /// Deep-clones one immutable conformance proof into the active Runtime's
 /// non-moving, traced proof arena.
 ///
@@ -816,6 +1305,7 @@ struct Marks {
 struct TraceContext {
     index: *const HeapIndex,
     marks: *mut Marks,
+    work: Vec<TraceItem>,
 }
 
 unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
@@ -825,63 +1315,108 @@ unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
     let context = unsafe { &mut *context.cast::<TraceContext>() };
     let index = unsafe { &*context.index };
     let marks = unsafe { &mut *context.marks };
-    trace_value(unsafe { &*slot.cast::<ValueSlot>() }, index, marks);
+    trace_value(slot.cast::<ValueSlot>(), index, marks, &mut context.work);
 }
 
-fn trace_value(value: &ValueSlot, index: &HeapIndex, marks: &mut Marks) {
-    match value.words[VALUE_WORD_TAG] {
-        VALUE_TAG_TEXT => {
-            let Some(object) = text::object(value) else {
-                return;
-            };
-            let address = object as usize;
-            if index.sequences.contains(&address) {
-                marks.sequences.insert(address);
+enum TraceItem {
+    Value(*const ValueSlot),
+    Nodes(*const ValueNode, u64),
+}
+
+/// Traces one complete value graph without consuming native stack in
+/// proportion to Loom nesting depth. A node-chain continuation is scheduled
+/// before its child value, keeping the worklist proportional to structural
+/// depth rather than the width of a flat aggregate.
+fn trace_value(
+    value: *const ValueSlot,
+    index: &HeapIndex,
+    marks: &mut Marks,
+    work: &mut Vec<TraceItem>,
+) {
+    debug_assert!(work.is_empty());
+    work.push(TraceItem::Value(value));
+    while let Some(item) = work.pop() {
+        match item {
+            TraceItem::Value(value) => {
+                if value.is_null() {
+                    continue;
+                }
+                // SAFETY: roots and managed children are checked compiler or
+                // runtime values. Managed pointers are admitted below only
+                // after consulting the current heap index.
+                let value = unsafe { &*value };
+                match value.words[VALUE_WORD_TAG] {
+                    VALUE_TAG_TEXT => {
+                        let Some(object) = text::object(value) else {
+                            continue;
+                        };
+                        let address = object as usize;
+                        if index.sequences.contains(&address) {
+                            marks.sequences.insert(address);
+                        }
+                    }
+                    VALUE_TAG_RECORD
+                    | VALUE_TAG_CONSTRAINT_ERROR
+                    | VALUE_TAG_TUPLE
+                    | VALUE_TAG_LIST => work.push(TraceItem::Nodes(
+                        value.words[VALUE_WORD_DATA] as *const ValueNode,
+                        value.words[VALUE_WORD_AUX],
+                    )),
+                    VALUE_TAG_ENUM => work.push(TraceItem::Nodes(
+                        value.words[VALUE_WORD_DATA] as *const ValueNode,
+                        value.words[VALUE_WORD_SCALAR],
+                    )),
+                    VALUE_TAG_REFINED => schedule_value_pointer(
+                        value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                        index,
+                        marks,
+                        work,
+                    ),
+                    VALUE_TAG_DYN => {
+                        schedule_value_pointer(
+                            value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                            index,
+                            marks,
+                            work,
+                        );
+                        trace_witness_pointer(
+                            value.words[VALUE_WORD_WITNESS] as *const LoomWitnessInstance,
+                            index,
+                            marks,
+                        );
+                    }
+                    VALUE_TAG_TASK_OUTCOME
+                        if value.words[VALUE_WORD_AUX] == TASK_COMPLETED as u64 =>
+                    {
+                        schedule_value_pointer(
+                            value.words[VALUE_WORD_DATA] as *const ValueSlot,
+                            index,
+                            marks,
+                            work,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            TraceItem::Nodes(pointer, count) => {
+                if pointer.is_null() || count == 0 {
+                    continue;
+                }
+                let address = pointer as usize;
+                let newly_marked = !index.nodes.contains(&address) || marks.nodes.insert(address);
+                // SAFETY: aggregate counts and chains are compiler/runtime
+                // constructed. The same bounded invariant permits reading the
+                // child and continuation before either is scheduled.
+                let node = unsafe { &*pointer };
+                work.push(TraceItem::Nodes(node.next, count - 1));
+                // A shared head may first be reached through a shorter view.
+                // Continue the chain even when already marked, but avoid
+                // tracing its child graph more than once.
+                if newly_marked {
+                    work.push(TraceItem::Value(&raw const node.value));
+                }
             }
         }
-        VALUE_TAG_RECORD | VALUE_TAG_CONSTRAINT_ERROR | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
-            trace_nodes(
-                value.words[VALUE_WORD_DATA] as *const ValueNode,
-                value.words[VALUE_WORD_AUX],
-                index,
-                marks,
-            );
-        }
-        VALUE_TAG_ENUM => {
-            trace_nodes(
-                value.words[VALUE_WORD_DATA] as *const ValueNode,
-                value.words[VALUE_WORD_SCALAR],
-                index,
-                marks,
-            );
-        }
-        VALUE_TAG_REFINED => {
-            trace_value_pointer(
-                value.words[VALUE_WORD_DATA] as *const ValueSlot,
-                index,
-                marks,
-            );
-        }
-        VALUE_TAG_DYN => {
-            trace_value_pointer(
-                value.words[VALUE_WORD_DATA] as *const ValueSlot,
-                index,
-                marks,
-            );
-            trace_witness_pointer(
-                value.words[VALUE_WORD_WITNESS] as *const LoomWitnessInstance,
-                index,
-                marks,
-            );
-        }
-        VALUE_TAG_TASK_OUTCOME if value.words[VALUE_WORD_AUX] == TASK_COMPLETED as u64 => {
-            trace_value_pointer(
-                value.words[VALUE_WORD_DATA] as *const ValueSlot,
-                index,
-                marks,
-            );
-        }
-        _ => {}
     }
 }
 
@@ -903,7 +1438,12 @@ fn trace_witness_pointer(
     }
 }
 
-fn trace_value_pointer(pointer: *const ValueSlot, index: &HeapIndex, marks: &mut Marks) {
+fn schedule_value_pointer(
+    pointer: *const ValueSlot,
+    index: &HeapIndex,
+    marks: &mut Marks,
+    work: &mut Vec<TraceItem>,
+) {
     if pointer.is_null() {
         return;
     }
@@ -913,27 +1453,7 @@ fn trace_value_pointer(pointer: *const ValueSlot, index: &HeapIndex, marks: &mut
     }
     // SAFETY: checked MIR only stores live Value pointers in managed fields;
     // untracked pointers belong to the runtime result arena or process arena.
-    trace_value(unsafe { &*pointer }, index, marks);
-}
-
-fn trace_nodes(mut pointer: *const ValueNode, count: u64, index: &HeapIndex, marks: &mut Marks) {
-    for _ in 0..count {
-        if pointer.is_null() {
-            return;
-        }
-        let address = pointer as usize;
-        let newly_marked = !index.nodes.contains(&address) || marks.nodes.insert(address);
-        // A shared head may first be reached through a shorter bounded view.
-        // Continue walking an already-marked chain so a later longer view can
-        // still mark its tail, while avoiding duplicate child traversal.
-        if newly_marked {
-            // SAFETY: aggregate counts and chains were validated/constructed
-            // by compiler or runtime code and remain live until this safepoint.
-            trace_value(unsafe { &(*pointer).value }, index, marks);
-        }
-        // SAFETY: the same bounded-chain invariant applies to its next link.
-        pointer = unsafe { (*pointer).next };
-    }
+    work.push(TraceItem::Value(pointer));
 }
 
 fn rewrite_value(
@@ -1110,6 +1630,7 @@ unsafe fn collect_heap(
     let mut trace_context = TraceContext {
         index: &raw const index,
         marks: &raw mut marks,
+        work: Vec::new(),
     };
     for task in tasks.iter() {
         let task = (&raw const **task).cast_mut();
@@ -1379,6 +1900,38 @@ mod tests {
         value
     }
 
+    fn integer(value: i64) -> ValueSlot {
+        let mut slot = ValueSlot::default();
+        slot.words[VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
+        slot.words[VALUE_WORD_SCALAR] = value.cast_unsigned();
+        slot
+    }
+
+    unsafe fn value_chain(values: &[ValueSlot]) -> *mut ValueNode {
+        let mut head = ptr::null_mut();
+        for value in values.iter().rev() {
+            let node = allocate_value_node().cast::<ValueNode>();
+            assert!(!node.is_null());
+            unsafe {
+                (*node).value = *value;
+                (*node).next = head;
+            }
+            head = node;
+        }
+        head
+    }
+
+    unsafe fn chain_values(mut node: *const ValueNode, count: usize) -> Vec<ValueSlot> {
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            assert!(!node.is_null());
+            values.push(unsafe { (*node).value });
+            node = unsafe { (*node).next };
+        }
+        assert!(node.is_null());
+        values
+    }
+
     unsafe extern "C" fn completed_task(_task: *mut LoomTask, _executor: *mut LoomExecutor) -> i32 {
         TASK_COMPLETED
     }
@@ -1606,6 +2159,251 @@ mod tests {
         assert!(!runtime.is_null());
         assert!(allocate_value().is_null());
         unsafe {
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn value_clone_supports_aliasing_and_rejects_an_overlong_chain() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<1>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let head = value_chain(&[integer(10), integer(20)]);
+            frame.roots[0] = synthetic_list(head, 2);
+            let root = (&raw mut frame.roots[0]).cast::<c_void>();
+            assert_eq!(clone_value_v1(root, root.cast_const()), GC_OK);
+            let cloned = chain_values(frame.roots[0].words[VALUE_WORD_DATA] as *const ValueNode, 2);
+            assert_eq!(cloned[0].words[VALUE_WORD_SCALAR], 10);
+            assert_eq!(cloned[1].words[VALUE_WORD_SCALAR], 20);
+            assert_eq!((*runtime).sync_root_depth, 1);
+
+            let malformed = value_chain(&[integer(1), integer(2)]);
+            frame.roots[0] = synthetic_list(malformed, 1);
+            assert_eq!(clone_value_v1(root, root.cast_const()), GC_INVALID_ARGUMENT);
+            assert_eq!(
+                frame.roots[0].words[VALUE_WORD_TAG],
+                loom_runtime_abi::VALUE_TAG_UNIT,
+            );
+            assert_eq!((*runtime).sync_root_depth, 1);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn clone_preserves_enum_outcome_and_normalized_dyn_semantics() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<2>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+
+            let enum_head = value_chain(&[integer(7), integer(9)]);
+            frame.roots[0].words[VALUE_WORD_TAG] = VALUE_TAG_ENUM;
+            frame.roots[0].words[loom_runtime_abi::VALUE_WORD_NOMINAL] = 41;
+            frame.roots[0].words[VALUE_WORD_AUX] = 3;
+            frame.roots[0].words[VALUE_WORD_SCALAR] = 2;
+            frame.roots[0].words[VALUE_WORD_DATA] = enum_head as u64;
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[1]).cast(),
+                    (&raw const frame.roots[0]).cast(),
+                ),
+                GC_OK,
+            );
+            assert_eq!(frame.roots[1].words[VALUE_WORD_TAG], VALUE_TAG_ENUM);
+            assert_eq!(frame.roots[1].words[VALUE_WORD_AUX], 3);
+            assert_eq!(frame.roots[1].words[VALUE_WORD_SCALAR], 2);
+            assert_eq!(
+                chain_values(frame.roots[1].words[VALUE_WORD_DATA] as *const ValueNode, 2,)
+                    .iter()
+                    .map(|value| value.words[VALUE_WORD_SCALAR])
+                    .collect::<Vec<_>>(),
+                vec![7, 9],
+            );
+
+            let dyn_inner = allocate_value().cast::<ValueSlot>();
+            assert!(!dyn_inner.is_null());
+            dyn_inner.write(integer(88));
+            frame.roots[0] = ValueSlot::default();
+            frame.roots[0].words[VALUE_WORD_TAG] = VALUE_TAG_DYN;
+            frame.roots[0].words[VALUE_WORD_AUX] = DYN_FLAG_MUTABLE | 0x80;
+            frame.roots[0].words[VALUE_WORD_SCALAR] = 123;
+            frame.roots[0].words[VALUE_WORD_DATA] = dyn_inner as u64;
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[1]).cast(),
+                    (&raw const frame.roots[0]).cast(),
+                ),
+                GC_OK,
+            );
+            let cloned_dyn_inner = frame.roots[1].words[VALUE_WORD_DATA] as *const ValueSlot;
+            assert!(!cloned_dyn_inner.is_null());
+            assert_ne!(cloned_dyn_inner, dyn_inner);
+            assert_eq!(frame.roots[1].words[VALUE_WORD_AUX], DYN_FLAG_MUTABLE);
+            assert_eq!(frame.roots[1].words[VALUE_WORD_SCALAR], 0);
+            assert_eq!((*cloned_dyn_inner).words[VALUE_WORD_SCALAR], 88);
+
+            let outcome_inner = allocate_value().cast::<ValueSlot>();
+            assert!(!outcome_inner.is_null());
+            outcome_inner.write(integer(55));
+            frame.roots[0] = ValueSlot::default();
+            frame.roots[0].words[VALUE_WORD_TAG] = VALUE_TAG_TASK_OUTCOME;
+            frame.roots[0].words[VALUE_WORD_AUX] = TASK_COMPLETED as u64;
+            frame.roots[0].words[VALUE_WORD_DATA] = outcome_inner as u64;
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[1]).cast(),
+                    (&raw const frame.roots[0]).cast(),
+                ),
+                GC_OK,
+            );
+            let cloned_outcome_inner = frame.roots[1].words[VALUE_WORD_DATA] as *const ValueSlot;
+            assert!(!cloned_outcome_inner.is_null());
+            assert_ne!(cloned_outcome_inner, outcome_inner);
+            assert_eq!((*cloned_outcome_inner).words[VALUE_WORD_SCALAR], 55);
+
+            frame.roots[0].words[VALUE_WORD_AUX] = 1;
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[1]).cast(),
+                    (&raw const frame.roots[0]).cast(),
+                ),
+                GC_OK,
+            );
+            assert_eq!(frame.roots[1].words[VALUE_WORD_DATA], outcome_inner as u64);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn clone_and_builder_survive_collection_before_every_allocation() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<6>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let inner = allocate_value().cast::<ValueSlot>();
+            assert!(!inner.is_null());
+            inner.write(integer(101));
+            frame.roots[0] = indirect(inner);
+            frame.roots[1] = text_value(b"moving text").expect("managed Text");
+            frame.roots[2] = integer(303);
+            let inputs: [*const c_void; 3] = [
+                (&raw const frame.roots[0]).cast(),
+                (&raw const frame.roots[1]).cast(),
+                (&raw const frame.roots[2]).cast(),
+            ];
+            let inner_before = frame.roots[0].words[VALUE_WORD_DATA];
+            (*runtime).heap.collect_on_every_poll = true;
+            assert_eq!(
+                build_value_nodes_v1(
+                    (&raw mut frame.roots[3]).cast(),
+                    inputs.as_ptr(),
+                    inputs.len() as u64,
+                ),
+                GC_OK,
+            );
+            assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], inner_before);
+            let built = chain_values(
+                frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
+                inputs.len(),
+            );
+            assert_eq!(
+                built[0].words[VALUE_WORD_DATA],
+                frame.roots[0].words[VALUE_WORD_DATA]
+            );
+            assert_eq!(text::text_value_bytes(&built[1]), Some(&b"moving text"[..]),);
+            assert_eq!(built[2].words[VALUE_WORD_SCALAR], 303);
+
+            frame.roots[4].words[VALUE_WORD_TAG] = VALUE_TAG_TUPLE;
+            frame.roots[4].words[VALUE_WORD_AUX] = inputs.len() as u64;
+            frame.roots[4].words[VALUE_WORD_DATA] = frame.roots[3].words[VALUE_WORD_DATA];
+            let collections_before = (*runtime).heap.collections;
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[5]).cast(),
+                    (&raw const frame.roots[4]).cast(),
+                ),
+                GC_OK,
+            );
+            assert!((*runtime).heap.collections >= collections_before + inputs.len() as u64);
+            let cloned = chain_values(
+                frame.roots[5].words[VALUE_WORD_DATA] as *const ValueNode,
+                inputs.len(),
+            );
+            assert_eq!(cloned[0].words[VALUE_WORD_TAG], VALUE_TAG_REFINED);
+            assert_ne!(
+                cloned[0].words[VALUE_WORD_DATA],
+                built[0].words[VALUE_WORD_DATA],
+            );
+            assert_eq!(
+                (*(cloned[0].words[VALUE_WORD_DATA] as *const ValueSlot)).words[VALUE_WORD_SCALAR],
+                101,
+            );
+            assert_eq!(
+                text::text_value_bytes(&cloned[1]),
+                Some(&b"moving text"[..])
+            );
+            assert_eq!(cloned[2].words[VALUE_WORD_SCALAR], 303);
+            (*runtime).heap.collect_on_every_poll = false;
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn deeply_nested_clone_and_gc_trace_are_native_stack_bounded() {
+        const DEPTH: usize = 8_192;
+        let runtime = runtime_create_v1();
+        let mut frame = TestRootFrame::<2>::all_live();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(frame.pointer()), GC_OK);
+            let mut source = integer(73);
+            for _ in 0..DEPTH {
+                let inner = allocate_value().cast::<ValueSlot>();
+                assert!(!inner.is_null());
+                inner.write(source);
+                source = indirect(inner);
+            }
+            frame.roots[0] = source;
+            // The first clone allocation forces a collection while all
+            // explicit CloneWork frames and the deeply nested source graph are
+            // live. Both clone and trace must remain native-stack bounded.
+            force_next_safepoint(runtime);
+            assert_eq!(
+                clone_value_v1(
+                    (&raw mut frame.roots[1]).cast(),
+                    (&raw const frame.roots[0]).cast(),
+                ),
+                GC_OK,
+            );
+            assert!((*runtime).heap.collections >= 1);
+            let mut source = frame.roots[0];
+            let mut cloned = frame.roots[1];
+            for _ in 0..DEPTH {
+                assert_eq!(source.words[VALUE_WORD_TAG], VALUE_TAG_REFINED);
+                assert_eq!(cloned.words[VALUE_WORD_TAG], VALUE_TAG_REFINED);
+                assert_ne!(source.words[VALUE_WORD_DATA], cloned.words[VALUE_WORD_DATA]);
+                source = *(source.words[VALUE_WORD_DATA] as *const ValueSlot);
+                cloned = *(cloned.words[VALUE_WORD_DATA] as *const ValueSlot);
+            }
+            assert_eq!(source.words[VALUE_WORD_SCALAR], 73);
+            assert_eq!(cloned.words[VALUE_WORD_SCALAR], 73);
+            assert_eq!((*runtime).sync_root_depth, 1);
+
+            assert_eq!(root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
             assert_eq!(runtime_destroy_v1(runtime), GC_OK);
         }
     }
