@@ -2,13 +2,13 @@
 
 状态：Core Delivery Plan / Core 0.1–0.3 Native Loop + Controlled Quality Gates Closed
 
-证据等级：C1 executable reference + C2 implementation-controlled evidence
+证据等级：C1 executable reference + C3 implementation-controlled repository evidence
 
 日期：2026-08-24
 
 本文只安排普通编程语言闭环：源码、静态类型、约束/合同、`concept`、多态、自动内存管理、词法资源清理、异步任务、编译产物和工具链。live、AST 编辑、AOP-like 组合、operator runtime 与所有权语法不进入当前排期。
 
-当前 reference implementation 已完成同一条前端到 native artifact 的 C1 纵向切片：`examples/core01` 覆盖静态核心、受约束值、record invariant 与 method contract；`examples/core02` 覆盖 static concept、associated type、接口参数和 readonly/mutable dispatch；`examples/core03` 覆盖 moving GC、scoped/defer、结构化 Task、真实 wait registration、静态/动态 join 与取消。三套源码真实通过 `check/build/test/run`，并由冻结 hash、双后端 oracle、性能/增量门、机器 IR 优化证据与持续 fuzz 组成 C2 implementation-controlled 门禁。
+当前 reference implementation 已完成同一条前端到 native artifact 的 C1 纵向切片：`examples/core01` 覆盖静态核心、受约束值、record invariant 与 method contract；`examples/core02` 覆盖 static concept、associated type、接口参数和 readonly/mutable dispatch；`examples/core03` 覆盖 moving GC、scoped/defer、结构化 Task、真实 wait registration、静态/动态 join 与取消。三套冻结源码形成 C2 oracle；`examples/c3` 的 3-package/24-module workload 再把 package identity、direct dependency、跨模块 root graph 和双后端 main/test 纳入 C3 门禁。
 
 ## 1. C0：规范基线
 
