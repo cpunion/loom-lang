@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::c_void;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -89,6 +89,12 @@ pub(crate) struct Reactor {
     last_os_error: i32,
 }
 
+pub(crate) struct ListNodeIndex {
+    pub(crate) length: u64,
+    pub(crate) tail: *mut ValueNode,
+    pub(crate) nodes: Option<Vec<*mut ValueNode>>,
+}
+
 pub struct LoomExecutor {
     pub(crate) reactor: Reactor,
     pub(crate) tasks: Vec<Box<LoomTask>>,
@@ -99,6 +105,11 @@ pub struct LoomExecutor {
     pub(crate) gc_values: Vec<Box<ValueSlot>>,
     pub(crate) gc_nodes: Vec<Box<ValueNode>>,
     pub(crate) gc_sequences: Vec<Box<[u64]>>,
+    /// Derived, non-owning indexes for native List chains. The key is the
+    /// current head address and the value preserves source order. Collection
+    /// clears these before relocating nodes, so this metadata is never a GC
+    /// root and never contains a stale pointer across a safepoint.
+    pub(crate) list_node_indexes: HashMap<usize, ListNodeIndex>,
     pub(crate) metadata_nodes: Vec<Box<[usize; 2]>>,
     pub(crate) gc_collections: u64,
     pub(crate) gc_relocations: u64,
@@ -153,6 +164,7 @@ impl LoomExecutor {
             gc_values: Vec::new(),
             gc_nodes: Vec::new(),
             gc_sequences: Vec::new(),
+            list_node_indexes: HashMap::new(),
             metadata_nodes: Vec::new(),
             gc_collections: 0,
             gc_relocations: 0,

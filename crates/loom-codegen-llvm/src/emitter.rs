@@ -89,6 +89,78 @@ fn needs_parameter_snapshots(function: &Function) -> bool {
         || !function.call_plan.ensures.is_empty()
 }
 
+fn block_contains_await(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. }
+            | StatementKind::Evaluate(value) => expression_contains_await(value),
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                expression_contains_await(start)
+                    || expression_contains_await(end)
+                    || block_contains_await(body)
+            }
+            StatementKind::Assert { condition } => expression_contains_await(condition),
+            StatementKind::Defer(cleanup) => block_contains_await(cleanup),
+            StatementKind::Return(value) => value.as_ref().is_some_and(expression_contains_await),
+        })
+        || block.tail.as_deref().is_some_and(expression_contains_await)
+}
+
+fn expression_contains_await(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Await { .. } => true,
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => values.iter().any(expression_contains_await),
+        ExprKind::Unary(_, value)
+        | ExprKind::Unrefine(value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::MakeView { value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        }
+        | ExprKind::WaitFd {
+            descriptor: value, ..
+        } => expression_contains_await(value),
+        ExprKind::Binary(_, left, right) => {
+            expression_contains_await(left) || expression_contains_await(right)
+        }
+        ExprKind::Block(block) => block_contains_await(block),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expression_contains_await(condition)
+                || block_contains_await(then_branch)
+                || block_contains_await(else_branch)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expression_contains_await(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expression_contains_await(&arm.value))
+        }
+        ExprKind::Record { fields, .. } => fields.iter().any(expression_contains_await),
+        ExprKind::Variant { payload, .. } => payload.iter().any(expression_contains_await),
+        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| {
+            matches!(argument, CallArgument::Value(value) if expression_contains_await(value))
+        }),
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => false,
+    }
+}
+
 const MAX_STACK_RECORD_FIELDS: usize = 16;
 const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
 
@@ -8000,15 +8072,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         arguments: &[CallArgument],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let Some(values) = self.emit_call_arguments(arguments)? else {
-            return Ok(false);
-        };
         if matches!(
             builtin,
             Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
         ) {
-            return self.emit_list_builtin(builtin, &values, destination);
+            return self.emit_list_builtin(builtin, arguments, destination);
         }
+        let Some(values) = self.emit_call_arguments(arguments)? else {
+            return Ok(false);
+        };
         if matches!(
             builtin,
             Builtin::ProcessArguments | Builtin::ProcessEnvironment
@@ -8877,6 +8949,48 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_list_builtin(
         &self,
         builtin: Builtin,
+        arguments: &[CallArgument],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let values = if matches!(builtin, Builtin::ListLength | Builtin::ListGet)
+            && let Some((CallArgument::Value(receiver), remaining)) = arguments.split_first()
+            && let ExprKind::Copy(place) = &receiver.kind
+            && remaining.iter().all(|argument| match argument {
+                CallArgument::Value(value) => !expression_contains_await(value),
+                CallArgument::InOut(_) => true,
+            }) {
+            // Preserve left-to-right value evaluation without cloning the complete list.
+            // The snapshot keeps the old logical length/head if a later argument mutates the
+            // source. No suspension may intervene because native stack slots are not GC roots.
+            let snapshot = self.alloc_value("list.readonly.snapshot");
+            self.shallow_copy(snapshot, self.place(place)?)?;
+            let mut values = Vec::with_capacity(arguments.len());
+            values.push(snapshot);
+            for argument in remaining {
+                match argument {
+                    CallArgument::Value(expression) => {
+                        let value = self.alloc_value("argument.value");
+                        if !self.emit_expr(expression, value)? {
+                            return Ok(false);
+                        }
+                        values.push(value);
+                    }
+                    CallArgument::InOut(place) => values.push(self.place(place)?),
+                }
+            }
+            values
+        } else {
+            let Some(values) = self.emit_call_arguments(arguments)? else {
+                return Ok(false);
+            };
+            values
+        };
+        self.emit_list_builtin_values(builtin, &values, destination)
+    }
+
+    fn emit_list_builtin_values(
+        &self,
+        builtin: Builtin,
         values: &[PointerValue<'ctx>],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
@@ -8942,7 +9056,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .map_err(builder_error)?;
 
                 self.backend.builder.position_at_end(some);
-                self.emit_variant_from_pointers(TypeId(0), 1, &[element], destination)?;
+                let owned = self.alloc_value("list.get.owned");
+                self.clone_value(owned, element)?;
+                self.emit_variant_from_pointers(TypeId(0), 1, &[owned], destination)?;
                 self.backend.branch(merge)?;
 
                 self.backend.builder.position_at_end(none);

@@ -483,6 +483,137 @@ pub fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn readonly_list_builtins_snapshot_the_header_and_clone_only_the_selected_value() {
+    let source = r"module list_readonly
+
+record Boxed {
+    value Int
+}
+
+impl Boxed {
+    method bump(mut self) Unit {
+        self.value = self.value + 1
+        Unit
+    }
+}
+
+record Holder {
+    values List[Int]
+}
+
+impl Holder {
+    method appendAndChoose(mut self) Int {
+        self.values.add(11)
+        2
+    }
+}
+
+fn readAt(values List[Int], index Int) Int {
+    let length = values.length()
+    assert length == 2
+    match values.get(index) {
+        Some(value) => value
+        None => -1
+    }
+}
+
+async fn delayedIndex() Int {
+    Task.sleep(1).await
+    0
+}
+
+pub async fn main() Unit {
+    var numbers = List[Int]()
+    numbers.add(7)
+    numbers.add(9)
+    let selectedNumber = readAt(numbers, 1)
+    assert selectedNumber == 9
+
+    var holder = Holder { values = numbers }
+    let beforeArgumentMutation = holder.values.get(holder.appendAndChoose())
+    match beforeArgumentMutation {
+        Some(_) => {
+            assert false
+            Unit
+        }
+        None => Unit
+    }
+    let numberCount = holder.values.length()
+    assert numberCount == 3
+
+    var boxes = List[Boxed]()
+    let original = Boxed { value = 1 }
+    boxes.add(original)
+    var extracted = match boxes.get(0) {
+        Some(value) => value
+        None => Boxed { value = -1 }
+    }
+    extracted.bump()
+    let stored = match boxes.get(0) {
+        Some(value) => value
+        None => Boxed { value = -1 }
+    }
+    let extractedValue = extracted.value
+    assert extractedValue == 2
+    assert stored.value == 1
+
+    var delayedValues = List[Int]()
+    delayedValues.add(42)
+    let delayed = delayedValues.get(delayedIndex().await)
+    match delayed {
+        Some(value) => {
+            assert value == 42
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create readonly List project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write readonly List source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load readonly List project")
+        .snapshot()
+        .expect("analyze readonly List project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower readonly List MIR");
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit readonly List executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read readonly List LLVM IR");
+    let read_at = llvm_function(&llvm, "list_readonly_readAt");
+    let get = read_at
+        .find("@loom_runtime_list_get")
+        .expect("readAt calls native List.get");
+    assert!(
+        read_at[..get].contains("list.readonly.snapshot"),
+        "{read_at}"
+    );
+    assert!(!read_at[..get].contains("@loom.runtime.clone"), "{read_at}");
+    assert!(read_at[get..].contains("@loom.runtime.clone"), "{read_at}");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run readonly List executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(output.stdout, b"Unit\n");
+}
+
+#[test]
 fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
     let source = r"module construction
 

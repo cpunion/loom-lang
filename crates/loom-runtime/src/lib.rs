@@ -459,6 +459,127 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn list_indexes_are_head_local_and_rebuild_after_heap_relocation() {
+        let executor = executor_create();
+        assert!(!executor.is_null());
+        let bitmap = [0b11_u64];
+        let descriptor = LoomCoroutineDescriptor {
+            abi_version: COROUTINE_ABI_VERSION,
+            flags: 0,
+            resume: Some(completed_child_resume),
+            cancel: None,
+            trace: None,
+            slot_count: 2,
+            result_slot: 0,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        unsafe {
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            let source = task_slot(task, 0).cast::<scheduler::ValueSlot>();
+            let copied = task_slot(task, 1).cast::<scheduler::ValueSlot>();
+            (*source).words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_LIST;
+            (*copied).words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_LIST;
+
+            gc::enter_executor(executor);
+            for number in 0..128_i64 {
+                let mut value = scheduler::ValueSlot::default();
+                value.words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
+                value.words[loom_runtime_abi::VALUE_WORD_SCALAR] = number.cast_unsigned();
+                assert_eq!(gc::list_add(source, &raw const value), 0);
+                assert_eq!(gc::list_add(copied, &raw const value), 0);
+            }
+            assert_ne!(
+                (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
+                (*copied).words[loom_runtime_abi::VALUE_WORD_DATA],
+            );
+            assert_eq!((*executor).list_node_indexes.len(), 2);
+            assert!(
+                (*executor)
+                    .list_node_indexes
+                    .values()
+                    .all(|entry| entry.length == 128 && entry.nodes.is_none())
+            );
+            for index in (0..128_i64).rev() {
+                let source_value = gc::list_get(source, index);
+                let copied_value = gc::list_get(copied, index);
+                assert!(!source_value.is_null() && !copied_value.is_null());
+                assert_eq!(
+                    (*source_value).words[loom_runtime_abi::VALUE_WORD_SCALAR],
+                    index.cast_unsigned(),
+                );
+                assert_eq!((*source_value).words, (*copied_value).words);
+            }
+            assert!(
+                (*executor)
+                    .list_node_indexes
+                    .values()
+                    .all(|entry| { entry.nodes.as_ref().is_some_and(|nodes| nodes.len() == 128) })
+            );
+            gc::leave_executor();
+
+            let old_source_head = (*source).words[loom_runtime_abi::VALUE_WORD_DATA];
+            let old_copied_head = (*copied).words[loom_runtime_abi::VALUE_WORD_DATA];
+            gc::collect(&mut *executor);
+            assert!((*executor).list_node_indexes.is_empty());
+            assert_ne!(
+                (*source).words[loom_runtime_abi::VALUE_WORD_DATA],
+                old_source_head,
+            );
+            assert_ne!(
+                (*copied).words[loom_runtime_abi::VALUE_WORD_DATA],
+                old_copied_head,
+            );
+
+            gc::enter_executor(executor);
+            let last_source = gc::list_get(source, 127);
+            let first_copied = gc::list_get(copied, 0);
+            assert_eq!(
+                (*last_source).words[loom_runtime_abi::VALUE_WORD_SCALAR],
+                127,
+            );
+            assert_eq!(
+                (*first_copied).words[loom_runtime_abi::VALUE_WORD_SCALAR],
+                0,
+            );
+            assert_eq!((*executor).list_node_indexes.len(), 2);
+            let mut extra = scheduler::ValueSlot::default();
+            extra.words[loom_runtime_abi::VALUE_WORD_TAG] = loom_runtime_abi::VALUE_TAG_INT;
+            extra.words[loom_runtime_abi::VALUE_WORD_SCALAR] = 999;
+            assert_eq!(gc::list_add(copied, &raw const extra), 0);
+            assert_eq!((*source).words[loom_runtime_abi::VALUE_WORD_AUX], 128);
+            assert_eq!((*copied).words[loom_runtime_abi::VALUE_WORD_AUX], 129);
+            assert_eq!(
+                (*gc::list_get(copied, 128)).words[loom_runtime_abi::VALUE_WORD_SCALAR],
+                999,
+            );
+            assert_eq!(
+                (*executor)
+                    .list_node_indexes
+                    .get(
+                        &usize::try_from((*copied).words[loom_runtime_abi::VALUE_WORD_DATA],)
+                            .unwrap(),
+                    )
+                    .and_then(|entry| entry.nodes.as_ref())
+                    .map(Vec::len),
+                Some(129),
+            );
+            assert!(gc::list_get(source, 128).is_null());
+            gc::leave_executor();
+
+            source.write(scheduler::ValueSlot::default());
+            copied.write(scheduler::ValueSlot::default());
+            gc::collect(&mut *executor);
+            assert!((*executor).list_node_indexes.is_empty());
+            assert_eq!(executor_gc_live_objects(executor), 0);
+            executor_destroy(executor);
+        }
+    }
+
+    #[test]
     fn task_witness_clone_owns_conditional_proof_tree() {
         let executor = executor_create();
         assert!(!executor.is_null());

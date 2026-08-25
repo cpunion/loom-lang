@@ -16,7 +16,7 @@ use loom_runtime_abi::{
     VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
 };
 
-use crate::reactor::LoomExecutor;
+use crate::reactor::{ListNodeIndex, LoomExecutor};
 use crate::scheduler::{ValueNode, ValueSlot, trace_task_roots};
 use crate::text;
 
@@ -146,6 +146,170 @@ pub(crate) fn byte_value(bytes: &[u8]) -> Option<ValueSlot> {
     retain_byte_sequence(bytes).map(text::value)
 }
 
+unsafe fn list_chain(mut node: *mut ValueNode, count: u64) -> Option<Vec<*mut ValueNode>> {
+    let count = usize::try_from(count).ok()?;
+    let mut nodes = Vec::with_capacity(count);
+    for _ in 0..count {
+        if node.is_null() {
+            return None;
+        }
+        nodes.push(node);
+        // SAFETY: callers pass a runtime-created List head and its checked
+        // element count. The bounded walk rejects a prematurely-ended chain.
+        node = unsafe { (*node).next };
+    }
+    node.is_null().then_some(nodes)
+}
+
+unsafe fn list_tail(mut node: *mut ValueNode, count: u64) -> Option<*mut ValueNode> {
+    let count = usize::try_from(count).ok()?;
+    let mut tail = ptr::null_mut();
+    for _ in 0..count {
+        if node.is_null() {
+            return None;
+        }
+        tail = node;
+        // SAFETY: the same checked, bounded-chain invariant as list_chain.
+        node = unsafe { (*node).next };
+    }
+    node.is_null().then_some(tail)
+}
+
+unsafe fn list_node_at(mut node: *mut ValueNode, index: usize) -> Option<*mut ValueNode> {
+    for _ in 0..index {
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: callers already checked the index against the List count.
+        node = unsafe { (*node).next };
+    }
+    (!node.is_null()).then_some(node)
+}
+
+fn has_active_executor() -> bool {
+    ACTIVE_EXECUTOR.with(|active| !active.get().is_null())
+}
+
+fn cached_list_node(head: *mut ValueNode, count: u64, index: usize) -> Option<*mut ValueNode> {
+    if head.is_null() {
+        return None;
+    }
+    let count = usize::try_from(count).ok()?;
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if executor.is_null() {
+            return None;
+        }
+        // SAFETY: ACTIVE_EXECUTOR is installed only for its single-threaded
+        // generated-code interval. We copy one raw node pointer and do not
+        // retain a Rust borrow across any runtime allocation.
+        unsafe {
+            (*executor)
+                .list_node_indexes
+                .get(&(head as usize))
+                .filter(|entry| entry.length == count as u64)
+                .and_then(|entry| entry.nodes.as_ref())
+                .and_then(|nodes| nodes.get(index))
+                .copied()
+        }
+    })
+}
+
+fn cached_list_tail(head: *mut ValueNode, count: u64) -> Option<*mut ValueNode> {
+    if head.is_null() {
+        return None;
+    }
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if executor.is_null() {
+            return None;
+        }
+        // SAFETY: see cached_list_node.
+        unsafe {
+            (*executor)
+                .list_node_indexes
+                .get(&(head as usize))
+                .filter(|entry| entry.length == count)
+                .map(|entry| entry.tail)
+                .filter(|tail| !tail.is_null())
+        }
+    })
+}
+
+fn cache_list_chain(head: *mut ValueNode, count: u64, nodes: Vec<*mut ValueNode>) {
+    if head.is_null() {
+        return;
+    }
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if !executor.is_null() {
+            // SAFETY: see cached_list_node. This derived index owns no nodes
+            // and is discarded before the collector can relocate them.
+            unsafe {
+                let tail = nodes.last().copied().unwrap_or(ptr::null_mut());
+                (*executor).list_node_indexes.insert(
+                    head as usize,
+                    ListNodeIndex {
+                        length: count,
+                        tail,
+                        nodes: Some(nodes),
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn cache_list_tail(head: *mut ValueNode, count: u64, tail: *mut ValueNode) {
+    if head.is_null() || tail.is_null() {
+        return;
+    }
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if !executor.is_null() {
+            // SAFETY: see cache_list_chain.
+            unsafe {
+                (*executor).list_node_indexes.insert(
+                    head as usize,
+                    ListNodeIndex {
+                        length: count,
+                        tail,
+                        nodes: None,
+                    },
+                );
+            }
+        }
+    });
+}
+
+fn append_cached_list_node(head: *mut ValueNode, count: u64, node: *mut ValueNode) -> bool {
+    ACTIVE_EXECUTOR.with(|active| {
+        let executor = active.get();
+        if executor.is_null() {
+            return false;
+        }
+        // SAFETY: see cached_list_node. list_add is the only native chain
+        // mutator and updates this index in the same call as the next link.
+        unsafe {
+            let Some(entry) = (*executor).list_node_indexes.get_mut(&(head as usize)) else {
+                return false;
+            };
+            if entry.length != count {
+                return false;
+            }
+            entry.length = entry
+                .length
+                .checked_add(1)
+                .unwrap_or_else(|| std::process::abort());
+            entry.tail = node;
+            if let Some(nodes) = &mut entry.nodes {
+                nodes.push(node);
+            }
+            true
+        }
+    })
+}
+
 /// Appends one already-evaluated value to a checked native List.
 ///
 /// The generated-code ABI passes uniform value slots. A nonzero result means
@@ -161,6 +325,24 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
     if list.words[0] != VALUE_TAG_LIST {
         return 1;
     }
+    let head = list.words[VALUE_WORD_DATA] as *mut ValueNode;
+    let count = list.words[VALUE_WORD_AUX];
+    let new_count = count
+        .checked_add(1)
+        .unwrap_or_else(|| std::process::abort());
+    let tail = if head.is_null() {
+        if count != 0 {
+            return 1;
+        }
+        None
+    } else if let Some(tail) = cached_list_tail(head, count) {
+        Some(tail)
+    } else {
+        let Some(tail) = (unsafe { list_tail(head, count) }) else {
+            return 1;
+        };
+        Some(tail)
+    };
     let node = allocate_value_node().cast::<ValueNode>();
     if node.is_null() {
         return 1;
@@ -171,21 +353,23 @@ pub unsafe extern "C" fn list_add(list: *mut ValueSlot, value: *const ValueSlot)
         (*node).value = *value;
         (*node).next = ptr::null_mut();
     }
-    let mut current = list.words[4] as *mut ValueNode;
-    if current.is_null() {
-        list.words[4] = node as u64;
+    if head.is_null() {
+        list.words[VALUE_WORD_DATA] = node as u64;
+        cache_list_tail(node, new_count, node);
     } else {
-        // SAFETY: the List data word is a runtime-owned, null-terminated chain.
+        let Some(tail) = tail else {
+            return 1;
+        };
+        // SAFETY: the checked chain walk or executor-local index selected the
+        // final node in this List's runtime-owned chain.
         unsafe {
-            while !(*current).next.is_null() {
-                current = (*current).next;
-            }
-            (*current).next = node;
+            (*tail).next = node;
+        }
+        if !append_cached_list_node(head, count, node) {
+            cache_list_tail(head, new_count, node);
         }
     }
-    list.words[2] = list.words[2]
-        .checked_add(1)
-        .unwrap_or_else(|| std::process::abort());
+    list.words[VALUE_WORD_AUX] = new_count;
     0
 }
 
@@ -197,17 +381,28 @@ pub unsafe extern "C" fn list_get(list: *const ValueSlot, index: i64) -> *const 
     }
     // SAFETY: generated checked MIR provides a live, aligned ValueSlot pointer.
     let list = unsafe { &*list };
-    if list.words[0] != VALUE_TAG_LIST || index.cast_unsigned() >= list.words[2] {
+    if list.words[VALUE_WORD_TAG] != VALUE_TAG_LIST
+        || index.cast_unsigned() >= list.words[VALUE_WORD_AUX]
+    {
         return ptr::null();
     }
-    let mut node = list.words[4] as *const ValueNode;
-    for _ in 0..index {
-        if node.is_null() {
+    let head = list.words[VALUE_WORD_DATA] as *mut ValueNode;
+    let index = usize::try_from(index).unwrap_or_else(|_| unreachable!());
+    let node = if !has_active_executor() {
+        let Some(node) = (unsafe { list_node_at(head, index) }) else {
             return ptr::null();
-        }
-        // SAFETY: List chains are runtime-owned and null-terminated.
-        node = unsafe { (*node).next };
-    }
+        };
+        node
+    } else if let Some(node) = cached_list_node(head, list.words[VALUE_WORD_AUX], index) {
+        node
+    } else {
+        let Some(nodes) = (unsafe { list_chain(head, list.words[VALUE_WORD_AUX]) }) else {
+            return ptr::null();
+        };
+        let node = nodes[index];
+        cache_list_chain(head, list.words[VALUE_WORD_AUX], nodes);
+        node
+    };
     if node.is_null() {
         ptr::null()
     } else {
@@ -417,6 +612,10 @@ unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
 
 pub(crate) fn collect(executor: &mut LoomExecutor) {
     executor.gc_collections = executor.gc_collections.saturating_add(1);
+    // List indexes are derived accelerators, not roots. Drop every raw node
+    // pointer before filtering or relocating the heap; the next add/get lazily
+    // rebuilds an index from the rewritten List head.
+    executor.list_node_indexes.clear();
     if executor.gc_values.is_empty()
         && executor.gc_nodes.is_empty()
         && executor.gc_sequences.is_empty()
