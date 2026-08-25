@@ -13,7 +13,9 @@ use inkwell::debug_info::{
 use inkwell::module::{FlagBehavior, Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::FileType;
-use inkwell::types::{BasicType, FunctionType, IntType, PointerType, StructType};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, FunctionType, IntType, PointerType, StructType,
+};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
     UnnamedAddress,
@@ -67,6 +69,24 @@ fn native_fault_message(code: &str) -> &str {
         "ResourceCloseFault" => "resource close failed",
         _ => "runtime operation failed",
     }
+}
+
+fn uses_scalar_int_abi(function: &Function) -> bool {
+    !function.is_async
+        && function.type_parameters == 0
+        && function.receiver.is_none()
+        && function.witness_params.is_empty()
+        && function.return_ty == Type::Int
+        && function
+            .params
+            .iter()
+            .all(|parameter| parameter.ty == Type::Int)
+}
+
+fn needs_parameter_snapshots(function: &Function) -> bool {
+    function.call_plan.receiver_invariant.is_some()
+        || !function.call_plan.requires.is_empty()
+        || !function.call_plan.ensures.is_empty()
 }
 
 impl Emitter {
@@ -220,6 +240,7 @@ struct Backend<'ctx, 'program> {
     loom_function_type: FunctionType<'ctx>,
     task_resume_type: FunctionType<'ctx>,
     functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
+    scalar_int_functions: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     task_resumes: BTreeMap<FunctionId, FunctionValue<'ctx>>,
     coroutine_descriptors: BTreeMap<FunctionId, GlobalValue<'ctx>>,
     witnesses: BTreeMap<WitnessId, GlobalValue<'ctx>>,
@@ -509,6 +530,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             loom_function_type,
             task_resume_type,
             functions: BTreeMap::new(),
+            scalar_int_functions: BTreeMap::new(),
             task_resumes: BTreeMap::new(),
             coroutine_descriptors: BTreeMap::new(),
             witnesses: BTreeMap::new(),
@@ -527,6 +549,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             if source.is_async {
                 self.emit_async_constructor(*function)?;
                 self.emit_async_resume(*function)?;
+            } else if self.scalar_int_functions.contains_key(function) {
+                self.emit_scalar_int_function(*function)?;
+                self.emit_scalar_int_wrapper(*function)?;
             } else {
                 self.emit_function(*function)?;
             }
@@ -563,6 +588,27 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 source.span.range.start,
             )?;
             self.functions.insert(*id, function);
+            if uses_scalar_int_abi(source) {
+                let mut parameters =
+                    Vec::<BasicMetadataTypeEnum<'ctx>>::with_capacity(source.params.len() + 2);
+                parameters.push(self.ptr_type.into());
+                let scalar_parameter: BasicMetadataTypeEnum<'ctx> = self.i64_type.into();
+                parameters.extend(std::iter::repeat_n(scalar_parameter, source.params.len()));
+                parameters.push(self.ptr_type.into());
+                let scalar_type = self.context.i32_type().fn_type(&parameters, false);
+                let scalar = self.module.add_function(
+                    &format!("loom.int.fn.{}.{}", id.0, mangle(&source.name)),
+                    scalar_type,
+                    Some(Linkage::Internal),
+                );
+                self.debug.attach_function(
+                    scalar,
+                    &format!("{}$int", source.name),
+                    source.span.file.0,
+                    source.span.range.start,
+                )?;
+                self.scalar_int_functions.insert(*id, scalar);
+            }
             if source.is_async {
                 let resume = self.module.add_function(
                     &format!("loom.resume.{}.{}", id.0, mangle(&source.name)),
@@ -2830,6 +2876,112 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         result
     }
 
+    fn emit_scalar_int_function(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self.program.function(id).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "integer function is missing")
+        })?;
+        self.set_debug_location(
+            self.scalar_int_functions[&id],
+            source.span.file.0,
+            source.span.range.start,
+        );
+        let result = FunctionCompiler::new_scalar_int(self, id)?.compile();
+        self.builder.unset_current_debug_location();
+        result
+    }
+
+    fn emit_scalar_int_wrapper(&self, id: FunctionId) -> Result<(), CodegenError> {
+        let source = self.program.function(id).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "integer function is missing")
+        })?;
+        let wrapper = self.functions[&id];
+        self.set_debug_location(wrapper, source.span.file.0, source.span.range.start);
+        let output = parameter_pointer(wrapper, 0)?;
+        let mut argument_node = parameter_pointer(wrapper, 1)?;
+        let executor = parameter_pointer(wrapper, 3)?;
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        let success = self.context.append_basic_block(wrapper, "call.success");
+        let failure = self.context.append_basic_block(wrapper, "call.failure");
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_store(output, self.value_type.const_zero())
+            .map_err(builder_error)?;
+
+        let scalar_output = self
+            .builder
+            .build_alloca(self.i64_type, "integer.result")
+            .map_err(builder_error)?;
+        let mut call_arguments =
+            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(source.params.len() + 2);
+        call_arguments.push(scalar_output.into());
+        for _ in &source.params {
+            let argument = self.load_pointer_field(
+                self.arg_node_type,
+                argument_node,
+                ARG_NODE_FIELD_VALUE,
+                "argument",
+            )?;
+            call_arguments.push(
+                self.load_i64_field(
+                    self.value_type,
+                    argument,
+                    VALUE_FIELD_SCALAR,
+                    "argument.scalar",
+                )?
+                .into(),
+            );
+            argument_node = self.load_pointer_field(
+                self.arg_node_type,
+                argument_node,
+                ARG_NODE_FIELD_NEXT,
+                "argument.next",
+            )?;
+        }
+        call_arguments.push(executor.into());
+        let status = call_int(
+            &self.builder,
+            self.scalar_int_functions[&id],
+            &call_arguments,
+            "integer.call",
+        )?;
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_zero(),
+                "integer.call.ok",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(failure);
+        self.builder
+            .build_return(Some(&status))
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(success);
+        self.store_i64_field(
+            self.value_type,
+            output,
+            VALUE_FIELD_TAG,
+            self.tag(VALUE_TAG_INT),
+        )?;
+        let scalar = self
+            .builder
+            .build_load(self.i64_type, scalar_output, "integer.result.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.store_i64_field(self.value_type, output, VALUE_FIELD_SCALAR, scalar)?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_zero()))
+            .map_err(builder_error)?;
+        self.builder.unset_current_debug_location();
+        Ok(())
+    }
+
     fn emit_async_resume(&self, id: FunctionId) -> Result<(), CodegenError> {
         let source = self.program.function(id).ok_or_else(|| {
             CodegenError::new("InvalidFunctionReference", "async function is missing")
@@ -3703,6 +3855,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     source: &'program Function,
     function: FunctionValue<'ctx>,
     output: PointerValue<'ctx>,
+    scalar_output: Option<PointerValue<'ctx>>,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     executor: PointerValue<'ctx>,
     task: Option<PointerValue<'ctx>>,
@@ -3773,25 +3926,27 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .builder
             .build_store(output, backend.value_type.const_zero())
             .map_err(builder_error)?;
-        let clone = backend
-            .module
-            .get_function("loom.runtime.clone")
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
         let mut old_parameters = BTreeMap::new();
-        for parameter in &source.params {
-            let snapshot = backend
-                .builder
-                .build_alloca(backend.value_type, &format!("old.{}", parameter.id.0))
-                .map_err(builder_error)?;
-            backend
-                .builder
-                .build_call(
-                    clone,
-                    &[snapshot.into(), locals[&parameter.id].into()],
-                    "snapshot",
-                )
-                .map_err(builder_error)?;
-            old_parameters.insert(parameter.id, snapshot);
+        if needs_parameter_snapshots(source) {
+            let clone = backend
+                .module
+                .get_function("loom.runtime.clone")
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+            for parameter in &source.params {
+                let snapshot = backend
+                    .builder
+                    .build_alloca(backend.value_type, &format!("old.{}", parameter.id.0))
+                    .map_err(builder_error)?;
+                backend
+                    .builder
+                    .build_call(
+                        clone,
+                        &[snapshot.into(), locals[&parameter.id].into()],
+                        "snapshot",
+                    )
+                    .map_err(builder_error)?;
+                old_parameters.insert(parameter.id, snapshot);
+            }
         }
         let mut witness_parameters = BTreeMap::new();
         for index in 0..source.witness_params.len() {
@@ -3816,7 +3971,131 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
+            scalar_output: None,
             witness_parameters,
+            executor,
+            task: None,
+            loop_depth: Cell::new(0),
+            resume_blocks: BTreeMap::new(),
+            locals,
+            old_parameters,
+            body_done,
+            cleanups: RefCell::new(Vec::new()),
+            cancellation_block: None,
+            cancellation_cleanups: RefCell::new(BTreeMap::new()),
+            unwind_status: Cell::new(None),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn new_scalar_int(
+        backend: &'backend Backend<'ctx, 'program>,
+        id: FunctionId,
+    ) -> Result<Self, CodegenError> {
+        let source = backend.program.function(id).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("function #{} does not exist", id.0),
+            )
+        })?;
+        if !uses_scalar_int_abi(source) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "non-integer function selected for the scalar integer ABI",
+            ));
+        }
+        let function = backend.scalar_int_functions[&id];
+        let scalar_output = parameter_pointer(function, 0)?;
+        let executor_index = u32::try_from(source.params.len() + 1)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
+        let executor = parameter_pointer(function, executor_index)?;
+        let entry = backend.context.append_basic_block(function, "entry");
+        let body_done = backend.context.append_basic_block(function, "body.done");
+        backend.builder.position_at_end(entry);
+
+        let output = backend
+            .builder
+            .build_alloca(backend.value_type, "integer.output.value")
+            .map_err(builder_error)?;
+        backend
+            .builder
+            .build_store(output, backend.value_type.const_zero())
+            .map_err(builder_error)?;
+
+        let mut locals = BTreeMap::new();
+        for (index, parameter) in source.params.iter().enumerate() {
+            let pointer = backend
+                .builder
+                .build_alloca(
+                    backend.value_type,
+                    &format!("parameter.{}.{}", parameter.id.0, parameter.name),
+                )
+                .map_err(builder_error)?;
+            backend
+                .builder
+                .build_store(pointer, backend.value_type.const_zero())
+                .map_err(builder_error)?;
+            backend.store_i64_field(
+                backend.value_type,
+                pointer,
+                VALUE_FIELD_TAG,
+                backend.tag(VALUE_TAG_INT),
+            )?;
+            let parameter_index = u32::try_from(index + 1)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
+            backend.store_i64_field(
+                backend.value_type,
+                pointer,
+                VALUE_FIELD_SCALAR,
+                parameter_int(function, parameter_index)?,
+            )?;
+            locals.insert(parameter.id, pointer);
+        }
+        for local in &source.locals {
+            let pointer = backend
+                .builder
+                .build_alloca(
+                    backend.value_type,
+                    &format!("local.{}.{}", local.id.0, local.name),
+                )
+                .map_err(builder_error)?;
+            backend
+                .builder
+                .build_store(pointer, backend.value_type.const_zero())
+                .map_err(builder_error)?;
+            locals.insert(local.id, pointer);
+        }
+
+        let mut old_parameters = BTreeMap::new();
+        if needs_parameter_snapshots(source) {
+            let clone = backend
+                .module
+                .get_function("loom.runtime.clone")
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "clone helper is missing"))?;
+            for parameter in &source.params {
+                let snapshot = backend
+                    .builder
+                    .build_alloca(backend.value_type, &format!("old.{}", parameter.id.0))
+                    .map_err(builder_error)?;
+                backend
+                    .builder
+                    .build_call(
+                        clone,
+                        &[snapshot.into(), locals[&parameter.id].into()],
+                        "snapshot",
+                    )
+                    .map_err(builder_error)?;
+                old_parameters.insert(parameter.id, snapshot);
+            }
+        }
+
+        Ok(Self {
+            backend,
+            source,
+            function,
+            output,
+            scalar_output: Some(scalar_output),
+            witness_parameters: BTreeMap::new(),
             executor,
             task: None,
             loop_depth: Cell::new(0),
@@ -3989,6 +4268,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             function,
             output,
+            scalar_output: None,
             witness_parameters,
             executor,
             task: Some(task),
@@ -4013,6 +4293,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(self.body_done);
         self.emit_exit_contracts()?;
         if !self.current_block_terminated() {
+            if let Some(scalar_output) = self.scalar_output {
+                let scalar = self.int_scalar(self.output)?;
+                self.backend
+                    .builder
+                    .build_store(scalar_output, scalar)
+                    .map_err(builder_error)?;
+            }
             self.backend
                 .builder
                 .build_return(Some(&self.backend.context.i32_type().const_zero()))
@@ -4495,7 +4782,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ExprKind::List(elements) => self.emit_list(elements, destination),
             ExprKind::Copy(place) => {
                 let source = self.place(place)?;
-                self.clone_value(destination, source)?;
+                if expression.ty == Type::Int {
+                    let scalar = self.int_scalar(source)?;
+                    self.initialize(destination, VALUE_TAG_INT)?;
+                    self.backend.store_i64_field(
+                        self.backend.value_type,
+                        destination,
+                        VALUE_FIELD_SCALAR,
+                        scalar,
+                    )?;
+                } else {
+                    self.clone_value(destination, source)?;
+                }
                 Ok(true)
             }
             ExprKind::Move(place) => {
@@ -6848,6 +7146,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let CallTarget::Builtin(builtin) = target {
             return self.emit_builtin(*builtin, arguments, destination);
         }
+        if let CallTarget::Direct(function) = target
+            && self.backend.scalar_int_functions.contains_key(function)
+        {
+            return self.emit_scalar_int_call(*function, arguments, witnesses, destination);
+        }
 
         let Some(mut values) = self.emit_call_arguments(arguments)? else {
             return Ok(false);
@@ -6991,6 +7294,53 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             self.emit_dynamic_writeback(source, writeback)?;
         }
         self.propagate_status(status)?;
+        Ok(true)
+    }
+
+    fn emit_scalar_int_call(
+        &self,
+        function: FunctionId,
+        arguments: &[CallArgument],
+        witnesses: &[WitnessRef],
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if !witnesses.is_empty() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "scalar integer call unexpectedly carries witnesses",
+            ));
+        }
+        let Some(values) = self.emit_call_arguments(arguments)? else {
+            return Ok(false);
+        };
+        let scalar_output = self.alloc_temporary(self.backend.i64_type, "integer.call.result")?;
+        let mut call_arguments =
+            Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(values.len() + 2);
+        call_arguments.push(scalar_output.into());
+        for value in values {
+            call_arguments.push(self.int_scalar(value)?.into());
+        }
+        call_arguments.push(self.executor.into());
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.scalar_int_functions[&function],
+            &call_arguments,
+            "integer.call",
+        )?;
+        self.propagate_status(status)?;
+        let scalar = self
+            .backend
+            .builder
+            .build_load(self.backend.i64_type, scalar_output, "integer.call.value")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.initialize(destination, VALUE_TAG_INT)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_SCALAR,
+            scalar,
+        )?;
         Ok(true)
     }
 

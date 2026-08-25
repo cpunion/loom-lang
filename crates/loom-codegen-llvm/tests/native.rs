@@ -208,14 +208,131 @@ pub fn main() Unit {
         .filter(|line| line.starts_with("define "))
         .collect::<Vec<_>>();
     assert!(
-        development.contains("define internal i32 @loom.fn.0.optimize_folded"),
+        development.contains("define internal i32 @loom.int.fn.0.optimize_folded"),
         "{development_definitions:#?}"
     );
-    assert!(!development.contains("define internal i32 @loom.fn.1.optimize_unreachable"));
+    assert!(!development.contains("optimize_unreachable"));
     assert!(development.contains("llvm.sadd.with.overflow.i64"));
-    assert!(!release.contains("define internal i32 @loom.fn.0.optimize_folded"));
-    assert!(!release.contains("define internal i32 @loom.fn.1.optimize_unreachable"));
+    assert!(!release.contains("optimize_folded"));
+    assert!(!release.contains("optimize_unreachable"));
     assert!(!release.contains("llvm.sadd.with.overflow.i64"));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scalar_int_abi_is_recursive_checked_and_compatible_at_the_root() {
+    let source = r"module scalar_int
+
+fn fibonacci(value Int) Int {
+    if value < 2 {
+        value
+    } else {
+        fibonacci(value - 1) + fibonacci(value - 2)
+    }
+}
+
+fn contracted(value Int) Int
+    requires value >= 0
+    ensures result > old(value)
+{
+    value + 1
+}
+
+pub fn main() Int {
+    let recursive = fibonacci(20)
+    assert recursive == 6765
+    contracted(41)
+}
+";
+    let project = tempfile::tempdir().expect("create scalar Int project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write scalar Int source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load scalar Int project")
+        .snapshot()
+        .expect("analyze scalar Int project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower scalar Int MIR");
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit scalar Int executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read scalar Int LLVM IR");
+    let fibonacci = llvm_integer_function(&llvm, "scalar_int_fibonacci");
+    assert!(
+        fibonacci
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("ptr %0, i64 %1, ptr %2")),
+        "{fibonacci}"
+    );
+    assert!(
+        fibonacci.contains("call i32 @loom.int.fn.0.scalar_int_fibonacci"),
+        "{fibonacci}"
+    );
+    assert!(!fibonacci.contains("%loom.ArgNode"), "{fibonacci}");
+    assert!(
+        fibonacci.contains("llvm.ssub.with.overflow.i64"),
+        "{fibonacci}"
+    );
+    assert!(
+        fibonacci.contains("llvm.sadd.with.overflow.i64"),
+        "{fibonacci}"
+    );
+    let contracted = llvm_integer_function(&llvm, "scalar_int_contracted");
+    assert!(
+        contracted.contains("call void @loom.runtime.clone"),
+        "{contracted}"
+    );
+    assert!(llvm.contains("define internal i32 @loom.fn.2.scalar_int_main"));
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run scalar Int executable");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(output.stdout, b"42\n");
+
+    let overflow_source = r"module scalar_int_fault
+
+fn checkedAdd(left Int, right Int) Int {
+    left + right
+}
+
+pub fn main() Int {
+    checkedAdd(9223372036854775807, 1)
+}
+";
+    let overflow_project = tempfile::tempdir().expect("create scalar Int fault project");
+    std::fs::write(overflow_project.path().join("main.loom"), overflow_source)
+        .expect("write scalar Int fault source");
+    let snapshot = AnalysisHost::new(overflow_project.path())
+        .expect("load scalar Int fault project")
+        .snapshot()
+        .expect("analyze scalar Int fault project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let overflow_executable = overflow_project.path().join("program");
+    emit_native(
+        snapshot.executable().expect("lower scalar Int fault MIR"),
+        &overflow_executable,
+        &EmitOptions::run("main"),
+    )
+    .expect("emit scalar Int fault executable");
+    let output = Command::new(overflow_executable)
+        .output()
+        .expect("run scalar Int fault executable");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("IntegerOverflow")
+            || String::from_utf8_lossy(&output.stderr).contains("IntegerOverflow"),
+        "{output:?}"
+    );
 }
 
 #[test]
@@ -429,6 +546,23 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
                 .is_some_and(|line| line.contains(symbol_suffix))
         })
         .unwrap_or_else(|| panic!("missing LLVM function containing `{symbol_suffix}`"));
+    let rest = &ir[start + marker.len()..];
+    let end = rest.find("\ndefine ").unwrap_or(rest.len());
+    &ir[start..start + marker.len() + end]
+}
+
+fn llvm_integer_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
+    let marker = "define internal i32 @loom.int.fn.";
+    let start = ir
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .find(|index| {
+            ir[*index..]
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(symbol_suffix))
+        })
+        .unwrap_or_else(|| panic!("missing scalar Int LLVM function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
