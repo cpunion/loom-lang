@@ -51,9 +51,8 @@ impl RuntimeRequirements {
         self.0 & Self::MAY_FAULT_BIT != 0
     }
 
-    #[cfg(test)]
     #[must_use]
-    const fn may_allocate(self) -> bool {
+    pub(crate) const fn may_allocate(self) -> bool {
         self.0 & Self::MAY_ALLOCATE_BIT != 0
     }
 

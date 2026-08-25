@@ -66,3 +66,10 @@ pub(crate) const READY_NOTIFICATION_FIELD_EVENTS: u32 = 2;
 
 pub(crate) const COROUTINE_FRAME_FIELD_STATE: u32 = 0;
 pub(crate) const COROUTINE_FRAME_FIELD_RESULT: u32 = 1;
+
+pub(crate) const GC_ROOT_FRAME_FIELD_ABI_VERSION: u32 = 0;
+pub(crate) const GC_ROOT_FRAME_FIELD_FLAGS: u32 = 1;
+pub(crate) const GC_ROOT_FRAME_FIELD_STATE: u32 = 2;
+pub(crate) const GC_ROOT_FRAME_FIELD_DESCRIPTOR: u32 = 3;
+pub(crate) const GC_ROOT_FRAME_FIELD_SLOTS: u32 = 4;
+pub(crate) const GC_ROOT_FRAME_FIELD_PREVIOUS: u32 = 5;

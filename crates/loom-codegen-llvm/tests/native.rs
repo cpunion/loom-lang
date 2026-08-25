@@ -1,6 +1,6 @@
 #![allow(clippy::default_trait_access)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use loom_codegen_llvm::{
@@ -572,6 +572,379 @@ pub fn main() Int {
 }
 
 #[test]
+fn allocating_functions_emit_balanced_shadow_roots_while_pure_scalars_do_not() {
+    let source = r#"module shadow_root_shape
+
+fn identity(value Int) Int { value }
+
+fn scalarEqual(left Int, right Int) Bool { left == right }
+
+fn allocate(count Int) List[Text] {
+    var values = List[Text]()
+    for index in 0..count {
+        values.add("rooted")
+        Unit
+    }
+    values
+}
+
+pub fn main() Unit {
+    let values = allocate(4)
+    let count = values.length()
+    let expected = identity(4)
+    assert count == expected
+    let equal = scalarEqual(count, expected)
+    assert equal
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let identity = llvm_native_function(&llvm, "shadow_root_shape_identity");
+    assert!(!identity.contains("@loom_gc_root_push_v1"), "{identity}");
+    assert!(!identity.contains("@loom_gc_root_pop_v1"), "{identity}");
+    assert!(!identity.contains("@loom_gc_safepoint_v1"), "{identity}");
+    assert!(!identity.contains("gc.root.frame"), "{identity}");
+
+    let scalar_equal = llvm_native_function(&llvm, "shadow_root_shape_scalarEqual");
+    assert!(
+        !scalar_equal.contains("@loom_gc_root_push_v1"),
+        "{scalar_equal}"
+    );
+    assert!(
+        !scalar_equal.contains("@loom_gc_root_pop_v1"),
+        "{scalar_equal}"
+    );
+    assert!(!scalar_equal.contains("gc.root.frame"), "{scalar_equal}");
+    assert!(
+        scalar_equal.contains("@loom_gc_safepoint_v1"),
+        "scalar-only effectful functions must poll without publishing an empty frame: {scalar_equal}"
+    );
+
+    let allocate = llvm_function(&llvm, "shadow_root_shape_allocate");
+    assert_balanced_gc_root_frame(allocate);
+    assert!(
+        allocate.contains("gc.range.backedge.safepoint"),
+        "{allocate}"
+    );
+    assert!(
+        llvm.contains("private unnamed_addr constant %loom.GcRootDescriptor"),
+        "{llvm}"
+    );
+    assert!(llvm.contains("@llvm.trap"), "{llvm}");
+    let descriptor = gc_root_descriptor(&llvm, allocate);
+    assert!(descriptor.state_count > 1, "{descriptor:?}\n{allocate}");
+    assert!(
+        descriptor
+            .bitmaps
+            .chunks(descriptor.bitmap_words)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1,
+        "root states were not specialized: {descriptor:?}\n{allocate}"
+    );
+    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn scalar_aggregate_temporaries_do_not_expand_gc_root_frames() {
+    let small_elements = std::iter::repeat_n("0", 4).collect::<Vec<_>>().join(", ");
+    let large_elements = std::iter::repeat_n("0", 256).collect::<Vec<_>>().join(", ");
+    let source = format!(
+        r"module scalar_aggregate_roots
+
+fn small() Int {{
+    let values = [{small_elements}]
+    values.length()
+}}
+
+fn large() Int {{
+    let values = [{large_elements}]
+    values.length()
+}}
+
+pub fn main() Unit {{
+    let smallCount = small()
+    let largeCount = large()
+    assert smallCount == 4
+    assert largeCount == 256
+    Unit
+}}
+"
+    );
+    let (project, _program, llvm) = emit_source_with_ir(&source);
+
+    let small = llvm_native_function(&llvm, "scalar_aggregate_roots_small");
+    let large = llvm_native_function(&llvm, "scalar_aggregate_roots_large");
+    assert_balanced_gc_root_frame(small);
+    assert_balanced_gc_root_frame(large);
+    let small_slots = gc_root_slot_count(small);
+    let large_slots = gc_root_slot_count(large);
+    assert_eq!(small_slots, 2, "unexpected small root frame: {small}");
+    assert_eq!(large_slots, 2, "scalar elements grew root slots: {large}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn gc_root_bitmaps_cover_more_than_one_word_without_live_tail_bits() {
+    let parameters = (0..66)
+        .map(|index| format!("value{index} Text"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = std::iter::repeat_n("\"root\"", 66)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        r#"module gc_root_bitmap_tail
+
+fn retain({parameters}, count Int) Text {{
+    var noise = List[Text]()
+    for index in 0..count {{
+        noise.add("relocate")
+        Unit
+    }}
+    value65
+}}
+
+pub fn main() Unit {{
+    let retained = retain({arguments}, 4)
+    assert retained == "root"
+    Unit
+}}
+"#
+    );
+    let (project, _program, llvm) = emit_source_with_ir(&source);
+    let retain = llvm_function(&llvm, "gc_root_bitmap_tail_retain");
+    let descriptor = gc_root_descriptor(&llvm, retain);
+
+    assert!(descriptor.slot_count > 64, "{descriptor:?}\n{retain}");
+    assert!(descriptor.bitmap_words > 1, "{descriptor:?}\n{retain}");
+    let tail_bits = descriptor.slot_count % 64;
+    assert_ne!(tail_bits, 0, "test must exercise a partial tail word");
+    let tail_mask = (1_u64 << tail_bits) - 1;
+    for state in descriptor.bitmaps.chunks(descriptor.bitmap_words) {
+        assert_eq!(
+            state[descriptor.bitmap_words - 1] & !tail_mask,
+            0,
+            "unused tail bits are live: {descriptor:?}\n{retain}"
+        );
+    }
+    assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn safepoint_states_drop_dead_temporaries_and_keep_live_caller_values() {
+    let source = r#"module precise_root_liveness
+
+fn allocate(count Int) List[Text] {
+    var values = List[Text]()
+    for index in 0..count {
+        values.add("relocate")
+        Unit
+    }
+    values
+}
+
+fn retain(value Text, count Int) Text {
+    let copied = value
+    let noise = allocate(count)
+    let noiseCount = noise.length()
+    assert noiseCount == count
+    copied
+}
+
+pub fn main() Unit {
+    let retained = retain("kept", 4096)
+    assert retained == "kept"
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+    let retain = llvm_function(&llvm, "precise_root_liveness_retain");
+    assert_balanced_gc_root_frame(retain);
+
+    let descriptor = gc_root_descriptor(&llvm, retain);
+    assert!(descriptor.state_count > 2, "{descriptor:?}\n{retain}");
+    assert_eq!(
+        descriptor.bitmaps.len(),
+        descriptor.state_count * descriptor.bitmap_words,
+        "{descriptor:?}\n{retain}"
+    );
+    let clone_state = gc_state_before_call(retain, "@loom.runtime.clone", 0);
+    let source_proxy = gc_root_slot_index(retain, "clone.source.proxy");
+    assert!(
+        descriptor.is_live(clone_state, source_proxy),
+        "clone source proxy is not rooted in its helper state: {descriptor:?}\n{retain}"
+    );
+    let source_call_state = gc_state_before_call(retain, "call i32 @loom.fn.", 0);
+    assert!(
+        !descriptor.is_live(source_call_state, source_proxy),
+        "dead clone source proxy leaked into a later source-call state: {descriptor:?}\n{retain}"
+    );
+    assert_gc_state_published_before(retain, "call i32 @loom.fn.");
+    assert_gc_state_published_before(retain, "@loom.runtime.clone");
+    assert_gc_state_published_before(retain, "@loom_gc_safepoint_v1");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn moving_gc_relocates_sync_nested_projected_and_dynamic_call_state() {
+    let source = r#"module moving_gc_sync
+
+dyn concept CounterOps {
+    method allocateAndAdd(mut self, amount Int, count Int) Int
+}
+
+record Counter { value Int }
+record Holder { counter Counter }
+
+impl CounterOps for Counter {
+    method allocateAndAdd(mut self, amount Int, count Int) Int {
+        var noise = List[Text]()
+        for index in 0..count {
+            noise.add("relocate")
+            Unit
+        }
+        let noiseCount = noise.length()
+        assert noiseCount == count
+        self.value = self.value + amount
+        self.value
+    }
+}
+
+impl Holder {
+    method projected(mut self, amount Int, count Int) Int {
+        self.counter.allocateAndAdd(amount, count)
+    }
+
+    method nested(mut self, amount Int, count Int) Int {
+        self.projected(amount, count)
+    }
+}
+
+fn dynamicAdd(counter dyn CounterOps, amount Int, count Int) Int {
+    counter.allocateAndAdd(amount, count)
+}
+
+pub fn main() Unit {
+    var projected = Holder { counter = Counter { value = 10 } }
+    let projectedResult = projected.nested(5, 4096)
+    assert projectedResult == 15
+    let projectedValue = projected.counter.value
+    assert projectedValue == 15
+
+    var dynamic = Holder { counter = Counter { value = 20 } }
+    let dynamicResult = dynamicAdd(dynamic.counter, 7, 4096)
+    assert dynamicResult == 27
+    let dynamicValue = dynamic.counter.value
+    assert dynamicValue == 27
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let allocate = llvm_function(&llvm, "moving_gc_sync_allocateAndAdd");
+    let projected = llvm_function(&llvm, "moving_gc_sync_projected");
+    let nested = llvm_function(&llvm, "moving_gc_sync_nested");
+    let dynamic = llvm_function(&llvm, "moving_gc_sync_dynamicAdd");
+    assert_balanced_gc_root_frame(allocate);
+    assert_balanced_gc_root_frame(projected);
+    assert_balanced_gc_root_frame(nested);
+    assert_balanced_gc_root_frame(dynamic);
+    assert!(
+        allocate.contains("gc.range.backedge.safepoint"),
+        "{allocate}"
+    );
+    assert!(projected.contains("inout.projected.proxy"), "{projected}");
+    assert!(dynamic.contains("dyn.dispatch.proxy"), "{dynamic}");
+    assert_gc_state_published_before(projected, "call i32 @loom.fn.");
+    assert_gc_state_published_before(nested, "call i32 @loom.fn.");
+    assert_gc_state_published_before(dynamic, "dyn.call");
+    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+    let dynamic_descriptor = gc_root_descriptor(&llvm, dynamic);
+    let projected_descriptor = gc_root_descriptor(&llvm, projected);
+    let projected_call_state = gc_state_before_call(projected, "call i32 @loom.fn.", 0);
+    let projected_proxy = gc_root_slot_index(projected, "inout.projected.proxy");
+    assert!(
+        projected_descriptor.is_live(projected_call_state, projected_proxy),
+        "projected InOut proxy is not live at its call: {projected_descriptor:?}\n{projected}"
+    );
+    let dynamic_call_state = gc_state_before_call(dynamic, "dyn.call", 0);
+    let dynamic_proxy = gc_root_slot_index(dynamic, "dyn.dispatch.proxy");
+    assert!(
+        dynamic_descriptor.is_live(dynamic_call_state, dynamic_proxy),
+        "dynamic dispatch proxy is not live at its call: {dynamic_descriptor:?}\n{dynamic}"
+    );
+    assert!(
+        dynamic_descriptor.state_count > 1,
+        "{dynamic_descriptor:?}\n{dynamic}"
+    );
+    assert!(!llvm.contains("ptrtoint"), "{llvm}");
+    assert!(!llvm.contains("inttoptr"), "{llvm}");
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn moving_gc_relocates_async_task_slots_across_pending_and_resume() {
+    let source = r#"module moving_gc_async
+
+async fn allocateAcrossAwait(count Int) Int {
+    var values = List[Text]()
+    for index in 0..count {
+        values.add("before-await")
+        Unit
+    }
+    let before = values.length()
+    assert before == count
+    Task.sleep(1).await
+    for index in 0..count {
+        values.add("after-await")
+        Unit
+    }
+    values.length()
+}
+
+pub async fn main() Unit {
+    let count = allocateAcrossAwait(4096).await
+    assert count == 8192
+    Unit
+}
+"#;
+    let (project, _program, llvm) = emit_source_with_ir(source);
+
+    let allocate = llvm_resume_function(&llvm, "moving_gc_async_allocateAcrossAwait");
+    let main = llvm_resume_function(&llvm, "moving_gc_async_main");
+    assert_balanced_gc_root_frame(allocate);
+    assert_balanced_gc_root_frame(main);
+    assert!(
+        allocate.matches("gc.range.backedge.safepoint").count() >= 2,
+        "{allocate}"
+    );
+    assert!(!allocate.contains("gc.return.safepoint"), "{allocate}");
+    assert!(
+        allocate.contains("i32 0"),
+        "pending return is missing: {allocate}"
+    );
+    assert_gc_state_published_before(allocate, "@loom_gc_safepoint_v1");
+    let descriptor = gc_root_descriptor(&llvm, allocate);
+    assert_eq!(
+        descriptor.bitmaps.len(),
+        descriptor.state_count * descriptor.bitmap_words,
+        "{descriptor:?}\n{allocate}"
+    );
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
 fn primitive_scalar_abi_uses_i1_i64_and_double_without_universal_calls() {
     let source = r"module primitive_scalar
 
@@ -655,7 +1028,7 @@ pub fn main() Unit {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn loop_temporaries_are_entry_allocated_and_large_release_loops_do_not_grow_stack() {
+fn loop_temporaries_stay_in_one_shot_prologues_and_large_release_loops_do_not_grow_stack() {
     let source = r"module stack_loop
 
 record Counter {
@@ -769,7 +1142,7 @@ pub fn main() Unit {
                 block = label;
             }
             assert!(
-                !line.contains(" alloca ") || block == "entry",
+                !line.contains(" alloca ") || matches!(block, "entry" | "body.start"),
                 "{function_name} contains a dynamic alloca in `{block}`: {line}"
             );
         }
@@ -1684,22 +2057,258 @@ fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
 }
 
 fn assert_native_int_list_dropped_once_on_each_return(function: &str) {
-    let returns = function
-        .split("\n\n")
-        .filter(|block| {
+    let blocks = llvm_basic_blocks(function);
+    let returns = blocks
+        .iter()
+        .filter(|(_, block)| {
             block
                 .lines()
                 .any(|line| line.trim_start().starts_with("ret "))
         })
         .collect::<Vec<_>>();
     assert!(!returns.is_empty(), "function has no return: {function}");
-    for block in returns {
+    for (label, block) in returns {
+        let predecessors = llvm_block_predecessors(block);
         assert_eq!(
-            block.matches("@loom_int_list_drop_v1").count(),
+            predecessors.len(),
             1,
-            "return must drop native Int list exactly once: {block}"
+            "return `{label}` must have one cleanup predecessor: {block}"
+        );
+        let predecessor = blocks
+            .get(predecessors[0])
+            .unwrap_or_else(|| panic!("missing predecessor `{}`: {function}", predecessors[0]));
+        assert_eq!(
+            predecessor.matches("@loom_int_list_drop_v1").count(),
+            1,
+            "return `{label}` must be immediately preceded by one List drop: {predecessor}"
+        );
+        assert_eq!(
+            predecessor.matches("@loom_gc_root_pop_v1").count(),
+            1,
+            "return `{label}` must be immediately preceded by root pop: {predecessor}"
         );
     }
+}
+
+fn assert_balanced_gc_root_frame(function: &str) {
+    assert_eq!(
+        function.matches("call i32 @loom_gc_root_push_v1").count(),
+        1,
+        "allocating function must push one root frame: {function}"
+    );
+    let returns = function
+        .lines()
+        .filter(|line| line.trim_start().starts_with("ret "))
+        .count();
+    assert!(returns > 0, "function has no return: {function}");
+    assert_eq!(
+        function.matches("call i32 @loom_gc_root_pop_v1").count(),
+        returns,
+        "every return must pop the root frame: {function}"
+    );
+}
+
+fn gc_root_slot_count(function: &str) -> usize {
+    let allocation = function
+        .lines()
+        .find(|line| line.contains("gc.root.slots") && line.contains("alloca"))
+        .unwrap_or_else(|| panic!("function has no GC root slots: {function}"))
+        .split_once("alloca ")
+        .map_or_else(
+            || panic!("malformed GC root slot allocation: {function}"),
+            |(_, allocation)| allocation,
+        );
+    if let Some(array) = allocation.strip_prefix('[') {
+        return array
+            .split_once(" x ptr]")
+            .and_then(|(count, _)| count.parse().ok())
+            .unwrap_or_else(|| panic!("malformed GC root slot array: {allocation}"));
+    }
+    let fields = allocation
+        .strip_prefix("{ ")
+        .and_then(|fields| fields.split_once(" }").map(|(fields, _)| fields))
+        .unwrap_or_else(|| panic!("malformed GC root slot structure: {allocation}"));
+    fields
+        .split(',')
+        .filter(|field| field.trim() == "ptr")
+        .count()
+}
+
+#[derive(Debug)]
+struct GcRootDescriptorIr {
+    slot_count: usize,
+    state_count: usize,
+    bitmap_words: usize,
+    bitmaps: Vec<u64>,
+}
+
+impl GcRootDescriptorIr {
+    fn is_live(&self, state: usize, slot: usize) -> bool {
+        assert!(state < self.state_count, "{self:?}");
+        assert!(slot < self.slot_count, "{self:?}");
+        let word = state * self.bitmap_words + slot / 64;
+        self.bitmaps[word] & (1_u64 << (slot % 64)) != 0
+    }
+}
+
+fn gc_root_descriptor(llvm: &str, function: &str) -> GcRootDescriptorIr {
+    let descriptor_name = function
+        .lines()
+        .find(|line| line.contains("store ptr @loom.gc.root.descriptor."))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find(|token| token.starts_with("@loom.gc.root.descriptor."))
+        })
+        .map(|token| token.trim_end_matches(','))
+        .unwrap_or_else(|| panic!("function has no GC root descriptor: {function}"));
+    let descriptor = llvm
+        .lines()
+        .find(|line| line.starts_with(&format!("{descriptor_name} =")))
+        .unwrap_or_else(|| panic!("missing descriptor `{descriptor_name}`: {llvm}"));
+    let fields = descriptor
+        .split_once("%loom.GcRootDescriptor { ")
+        .and_then(|(_, fields)| fields.split_once(" }").map(|(fields, _)| fields))
+        .map(|fields| fields.split(',').map(str::trim).collect::<Vec<_>>())
+        .unwrap_or_else(|| panic!("malformed GC root descriptor: {descriptor}"));
+    assert_eq!(fields.len(), 6, "malformed descriptor: {descriptor}");
+    let slot_count = parse_llvm_usize_field(fields[2], "i64", descriptor);
+    let state_count = parse_llvm_usize_field(fields[3], "i64", descriptor);
+    let bitmap_words = parse_llvm_usize_field(fields[4], "i64", descriptor);
+    let bitmap_name = fields[5]
+        .strip_prefix("ptr ")
+        .unwrap_or_else(|| panic!("descriptor has no bitmap pointer: {descriptor}"));
+    let bitmap = llvm
+        .lines()
+        .find(|line| line.starts_with(&format!("{bitmap_name} =")))
+        .unwrap_or_else(|| panic!("missing bitmap `{bitmap_name}`: {llvm}"));
+    let bitmaps = bitmap
+        .split("i64 ")
+        .skip(1)
+        .map(|value| {
+            let value = value
+                .split(|character: char| character == ',' || character == ']')
+                .next()
+                .unwrap_or_default()
+                .trim();
+            parse_llvm_u64(value, bitmap)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bitmaps.len(),
+        state_count * bitmap_words,
+        "malformed bitmap: {bitmap}"
+    );
+    GcRootDescriptorIr {
+        slot_count,
+        state_count,
+        bitmap_words,
+        bitmaps,
+    }
+}
+
+fn parse_llvm_usize_field(field: &str, ty: &str, context: &str) -> usize {
+    field
+        .strip_prefix(&format!("{ty} "))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("malformed `{field}` in {context}"))
+}
+
+fn parse_llvm_u64(value: &str, context: &str) -> u64 {
+    value.parse().unwrap_or_else(|_| {
+        value
+            .parse::<i64>()
+            .map(|value| value as u64)
+            .unwrap_or_else(|_| panic!("malformed integer `{value}` in {context}"))
+    })
+}
+
+fn gc_state_before_call(function: &str, needle: &str, occurrence: usize) -> usize {
+    let lines = function.lines().collect::<Vec<_>>();
+    let call = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("call ") && line.contains(needle))
+        .nth(occurrence)
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| panic!("missing call #{occurrence} `{needle}`: {function}"));
+    for line in lines[..call].iter().rev() {
+        if !line.starts_with(char::is_whitespace) && line.contains(':') {
+            break;
+        }
+        let line = line.trim();
+        if let Some(value) = line
+            .strip_prefix("store i64 ")
+            .and_then(|line| line.split_once(", ptr %gc.root.state"))
+            .map(|(value, _)| value)
+        {
+            return parse_llvm_usize_field(&format!("i64 {value}"), "i64", function);
+        }
+    }
+    panic!("call `{needle}` has no preceding GC state publication: {function}");
+}
+
+fn assert_gc_state_published_before(function: &str, needle: &str) {
+    let calls = function
+        .lines()
+        .filter(|line| line.contains("call ") && line.contains(needle))
+        .count();
+    assert!(calls > 0, "missing call `{needle}`: {function}");
+    for occurrence in 0..calls {
+        let _ = gc_state_before_call(function, needle, occurrence);
+    }
+}
+
+fn gc_root_slot_index(function: &str, pointer: &str) -> usize {
+    for store in function
+        .lines()
+        .filter(|line| line.contains("store ptr %") && line.contains(pointer))
+    {
+        let destination = store
+            .split_once(", ptr ")
+            .and_then(|(_, destination)| destination.split(',').next())
+            .map(str::trim)
+            .unwrap_or_default();
+        let Some(field) = function.lines().find(|line| {
+            line.trim_start().starts_with(&format!("{destination} ="))
+                && line.contains("gc.root.slots")
+        }) else {
+            continue;
+        };
+        return field
+            .rsplit_once("i32 ")
+            .and_then(|(_, index)| index.split(',').next())
+            .and_then(|index| index.trim().parse().ok())
+            .unwrap_or_else(|| panic!("malformed root slot field: {field}"));
+    }
+    panic!("root slot for `{pointer}` is missing: {function}");
+}
+
+fn llvm_basic_blocks(function: &str) -> BTreeMap<&str, &str> {
+    function
+        .split("\n\n")
+        .filter_map(|block| {
+            let label = block
+                .lines()
+                .find(|line| !line.starts_with(char::is_whitespace) && line.contains(':'))?
+                .split_once(':')?
+                .0;
+            Some((label, block))
+        })
+        .collect()
+}
+
+fn llvm_block_predecessors(block: &str) -> Vec<&str> {
+    let Some((_, predecessors)) = block
+        .lines()
+        .next()
+        .and_then(|line| line.split_once("; preds = "))
+    else {
+        return Vec::new();
+    };
+    predecessors
+        .split(',')
+        .map(|predecessor| predecessor.trim().trim_start_matches('%'))
+        .collect()
 }
 
 fn llvm_declaration_attributes<'source>(ir: &'source str, symbol: &str) -> &'source str {
