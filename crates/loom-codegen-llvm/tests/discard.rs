@@ -15,6 +15,11 @@ record Counter {
     value Int
 }
 
+enum DiscardChoice {
+    Async,
+    Sync
+}
+
 impl Counter {
     method next(mut self) Int {
         self.value = self.value + 1
@@ -50,6 +55,19 @@ test fn synchronous_discard() {
 test async fn awaited_discard() {
     discard asynchronous_answer().await
 }
+
+test async fn nested_control_discard() {
+    discard {
+        match DiscardChoice.Async {
+            DiscardChoice.Async => if answer() == 42 {
+                asynchronous_answer().await
+            } else {
+                answer()
+            }
+            DiscardChoice.Sync => answer()
+        }
+    }
+}
 ",
     )
     .expect("write discard source");
@@ -72,7 +90,7 @@ test async fn awaited_discard() {
         .expect("run interpreter main");
     assert_eq!(interpreted_main, Value::Unit);
     let interpreted_tests = Interpreter::new(program).run_tests();
-    assert_eq!(interpreted_tests.len(), 2, "{interpreted_tests:#?}");
+    assert_eq!(interpreted_tests.len(), 3, "{interpreted_tests:#?}");
     assert!(
         interpreted_tests
             .iter()
@@ -114,6 +132,10 @@ test async fn awaited_discard() {
     );
     assert!(
         stdout.contains("passed discard_values.awaited_discard\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("passed discard_values.nested_control_discard\n"),
         "{stdout}"
     );
 }
