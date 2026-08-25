@@ -93,7 +93,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成私有 `i64` body 并保留 universal wrapper：closed-world summary 为 pure/no-fault 时，body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path；安全的同步局部 POD record 把字段节点放入有预算的入口栈存储，release 由 SROA 把热循环字段提升为 SSA，只在 whole-value copy/call/return 边界物化独立 managed chain。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果完全由 primitive scalar 组成的 direct call 已生成私有 typed body 并保留 universal wrapper：`Unit -> i1`、`Bool -> i1`、`Int -> i64`、`Float -> double`。closed-world summary 为 pure/no-fault 时，body 没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path；安全的同步局部 POD record 把字段节点放入有预算的入口栈存储，release 由 SROA 把热循环字段提升为 SSA，只在 whole-value copy/call/return 边界物化独立 managed chain。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -135,13 +135,13 @@ InstanceKey = (
 
 ### 普通值
 
-当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。这里称为当前 universal `Value` lowering，而不是对旧布局兼容性的承诺。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection、局部 POD SROA 和局部 `List[Int]` 快路已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留 universal 表示。POD record 的私有栈节点不会直接逃逸：whole-value copy/call/return 必须从当前字段值建立一条独立 managed chain，因而既保存值复制隔离，又让原始字段地址继续满足 SROA。`Text` 的对象侧表示已经闭合：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。这里称为当前 universal `Value` lowering，而不是对旧布局兼容性的承诺。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 primitive scalar 私有 ABI、record scalar projection、局部 POD SROA 和局部 `List[Int]` 快路已绕过部分 envelope/node 成本，但 aggregate main/test/export、未知 generic、async frame 和动态分派仍保留 universal 表示。POD record 的私有栈节点不会直接逃逸：whole-value copy/call/return 必须从当前字段值建立一条独立 managed chain，因而既保存值复制隔离，又让原始字段地址继续满足 SROA。`Text` 的对象侧表示已经闭合：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
 
 `List` 有两条明确分开的 lowering。默认路径继续使用 current universal `Value`/managed `ValueNode` 表示，并保持既有逻辑复制、值相等和 GC tracing 语义。closed-world use scan 只有在 callable 同步、local 精确为 `List[Int]`、恰有一次空初始化，且所有使用都能证明不复制、不逃逸、不跨 `.await`/generic/witness/defer 边界时，才选择 compiler-private `{data, len, cap}` storage；当前允许的观察形状是局部 `add`、`length` 和直接穷尽匹配 `get` 的 `Option[Int]`。canonical 单 append range 在进入循环前读取 data/len/cap，并用 loop SSA/phi 携带三者；非增长路径不重载 header，reserve 成功后只重载可能改变的 data/cap，元素槽 store 到新 len 提交之间没有 fault point。因此下一迭代的 element 求值 fault、正常退出和 drop 总能看到一致的内存 header。容量不足时仍调用几何扩容 helper，不做隐式预 reserve。
 
 对更窄的 exact-length 形状，分析还要求从空 list 开始、零起点 build range 每个正常迭代恰好 append 一次、range end 是同一常量或 immutable local，且其后零起点 scan 使用同一 end、唯一 induction binding、direct/Unit 形状的穷尽 `Option[Int]` match，中间和 scan body 都不修改 list。此时每个到达的 `get(induction)` 必有 `0 <= induction < len`，LLVM 可直接生成 `Some` 路径，删除逐元素 negative/past-end 与不可达 `None` edge；end、binding、direct/Unit 形状或同一 list 不变性中任一无法证明时都保留完整 checked get。`Some`/`None` arm 本身可以包含可观察行为；只有在 `None` 已被前述条件证明不可达时才删除该 edge。独立的 checked checksum、fault 和 cleanup 不因该证明删除。该 storage 只含 `i64` 元素、独立于 moving heap，不需要 GC root 或 Executor；add 为摊销 O(1)，get/length 为 O(1)，正常或 fault 退出都显式释放。它不是 public/generic List ABI。
 
-最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。`NativeLayout` catalog 已描述 scalar 和无 invariant、单态、直接 primitive-field 的 POD record；现有 record 栈存储候选复用该 shape-only 分类。更强的 `NativeSignatureShape` 仍只为完整支持的 scalar `Int` callable 建立 requirement graph 与 emitter 的共同 private-ABI selector；emitter 再把 closed-world requirement 绑定为 effect-bearing `NativeSignature`，并让声明、调用与 root gate 共用该结果。因此“分类为 POD”本身不能删除 allocation 或启用 aggregate ABI。List/其他布局、统一 clone/trace/drop plan 与完整 machine-instance graph 仍待扩展，跨函数 POD record 也仍通过 universal boundary。未来具体 aggregate private ABI 由扩展后的 catalog/plan 选择，本版不预先承诺 aggregate by-value、scalar fields 或 out-pointer 物理签名。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
+最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。`NativeLayout` catalog 已描述 scalar 和无 invariant、单态、直接 primitive-field 的 POD record；现有 record 栈存储候选复用该 shape-only 分类。更强的 `NativeSignatureShape` 已为四种 primitive scalar callable 建立 requirement graph 与 emitter 的共同 private-ABI selector；emitter 再把 closed-world requirement 绑定为 effect-bearing `NativeSignature`，并让声明、调用与 root gate 共用该结果。因此“分类为 POD”本身不能删除 allocation 或启用 aggregate ABI。List/其他布局、统一 clone/trace/drop plan 与完整 machine-instance graph 仍待扩展，跨函数 POD record 也仍通过 universal boundary。未来 concrete aggregate private ABI 采用 compiler-internal first-class LLVM aggregate，由目标后端决定寄存器或机器返回槽；只有 body/bridge requirement、独立参数/结果 storage 与 GC/逃逸边界同时闭合后才开放，不手工冻结 `sret`/`byval`。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 
@@ -160,7 +160,7 @@ i64 int_fn(i64 arguments...)                         // pure + no fault
 {status, i64} int_fn(i64 arguments..., context)      // may fault/allocate
 ```
 
-universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。这两种 scalar `Int` callable 形状由 `NativeSignatureShape` 统一选择；`NativeLayout` 虽已能分类当前 POD record storage，record 仍没有同类的跨函数 concrete private signature。其他类型也必须在 catalog/plan 中补齐完整 calling convention 与 layout/clone/trace/drop 后才能套用 typed ABI。
+universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。四种 primitive scalar callable 形状由 `NativeSignatureShape` 统一选择；`NativeLayout` 虽已能分类当前 POD record storage，record 仍没有同类的跨函数 concrete private signature。其他类型也必须在 catalog/plan 中补齐完整 calling convention 与 layout/clone/trace/drop 后才能套用 typed ABI。
 
 ### Runtime requirements 与 root context
 
@@ -168,7 +168,7 @@ LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 com
 
 root context 由 invocation summary 与实际 ABI 共同决定：
 
-- 只有 eligible pure/no-fault scalar `Int` root 可以完全不创建 context；
+- 只有 eligible pure/no-fault primitive-scalar root 可以完全不创建 context；
 - 其余同步 root 只创建、激活一个 `LoomRuntime`，不创建 Executor；
 - async/`EXECUTOR` root 先创建并激活 `LoomRuntime`，再把一个 `LoomExecutor` 附加到该 Runtime。
 

@@ -568,6 +568,88 @@ pub fn main() Int {
 }
 
 #[test]
+fn primitive_scalar_abi_uses_i1_i64_and_double_without_universal_calls() {
+    let source = r"module primitive_scalar
+
+fn negate(value Bool) Bool {
+    !value
+}
+
+fn double(value Float) Float {
+    value * 2.0
+}
+
+fn unitIdentity(value Unit) Unit {
+    value
+}
+
+pub fn main() Unit {
+    let negated = negate(false)
+    assert negated
+    let doubled = double(2.5)
+    assert doubled == 5.0
+    unitIdentity(Unit)
+}
+";
+    let project = tempfile::tempdir().expect("create primitive scalar project");
+    std::fs::write(project.path().join("main.loom"), source)
+        .expect("write primitive scalar source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load primitive scalar project")
+        .snapshot()
+        .expect("analyze primitive scalar project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower primitive scalar MIR");
+
+    let executable = project.path().join("program");
+    let ir = project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit primitive scalar executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read primitive scalar LLVM IR");
+    let negate = llvm_native_function(&llvm, "primitive_scalar_negate");
+    let double = llvm_native_function(&llvm, "primitive_scalar_double");
+    let unit = llvm_native_function(&llvm, "primitive_scalar_unitIdentity");
+    let main = llvm_native_function(&llvm, "primitive_scalar_main");
+    assert!(
+        negate.lines().next().unwrap_or_default().contains("i1 %0"),
+        "{negate}"
+    );
+    assert!(
+        double
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("double %0"),
+        "{double}"
+    );
+    assert!(
+        unit.lines().next().unwrap_or_default().contains("i1 %0"),
+        "{unit}"
+    );
+    assert!(
+        main.contains("call i1 @loom.native.fn.0.primitive_scalar_negate"),
+        "{main}"
+    );
+    assert!(
+        main.contains("call double @loom.native.fn.1.primitive_scalar_double"),
+        "{main}"
+    );
+    assert!(
+        main.contains("call i1 @loom.native.fn.2.primitive_scalar_unitIdentity"),
+        "{main}"
+    );
+    assert!(!main.contains("%loom.ArgNode"), "{main}");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run primitive scalar executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"Unit\n");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn loop_temporaries_are_entry_allocated_and_large_release_loops_do_not_grow_stack() {
     let source = r"module stack_loop
@@ -716,7 +798,7 @@ pub fn main() Unit {
         .find("call ptr @loom_gc_alloc_value_node")
         .expect("record result is materialized");
     assert!(loop_exit < first_materialization, "{record_method}");
-    let main = llvm_function(&llvm, "stack_loop_main");
+    let main = llvm_native_function(&llvm, "stack_loop_main");
     assert!(
         main.contains("record.copy.field"),
         "the original-to-copy path must use independent managed fields: {main}"
@@ -1260,7 +1342,7 @@ pub fn faultMain() Unit {
             );
             assert!(!fallback.contains("@loom_runtime_list_add"), "{fallback}");
 
-            let faultable = llvm_function(&llvm, "native_int_list_faultableAppend");
+            let faultable = llvm_native_function(&llvm, "native_int_list_faultableAppend");
             assert!(
                 faultable.contains("int.list.loop.length = phi i64"),
                 "fallible element lost append-loop SSA: {faultable}"
@@ -1290,7 +1372,7 @@ pub fn faultMain() Unit {
                 assert!(body.contains("int.list.get.past.end"), "{body}");
                 assert!(body.contains("int.list.get.none"), "{body}");
             }
-            let cleanup = llvm_function(&llvm, "native_int_list_cleanupOnFaultPath");
+            let cleanup = llvm_native_function(&llvm, "native_int_list_cleanupOnFaultPath");
             assert!(cleanup.contains("@loom_int_list_drop_v1"), "{cleanup}");
             assert_native_int_list_dropped_once_on_each_return(cleanup);
         }

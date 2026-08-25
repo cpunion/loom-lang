@@ -126,27 +126,25 @@ pub(crate) struct NativeSignature {
 
 impl NativeSignatureShape {
     /// Selects only functions which the production LLVM emitter fully lowers through a private
-    /// native ABI. This deliberately preserves the current monomorphic scalar-`Int` slice.
+    /// native ABI. Aggregate layouts remain catalog-only until their calling convention and
+    /// value-boundary materialization are fully implemented.
     #[must_use]
     pub(crate) fn for_supported_function(function: &Function) -> Option<Self> {
         if function.is_async
             || function.type_parameters != 0
             || function.receiver.is_some()
             || !function.witness_params.is_empty()
-            || function.return_ty != Type::Int
-            || !function
-                .params
-                .iter()
-                .all(|parameter| parameter.ty == Type::Int)
         {
             return None;
         }
 
-        let int = NativeLayout::Scalar(NativeScalar::Int);
-        Some(Self {
-            parameters: vec![int.clone(); function.params.len()],
-            result: int,
-        })
+        let parameters = function
+            .params
+            .iter()
+            .map(|parameter| NativeScalar::for_type(&parameter.ty).map(NativeLayout::Scalar))
+            .collect::<Option<Vec<_>>>()?;
+        let result = NativeLayout::Scalar(NativeScalar::for_type(&function.return_ty)?);
+        Some(Self { parameters, result })
     }
 
     #[must_use]
@@ -334,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_the_production_scalar_int_shape() {
+    fn selects_production_primitive_scalar_shapes() {
         let shape = NativeSignatureShape::for_supported_function(&scalar_int_function())
             .expect("scalar Int function should have a private native shape");
         let int = NativeLayout::Scalar(NativeScalar::Int);
@@ -348,6 +346,16 @@ mod tests {
             shape.with_effect(NativeEffectAbi::RuntimeStatus).effect(),
             NativeEffectAbi::RuntimeStatus
         );
+
+        for scalar in [Type::Unit, Type::Bool, Type::Float] {
+            let mut function = scalar_int_function();
+            function.params[0].ty = scalar.clone();
+            function.return_ty = scalar.clone();
+            let shape = NativeSignatureShape::for_supported_function(&function)
+                .unwrap_or_else(|| panic!("{scalar:?} should have a native scalar shape"));
+            assert_eq!(shape.parameters().len(), 1);
+            assert_eq!(shape.parameters(), std::slice::from_ref(shape.result()));
+        }
     }
 
     #[test]
@@ -367,22 +375,10 @@ mod tests {
             bindings: BTreeMap::new(),
             span: Default::default(),
         });
-        let mut bool_parameter = base.clone();
-        bool_parameter.params[0].ty = Type::Bool;
-        let mut bool_result = base.clone();
-        bool_result.return_ty = Type::Bool;
         let mut record_parameter = base;
         record_parameter.params[0].ty = Type::Nominal(TypeId(0), Vec::new());
 
-        for function in [
-            asynchronous,
-            generic,
-            receiver,
-            witnessed,
-            bool_parameter,
-            bool_result,
-            record_parameter,
-        ] {
+        for function in [asynchronous, generic, receiver, witnessed, record_parameter] {
             assert!(
                 NativeSignatureShape::for_supported_function(&function).is_none(),
                 "unsupported function shape was selected: {}",

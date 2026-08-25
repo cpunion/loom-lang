@@ -910,13 +910,123 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         layout: &NativeLayout,
     ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
         match layout {
+            NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool) => {
+                Ok(self.context.bool_type().into())
+            }
             NativeLayout::Scalar(NativeScalar::Int) => Ok(self.i64_type.into()),
-            NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool | NativeScalar::Float)
-            | NativeLayout::PodRecord(_) => Err(CodegenError::new(
+            NativeLayout::Scalar(NativeScalar::Float) => Ok(self.context.f64_type().into()),
+            NativeLayout::PodRecord(_) => Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "storage-only native layout was selected for the callable ABI",
             )),
         }
+    }
+
+    fn native_zero_value(
+        &self,
+        layout: &NativeLayout,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match layout {
+            NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool) => {
+                Ok(self.context.bool_type().const_zero().into())
+            }
+            NativeLayout::Scalar(NativeScalar::Int) => Ok(self.i64_type.const_zero().into()),
+            NativeLayout::Scalar(NativeScalar::Float) => {
+                Ok(self.context.f64_type().const_zero().into())
+            }
+            NativeLayout::PodRecord(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "storage-only native layout has no callable zero value",
+            )),
+        }
+    }
+
+    fn load_native_value(
+        &self,
+        layout: &NativeLayout,
+        source: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match layout {
+            NativeLayout::Scalar(NativeScalar::Unit) => {
+                Ok(self.context.bool_type().const_zero().into())
+            }
+            NativeLayout::Scalar(NativeScalar::Bool) => {
+                let scalar = self.load_i64_field(
+                    self.value_type,
+                    source,
+                    VALUE_FIELD_SCALAR,
+                    &format!("{name}.bits"),
+                )?;
+                Ok(self
+                    .builder
+                    .build_int_truncate(scalar, self.context.bool_type(), name)
+                    .map_err(builder_error)?
+                    .into())
+            }
+            NativeLayout::Scalar(NativeScalar::Int) => Ok(self
+                .load_i64_field(self.value_type, source, VALUE_FIELD_SCALAR, name)?
+                .into()),
+            NativeLayout::Scalar(NativeScalar::Float) => {
+                let bits = self.load_i64_field(
+                    self.value_type,
+                    source,
+                    VALUE_FIELD_SCALAR,
+                    &format!("{name}.bits"),
+                )?;
+                Ok(self
+                    .builder
+                    .build_bit_cast(bits, self.context.f64_type(), name)
+                    .map_err(builder_error)?)
+            }
+            NativeLayout::PodRecord(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "storage-only native layout was loaded at a callable boundary",
+            )),
+        }
+    }
+
+    fn store_native_value(
+        &self,
+        layout: &NativeLayout,
+        destination: PointerValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.builder
+            .build_store(destination, self.value_type.const_zero())
+            .map_err(builder_error)?;
+        let (tag, scalar) = match layout {
+            NativeLayout::Scalar(NativeScalar::Unit) => (VALUE_TAG_UNIT, None),
+            NativeLayout::Scalar(NativeScalar::Bool) => {
+                let scalar = self
+                    .builder
+                    .build_int_z_extend(value.into_int_value(), self.i64_type, "bool.scalar")
+                    .map_err(builder_error)?;
+                (VALUE_TAG_BOOL, Some(scalar))
+            }
+            NativeLayout::Scalar(NativeScalar::Int) => {
+                (VALUE_TAG_INT, Some(value.into_int_value()))
+            }
+            NativeLayout::Scalar(NativeScalar::Float) => {
+                let scalar = self
+                    .builder
+                    .build_bit_cast(value.into_float_value(), self.i64_type, "float.bits")
+                    .map_err(builder_error)?
+                    .into_int_value();
+                (VALUE_TAG_FLOAT, Some(scalar))
+            }
+            NativeLayout::PodRecord(_) => {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "storage-only native layout was stored at a callable boundary",
+                ));
+            }
+        };
+        self.store_i64_field(self.value_type, destination, VALUE_FIELD_TAG, self.tag(tag))?;
+        if let Some(scalar) = scalar {
+            self.store_i64_field(self.value_type, destination, VALUE_FIELD_SCALAR, scalar)?;
+        }
+        Ok(())
     }
 
     fn native_status_result_type(
@@ -3370,7 +3480,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
             source.params.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
-        for _ in &source.params {
+        for layout in signature.shape().parameters() {
             let argument = self.load_pointer_field(
                 self.arg_node_type,
                 argument_node,
@@ -3378,13 +3488,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "argument",
             )?;
             call_arguments.push(
-                self.load_i64_field(
-                    self.value_type,
-                    argument,
-                    VALUE_FIELD_SCALAR,
-                    "argument.scalar",
-                )?
-                .into(),
+                self.load_native_value(layout, argument, "argument.native")?
+                    .into(),
             );
             argument_node = self.load_pointer_field(
                 self.arg_node_type,
@@ -3393,21 +3498,21 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "argument.next",
             )?;
         }
-        let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
-            call_int(
+        let value = if signature.effect() == NativeEffectAbi::PureNoFault {
+            call_basic_value(
                 &self.builder,
                 declaration.function,
                 &call_arguments,
-                "integer.call",
+                "native.call",
             )?
         } else {
             call_arguments.push(parameter_pointer(wrapper, 3)?.into());
-            let (status, scalar) = call_native_status(
+            let (status, value) = call_native_status(
                 &self.builder,
                 declaration.function,
                 signature,
                 &call_arguments,
-                "integer.call",
+                "native.call",
             )?;
             let success = self.context.append_basic_block(wrapper, "call.success");
             let failure = self.context.append_basic_block(wrapper, "call.failure");
@@ -3434,15 +3539,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 .build_return(Some(&status))
                 .map_err(builder_error)?;
             self.builder.position_at_end(success);
-            scalar
+            value
         };
-        self.store_i64_field(
-            self.value_type,
-            output,
-            VALUE_FIELD_TAG,
-            self.tag(VALUE_TAG_INT),
-        )?;
-        self.store_i64_field(self.value_type, output, VALUE_FIELD_SCALAR, scalar)?;
+        self.store_native_value(signature.shape().result(), output, value)?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_zero()))
             .map_err(builder_error)?;
@@ -4597,7 +4696,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let signature = &declaration.signature;
         let runtime_context = if signature.effect() == NativeEffectAbi::RuntimeStatus {
             let context_index = u32::try_from(source.params.len())
-                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many native parameters"))?;
             parameter_pointer(function, context_index)?
         } else {
             backend.ptr_type.const_null()
@@ -4608,7 +4707,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
         let output = backend
             .builder
-            .build_alloca(backend.value_type, "integer.output.value")
+            .build_alloca(backend.value_type, "native.output.value")
             .map_err(builder_error)?;
         backend
             .builder
@@ -4616,7 +4715,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
 
         let mut locals = BTreeMap::new();
-        for (index, parameter) in source.params.iter().enumerate() {
+        for (index, (parameter, layout)) in source
+            .params
+            .iter()
+            .zip(signature.shape().parameters())
+            .enumerate()
+        {
             let pointer = backend
                 .builder
                 .build_alloca(
@@ -4624,23 +4728,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     &format!("parameter.{}.{}", parameter.id.0, parameter.name),
                 )
                 .map_err(builder_error)?;
-            backend
-                .builder
-                .build_store(pointer, backend.value_type.const_zero())
-                .map_err(builder_error)?;
-            backend.store_i64_field(
-                backend.value_type,
-                pointer,
-                VALUE_FIELD_TAG,
-                backend.tag(VALUE_TAG_INT),
-            )?;
             let parameter_index = u32::try_from(index)
-                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many integer parameters"))?;
-            backend.store_i64_field(
-                backend.value_type,
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many native parameters"))?;
+            backend.store_native_value(
+                layout,
                 pointer,
-                VALUE_FIELD_SCALAR,
-                parameter_int(function, parameter_index)?,
+                parameter_value(function, parameter_index)?,
             )?;
             locals.insert(parameter.id, pointer);
         }
@@ -4958,19 +5051,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.backend.builder.position_at_end(self.body_done);
         self.emit_exit_contracts()?;
         if !self.current_block_terminated() {
-            let scalar = self
+            let value = self
                 .native_signature
-                .is_some()
-                .then(|| {
-                    self.backend.load_i64_field(
-                        self.backend.value_type,
+                .map(|signature| {
+                    self.backend.load_native_value(
+                        signature.shape().result(),
                         self.output,
-                        VALUE_FIELD_SCALAR,
-                        "integer.result",
+                        "native.result",
                     )
                 })
                 .transpose()?;
-            self.emit_status_return(self.backend.context.i32_type().const_zero(), scalar)?;
+            self.emit_status_return(self.backend.context.i32_type().const_zero(), value)?;
         }
         self.emit_cancellation_dispatch()?;
         Ok(())
@@ -4979,7 +5070,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_status_return(
         &self,
         status: IntValue<'ctx>,
-        scalar: Option<IntValue<'ctx>>,
+        value: Option<BasicValueEnum<'ctx>>,
     ) -> Result<(), CodegenError> {
         // Source defers and exit contracts have already run at every caller.
         // Native list storage is compiler-owned and therefore released last,
@@ -4999,7 +5090,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 NativeEffectAbi::PureNoFault => {
                     self.backend
                         .builder
-                        .build_return(Some(&scalar.ok_or_else(|| {
+                        .build_return(Some(&value.ok_or_else(|| {
                             CodegenError::new(
                                 "LlvmAbiDefect",
                                 "pure native return is missing its value",
@@ -5015,7 +5106,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     let aggregate = self
                         .backend
                         .builder
-                        .build_insert_value(aggregate, status, 0, "integer.status")
+                        .build_insert_value(aggregate, status, 0, "native.status")
                         .map_err(builder_error)?
                         .into_struct_value();
                     let aggregate = self
@@ -5023,9 +5114,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         .builder
                         .build_insert_value(
                             aggregate,
-                            scalar.unwrap_or_else(|| self.backend.i64_type.const_zero()),
+                            value.unwrap_or(
+                                self.backend.native_zero_value(signature.shape().result())?,
+                            ),
                             1,
-                            "integer.value",
+                            "native.value",
                         )
                         .map_err(builder_error)?
                         .into_struct_value();
@@ -5808,20 +5901,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     return Ok(true);
                 }
                 let source = self.place(place)?;
-                if expression.ty == Type::Int {
-                    let scalar = self.backend.load_i64_field(
-                        self.backend.value_type,
-                        source,
-                        VALUE_FIELD_SCALAR,
-                        "copy.scalar",
-                    )?;
-                    self.initialize(destination, VALUE_TAG_INT)?;
-                    self.backend.store_i64_field(
-                        self.backend.value_type,
-                        destination,
-                        VALUE_FIELD_SCALAR,
-                        scalar,
-                    )?;
+                if let Some(layout @ NativeLayout::Scalar(_)) =
+                    NativeLayout::classify(self.backend.program, &expression.ty)
+                {
+                    let value = self
+                        .backend
+                        .load_native_value(&layout, source, "copy.scalar")?;
+                    self.backend
+                        .store_native_value(&layout, destination, value)?;
                 } else {
                     self.clone_value(destination, source)?;
                 }
@@ -8538,44 +8625,34 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
             values.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
         );
-        for value in values {
+        for (value, layout) in values.into_iter().zip(signature.shape().parameters()) {
             call_arguments.push(
                 self.backend
-                    .load_i64_field(
-                        self.backend.value_type,
-                        value,
-                        VALUE_FIELD_SCALAR,
-                        "argument.scalar",
-                    )?
+                    .load_native_value(layout, value, "argument.native")?
                     .into(),
             );
         }
-        let scalar = if signature.effect() == NativeEffectAbi::PureNoFault {
-            call_int(
+        let value = if signature.effect() == NativeEffectAbi::PureNoFault {
+            call_basic_value(
                 &self.backend.builder,
                 declaration.function,
                 &call_arguments,
-                "integer.call",
+                "native.call",
             )?
         } else {
             call_arguments.push(self.runtime_context.into());
-            let (status, scalar) = call_native_status(
+            let (status, value) = call_native_status(
                 &self.backend.builder,
                 declaration.function,
                 signature,
                 &call_arguments,
-                "integer.call",
+                "native.call",
             )?;
             self.propagate_status(status)?;
-            scalar
+            value
         };
-        self.initialize(destination, VALUE_TAG_INT)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_SCALAR,
-            scalar,
-        )?;
+        self.backend
+            .store_native_value(signature.shape().result(), destination, value)?;
         Ok(true)
     }
 
@@ -11628,6 +11705,18 @@ fn parameter_int(function: FunctionValue<'_>, index: u32) -> Result<IntValue<'_>
         })
 }
 
+fn parameter_value(
+    function: FunctionValue<'_>,
+    index: u32,
+) -> Result<BasicValueEnum<'_>, CodegenError> {
+    function.get_nth_param(index).ok_or_else(|| {
+        CodegenError::new(
+            "LlvmAbiDefect",
+            format!("function is missing native parameter {index}"),
+        )
+    })
+}
+
 fn call_pointer<'ctx>(
     builder: &Builder<'ctx>,
     function: FunctionValue<'ctx>,
@@ -11658,13 +11747,27 @@ fn call_int<'ctx>(
         .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return an integer"))
 }
 
+fn call_basic_value<'ctx>(
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    builder
+        .build_call(function, arguments, name)
+        .map_err(builder_error)?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "call did not return a value"))
+}
+
 fn call_native_status<'ctx>(
     builder: &Builder<'ctx>,
     function: FunctionValue<'ctx>,
     signature: &NativeSignature,
     arguments: &[BasicMetadataValueEnum<'ctx>],
     name: &str,
-) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+) -> Result<(IntValue<'ctx>, BasicValueEnum<'ctx>), CodegenError> {
     if signature.effect() != NativeEffectAbi::RuntimeStatus {
         return Err(CodegenError::new(
             "LlvmAbiDefect",
@@ -11686,9 +11789,8 @@ fn call_native_status<'ctx>(
         .build_extract_value(aggregate, 1, &format!("{name}.value"))
         .map_err(builder_error)?;
     let value = match signature.shape().result() {
-        NativeLayout::Scalar(NativeScalar::Int) => value.into_int_value(),
-        NativeLayout::Scalar(NativeScalar::Unit | NativeScalar::Bool | NativeScalar::Float)
-        | NativeLayout::PodRecord(_) => {
+        NativeLayout::Scalar(_) => value,
+        NativeLayout::PodRecord(_) => {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "native status call used a storage-only result layout",

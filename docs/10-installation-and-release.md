@@ -18,7 +18,7 @@ SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从�
 `loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。
 
 v3 把 managed `Heap` 的所有权固定在 `LoomRuntime`：需要 runtime 的同步 root 只创建 Runtime，
-async root 才附加 Executor，reactor 与 blocking-I/O worker 均懒初始化；pure/no-fault scalar `Int`
+async root 才附加 Executor，reactor 与 blocking-I/O worker 均懒初始化；pure/no-fault primitive-scalar
 root 不创建隐藏 context。旧 `loom_executor_create`、`loom_gc_activate_executor`/
 `loom_gc_deactivate_executor`、`loom_executor_raise_fault`、`loom_executor_runtime_v1` 和
 `loom_runtime_heap_v1` ABI 已删除且没有 shim。旧 runtime bundle 即使 archive 本身仍可链接，

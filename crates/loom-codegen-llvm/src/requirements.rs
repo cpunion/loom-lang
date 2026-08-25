@@ -5,7 +5,7 @@ use loom_mir::{
     Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
-use crate::native_layout::NativeSignatureShape;
+use crate::native_layout::{NativeLayout, NativeSignatureShape};
 use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
@@ -241,7 +241,10 @@ fn scan_expr(
     match &expression.kind {
         ExprKind::Constant(_) | ExprKind::Move(_) | ExprKind::ReborrowView { .. } => {}
         ExprKind::Copy(_) => {
-            if expression.ty != Type::Int {
+            if !matches!(
+                NativeLayout::classify(program, &expression.ty),
+                Some(NativeLayout::Scalar(_))
+            ) {
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_ALLOCATE);
@@ -339,8 +342,8 @@ fn scan_expr(
                     })?;
                     output.callees.insert(*callee);
                     if NativeSignatureShape::for_supported_function(target).is_none() {
-                        // The first typed slice only proves the scalar Int ABI.
-                        // Other calls retain the universal Value ABI boundary.
+                        // Aggregate and managed calls retain the universal Value ABI boundary
+                        // until their complete layout/materialization plan exists.
                         output
                             .requirements
                             .include(RuntimeRequirements::MAY_ALLOCATE);
