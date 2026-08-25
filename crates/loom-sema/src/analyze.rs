@@ -2007,8 +2007,14 @@ struct ActiveBorrow {
     owner: Place,
     mutable: bool,
     region: RegionId,
-    token: ViewTokenId,
+    identity: BorrowIdentity,
     span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum BorrowIdentity {
+    Interface(ViewTokenId),
+    InOut(u32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2056,6 +2062,7 @@ struct BodyChecker<'a, 'program> {
     regions: Vec<RegionId>,
     next_region: u32,
     next_view_token: u32,
+    next_inout_scope: u32,
     borrows: Vec<ActiveBorrow>,
     scoped_locals: BTreeSet<LocalId>,
     pending_must_scope_locals: BTreeSet<LocalId>,
@@ -2091,6 +2098,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             regions: vec![RegionId(0)],
             next_region: 1,
             next_view_token: 0,
+            next_inout_scope: 0,
             borrows: Vec::new(),
             scoped_locals: BTreeSet::new(),
             pending_must_scope_locals: BTreeSet::new(),
@@ -3966,11 +3974,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let token = ViewTokenId(self.next_view_token);
             self.next_view_token = self.next_view_token.saturating_add(1);
             if borrowed {
-                self.register_borrow(
+                let _ = self.register_borrow(
                     owner.clone().expect("borrowed interface has an owner"),
                     mutability == Mutability::Mutable,
                     region,
-                    token,
+                    BorrowIdentity::Interface(token),
                     self.expr_span(expression),
                     expression,
                 );
@@ -4041,11 +4049,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let region = *self.regions.last().expect("body has a lexical region");
         let token = ViewTokenId(self.next_view_token);
         self.next_view_token = self.next_view_token.saturating_add(1);
-        self.register_borrow(
+        let _ = self.register_borrow(
             owner.clone(),
             mutability == Mutability::Mutable,
             region,
-            token,
+            BorrowIdentity::Interface(token),
             self.expr_span(expression),
             expression,
         );
@@ -6013,13 +6021,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
             let explicit = self.resolve_call_type_arguments(type_arguments);
-            let (return_ty, substitution) = self.check_callable_arguments(
-                expression,
-                &signature,
-                arguments,
-                &explicit,
-                expected,
-                Substitution::default(),
+            let (return_ty, substitution) = self.with_inout_argument_scope(
+                receiver,
+                signature.receiver == Some(ReceiverKind::Mutable),
+                |checker| {
+                    checker.check_callable_arguments(
+                        expression,
+                        &signature,
+                        arguments,
+                        &explicit,
+                        expected,
+                        Substitution::default(),
+                    )
+                },
             );
             self.finish_call_arguments(arguments);
             let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
@@ -6070,30 +6084,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
         }
         let explicit = self.resolve_call_type_arguments(type_arguments);
-        let (return_ty, substitution) = self.check_callable_arguments(
-            expression, &signature, arguments, &explicit, expected, initial,
+        let (return_ty, substitution) = self.with_inout_argument_scope(
+            receiver,
+            signature.receiver == Some(ReceiverKind::Mutable),
+            |checker| {
+                checker.check_callable_arguments(
+                    expression, &signature, arguments, &explicit, expected, initial,
+                )
+            },
         );
         self.finish_call_arguments(arguments);
         let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
         let return_ty = self.normalize_call_type(return_ty, &signature, &substitution, &witnesses);
-        if signature.receiver == Some(ReceiverKind::Mutable)
-            && let Some(receiver_place) = self.semantics.expression_places.get(receiver).cloned()
-        {
-            for argument in arguments {
-                if self
-                    .semantics
-                    .expression_places
-                    .get(*argument)
-                    .is_some_and(|argument_place| places_overlap(&receiver_place, argument_place))
-                {
-                    self.error_at(
-                        "InoutAliasConflict",
-                        "an argument aliases the mutable receiver",
-                        *argument,
-                    );
-                }
-            }
-        }
         self.semantics.calls.insert(
             expression,
             CallResolution {
@@ -6126,19 +6128,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 if arguments.len() != 1 {
                     self.call_arity(expression, 1, arguments.len());
                 }
-                if let Some(argument) = arguments.first() {
-                    self.check_expr(*argument, Some(element), ExpressionContext::Value);
-                    if self.has_marker_obligation(element, MUST_SCOPE_CONCEPT) {
-                        self.error_at(
-                            "MustScopeArgumentNotAllowed",
-                            "a value containing a MustScope resource cannot be stored in a List",
+                self.with_inout_argument_scope(receiver, true, |checker| {
+                    if let Some(argument) = arguments.first() {
+                        checker.check_expr(
                             *argument,
+                            Some(element),
+                            ExpressionContext::Value,
                         );
+                        if checker.has_marker_obligation(element, MUST_SCOPE_CONCEPT) {
+                            checker.error_at(
+                                "MustScopeArgumentNotAllowed",
+                                "a value containing a MustScope resource cannot be stored in a List",
+                                *argument,
+                            );
+                        }
+                        if checker.has_task_obligation(element, &mut BTreeSet::new(), 0) {
+                            checker.consume_task_obligation(*argument);
+                        }
                     }
-                    if self.has_task_obligation(element, &mut BTreeSet::new(), 0) {
-                        self.consume_task_obligation(*argument);
-                    }
-                }
+                });
                 if self
                     .semantics
                     .expression_places
@@ -6672,7 +6680,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 expression,
             );
         }
-        self.check_fixed_arguments(expression, arguments, &parameters);
+        self.with_inout_argument_scope(
+            receiver,
+            receiver_passing == ReceiverPassing::InOut,
+            |checker| checker.check_fixed_arguments(expression, arguments, &parameters),
+        );
         if receiver_passing == ReceiverPassing::InOut {
             let mutable = self
                 .semantics
@@ -6816,13 +6828,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
             let explicit = self.resolve_call_type_arguments(type_arguments);
-            let (return_ty, substitution) = self.check_callable_arguments(
-                expression,
-                &signature,
-                arguments,
-                &explicit,
-                expected,
-                Substitution::default(),
+            let (return_ty, substitution) = self.with_inout_argument_scope(
+                receiver_expression,
+                signature.receiver == Some(ReceiverKind::Mutable),
+                |checker| {
+                    checker.check_callable_arguments(
+                        expression,
+                        &signature,
+                        arguments,
+                        &explicit,
+                        expected,
+                        Substitution::default(),
+                    )
+                },
             );
             self.finish_call_arguments(arguments);
             let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
@@ -6874,13 +6892,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let signature =
             self.instantiate_concept_signature(requirement, receiver_ty, &bound.concept)?;
         let explicit = self.resolve_call_type_arguments(type_arguments);
-        let (return_ty, substitution) = self.check_callable_arguments(
-            expression,
-            &signature,
-            arguments,
-            &explicit,
-            expected,
-            Substitution::default(),
+        let (return_ty, substitution) = self.with_inout_argument_scope(
+            receiver_expression,
+            signature.receiver == Some(ReceiverKind::Mutable),
+            |checker| {
+                checker.check_callable_arguments(
+                    expression,
+                    &signature,
+                    arguments,
+                    &explicit,
+                    expected,
+                    Substitution::default(),
+                )
+            },
         );
         self.finish_call_arguments(arguments);
         let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
@@ -7115,13 +7139,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         let explicit = self.resolve_call_type_arguments(type_arguments);
-        let (return_ty, substitution) = self.check_callable_arguments(
-            expression,
-            &signature,
-            call_arguments,
-            &explicit,
-            expected,
-            Substitution::default(),
+        let (return_ty, substitution) = self.with_optional_inout_argument_scope(
+            receiver,
+            signature.receiver == Some(ReceiverKind::Mutable),
+            |checker| {
+                checker.check_callable_arguments(
+                    expression,
+                    &signature,
+                    call_arguments,
+                    &explicit,
+                    expected,
+                    Substitution::default(),
+                )
+            },
         );
         self.finish_call_arguments(call_arguments);
         let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
@@ -7449,11 +7479,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let region = *self.regions.last().expect("body has a lexical region");
             let token = ViewTokenId(self.next_view_token);
             self.next_view_token = self.next_view_token.saturating_add(1);
-            self.register_borrow(
+            let _ = self.register_borrow(
                 owner.clone(),
                 mutable,
                 region,
-                token,
+                BorrowIdentity::Interface(token),
                 self.expr_span(expression),
                 expression,
             );
@@ -8819,7 +8849,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             dirty |= state.self_dirty;
             for borrow in &state.borrows {
                 borrows
-                    .entry(borrow.token)
+                    .entry(borrow.identity)
                     .or_insert_with(|| borrow.clone());
             }
         }
@@ -8862,37 +8892,30 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         owner: Place,
         mutable: bool,
         region: RegionId,
-        token: ViewTokenId,
+        identity: BorrowIdentity,
         span: Span,
         expression: ExprId,
-    ) {
+    ) -> bool {
         if let Some(conflict) = self
             .borrows
             .iter()
-            .find(|borrow| places_overlap(&borrow.owner, &owner) && (mutable || borrow.mutable))
+            .find(|borrow| {
+                places_overlap(&borrow.owner, &owner)
+                    && (matches!(identity, BorrowIdentity::InOut(_)) || mutable || borrow.mutable)
+            })
             .cloned()
         {
-            self.analyzer.diagnostics.push(
-                Diagnostic::error(
-                    if conflict.mutable {
-                        "BorrowConflict"
-                    } else {
-                        "ReadonlyBorrowConflict"
-                    },
-                    "interface argument access conflicts with an active call-scoped access",
-                    self.expr_span(expression),
-                )
-                .with_label(conflict.span, "active interface access begins here"),
-            );
-            return;
+            self.push_borrow_conflict(&conflict, expression);
+            return false;
         }
         self.borrows.push(ActiveBorrow {
             owner,
             mutable,
             region,
-            token,
+            identity,
             span,
         });
+        true
     }
 
     fn check_borrowed_place_use(&mut self, place: &Place, access: PlaceAccess, expression: ExprId) {
@@ -8907,25 +8930,83 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         else {
             return;
         };
-        self.analyzer.diagnostics.push(
-            Diagnostic::error(
-                if conflict.mutable {
-                    "BorrowConflict"
-                } else {
-                    "ReadonlyBorrowConflict"
-                },
+        self.push_borrow_conflict(&conflict, expression);
+    }
+
+    fn push_borrow_conflict(&mut self, conflict: &ActiveBorrow, expression: ExprId) {
+        let (code, message, label) = match conflict.identity {
+            BorrowIdentity::InOut(_) => (
+                "InoutAliasConflict",
+                "argument expression aliases an active mutable receiver",
+                "exclusive mutable receiver access begins here",
+            ),
+            BorrowIdentity::Interface(_) if conflict.mutable => (
+                "BorrowConflict",
                 "argument use conflicts with an active interface call",
-                self.expr_span(expression),
-            )
-            .with_label(conflict.span, "active interface access begins here"),
+                "active interface access begins here",
+            ),
+            BorrowIdentity::Interface(_) => (
+                "ReadonlyBorrowConflict",
+                "argument use conflicts with an active interface call",
+                "active interface access begins here",
+            ),
+        };
+        self.analyzer.diagnostics.push(
+            Diagnostic::error(code, message, self.expr_span(expression))
+                .with_label(conflict.span, label),
         );
+    }
+
+    fn with_inout_argument_scope<Result>(
+        &mut self,
+        receiver: ExprId,
+        enabled: bool,
+        check: impl FnOnce(&mut Self) -> Result,
+    ) -> Result {
+        let scope = enabled
+            .then(|| self.semantics.expression_places.get(receiver).cloned())
+            .flatten()
+            .and_then(|owner| {
+                let region = *self.regions.last().expect("body has a lexical region");
+                let scope = self.next_inout_scope;
+                self.next_inout_scope = self.next_inout_scope.saturating_add(1);
+                self.register_borrow(
+                    owner,
+                    false,
+                    region,
+                    BorrowIdentity::InOut(scope),
+                    self.expr_span(receiver),
+                    receiver,
+                )
+                .then_some(scope)
+            });
+        let result = check(self);
+        if let Some(scope) = scope {
+            self.borrows
+                .retain(|borrow| borrow.identity != BorrowIdentity::InOut(scope));
+        }
+        result
+    }
+
+    fn with_optional_inout_argument_scope<Result>(
+        &mut self,
+        receiver: Option<ExprId>,
+        enabled: bool,
+        check: impl FnOnce(&mut Self) -> Result,
+    ) -> Result {
+        if let Some(receiver) = receiver {
+            self.with_inout_argument_scope(receiver, enabled, check)
+        } else {
+            check(self)
+        }
     }
 
     fn finish_call_arguments(&mut self, arguments: &[ExprId]) {
         for argument in arguments {
             if let Some(view) = self.semantics.views.get(*argument) {
                 let token = view.token;
-                self.borrows.retain(|borrow| borrow.token != token);
+                self.borrows
+                    .retain(|borrow| borrow.identity != BorrowIdentity::Interface(token));
             }
         }
     }
