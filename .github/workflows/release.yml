@@ -80,3 +80,37 @@ jobs:
             loom-lang-*.tar.gz
             loom-lang-*.tar.gz.sha256
           if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: archive
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: loom-lang-${{ github.ref_name }}-*
+          path: dist
+          merge-multiple: true
+      - name: Verify and aggregate checksums
+        run: |
+          cd dist
+          for checksum in loom-lang-*.tar.gz.sha256; do
+            shasum -a 256 --check "$checksum"
+          done
+          LC_ALL=C sort loom-lang-*.tar.gz.sha256 > SHA256SUMS
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" \
+            dist/loom-lang-*.tar.gz \
+            dist/loom-lang-*.tar.gz.sha256 \
+            dist/SHA256SUMS \
+            --clobber
