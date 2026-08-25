@@ -10,10 +10,15 @@ rust-version.workspace = true
 inkwell.workspace = true
 loom-mir.workspace = true
 loom-runtime-abi.workspace = true
+llvm-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+
+[build-dependencies]
+sha2.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 loom-driver.workspace = true

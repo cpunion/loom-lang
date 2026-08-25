@@ -37,3 +37,7 @@ pub use target::{
 
 /// LLVM backend version recorded in diagnostics and future cache keys.
 pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Content identity of the exact backend sources, manifests, Rust cfg, and
+/// linked LLVM build used to emit native objects.
+pub const LLVM_OBJECT_BUILD_FINGERPRINT: &str = env!("LOOM_LLVM_OBJECT_BUILD_FINGERPRINT");

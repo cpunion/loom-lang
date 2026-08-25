@@ -282,6 +282,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -289,6 +290,7 @@ name = "loom-codegen-llvm"
 version = "0.1.0"
 dependencies = [
  "inkwell",
+ "llvm-sys",
  "loom-driver",
  "loom-interpreter",
  "loom-mir",
@@ -297,6 +299,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

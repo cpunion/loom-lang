@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{CodegenError, OptimizationProfile, ReachableProgram, Roots, emitter::Emitter};
 
-const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v3";
+const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v4";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +39,8 @@ pub struct DebugSource {
 struct ObjectFingerprint<'a> {
     format: &'static str,
     backend_version: &'static str,
+    backend_build: &'static str,
+    llvm_version: (u32, u32, u32),
     mir_format: &'static str,
     mir_version: u32,
     target: crate::NativeTargetIdentity,
@@ -219,6 +221,8 @@ pub fn native_object_fingerprint(
     let identity = ObjectFingerprint {
         format: NATIVE_OBJECT_FORMAT,
         backend_version: crate::BACKEND_VERSION,
+        backend_build: crate::LLVM_OBJECT_BUILD_FINGERPRINT,
+        llvm_version: inkwell::support::get_llvm_version(),
         mir_format: loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         mir_version: loom_mir::INTERPRETED_ARTIFACT_VERSION,
         target: crate::target_identity(options.target_triple.as_deref(), options.optimization)?,
@@ -313,7 +317,19 @@ pub fn emit_native(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn managed_text_object_fingerprint_domain_is_pinned() {
-        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-native-object-v3");
+    fn native_object_fingerprint_domain_is_pinned() {
+        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-native-object-v4");
+    }
+
+    #[test]
+    fn object_build_identity_and_loaded_llvm_are_pinned() {
+        let build = crate::LLVM_OBJECT_BUILD_FINGERPRINT;
+        assert_eq!(build.len(), 64, "{build}");
+        assert!(
+            build.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{build}"
+        );
+        let version = inkwell::support::get_llvm_version();
+        assert_eq!(version.0, 19, "loaded LLVM version is {version:?}");
     }
 }

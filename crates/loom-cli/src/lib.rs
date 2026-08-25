@@ -32,7 +32,7 @@ const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v4";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v5";
 #[cfg(target_os = "macos")]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(target_os = "macos"))]
@@ -1876,17 +1876,17 @@ fn load_compilation(
 }
 
 fn cache_context(language_version: &str) -> CacheContext {
+    let frontend_build = env!("LOOM_FRONTEND_BUILD_FINGERPRINT");
     let frontend_identity = format!(
-        "loom-frontend-{}/source-{}/{}-{}",
+        "loom-frontend-{}/build-{frontend_build}/{}-{}",
         env!("CARGO_PKG_VERSION"),
-        env!("LOOM_COMPILER_SOURCE_FINGERPRINT"),
         loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         loom_mir::INTERPRETED_ARTIFACT_VERSION
     );
     CacheContext {
         language_version: language_version.to_owned(),
         frontend_identity,
-        standard_library_identity: "loom-core-inline-v2".to_owned(),
+        standard_library_identity: format!("loom-embedded-builtins-v2/build-{frontend_build}"),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -1965,10 +1965,7 @@ fn target_object_key(
     let fingerprint = loom_codegen_llvm::native_object_fingerprint(program, &emit_options).ok()?;
     Some(PersistentCache::semantic_key(
         LLVM_OBJECT_CACHE_DOMAIN,
-        &[
-            ("compiler-source", env!("LOOM_COMPILER_SOURCE_FINGERPRINT")),
-            ("object-fingerprint", &fingerprint),
-        ],
+        &[("object-fingerprint", &fingerprint)],
     ))
 }
 
@@ -2806,8 +2803,21 @@ fn take_option(arguments: &mut Vec<String>, option: &str) -> Result<Option<Strin
 
 #[cfg(test)]
 mod tests {
+    fn valid_sha256(value: &str) -> bool {
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
     #[test]
     fn llvm_object_cache_domain_is_pinned() {
-        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v4");
+        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v5");
+    }
+
+    #[test]
+    fn frontend_and_object_build_identities_are_independent_sha256_values() {
+        let frontend = env!("LOOM_FRONTEND_BUILD_FINGERPRINT");
+        let object = loom_codegen_llvm::LLVM_OBJECT_BUILD_FINGERPRINT;
+        assert!(valid_sha256(frontend), "{frontend}");
+        assert!(valid_sha256(object), "{object}");
+        assert_ne!(frontend, object);
     }
 }
