@@ -181,8 +181,39 @@ async fn file_round_trip(path Text) Result[Text, IoError] {
     input.try_read_text().await
 }
 
+async fn escaped_file_read(path Text, reuse Text) Result[Text, IoError] {
+    let pending = {
+        scoped input = try_open_read(path).await?
+        input.try_read_text()
+    }
+    {
+        scoped replacement = try_create(reuse).await?
+        replacement.try_write_text("reused descriptor").await?
+        Unit
+    }
+    pending.await
+}
+
+async fn escaped_socket_write(port Int) Result[Unit, IoError] {
+    let pending = {
+        scoped socket = try_connect("127.0.0.1", port).await?
+        socket.try_write_text("socket snapshot")
+    }
+    pending.await
+}
+
 test async fn typed_io() {
     match file_round_trip("__ROUND_TRIP_PATH__").await {
+        Ok(value) => {
+            assert value == "typed I/O"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match escaped_file_read("__ROUND_TRIP_PATH__", "__REUSE_PATH__").await {
         Ok(value) => {
             assert value == "typed I/O"
             Unit
@@ -236,6 +267,13 @@ test async fn typed_io() {
                 }
             }
         }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match escaped_socket_write(__READ_LOOPBACK_PORT__).await {
+        Ok(_) => Unit
         Err(_) => {
             assert false
             Unit

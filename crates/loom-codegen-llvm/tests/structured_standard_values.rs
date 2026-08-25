@@ -43,6 +43,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     assert!(native_runtime_identity().starts_with(NATIVE_RUNTIME_ABI));
     let project = tempfile::tempdir().expect("create standard-library project");
     let round_trip = project.path().join("round-trip.txt");
+    let reuse = project.path().join("reuse.txt");
     let missing = project.path().join("missing.txt");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback fixture");
     let port = listener.local_addr().expect("loopback address").port();
@@ -56,6 +57,21 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
             assert!(bytes.is_empty(), "empty write emitted bytes: {bytes:?}");
         }
     });
+    let read_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind read fixture");
+    let read_port = read_listener
+        .local_addr()
+        .expect("read fixture address")
+        .port();
+    let read_server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = read_listener.accept().expect("accept read fixture");
+            let mut bytes = Vec::new();
+            stream
+                .read_to_end(&mut bytes)
+                .expect("read socket snapshot");
+            assert_eq!(bytes, b"socket snapshot");
+        }
+    });
     let source = include_str!("../../../fixtures/standard-library/main.loom")
         .replace(
             "__ROUND_TRIP_PATH__",
@@ -67,7 +83,12 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
             "__MISSING_PATH__",
             missing.to_str().expect("temporary missing path is UTF-8"),
         )
-        .replace("__LOOPBACK_PORT__", &port.to_string());
+        .replace(
+            "__REUSE_PATH__",
+            reuse.to_str().expect("temporary reuse path is UTF-8"),
+        )
+        .replace("__LOOPBACK_PORT__", &port.to_string())
+        .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
     std::fs::write(project.path().join("main.loom"), source).expect("write fixture source");
 
     let interpreter = Command::new(std::env::current_exe().expect("current test executable"))
@@ -131,4 +152,5 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         "typed I/O",
     );
     server.join().expect("join loopback fixture");
+    read_server.join().expect("join read fixture");
 }
