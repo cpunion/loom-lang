@@ -93,7 +93,7 @@ builtin                     → compiler/runtime symbol
 2. uniform representation + witness 参数；
 3. 两者混合，并在 hot/known call site specialize。
 
-当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private uniform `Value` ABI，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成 checked `i64` 私有 body，并保留 universal wrapper；递归调用直接返回 `{status, value}` 寄存器对。静态 record 字段投影和 primitive 字段赋值走 scalar path，安全的同步局部 POD record 还会把字段节点放入有预算的入口栈存储，由 LLVM SROA 消除热路径分配。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
+当前 C1 LLVM 后端采用混合实现。generic、`dyn`、aggregate 和外部入口仍使用 compiler-private universal `Value` lowering，使 generic function 可以共享 machine body；static concept proof 通过 witness argument 传递。同步、非泛型且参数/结果都精确为 `Int` 的 direct call 已生成私有 `i64` body 并保留 universal wrapper：closed-world summary 为 pure/no-fault 时，body 直接使用 `i64 fn(i64...)`，没有 status 或隐藏 context；可能 fault/allocate 时仍返回 `{status, value}` 并接收 context。静态 record 字段投影和 primitive 字段赋值走 scalar path，安全的同步局部 POD record 还会把字段节点放入有预算的入口栈存储，由 LLVM SROA 消除热路径分配。同步不逃逸的局部 `List[Int]` 另有 compiler-private contiguous storage。其余 concrete/layout specialization 仍是后续工作，且不得改变 checked overflow、value copy、mutation、ConstraintError 或合同结果。
 
 缓存中的完整实例键应是：
 
@@ -134,29 +134,44 @@ InstanceKey = (
 
 ### 普通值
 
-当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的兼容 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection 与局部 POD SROA 已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留兼容表示。`Text` 已先完成兼容迁移：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
+当前 C1 lowering 默认把跨调用、generic aggregate、`dyn` 与 coroutine 的 MIR value 放入统一 tag/payload representation。这里称为当前 universal `Value` lowering，而不是对旧布局兼容性的承诺。tag 只帮助现有通用 clone/equality/trace/diagnostic helper 分派，不是语言 RTTI、reflection、stable ABI 或普通值的永久成本。record/enum/refined value 的 payload 由 compiler-managed nodes 表示；copy 做逻辑深拷贝，内部 transfer 可以转移当前表示。上节所述 concrete `Int` 私有 ABI、record scalar projection、局部 POD SROA 和局部 `List[Int]` 快路已绕过部分 envelope/node 成本，但 main/test/export、未知 generic、async frame 和动态分派仍保留 universal 表示。`Text` 的对象侧表示已经闭合：envelope 只含 tag 与单个 `TextObject*`，长度和 inline UTF-8 位于带 versioned layout descriptor 的对象中，动态对象由 GC 整块移动，字面量使用同布局的 immortal global。该布局只能被 codegen/runtime helpers 观察。
 
-`List` 当前仍以 canonical `ValueNode` 链保存值语义，但 native runtime 在每个 executor 的一个 safepoint epoch 内维护不拥有节点的派生索引：`add` 缓存 tail，首次 `get` 线性建立顺序指针表，后续 append/get 为摊销 O(1)。GC 在 mark/filter/relocate 前清空索引，因此缓存绝不成为 root，也不保存跨移动的裸指针。LLVM 对 place 形式的只读 `length/get` 只保存调用期 header 快照；若后续参数包含 `.await` 则回退到完整深复制，`get` 命中后始终只深复制被选中的元素。该兼容快路不改变 `ValueSlot`/`ValueNode` ABI；最终 contiguous typed `ListStorage` 仍需 element layout 与 GC trace descriptor。
+`List` 有两条明确分开的 lowering。默认路径继续使用 current universal `Value`/managed `ValueNode` 表示，并保持既有逻辑复制、值相等和 GC tracing 语义。closed-world use scan 只有在 callable 同步、local 精确为 `List[Int]`、恰有一次空初始化，且所有使用都能证明不复制、不逃逸、不跨 `.await`/generic/witness/defer 边界时，才选择 compiler-private `{data, len, cap}` storage；当前允许的观察形状是局部 `add`、`length` 和直接穷尽匹配 `get` 的 `Option[Int]`。LLVM 内联 append/access，容量不足时调用几何扩容 helper，并在正常或 fault 退出上释放 storage，因此 add 为摊销 O(1)、get/length 为 O(1)。该 storage 只含 `i64` 元素、独立于 moving heap，不需要 GC root 或 Executor；任何未证明形状都完整回退到 universal lowering。它不是 public/generic List ABI，推广到含 managed element 的 layout-driven container 仍需 element clone/trace descriptor。
 
 最终 typed lowering 以静态类型和 layout descriptor 为依据：concrete scalar、`Text`、record 与已知 generic instance 不需要 per-value tag；enum 只保留自身 variant discriminant；`dyn C` 携带已选 witness/layout proof，但不增加 universal type id。GC trace metadata 可以位于公共 allocation header 或静态 descriptor，它仍不是源码可观察的类型标签。`TextObject` 已闭合对象侧表示，直接 typed local/call ABI 仍须在 generic layout argument、container element layout、coroutine slot layout 与 `dyn` payload layout 完成后移除外围 envelope。该优化不改变 checked MIR 或 cache 中的语言语义 identity。
 
 ### 函数
 
-兼容 body 使用统一调用形状：
+当前 universal `Value` body 使用统一调用形状：
 
 ```text
-status fn(out_value, argument_nodes, witness_nodes)
+status fn(out_value, argument_nodes, witness_nodes, context)
 ```
 
-正常返回写入 `out_value` 并返回 0；ContractFault/RuntimeFault 走非零 status。业务 `Result.Err` 仍是普通返回值，绝不与 status 混淆。
+正常返回写入 `out_value` 并返回 0；ContractFault/RuntimeFault 走非零 status。需要 context 时，同步路径传入 `LoomRuntime`，async resume 路径传入 `LoomExecutor`；runtime 只通过 versioned context ABI 解析它。业务 `Result.Err` 仍是普通返回值，绝不与 status 混淆。该调用形状只是当前 lowering，不承诺旧 bundle 或未来 native library 的布局兼容。
 
-eligible concrete `Int` 函数另有私有调用形状：
+eligible concrete `Int` 函数按 requirement summary 使用两种私有调用形状：
 
 ```text
-{status, i64} int_fn(i64 arguments..., executor)
+i64 int_fn(i64 arguments...)                         // pure + no fault
+{status, i64} int_fn(i64 arguments..., context)      // may fault/allocate
 ```
 
-universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱；checked overflow、合同 fault 与 executor 传播保持同一语义。其他类型在拥有完整 layout/clone/trace plan 前不得套用该 ABI。
+universal wrapper 只负责入口拆箱、调用私有 body 和结果装箱。pure body 及其直接/递归调用没有 status、Runtime、Executor 或其他隐藏 pointer；checked arithmetic、合同或其他不能证明安全的 body 保留 status，并把 fault/allocate 路由到调用方 context。其他类型在拥有完整 layout/clone/trace plan 前不得套用该 ABI。
+
+### Runtime requirements 与 root context
+
+LLVM codegen 在 root/witness reachability 之后，为可达闭世界建立 compiler-private requirement 图。三个独立 bit 是 `FAULT`（实现名 `MAY_FAULT`）、`ALLOC`（`MAY_ALLOCATE`）和 `EXECUTOR`（`NEEDS_EXECUTOR`）；它们描述当前 lowering 所需设施，不是源码 effect system，也不进入 concept 或公共函数类型。scanner 记录 local operation、builtin、direct/static/dynamic witness call edge，再以固定点传播 callee 的 invocation summary。每个 callable 分开保存 invocation/body summary；async invocation 是建立 Task 的需求，deferred resume body 另行统计，避免把 resume 工作错误地当作同步构造器执行。
+
+root context 由 invocation summary 与实际 ABI 共同决定：
+
+- 只有 eligible pure/no-fault scalar `Int` root 可以完全不创建 context；
+- 其余同步 root 只创建、激活一个 `LoomRuntime`，不创建 Executor；
+- async/`EXECUTOR` root 先创建并激活 `LoomRuntime`，再把一个 `LoomExecutor` 附加到该 Runtime。
+
+`LoomRuntime` 始终拥有 `LoomHeap`；Executor 只借用该稳定 Runtime，并拥有 task/join/ready-queue 调度状态。OS reactor 在首次 wait registration 时初始化，blocking file/socket worker mailbox 在首次需要 worker 时初始化，因此 async root 本身不等于预先创建 kqueue/epoll 或 worker。root 先消费可能引用 heap 的结果，再按 Executor destroy → Runtime deactivate → Runtime destroy 的顺序清理；Runtime activation 或 Executor attachment 失败也走有界清理路径。
+
+当前 native runtime ABI 总版本是 v3，精确 identity 为 `loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。旧 executor-owned runtime 入口 `loom_executor_create`、executor GC activation 入口 `loom_gc_activate_executor`/`loom_gc_deactivate_executor`、executor fault 入口 `loom_executor_raise_fault`，以及 `loom_executor_runtime_v1`/`loom_runtime_heap_v1` introspection 入口均已删除；当前 codegen 使用 `loom_runtime_create_v1`、`loom_runtime_activate_v1`、`loom_runtime_deactivate_v1`、`loom_runtime_destroy_v1`、`loom_executor_create_for_runtime_v1` 与 `loom_context_raise_fault_v1`。没有兼容 shim，旧 runtime bundle 必须因 identity 不匹配而拒绝。
 
 ### 接口
 
@@ -168,15 +183,15 @@ witness table 不是语言必须存在的对象。若当前后端选择物化它
 
 ### managed object 与 GC
 
-Core 0.3 的 native ABI 使用 compiler/runtime-private layout tag、精确 frame slots、safepoint 和 root protocol；它们不进入源码或稳定 library ABI。当前 stackless lowering 只在一次 `resume` 返回之后收集，因此所有跨 safepoint live value 都已位于 Task frame/result roots，不需要让裸 SSA 地址跨越 safepoint。collector 追踪 `Value` 与 aggregate `ValueNode`，回收不可达对象、复制存活对象并重写 frame/runtime roots；Task 指针和 immutable witness metadata 留在非移动区。runtime fixture 会保存旧地址并验证根被改写、垃圾被回收，同时 differential tests 保持 value copy、equality、contract、concept dispatch 与 fault 一致。
+Core 0.3 的 native ABI 使用 compiler/runtime-private layout tag、精确 frame slots、safepoint 和 root protocol；它们不进入源码或稳定 library ABI。当前 stackless lowering 只在一次 `resume` 返回之后收集，因此所有跨 safepoint live value 都已位于 Task frame/result roots，不需要让裸 SSA 地址跨越 safepoint。`LoomRuntime` 拥有的 collector 追踪 `Value` 与 aggregate `ValueNode`，回收不可达对象、复制存活对象并重写 frame/runtime roots；Task 指针和 immutable witness metadata 留在非移动区。native local `List[Int]` storage 只含非 managed `i64` 并由生成代码显式释放，不进入 trace 集合。runtime fixture 会保存旧地址并验证根被改写、垃圾被回收，同时 differential tests 保持 value copy、equality、contract、concept dispatch 与 fault 一致。
 
 ### Task 与 coroutine
 
 `Task[T]` 是单个 managed pointer。每个 reachable async constructor 形成对 compiler-generated `resume`、`cancel`、`trace` 和 frame/result descriptor 的闭合边；descriptor 类似静态 witness table，但不是用户 concept、fat-pointer 第二字段或 runtime registry。
 
-Loom MIR 先把 async body降低成 numbered suspension/cancellation states，再由 LLVM 发射普通 control flow。后端不直接采用 Rust `Future`/`Pin` 表面，也不把 C++ `promise_type` customization 暴露给语言。join node、ready queue 和 wait registration 属于 root-scoped runtime；child completion 只能 enqueue waiter，不能在 runtime callback 栈上直接重入 continuation。
+Loom MIR 先把 async body降低成 numbered suspension/cancellation states，再由 LLVM 发射普通 control flow。后端不直接采用 Rust `Future`/`Pin` 表面，也不把 C++ `promise_type` customization 暴露给语言。join node 与 ready queue 属于附加到 root Runtime 的 Executor，wait registration 属于其惰性 reactor；child completion 只能 enqueue waiter，不能在 runtime callback 栈上直接重入 continuation。
 
-当前 native runtime 已落地 version 1 的平台无关 `WaitSource`/`Registration`/`ReadyNotification` C ABI，macOS backend 为 kqueue，Linux backend 为 epoll；timer 用同一 poll wait 的 monotonic deadline timeout，不依赖第二套 callback runtime。registration 是 generation-checked one-shot handle；fd 明确登记 readable/writable，child completion 使用独立 notification source。LLVM 的每个 run/test root 复用同一个 executor；async constructor 返回单指针 Task，`resume` 在 wait/join 未完成时返回 `Pending`，notification 只把 Task 加回 ready queue。numbered state dispatch覆盖线性 chain 与 if/match/block 内的 await；取消按挂起 state 进入对应 cleanup unwind。`Task.sleep`、`Task.waitReadable`、`Task.waitWritable`、可存储 Task、tuple/list join 和四种 join mode 均走该路径。
+当前 native runtime 已落地 version 1 的平台无关 `WaitSource`/`Registration`/`ReadyNotification` C ABI，macOS backend 为 kqueue，Linux backend 为 epoll；timer 用同一 poll wait 的 monotonic deadline timeout，不依赖第二套 callback runtime。registration 是 generation-checked one-shot handle；fd 明确登记 readable/writable，child completion 使用独立 notification source。LLVM 的每个 async run root、以及 test harness 中的每个 async test root，各自建立一组 Runtime + Executor；async constructor 返回单指针 Task，`resume` 在 wait/join 未完成时返回 `Pending`，notification 只把 Task 加回 ready queue。numbered state dispatch覆盖线性 chain 与 if/match/block 内的 await；取消按挂起 state 进入对应 cleanup unwind。`Task.sleep`、`Task.waitReadable`、`Task.waitWritable`、可存储 Task、tuple/list join 和四种 join mode 均走该路径。
 
 ## 7. 数值与目标平台
 

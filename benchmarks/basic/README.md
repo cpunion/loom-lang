@@ -17,7 +17,7 @@
 
 Text 拼接和 `dyn` 分派没有放入 v1：各语言的字符串表示、分配策略、虚调用去虚化条件并不天然等价。它们应在 ABI/layout 优化阶段用单独、明确语义的 case 加入。
 
-默认规模按当前 Loom 实现校准，使标准矩阵能在开发机上有界完成；它们不是成熟实现的吞吐上限。`list_build_scan` 曾用于定位整表 receiver clone 与链式 add/get 叠加产生的 O(n²) 退化；当前 native 路径已改为只读 header snapshot、命中元素 clone 和 executor-local 派生索引，标准规模继续作为该复杂度回归的稳定证据。每个 case 内五种语言仍使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
+默认规模按当前 Loom 实现校准，使标准矩阵能在开发机上有界完成；它们不是成熟实现的吞吐上限。`list_build_scan` 曾用于定位整表 receiver clone 与链式 add/get 叠加产生的 O(n²) 退化；当前 Loom 源码满足同步、不逃逸局部 `List[Int]` 的保守形状检查，因此 LLVM 使用 compiler-private contiguous `{data, len, cap}` storage：append 几何扩容，length/get 直接读取，所有退出路径显式释放。它不经过 GC，也不把该布局公开为 generic List ABI；未通过形状检查的程序安全回退到当前 universal `Value` lowering。标准规模继续作为复杂度回归的稳定证据。每个 case 内五种语言仍使用完全相同的规模；若最快实现接近进程启动时间，其相对倍数只能视为下界。
 
 ## 运行
 

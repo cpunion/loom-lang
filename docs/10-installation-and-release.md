@@ -12,9 +12,17 @@ SHA-256 与必要 system link args。`loomc runtime export --output DIR` 可从�
 使用真正支持该 target 的 linker；编译器会在链接前校验 bundle target/ABI/digest，并把 bundle
 与 linker identity 纳入缓存。仅需要 relocatable object 时不需要 runtime bundle。
 
-当前 native compatibility Value ABI 只支持 64-bit pointer target；32-bit triple 在产生 object
-前以 `UnsupportedNativePointerWidth` fail closed。当前 runtime identity 包含
-`loom-value-v2/layout-v1/text-v1/gc-v2/stdlib-v3`，旧 runtime bundle 会因 ABI 不匹配而拒绝。
+当前 universal `Value` lowering 只支持 64-bit pointer target；这是当前 compiler/runtime-private
+表示限制，不是对旧 Value 布局兼容性的承诺。32-bit triple 在产生 object 前以
+`UnsupportedNativePointerWidth` fail closed。当前 native runtime ABI 总版本是 v3，其精确 identity 为
+`loom-value-v2/layout-v1/text-v1/wait-v1/task-v1/runtime-v1/gc-v3/int-list-v1/stdlib-v3`。
+
+v3 把 managed `Heap` 的所有权固定在 `LoomRuntime`：需要 runtime 的同步 root 只创建 Runtime，
+async root 才附加 Executor，reactor 与 blocking-I/O worker 均懒初始化；pure/no-fault scalar `Int`
+root 不创建隐藏 context。旧 `loom_executor_create`、`loom_gc_activate_executor`/
+`loom_gc_deactivate_executor`、`loom_executor_raise_fault`、`loom_executor_runtime_v1` 和
+`loom_runtime_heap_v1` ABI 已删除且没有 shim。旧 runtime bundle 即使 archive 本身仍可链接，
+也必须先因 ABI identity 不匹配而拒绝，不能与当前 codegen 混用。
 
 ## LLVM 19
 
