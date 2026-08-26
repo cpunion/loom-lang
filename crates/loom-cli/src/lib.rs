@@ -32,7 +32,7 @@ const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v6";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v7";
 #[cfg(target_os = "macos")]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(target_os = "macos"))]
@@ -2747,7 +2747,7 @@ mod tests {
 
     #[test]
     fn llvm_object_cache_domain_is_pinned() {
-        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v6");
+        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v7");
     }
 
     #[test]

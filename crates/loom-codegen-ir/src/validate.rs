@@ -6,8 +6,8 @@ use loom_mir::Type;
 
 use crate::{
     BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
-    Program, Repr, RepresentationPlan, ResultTarget, Terminator, TerminatorKind, UnwindTarget,
-    ValueDefinition, ValueId, ValueTypeId,
+    ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, Terminator, TerminatorKind,
+    UnwindTarget, ValueDefinition, ValueId, ValueTypeId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -32,6 +32,7 @@ pub enum ValidationCode {
     BlockArgument,
     ReturnType,
     CallShape,
+    InOutShape,
     EffectMismatch,
     FaultState,
     OriginMismatch,
@@ -66,6 +67,7 @@ impl ValidationCode {
             Self::BlockArgument => "LcirBlockArgument",
             Self::ReturnType => "LcirReturnType",
             Self::CallShape => "LcirCallShape",
+            Self::InOutShape => "LcirInOutShape",
             Self::EffectMismatch => "LcirEffectMismatch",
             Self::FaultState => "LcirFaultState",
             Self::OriginMismatch => "LcirOriginMismatch",
@@ -328,16 +330,219 @@ impl<'a> Validator<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_representations(&mut self) {
-        let expected = RepresentationPlan::scalar_with_brand(
+        let expected = RepresentationPlan::direct_with_brand(
             self.program.representations.target(),
             self.program.brand,
         );
-        if self.program.representations != expected {
+        let representations = self.program.representations.clone();
+        let direct_reprs = expected.reprs().len();
+        let direct_types = expected.value_types().len();
+        let direct_registrations = expected.registrations().len();
+        if representations.reprs().get(..direct_reprs) != Some(expected.reprs())
+            || representations.value_types().get(..direct_types) != Some(expected.value_types())
+            || representations.registrations().get(..direct_registrations)
+                != Some(expected.registrations())
+        {
             self.error(
                 ValidationCode::RepresentationPlan,
                 "representations",
-                "scalar LCIR representation table is not canonical for its target",
+                "LCIR representation table does not begin with the canonical direct catalog",
+            );
+        }
+        let mut rebuilt_canonical_types = BTreeMap::new();
+        for (index, registration) in representations.registrations().iter().enumerate() {
+            if rebuilt_canonical_types
+                .insert(registration.semantic().clone(), registration.value_type())
+                .is_some()
+            {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.registration[{index}]"),
+                    format!(
+                        "canonical semantic registration {:?} appears more than once",
+                        registration.semantic()
+                    ),
+                );
+            }
+            match representations.value_type(registration.value_type()) {
+                Some(value_type) if value_type.semantic() == registration.semantic() => {}
+                Some(value_type) => self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.registration[{index}]"),
+                    format!(
+                        "registration semantic {:?} does not match value type {} semantic {:?}",
+                        registration.semantic(),
+                        registration.value_type(),
+                        value_type.semantic()
+                    ),
+                ),
+                None => self.error(
+                    ValidationCode::InvalidTypeReference,
+                    format!("representations.registration[{index}]"),
+                    format!(
+                        "registration references missing value type {}",
+                        registration.value_type()
+                    ),
+                ),
+            }
+        }
+        if &rebuilt_canonical_types != representations.canonical_types() {
+            self.error(
+                ValidationCode::RepresentationPlan,
+                "representations.canonical_types",
+                "canonical type index does not exactly match the ordered registration table",
+            );
+        }
+
+        let mut product_repr_uses = vec![0_usize; representations.products().len()];
+        for (index, repr) in representations.reprs().iter().copied().enumerate() {
+            if let Repr::Product(product) = repr {
+                if let Some(uses) = product_repr_uses.get_mut(product.index())
+                    && representations.product(product).is_some()
+                {
+                    *uses = uses.saturating_add(1);
+                } else {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.repr[{index}]"),
+                        format!("product representation references missing product {product}"),
+                    );
+                }
+            }
+        }
+        let mut product_value_uses = vec![0_usize; representations.products().len()];
+        for (index, value_type) in representations.value_types().iter().enumerate() {
+            if let Some(Repr::Product(product)) = representations.repr(value_type.repr()).copied() {
+                if !matches!(value_type.semantic(), Type::Nominal(_, arguments) if arguments.is_empty())
+                {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.type[{index}]"),
+                        "POD product value types require a monomorphic nominal semantic type",
+                    );
+                }
+                if let Some(uses) = product_value_uses.get_mut(product.index()) {
+                    *uses = uses.saturating_add(1);
+                }
+            }
+        }
+        let mut product_edges = vec![Vec::new(); representations.products().len()];
+        for (index, product) in representations.products().iter().enumerate() {
+            let product_id = ProductReprId::from_index(self.program.brand, index);
+            if product_id.is_none() || product_repr_uses.get(index) != Some(&1) {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.product[{index}].repr"),
+                    "each product definition must have exactly one representation-table entry",
+                );
+            }
+            if product_value_uses.get(index).copied().unwrap_or_default() == 0 {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.product[{index}].type"),
+                    "each product definition must be used by at least one value type",
+                );
+            }
+            for (field_index, field) in product.fields().iter().copied().enumerate() {
+                let supported = representations.value_type(field).is_some_and(|value_type| {
+                    value_type.semantic() != &Type::Never
+                        && matches!(
+                            representations.repr(value_type.repr()),
+                            Some(Repr::Zst | Repr::Scalar(_) | Repr::Product(_))
+                        )
+                });
+                if !supported {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.product[{index}].field[{field_index}]"),
+                        "POD product fields must reference inhabited direct value types",
+                    );
+                }
+                if let Some(value_type) = representations.value_type(field)
+                    && let Some(Repr::Product(nested)) =
+                        representations.repr(value_type.repr()).copied()
+                    && representations.product(nested).is_some()
+                {
+                    product_edges[index].push(nested.index());
+                }
+            }
+        }
+        let mut incoming = vec![0_usize; product_edges.len()];
+        for edges in &product_edges {
+            for target in edges {
+                if let Some(count) = incoming.get_mut(*target) {
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        let mut pending = incoming
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect::<VecDeque<_>>();
+        let mut visited = 0_usize;
+        while let Some(product) = pending.pop_front() {
+            visited = visited.saturating_add(1);
+            for target in &product_edges[product] {
+                let Some(count) = incoming.get_mut(*target) else {
+                    continue;
+                };
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    pending.push_back(*target);
+                }
+            }
+        }
+        if visited == product_edges.len() {
+            for root in 0..product_edges.len() {
+                let mut pending = vec![(root, 1_usize)];
+                let mut structural_nodes = 0_usize;
+                let mut exceeded = false;
+                while let Some((product, depth)) = pending.pop() {
+                    if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH {
+                        exceeded = true;
+                        break;
+                    }
+                    let field_count = representations.products()[product].fields().len();
+                    let Some(next_structural_nodes) = structural_nodes
+                        .checked_add(1)
+                        .and_then(|nodes| nodes.checked_add(field_count))
+                    else {
+                        exceeded = true;
+                        break;
+                    };
+                    if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+                        exceeded = true;
+                        break;
+                    }
+                    structural_nodes = next_structural_nodes;
+                    pending.extend(
+                        product_edges[product]
+                            .iter()
+                            .copied()
+                            .map(|child| (child, depth.saturating_add(1))),
+                    );
+                }
+                if exceeded {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.product[{root}].structure"),
+                        format!(
+                            "direct product closure exceeds the {}-node or {}-level structural budget",
+                            crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES,
+                            crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
+                        ),
+                    );
+                    break;
+                }
+            }
+        } else {
+            self.error(
+                ValidationCode::RepresentationPlan,
+                "representations.products",
+                "product representation fields form a cycle",
             );
         }
         for (index, value_type) in self
@@ -500,6 +705,42 @@ impl<'a> Validator<'a> {
             function.signature.result(),
             format!("{base}.signature.result"),
         );
+        let mut previous = None;
+        for (writeback_index, parameter) in function
+            .signature
+            .inout_params()
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if previous.is_some_and(|previous| previous >= parameter) {
+                self.error(
+                    ValidationCode::InOutShape,
+                    format!("{base}.signature.inout[{writeback_index}]"),
+                    "inout parameter positions must be strictly increasing",
+                );
+            }
+            previous = Some(parameter);
+            let Some(ty) = usize::try_from(parameter)
+                .ok()
+                .and_then(|index| function.signature.params().get(index))
+                .copied()
+            else {
+                self.error(
+                    ValidationCode::InOutShape,
+                    format!("{base}.signature.inout[{writeback_index}]"),
+                    format!("inout parameter position {parameter} is out of range"),
+                );
+                continue;
+            };
+            if self.product_fields(ty).is_none() {
+                self.error(
+                    ValidationCode::InOutShape,
+                    format!("{base}.signature.inout[{writeback_index}]"),
+                    format!("inout parameter {parameter} must use a direct product value type"),
+                );
+            }
+        }
     }
 
     fn validate_schedule(
@@ -745,6 +986,108 @@ impl<'a> Validator<'a> {
                 };
                 self.require_results(function, instruction, &[expected], &path);
             }
+            InstructionKind::ProductConstruct { fields } => {
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let Some(expected_fields) = result_type
+                    .and_then(|ty| self.product_fields(ty))
+                    .map(<[_]>::to_vec)
+                else {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "product construction result must use a product representation",
+                    );
+                    return;
+                };
+                if fields.len() != expected_fields.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.fields"),
+                        format!(
+                            "product construction has {} fields, representation requires {}",
+                            fields.len(),
+                            expected_fields.len()
+                        ),
+                    );
+                }
+                for (index, (field, expected)) in
+                    fields.iter().copied().zip(expected_fields).enumerate()
+                {
+                    self.require_value_type(
+                        function,
+                        field,
+                        expected,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.field[{index}]"),
+                    );
+                }
+            }
+            InstructionKind::ProductExtract { aggregate, field } => {
+                let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                let expected = aggregate_type
+                    .and_then(|ty| self.product_fields(ty))
+                    .and_then(|fields| {
+                        usize::try_from(*field)
+                            .ok()
+                            .and_then(|index| fields.get(index))
+                    })
+                    .copied();
+                if aggregate_type.is_some_and(|ty| self.product_fields(ty).is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product extraction operand must use a product representation",
+                    );
+                } else if aggregate_type.is_some() && expected.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.field"),
+                        format!("product field index {field} is out of range"),
+                    );
+                }
+                self.require_results(function, instruction, &[expected], &path);
+            }
+            InstructionKind::ProductInsert {
+                aggregate,
+                field,
+                value,
+            } => {
+                let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                let expected_field = aggregate_type
+                    .and_then(|ty| self.product_fields(ty))
+                    .and_then(|fields| {
+                        usize::try_from(*field)
+                            .ok()
+                            .and_then(|index| fields.get(index))
+                    })
+                    .copied();
+                if aggregate_type.is_some_and(|ty| self.product_fields(ty).is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product insertion operand must use a product representation",
+                    );
+                } else if aggregate_type.is_some() && expected_field.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.field"),
+                        format!("product field index {field} is out of range"),
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    expected_field,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.require_results(function, instruction, &[aggregate_type], &path);
+            }
             InstructionKind::BoolNot { value } => {
                 self.require_known_value_type(
                     function,
@@ -903,12 +1246,14 @@ impl<'a> Validator<'a> {
                         format!("{path}.argument[{index}]"),
                     );
                 }
-                self.require_results(
-                    function,
-                    instruction,
-                    &[Some(callee.signature.result())],
-                    &path,
+                let mut results = Vec::with_capacity(1 + callee.signature.inout_params().len());
+                results.push(Some(callee.signature.result()));
+                results.extend(
+                    Self::signature_writeback_types(callee)
+                        .into_iter()
+                        .map(Some),
                 );
+                self.require_results(function, instruction, &results, &path);
             }
         }
     }
@@ -953,6 +1298,45 @@ impl<'a> Validator<'a> {
                 }
             }
         }
+        let terminal_exit = matches!(
+            terminator.kind(),
+            TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault
+        );
+        if terminal_exit {
+            let expected = Self::signature_writeback_types(function);
+            if terminator.writebacks().len() != expected.len() {
+                self.error(
+                    ValidationCode::InOutShape,
+                    format!("{path}.writebacks"),
+                    format!(
+                        "terminal exit carries {} writebacks, signature requires {}",
+                        terminator.writebacks().len(),
+                        expected.len()
+                    ),
+                );
+            }
+            for (index, (value, expected)) in terminator
+                .writebacks()
+                .iter()
+                .copied()
+                .zip(expected)
+                .enumerate()
+            {
+                self.require_value_type(
+                    function,
+                    value,
+                    expected,
+                    ValidationCode::InOutShape,
+                    format!("{path}.writeback[{index}]"),
+                );
+            }
+        } else if !terminator.writebacks().is_empty() {
+            self.error(
+                ValidationCode::InOutShape,
+                format!("{path}.writebacks"),
+                "only return, fault, and resume_fault may carry function writebacks",
+            );
+        }
         match terminator.kind() {
             TerminatorKind::Jump(target) => {
                 self.validate_target(function, target, format!("{path}.target"));
@@ -994,8 +1378,13 @@ impl<'a> Validator<'a> {
                     ValidationCode::TypeMismatch,
                     format!("{path}.value"),
                 );
-                self.validate_result_target(function, normal, integer, &format!("{path}.normal"));
-                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[integer],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.require_may_fault_effect(function, &path, "checked integer negate");
             }
             TerminatorKind::CheckedIntBinary {
@@ -1020,8 +1409,13 @@ impl<'a> Validator<'a> {
                     ValidationCode::TypeMismatch,
                     format!("{path}.right"),
                 );
-                self.validate_result_target(function, normal, integer, &format!("{path}.normal"));
-                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[integer],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.require_may_fault_effect(function, &path, "checked integer binary operation");
             }
             TerminatorKind::Invoke {
@@ -1053,16 +1447,39 @@ impl<'a> Validator<'a> {
                         callee,
                         &format!("{path}.argument"),
                     );
+                    let mut normal_types =
+                        Vec::with_capacity(1 + callee.signature.inout_params().len());
+                    normal_types.push(Some(callee.signature.result()));
+                    normal_types.extend(
+                        Self::signature_writeback_types(callee)
+                            .into_iter()
+                            .map(Some),
+                    );
                     self.validate_result_target(
                         function,
                         normal,
-                        Some(callee.signature.result()),
+                        &normal_types,
                         &format!("{path}.normal"),
                     );
+                    let unwind_types = Self::signature_writeback_types(callee)
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>();
+                    self.validate_unwind_target(
+                        function,
+                        unwind,
+                        &unwind_types,
+                        &format!("{path}.unwind"),
+                    );
                 } else {
-                    self.validate_result_target(function, normal, None, &format!("{path}.normal"));
+                    self.validate_result_target(
+                        function,
+                        normal,
+                        &[None],
+                        &format!("{path}.normal"),
+                    );
+                    self.validate_unwind_target(function, unwind, &[], &format!("{path}.unwind"));
                 }
-                self.validate_unwind_target(function, unwind, format!("{path}.unwind"));
                 self.require_may_fault_effect(function, &path, "invoke");
             }
             TerminatorKind::Assert {
@@ -1079,7 +1496,7 @@ impl<'a> Validator<'a> {
                     format!("{path}.condition"),
                 );
                 self.validate_target(function, success, format!("{path}.success"));
-                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
             TerminatorKind::Fault { .. } => {
@@ -1092,42 +1509,79 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_target(&mut self, function: &Function, target: &crate::BlockTarget, path: String) {
-        self.validate_forwarded_target(function, target.block, &target.arguments, 0, path);
+        self.validate_forwarded_target(function, target.block, &target.arguments, &[], path);
     }
 
     fn validate_result_target(
         &mut self,
         function: &Function,
         target: &ResultTarget,
-        result_type: Option<ValueTypeId>,
+        implicit_types: &[Option<ValueTypeId>],
         path: &str,
     ) {
         self.validate_forwarded_target(
             function,
             target.block,
             &target.arguments,
-            1,
+            implicit_types,
             path.to_owned(),
         );
         let Some(block) = function.block(target.block) else {
             return;
         };
-        let Some(parameter) = block.params.first().copied() else {
-            return;
-        };
-        if let Some(result_type) = result_type {
-            self.require_value_type(
-                function,
-                parameter,
-                result_type,
-                ValidationCode::BlockArgument,
-                format!("{path}.result"),
-            );
+        for (index, (parameter, expected)) in block
+            .params
+            .iter()
+            .copied()
+            .zip(implicit_types.iter().copied())
+            .enumerate()
+        {
+            if let Some(expected) = expected {
+                self.require_value_type(
+                    function,
+                    parameter,
+                    expected,
+                    ValidationCode::BlockArgument,
+                    format!("{path}.implicit[{index}]"),
+                );
+            }
         }
     }
 
-    fn validate_unwind_target(&mut self, function: &Function, target: &UnwindTarget, path: String) {
-        self.validate_forwarded_target(function, target.block, &target.arguments, 0, path);
+    fn validate_unwind_target(
+        &mut self,
+        function: &Function,
+        target: &UnwindTarget,
+        implicit_types: &[Option<ValueTypeId>],
+        path: &str,
+    ) {
+        self.validate_forwarded_target(
+            function,
+            target.block,
+            &target.arguments,
+            implicit_types,
+            path.to_owned(),
+        );
+        let Some(block) = function.block(target.block) else {
+            return;
+        };
+        for (index, (parameter, expected)) in block
+            .params
+            .iter()
+            .copied()
+            .zip(implicit_types.iter().copied())
+            .enumerate()
+        {
+            if let Some(expected) = expected {
+                self.require_value_type(
+                    function,
+                    parameter,
+                    expected,
+                    ValidationCode::BlockArgument,
+                    format!("{path}.implicit[{index}]"),
+                );
+            }
+        }
     }
 
     fn validate_forwarded_target(
@@ -1135,7 +1589,7 @@ impl<'a> Validator<'a> {
         function: &Function,
         target_block: BlockId,
         arguments: &[ValueId],
-        parameter_offset: usize,
+        implicit_types: &[Option<ValueTypeId>],
         path: String,
     ) {
         let Some(block) = function.block(target_block) else {
@@ -1146,6 +1600,7 @@ impl<'a> Validator<'a> {
             );
             return;
         };
+        let parameter_offset = implicit_types.len();
         let supplied = arguments.len().saturating_add(parameter_offset);
         if supplied != block.params.len() {
             self.error(
@@ -1544,6 +1999,36 @@ impl<'a> Validator<'a> {
         self.program.representations.type_id(semantic)
     }
 
+    fn product_fields(&self, ty: ValueTypeId) -> Option<&[ValueTypeId]> {
+        let value_type = self.program.representations.value_type(ty)?;
+        let Repr::Product(product) = self
+            .program
+            .representations
+            .repr(value_type.repr())
+            .copied()?
+        else {
+            return None;
+        };
+        self.program
+            .representations
+            .product(product)
+            .map(crate::ProductRepr::fields)
+    }
+
+    fn signature_writeback_types(function: &Function) -> Vec<ValueTypeId> {
+        function
+            .signature
+            .inout_params()
+            .iter()
+            .filter_map(|parameter| {
+                usize::try_from(*parameter)
+                    .ok()
+                    .and_then(|index| function.signature.params().get(index))
+                    .copied()
+            })
+            .collect()
+    }
+
     fn require_type(&mut self, ty: ValueTypeId, path: String) {
         if self.program.representations.value_type(ty).is_none() {
             self.error(
@@ -1570,7 +2055,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::UninhabitedValue,
                 path,
-                "the scalar foundation cannot materialize an uninhabited SSA value; lower Never-producing operations as terminators",
+                "the direct foundation cannot materialize an uninhabited SSA value; lower Never-producing operations as terminators",
             );
         }
     }

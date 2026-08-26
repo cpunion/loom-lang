@@ -12,7 +12,7 @@
 //! while the private identity stays out of textual output.
 //!
 //! The first whole-artifact lowerer intentionally supports only canonical
-//! scalar representations and reports every reachable unsupported MIR site
+//! direct representations and reports every reachable unsupported MIR site
 //! before constructing SSA. Production LLVM emission remains a separate
 //! vertical slice; no LCIR function is mixed with a legacy function.
 //! Block, instruction, and value identities are owned by one function; the
@@ -40,7 +40,7 @@ pub use artifact_identity::{
 };
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
-pub use ids::{BlockId, InstanceId, InstructionId, ReprId, ValueId, ValueTypeId};
+pub use ids::{BlockId, InstanceId, InstructionId, ProductReprId, ReprId, ValueId, ValueTypeId};
 pub use instance::{
     INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceWitnessArgument,
     PlannedInstance,
@@ -54,9 +54,12 @@ pub use ir::{
 pub use lower::{
     InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,
     ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature, UnsupportedItem,
-    lower_scalar_artifact,
+    lower_typed_artifact,
 };
-pub use repr::{Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError, ValueType};
+pub use repr::{
+    ProductRepr, Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError,
+    TypeRegistration, ValueType,
+};
 pub use source_graph::{
     GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
 };

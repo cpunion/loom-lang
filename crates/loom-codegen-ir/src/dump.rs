@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 1")?;
+    writeln!(output, "lcir 2")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -61,7 +61,9 @@ pub fn write_program_with_options(
     )?;
     writeln!(output)?;
     for (index, repr) in representations.reprs().iter().enumerate() {
-        writeln!(output, "repr r{index} = {}", repr_name(*repr))?;
+        write!(output, "repr r{index} = ")?;
+        write_repr(output, representations, *repr)?;
+        writeln!(output)?;
     }
     writeln!(output)?;
     for (index, value_type) in representations.value_types().iter().enumerate() {
@@ -70,6 +72,15 @@ pub fn write_program_with_options(
             "type t{index} = {} => {}",
             type_name(value_type.semantic()),
             value_type.repr()
+        )?;
+    }
+    writeln!(output)?;
+    for (index, registration) in representations.registrations().iter().enumerate() {
+        writeln!(
+            output,
+            "registration k{index} = {} => {}",
+            type_name(registration.semantic()),
+            registration.value_type()
         )?;
     }
 
@@ -89,12 +100,18 @@ pub fn write_program_with_options(
             }
             write!(output, "{parameter}")?;
         }
-        writeln!(
-            output,
-            ") -> {} effects={} {{",
-            function.signature().result(),
-            effects_name(function.effects())
-        )?;
+        write!(output, ") -> {}", function.signature().result())?;
+        if !function.signature().inout_params().is_empty() {
+            write!(output, " inout=[")?;
+            for (index, parameter) in function.signature().inout_params().iter().enumerate() {
+                if index != 0 {
+                    write!(output, ", ")?;
+                }
+                write!(output, "{parameter}")?;
+            }
+            write!(output, "]")?;
+        }
+        writeln!(output, " effects={} {{", effects_name(function.effects()))?;
         if options.include_origins {
             write_origin(output, function.origin(), "  ; function-origin")?;
         }
@@ -129,7 +146,7 @@ pub fn write_program_with_options(
             let terminator = block
                 .terminator()
                 .expect("checked LCIR block has a terminator");
-            write_terminator(output, terminator)?;
+            write_terminator(output, program, terminator)?;
             if options.include_origins {
                 write_origin(output, terminator.origin(), " ; origin")?;
             } else {
@@ -157,6 +174,22 @@ fn write_instruction(output: &mut impl Write, instruction: &Instruction) -> fmt:
     }
     match instruction.kind() {
         InstructionKind::Constant(constant) => write_constant(output, *constant),
+        InstructionKind::ProductConstruct { fields } => {
+            write!(output, "product.construct (")?;
+            write_arguments(output, fields)?;
+            write!(output, ")")
+        }
+        InstructionKind::ProductExtract { aggregate, field } => {
+            write!(output, "product.extract %{aggregate}, field {field}")
+        }
+        InstructionKind::ProductInsert {
+            aggregate,
+            field,
+            value,
+        } => write!(
+            output,
+            "product.insert %{aggregate}, field {field}, %{value}"
+        ),
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {
             predicate,
@@ -219,7 +252,11 @@ fn write_constant(output: &mut impl Write, constant: Constant) -> fmt::Result {
     }
 }
 
-fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Result {
+fn write_terminator(
+    output: &mut impl Write,
+    program: &crate::Program,
+    terminator: &Terminator,
+) -> fmt::Result {
     write!(output, "    ")?;
     match terminator.kind() {
         TerminatorKind::Jump(target) => {
@@ -243,9 +280,9 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
             fault,
         } => {
             write!(output, "checked_int.negate %{value}, normal ")?;
-            write_result_target(output, normal)?;
+            write_result_target(output, normal, 0)?;
             write!(output, ", fault ")?;
-            write_unwind_target(output, fault)
+            write_unwind_target(output, fault, 0)
         }
         TerminatorKind::CheckedIntBinary {
             op,
@@ -259,9 +296,9 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
                 "checked_int.{} %{left}, %{right}, normal ",
                 checked_int_binary_name(*op)
             )?;
-            write_result_target(output, normal)?;
+            write_result_target(output, normal, 0)?;
             write!(output, ", fault ")?;
-            write_unwind_target(output, fault)
+            write_unwind_target(output, fault, 0)
         }
         TerminatorKind::Invoke {
             callee,
@@ -272,9 +309,13 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
             write!(output, "invoke {callee}(")?;
             write_arguments(output, arguments)?;
             write!(output, "), normal ")?;
-            write_result_target(output, normal)?;
+            let writebacks = program
+                .function(*callee)
+                .map(|callee| callee.signature().inout_params().len())
+                .unwrap_or_default();
+            write_result_target(output, normal, writebacks)?;
             write!(output, ", unwind ")?;
-            write_unwind_target(output, unwind)
+            write_unwind_target(output, unwind, writebacks)
         }
         TerminatorKind::Assert {
             condition,
@@ -289,11 +330,17 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
             )?;
             write_target(output, success)?;
             write!(output, ", fault ")?;
-            write_unwind_target(output, fault)
+            write_unwind_target(output, fault, 0)
         }
         TerminatorKind::Fault { code } => write!(output, "fault {}", fault_code_name(*code)),
         TerminatorKind::ResumeFault => write!(output, "resume_fault"),
+    }?;
+    if !terminator.writebacks().is_empty() {
+        write!(output, " writebacks(")?;
+        write_arguments(output, terminator.writebacks())?;
+        write!(output, ")")?;
     }
+    Ok(())
 }
 
 fn write_target(output: &mut impl Write, target: &BlockTarget) -> fmt::Result {
@@ -302,8 +349,15 @@ fn write_target(output: &mut impl Write, target: &BlockTarget) -> fmt::Result {
     write!(output, ")")
 }
 
-fn write_result_target(output: &mut impl Write, target: &ResultTarget) -> fmt::Result {
+fn write_result_target(
+    output: &mut impl Write,
+    target: &ResultTarget,
+    writebacks: usize,
+) -> fmt::Result {
     write!(output, "{}(result", target.block)?;
+    for index in 0..writebacks {
+        write!(output, ", writeback{index}")?;
+    }
     if !target.arguments.is_empty() {
         write!(output, "; ")?;
         write_arguments(output, &target.arguments)?;
@@ -311,8 +365,21 @@ fn write_result_target(output: &mut impl Write, target: &ResultTarget) -> fmt::R
     write!(output, ")")
 }
 
-fn write_unwind_target(output: &mut impl Write, target: &UnwindTarget) -> fmt::Result {
+fn write_unwind_target(
+    output: &mut impl Write,
+    target: &UnwindTarget,
+    writebacks: usize,
+) -> fmt::Result {
     write!(output, "{}(", target.block)?;
+    for index in 0..writebacks {
+        if index != 0 {
+            write!(output, ", ")?;
+        }
+        write!(output, "writeback{index}")?;
+    }
+    if writebacks != 0 && !target.arguments.is_empty() {
+        write!(output, "; ")?;
+    }
     write_arguments(output, &target.arguments)?;
     write!(output, ")")
 }
@@ -357,23 +424,42 @@ fn write_origin(output: &mut impl Write, origin: Origin, prefix: &str) -> fmt::R
     )
 }
 
-const fn repr_name(repr: Repr) -> &'static str {
+fn write_repr(
+    output: &mut impl Write,
+    representations: &crate::RepresentationPlan,
+    repr: Repr,
+) -> fmt::Result {
     match repr {
-        Repr::Uninhabited => "uninhabited",
-        Repr::Zst => "zst",
-        Repr::Scalar(ScalarRepr::I1) => "i1",
-        Repr::Scalar(ScalarRepr::I64) => "i64",
-        Repr::Scalar(ScalarRepr::F64) => "f64",
+        Repr::Uninhabited => output.write_str("uninhabited"),
+        Repr::Zst => output.write_str("zst"),
+        Repr::Scalar(ScalarRepr::I1) => output.write_str("i1"),
+        Repr::Scalar(ScalarRepr::I64) => output.write_str("i64"),
+        Repr::Scalar(ScalarRepr::F64) => output.write_str("f64"),
+        Repr::Product(product) => {
+            write!(output, "product {product}(")?;
+            let fields = representations
+                .product(product)
+                .expect("checked LCIR product representation exists")
+                .fields();
+            for (index, field) in fields.iter().enumerate() {
+                if index != 0 {
+                    output.write_str(", ")?;
+                }
+                write!(output, "{field}")?;
+            }
+            output.write_char(')')
+        }
     }
 }
 
-fn type_name(ty: &Type) -> &'static str {
+fn type_name(ty: &Type) -> String {
     match ty {
-        Type::Never => "Never",
-        Type::Unit => "Unit",
-        Type::Bool => "Bool",
-        Type::Int => "Int",
-        Type::Float => "Float",
+        Type::Never => "Never".to_owned(),
+        Type::Unit => "Unit".to_owned(),
+        Type::Bool => "Bool".to_owned(),
+        Type::Int => "Int".to_owned(),
+        Type::Float => "Float".to_owned(),
+        Type::Nominal(id, arguments) if arguments.is_empty() => format!("Nominal#{}", id.0),
         Type::Text
         | Type::Tuple(_)
         | Type::List(_)
@@ -383,7 +469,7 @@ fn type_name(ty: &Type) -> &'static str {
         | Type::Task(_)
         | Type::TaskOutcome(_)
         | Type::View { .. }
-        | Type::Error => "<unsupported>",
+        | Type::Error => "<unsupported>".to_owned(),
     }
 }
 

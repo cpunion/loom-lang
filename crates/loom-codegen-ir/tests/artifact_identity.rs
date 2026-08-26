@@ -26,6 +26,11 @@ impl BodyOrigins {
     }
 }
 
+#[test]
+fn identity_schema_is_pinned_after_direct_product_and_inout_expansion() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 3);
+}
+
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
     Origin {
         source_function: MirFunctionId(41),
@@ -101,7 +106,7 @@ fn scalar_artifact(
     }
     builder
         .finish_checked()
-        .expect("valid scalar LCIR")
+        .expect("valid typed LCIR")
         .into_artifact(ArtifactRootRequest::Run(root))
         .expect("closed run artifact")
 }

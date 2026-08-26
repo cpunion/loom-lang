@@ -1,12 +1,12 @@
-//! Mechanical scalar LCIR to LLVM emission.
+//! Mechanical typed LCIR to LLVM emission.
 //!
 //! This module intentionally has no dependency on the checked-MIR emitter,
 //! native-layout planning, universal values, or runtime-requirement analysis.
 //! Every source function has exactly the ABI selected by its checked LCIR
 //! signature and effects.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use inkwell::AddressSpace;
@@ -133,15 +133,18 @@ struct DebugState<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
     files: BTreeMap<u32, DIFile<'ctx>>,
     sources: BTreeMap<u32, DebugSource>,
+    type_file: DIFile<'ctx>,
     unit_type: DIType<'ctx>,
     bool_type: DIType<'ctx>,
     int_type: DIType<'ctx>,
     float_type: DIType<'ctx>,
+    status_type: DIType<'ctx>,
     fault_context_pointer_type: DIType<'ctx>,
     fallible_unit_type: DIType<'ctx>,
     fallible_bool_type: DIType<'ctx>,
     fallible_int_type: DIType<'ctx>,
     fallible_float_type: DIType<'ctx>,
+    product_types: RefCell<BTreeMap<u32, DIType<'ctx>>>,
     optimized: bool,
 }
 
@@ -309,15 +312,18 @@ impl<'ctx> DebugState<'ctx> {
             builder,
             files,
             sources: source_map,
+            type_file: file,
             unit_type,
             bool_type,
             int_type,
             float_type,
+            status_type,
             fault_context_pointer_type,
             fallible_unit_type,
             fallible_bool_type,
             fallible_int_type,
             fallible_float_type,
+            product_types: RefCell::new(BTreeMap::new()),
             optimized,
         })
     }
@@ -351,17 +357,83 @@ impl<'ctx> DebugState<'ctx> {
 
     fn value_type(
         &self,
-        artifact: &CheckedArtifact,
+        backend: &Backend<'ctx, '_>,
         ty: ValueTypeId,
     ) -> Result<DIType<'ctx>, CodegenError> {
-        let value_type = artifact.representations().value_type(ty).ok_or_else(|| {
-            CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
-        })?;
-        match artifact.representations().repr(value_type.repr()).copied() {
+        self.value_type_with_stack(backend, ty, &mut BTreeSet::new())
+    }
+
+    fn value_type_with_stack(
+        &self,
+        backend: &Backend<'ctx, '_>,
+        ty: ValueTypeId,
+        visiting: &mut BTreeSet<u32>,
+    ) -> Result<DIType<'ctx>, CodegenError> {
+        let value_type = backend
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+            })?;
+        match backend
+            .artifact
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+        {
             Some(Repr::Zst) => Ok(self.unit_type),
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
+            Some(Repr::Product(product)) => {
+                if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
+                    return Ok(existing);
+                }
+                if !visiting.insert(ty.raw()) {
+                    return Err(CodegenError::new(
+                        "LlvmDebugInfoFailed",
+                        format!("cyclic LCIR product type {ty} reached debug emission"),
+                    ));
+                }
+                let fields = backend
+                    .artifact
+                    .representations()
+                    .product(product)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmDebugInfoFailed",
+                            format!("missing LCIR product representation {product}"),
+                        )
+                    })?
+                    .fields()
+                    .to_vec();
+                let physical_type = backend.llvm_type(ty)?.into_struct_type();
+                let mut members = Vec::with_capacity(fields.len());
+                for (index, field) in fields.into_iter().enumerate() {
+                    members.push(DebugAggregateField {
+                        name: format!("field{index}"),
+                        debug_type: self.value_type_with_stack(backend, field, visiting)?,
+                        llvm_type: backend.llvm_type(field)?,
+                        flags: DIFlags::ZERO,
+                    });
+                }
+                visiting.remove(&ty.raw());
+                let name = format!("LoomProduct<t{}>", ty.raw());
+                let identifier = format!("loom.compiler.LoomProduct.t{}", ty.raw());
+                let debug_type = create_aggregate_debug_type(
+                    &self.builder,
+                    self.type_file,
+                    &backend.target_data,
+                    &name,
+                    &identifier,
+                    physical_type,
+                    &members,
+                    DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+                )?;
+                self.product_types.borrow_mut().insert(ty.raw(), debug_type);
+                Ok(debug_type)
+            }
             Some(Repr::Uninhabited) => Err(CodegenError::new(
                 "LlvmDebugInfoFailed",
                 format!("uninhabited LCIR type {ty} reached a debug signature"),
@@ -375,17 +447,36 @@ impl<'ctx> DebugState<'ctx> {
 
     fn fallible_type(
         &self,
-        artifact: &CheckedArtifact,
+        backend: &Backend<'ctx, '_>,
         ty: ValueTypeId,
     ) -> Result<DIType<'ctx>, CodegenError> {
-        let value_type = artifact.representations().value_type(ty).ok_or_else(|| {
-            CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
-        })?;
-        match artifact.representations().repr(value_type.repr()).copied() {
+        let value_type = backend
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+            })?;
+        match backend
+            .artifact
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+        {
             Some(Repr::Zst) => Ok(self.fallible_unit_type),
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.fallible_bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.fallible_int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.fallible_float_type),
+            Some(Repr::Product(_)) => create_fallible_debug_type(
+                backend.context,
+                &self.builder,
+                self.type_file,
+                &backend.target_data,
+                &format!("LoomProduct<t{}>", ty.raw()),
+                self.value_type(backend, ty)?,
+                backend.llvm_type(ty)?,
+                self.status_type,
+            ),
             Some(Repr::Uninhabited) => Err(CodegenError::new(
                 "LlvmDebugInfoFailed",
                 format!("uninhabited LCIR type {ty} reached a fallible debug signature"),
@@ -399,7 +490,7 @@ impl<'ctx> DebugState<'ctx> {
 
     fn attach_function(
         &self,
-        artifact: &CheckedArtifact,
+        backend: &Backend<'ctx, '_>,
         source: &Function,
         function: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
@@ -407,24 +498,21 @@ impl<'ctx> DebugState<'ctx> {
         let file_id = origin.span.file.0;
         let file = self.file(file_id)?;
         let (line, _) = self.line_column(file_id, origin.span.range.start)?;
-        let result = if source.effects().contains(Effects::MAY_FAULT) {
-            self.fallible_type(artifact, source.signature().result())?
-        } else {
-            self.value_type(artifact, source.signature().result())?
-        };
+        let result = self.function_result_type(backend, source)?;
         let mut parameters = source
             .signature()
             .params()
             .iter()
             .copied()
-            .map(|ty| self.value_type(artifact, ty))
+            .map(|ty| self.value_type(backend, ty))
             .collect::<Result<Vec<_>, _>>()?;
         if source.effects().contains(Effects::MAY_FAULT) {
             parameters.push(self.fault_context_pointer_type);
         }
-        // This describes the exact callable ABI. Fallible functions return a
-        // compiler-generated LoomFallible<T> aggregate and receive one hidden
-        // artificial fault-context parameter; neither is a source value.
+        // This describes the exact callable ABI: direct results stay direct,
+        // inout writebacks extend the physical return aggregate, and fallible
+        // returns prepend status. Hidden status/writeback fields and the
+        // fault-context parameter are marked artificial.
         let signature =
             self.builder
                 .create_subroutine_type(file, Some(result), &parameters, DIFlags::PUBLIC);
@@ -446,10 +534,80 @@ impl<'ctx> DebugState<'ctx> {
         Ok(())
     }
 
+    fn function_result_type(
+        &self,
+        backend: &Backend<'ctx, '_>,
+        source: &Function,
+    ) -> Result<DIType<'ctx>, CodegenError> {
+        let writebacks = Backend::signature_writeback_types(source)?;
+        if writebacks.is_empty() {
+            return if source.effects().contains(Effects::MAY_FAULT) {
+                self.fallible_type(backend, source.signature().result())
+            } else {
+                self.value_type(backend, source.signature().result())
+            };
+        }
+
+        let mut logical_types = Vec::with_capacity(1 + writebacks.len());
+        logical_types.push(source.signature().result());
+        logical_types.extend(writebacks);
+        let fallible = source.effects().contains(Effects::MAY_FAULT);
+        let mut fields = Vec::with_capacity(logical_types.len() + usize::from(fallible));
+        if fallible {
+            fields.push(DebugAggregateField {
+                name: "status".into(),
+                debug_type: self.status_type,
+                llvm_type: backend.context.i32_type().into(),
+                flags: DIFlags::ARTIFICIAL,
+            });
+        }
+        for (index, ty) in logical_types.iter().copied().enumerate() {
+            fields.push(DebugAggregateField {
+                name: if index == 0 {
+                    "value".into()
+                } else {
+                    format!("writeback{}", index - 1)
+                },
+                debug_type: self.value_type(backend, ty)?,
+                llvm_type: backend.llvm_type(ty)?,
+                flags: if index == 0 {
+                    DIFlags::ZERO
+                } else {
+                    DIFlags::ARTIFICIAL
+                },
+            });
+        }
+        let physical_fields = fields
+            .iter()
+            .map(|field| field.llvm_type)
+            .collect::<Vec<_>>();
+        let physical_type = backend.context.struct_type(&physical_fields, false);
+        let result = source.signature().result().raw();
+        let writeback_count = source.signature().inout_params().len();
+        let name = if fallible {
+            format!("LoomFallibleInOut<t{result};{writeback_count}>")
+        } else {
+            format!("LoomInOut<t{result};{writeback_count}>")
+        };
+        let identifier = format!(
+            "loom.compiler.LoomReturn.{}.t{result}.w{writeback_count}",
+            if fallible { "fallible" } else { "inout" }
+        );
+        create_aggregate_debug_type(
+            &self.builder,
+            self.type_file,
+            &backend.target_data,
+            &name,
+            &identifier,
+            physical_type,
+            &fields,
+            DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+        )
+    }
+
     fn attach_parameter_values(
         &self,
-        context: &'ctx Context,
-        artifact: &CheckedArtifact,
+        backend: &Backend<'ctx, '_>,
         source: &Function,
         function: FunctionValue<'ctx>,
         entry: BasicBlock<'ctx>,
@@ -473,7 +631,7 @@ impl<'ctx> DebugState<'ctx> {
         let file = self.file(file_id)?;
         let (line, column) = self.line_column(file_id, origin.span.range.start)?;
         let location = self.builder.create_debug_location(
-            context,
+            backend.context,
             line,
             column,
             scope.as_debug_info_scope(),
@@ -498,7 +656,7 @@ impl<'ctx> DebugState<'ctx> {
                 argument_number,
                 file,
                 line,
-                self.value_type(artifact, ty)?,
+                self.value_type(backend, ty)?,
                 true,
                 DIFlags::ZERO,
             );
@@ -560,6 +718,83 @@ impl<'ctx> DebugState<'ctx> {
     }
 }
 
+struct DebugAggregateField<'ctx> {
+    name: String,
+    debug_type: DIType<'ctx>,
+    llvm_type: BasicTypeEnum<'ctx>,
+    flags: DIFlags,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the complete physical LLVM aggregate and its DWARF identity are explicit inputs to target-data-checked metadata construction"
+)]
+fn create_aggregate_debug_type<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    file: DIFile<'ctx>,
+    target_data: &TargetData,
+    name: &str,
+    identifier: &str,
+    physical_type: StructType<'ctx>,
+    fields: &[DebugAggregateField<'ctx>],
+    flags: DIFlags,
+) -> Result<DIType<'ctx>, CodegenError> {
+    if physical_type.count_fields() as usize != fields.len() {
+        return Err(CodegenError::new(
+            "LlvmDebugInfoFailed",
+            format!(
+                "debug aggregate {name} has {} metadata field(s) but {} LLVM field(s)",
+                fields.len(),
+                physical_type.count_fields()
+            ),
+        ));
+    }
+    let mut members = Vec::with_capacity(fields.len());
+    for (index, field) in fields.iter().enumerate() {
+        let index = u32::try_from(index)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many debug aggregate fields"))?;
+        let offset = target_data
+            .offset_of_element(&physical_type, index)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmDebugInfoFailed",
+                    format!("missing physical offset for {name}.{}", field.name),
+                )
+            })?;
+        members.push(
+            builder
+                .create_member_type(
+                    file.as_debug_info_scope(),
+                    &field.name,
+                    file,
+                    0,
+                    target_data.get_bit_size(&field.llvm_type),
+                    abi_alignment_bits(target_data, &field.llvm_type)?,
+                    byte_offset_bits(offset)?,
+                    field.flags,
+                    field.debug_type,
+                )
+                .as_type(),
+        );
+    }
+    Ok(builder
+        .create_struct_type(
+            file.as_debug_info_scope(),
+            name,
+            file,
+            0,
+            target_data.get_bit_size(&physical_type),
+            abi_alignment_bits(target_data, &physical_type)?,
+            flags,
+            None,
+            &members,
+            0,
+            None,
+            identifier,
+        )
+        .as_type())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "all LLVM and DI type handles are explicit so target layout cannot be inferred or taken from ambient state"
@@ -591,7 +826,7 @@ fn create_fallible_debug_type<'ctx>(
             target_data.get_bit_size(&status_llvm_type),
             abi_alignment_bits(target_data, &status_llvm_type)?,
             byte_offset_bits(status_offset)?,
-            DIFlags::ZERO,
+            DIFlags::ARTIFICIAL,
             status_debug_type,
         )
         .as_type();
@@ -680,6 +915,7 @@ struct Backend<'ctx, 'artifact> {
     ptr_type: inkwell::types::PointerType<'ctx>,
     unit_type: StructType<'ctx>,
     fault_context_type: StructType<'ctx>,
+    target_data: TargetData,
     functions: Vec<FunctionValue<'ctx>>,
     debug: Option<DebugState<'ctx>>,
     names: Cell<u64>,
@@ -722,6 +958,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ptr_type,
             unit_type,
             fault_context_type,
+            target_data,
             functions: Vec::with_capacity(artifact.functions().len()),
             debug,
             names: Cell::new(0),
@@ -742,13 +979,20 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             if source.effects().contains(Effects::MAY_FAULT) {
                 params.push(self.ptr_type.into());
             }
-            let result = self.llvm_type(source.signature().result())?;
+            let results = self.logical_result_types(source)?;
             let function_type = if source.effects().contains(Effects::MAY_FAULT) {
+                let mut fields = Vec::with_capacity(1 + results.len());
+                fields.push(self.context.i32_type().into());
+                fields.extend(results);
                 self.context
-                    .struct_type(&[self.context.i32_type().into(), result], false)
+                    .struct_type(&fields, false)
                     .fn_type(&params, false)
-            } else {
+            } else if let [result] = results.as_slice() {
                 result.fn_type(&params, false)
+            } else {
+                self.context
+                    .struct_type(&results, false)
+                    .fn_type(&params, false)
             };
             let function = self.module.add_function(
                 &format!("loom.lcir.fn.{}", source.id().raw()),
@@ -756,7 +1000,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 Some(Linkage::Internal),
             );
             if let Some(debug) = &self.debug {
-                debug.attach_function(self.artifact, source, function)?;
+                debug.attach_function(self, source, function)?;
             }
             self.functions.push(function);
         }
@@ -793,6 +1037,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.context.bool_type().into()),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.context.i64_type().into()),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.context.f64_type().into()),
+            Some(Repr::Product(product)) => {
+                let fields = self
+                    .artifact
+                    .representations()
+                    .product(product)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("missing LCIR product representation {product}"),
+                        )
+                    })?
+                    .fields()
+                    .iter()
+                    .copied()
+                    .map(|field| self.llvm_type(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.context.struct_type(&fields, false).into())
+            }
             Some(Repr::Uninhabited) => Err(CodegenError::new(
                 "LlvmAbiDefect",
                 format!("uninhabited LCIR type {ty} reached an LLVM value boundary"),
@@ -802,6 +1064,41 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 format!("missing representation for LCIR type {ty}"),
             )),
         }
+    }
+
+    fn signature_writeback_types(source: &Function) -> Result<Vec<ValueTypeId>, CodegenError> {
+        source
+            .signature()
+            .inout_params()
+            .iter()
+            .map(|parameter| {
+                usize::try_from(*parameter)
+                    .ok()
+                    .and_then(|index| source.signature().params().get(index))
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!(
+                                "{} has invalid inout parameter position {parameter}",
+                                source.id()
+                            ),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    fn logical_result_types(
+        &self,
+        source: &Function,
+    ) -> Result<Vec<BasicTypeEnum<'ctx>>, CodegenError> {
+        let mut results = Vec::with_capacity(1 + source.signature().inout_params().len());
+        results.push(self.llvm_type(source.signature().result())?);
+        for writeback in Self::signature_writeback_types(source)? {
+            results.push(self.llvm_type(writeback)?);
+        }
+        Ok(results)
     }
 
     fn zero(&self, ty: ValueTypeId) -> Result<BasicValueEnum<'ctx>, CodegenError> {
@@ -994,8 +1291,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 )
             })?;
             debug.attach_parameter_values(
-                self.backend.context,
-                self.backend.artifact,
+                self.backend,
                 self.source,
                 self.function,
                 self.blocks[entry.index()],
@@ -1104,14 +1400,73 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     #[allow(clippy::too_many_lines)]
     fn emit_instruction(&mut self, instruction: &Instruction) -> Result<(), CodegenError> {
-        let value = match instruction.kind() {
-            InstructionKind::Constant(constant) => self.emit_constant(*constant)?,
-            InstructionKind::BoolNot { value } => self
+        let one = |value: BasicValueEnum<'ctx>| vec![value];
+        let values = match instruction.kind() {
+            InstructionKind::Constant(constant) => one(self.emit_constant(*constant)?),
+            InstructionKind::ProductConstruct { fields } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("{} product construction has no result", instruction.id()),
+                    )
+                })?;
+                let ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", format!("missing result {result}"))
+                    })?
+                    .ty();
+                let mut aggregate = self.backend.llvm_type(ty)?.into_struct_type().get_undef();
+                for (index, field) in fields.iter().copied().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many LCIR product fields")
+                    })?;
+                    aggregate = self
+                        .backend
+                        .builder
+                        .build_insert_value(
+                            aggregate,
+                            self.value(field)?,
+                            index,
+                            "product.construct",
+                        )
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                }
+                one(aggregate.into())
+            }
+            InstructionKind::ProductExtract { aggregate, field } => one(self
+                .backend
+                .builder
+                .build_extract_value(
+                    self.value(*aggregate)?.into_struct_value(),
+                    *field,
+                    "product.extract",
+                )
+                .map_err(builder_error)?),
+            InstructionKind::ProductInsert {
+                aggregate,
+                field,
+                value,
+            } => one(self
+                .backend
+                .builder
+                .build_insert_value(
+                    self.value(*aggregate)?.into_struct_value(),
+                    self.value(*value)?,
+                    *field,
+                    "product.insert",
+                )
+                .map_err(builder_error)?
+                .into_struct_value()
+                .into()),
+            InstructionKind::BoolNot { value } => one(self
                 .backend
                 .builder
                 .build_not(self.int(*value)?, "bool.not")
                 .map(Into::into)
-                .map_err(builder_error)?,
+                .map_err(builder_error)?),
             InstructionKind::BoolCompare {
                 predicate,
                 left,
@@ -1121,7 +1476,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     BoolPredicate::Equal => IntPredicate::EQ,
                     BoolPredicate::NotEqual => IntPredicate::NE,
                 };
-                self.backend
+                one(self
+                    .backend
                     .builder
                     .build_int_compare(
                         predicate,
@@ -1130,18 +1486,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         "bool.compare",
                     )
                     .map(Into::into)
-                    .map_err(builder_error)?
+                    .map_err(builder_error)?)
             }
-            InstructionKind::FloatNegate { value } => self
+            InstructionKind::FloatNegate { value } => one(self
                 .backend
                 .builder
                 .build_float_neg(self.value(*value)?.into_float_value(), "float.negate")
                 .map(Into::into)
-                .map_err(builder_error)?,
+                .map_err(builder_error)?),
             InstructionKind::FloatBinary { op, left, right } => {
                 let left = self.value(*left)?.into_float_value();
                 let right = self.value(*right)?.into_float_value();
-                match op {
+                one(match op {
                     FloatBinaryOp::Add => {
                         self.backend
                             .builder
@@ -1164,7 +1520,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     }
                 }
                 .map(Into::into)
-                .map_err(builder_error)?
+                .map_err(builder_error)?)
             }
             InstructionKind::IntCompare {
                 predicate,
@@ -1179,7 +1535,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     LcirIntPredicate::Greater => IntPredicate::SGT,
                     LcirIntPredicate::GreaterEqual => IntPredicate::SGE,
                 };
-                self.backend
+                one(self
+                    .backend
                     .builder
                     .build_int_compare(
                         predicate,
@@ -1188,13 +1545,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         "int.compare",
                     )
                     .map(Into::into)
-                    .map_err(builder_error)?
+                    .map_err(builder_error)?)
             }
             InstructionKind::IntSuccessorBelow { value, .. } => {
                 // The CheckedArtifact boundary has already proved the exact
                 // dominating true-edge fact carried by the other operands.
                 // They are evidence, not runtime values for this operation.
-                self.backend
+                one(self
+                    .backend
                     .builder
                     .build_int_nsw_add(
                         self.int(*value)?,
@@ -1202,7 +1560,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         "int.successor",
                     )
                     .map(Into::into)
-                    .map_err(builder_error)?
+                    .map_err(builder_error)?)
             }
             InstructionKind::FloatCompare {
                 predicate,
@@ -1217,7 +1575,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     LcirFloatPredicate::OrderedGreater => LlvmFloatPredicate::OGT,
                     LcirFloatPredicate::OrderedGreaterEqual => LlvmFloatPredicate::OGE,
                 };
-                self.backend
+                one(self
+                    .backend
                     .builder
                     .build_float_compare(
                         predicate,
@@ -1226,25 +1585,57 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         "float.compare",
                     )
                     .map(Into::into)
-                    .map_err(builder_error)?
+                    .map_err(builder_error)?)
             }
             InstructionKind::DirectCall { callee, arguments } => {
                 let arguments = self.call_arguments(arguments, false)?;
-                call_basic(
+                let returned = call_basic(
                     &self.backend.builder,
                     self.backend.function(*callee)?,
                     &arguments,
                     "direct.call",
-                )?
+                )?;
+                let callee = self.backend.artifact.function(*callee).ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidFunctionReference",
+                        "direct LCIR callee is missing from its artifact",
+                    )
+                })?;
+                if callee.signature().inout_params().is_empty() {
+                    one(returned)
+                } else {
+                    let returned = returned.into_struct_value();
+                    (0..=callee.signature().inout_params().len())
+                        .map(|index| {
+                            let index = u32::try_from(index).map_err(|_| {
+                                CodegenError::new(
+                                    "ProgramTooLarge",
+                                    "too many direct-call writebacks",
+                                )
+                            })?;
+                            self.backend
+                                .builder
+                                .build_extract_value(returned, index, "direct.call.result")
+                                .map_err(builder_error)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                }
             }
         };
-        let [result] = instruction.results() else {
+        if instruction.results().len() != values.len() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                format!("{} does not have exactly one result", instruction.id()),
+                format!(
+                    "{} has {} checked results but LLVM emission produced {}",
+                    instruction.id(),
+                    instruction.results().len(),
+                    values.len()
+                ),
             ));
-        };
-        self.values[result.index()] = Some(value);
+        }
+        for (result, value) in instruction.results().iter().zip(values) {
+            self.values[result.index()] = Some(value);
+        }
         Ok(())
     }
 
@@ -1318,7 +1709,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 }
                 Ok(())
             }
-            TerminatorKind::Return(value) => self.emit_return(self.value(*value)?),
+            TerminatorKind::Return(value) => {
+                self.emit_return(self.value(*value)?, terminator.writebacks())
+            }
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal,
@@ -1395,9 +1788,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             ),
             TerminatorKind::Fault { code } => {
                 self.emit_source_fault(*code, terminator.origin())?;
-                self.emit_fault_return()
+                self.emit_fault_return(terminator.writebacks())
             }
-            TerminatorKind::ResumeFault => self.emit_fault_return(),
+            TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
         }
     }
 
@@ -1467,7 +1860,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         fault: &UnwindTarget,
     ) -> Result<(), CodegenError> {
         let predecessor = self.current_block()?;
-        self.add_result_incoming(normal, result, predecessor)?;
+        self.add_result_incoming(normal, &[result], predecessor)?;
         let report = self
             .backend
             .context
@@ -1595,11 +1988,24 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_extract_value(aggregate, 0, "invoke.status")
             .map_err(builder_error)?
             .into_int_value();
-        let result = self
-            .backend
-            .builder
-            .build_extract_value(aggregate, 1, "invoke.result")
-            .map_err(builder_error)?;
+        let callee_source = self.backend.artifact.function(callee).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                "invoked LCIR callee is missing from its artifact",
+            )
+        })?;
+        let mut logical_results =
+            Vec::with_capacity(1 + callee_source.signature().inout_params().len());
+        for index in 0..=callee_source.signature().inout_params().len() {
+            let field = u32::try_from(index.saturating_add(1))
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many invoke writebacks"))?;
+            logical_results.push(
+                self.backend
+                    .builder
+                    .build_extract_value(aggregate, field, "invoke.result")
+                    .map_err(builder_error)?,
+            );
+        }
         let succeeded = self
             .backend
             .builder
@@ -1611,8 +2017,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             )
             .map_err(builder_error)?;
         let predecessor = self.current_block()?;
-        self.add_result_incoming(normal, result, predecessor)?;
-        self.add_unwind_incoming(unwind, predecessor)?;
+        self.add_result_incoming(normal, &logical_results, predecessor)?;
+        self.add_unwind_incoming(unwind, &logical_results[1..], predecessor)?;
         self.backend
             .builder
             .build_conditional_branch(
@@ -1734,27 +2140,54 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn emit_return(&self, value: BasicValueEnum<'ctx>) -> Result<(), CodegenError> {
+    fn emit_return(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        writebacks: &[ValueId],
+    ) -> Result<(), CodegenError> {
+        let mut values = Vec::with_capacity(1 + writebacks.len());
+        values.push(value);
+        for writeback in writebacks {
+            values.push(self.value(*writeback)?);
+        }
         if self.source.effects().contains(Effects::MAY_FAULT) {
-            self.emit_status_return(self.backend.context.i32_type().const_zero(), value)
-        } else {
+            self.emit_status_return(self.backend.context.i32_type().const_zero(), &values)
+        } else if let [value] = values.as_slice() {
             self.backend
                 .builder
-                .build_return(Some(&value))
+                .build_return(Some(value))
+                .map_err(builder_error)?;
+            Ok(())
+        } else {
+            let return_type = self
+                .function
+                .get_type()
+                .get_return_type()
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "function returns void"))?
+                .into_struct_type();
+            let aggregate = self.build_return_aggregate(return_type, &values, 0)?;
+            self.backend
+                .builder
+                .build_return(Some(&aggregate))
                 .map_err(builder_error)?;
             Ok(())
         }
     }
 
-    fn emit_fault_return(&self) -> Result<(), CodegenError> {
+    fn emit_fault_return(&self, writebacks: &[ValueId]) -> Result<(), CodegenError> {
         let zero = self.backend.zero(self.source.signature().result())?;
-        self.emit_status_return(self.backend.context.i32_type().const_int(1, false), zero)
+        let mut values = Vec::with_capacity(1 + writebacks.len());
+        values.push(zero);
+        for writeback in writebacks {
+            values.push(self.value(*writeback)?);
+        }
+        self.emit_status_return(self.backend.context.i32_type().const_int(1, false), &values)
     }
 
     fn emit_status_return(
         &self,
         status: IntValue<'ctx>,
-        value: BasicValueEnum<'ctx>,
+        values: &[BasicValueEnum<'ctx>],
     ) -> Result<(), CodegenError> {
         if !self.source.effects().contains(Effects::MAY_FAULT) {
             return Err(CodegenError::new(
@@ -1768,23 +2201,55 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .get_return_type()
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "fallible function returns void"))?
             .into_struct_type();
-        let aggregate = self
+        let mut aggregate = self
             .backend
             .builder
             .build_insert_value(return_type.get_undef(), status, 0, "return.status")
             .map_err(builder_error)?
             .into_struct_value();
-        let aggregate = self
-            .backend
-            .builder
-            .build_insert_value(aggregate, value, 1, "return.value")
-            .map_err(builder_error)?
-            .into_struct_value();
+        for (index, value) in values.iter().enumerate() {
+            let index = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "too many LCIR return writebacks")
+                })?;
+            aggregate = self
+                .backend
+                .builder
+                .build_insert_value(aggregate, *value, index, "return.value")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
         self.backend
             .builder
             .build_return(Some(&aggregate))
             .map_err(builder_error)?;
         Ok(())
+    }
+
+    fn build_return_aggregate(
+        &self,
+        return_type: StructType<'ctx>,
+        values: &[BasicValueEnum<'ctx>],
+        offset: u32,
+    ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
+        let mut aggregate = return_type.get_undef();
+        for (index, value) in values.iter().enumerate() {
+            let index = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(offset))
+                .ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "too many LCIR return writebacks")
+                })?;
+            aggregate = self
+                .backend
+                .builder
+                .build_insert_value(aggregate, *value, index, "return.value")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        Ok(aggregate)
     }
 
     fn call_arguments(
@@ -1828,7 +2293,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         result: BasicValueEnum<'ctx>,
     ) -> Result<(), CodegenError> {
         let predecessor = self.current_block()?;
-        self.add_result_incoming(target, result, predecessor)?;
+        self.add_result_incoming(target, &[result], predecessor)?;
         self.backend
             .builder
             .build_unconditional_branch(self.block(target.block)?)
@@ -1838,7 +2303,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     fn unwind_branch(&self, target: &UnwindTarget) -> Result<(), CodegenError> {
         let predecessor = self.current_block()?;
-        self.add_unwind_incoming(target, predecessor)?;
+        self.add_unwind_incoming(target, &[], predecessor)?;
         self.backend
             .builder
             .build_unconditional_branch(self.block(target.block)?)
@@ -1857,23 +2322,34 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn add_unwind_incoming(
         &self,
         target: &UnwindTarget,
+        implicit: &[BasicValueEnum<'ctx>],
         predecessor: BasicBlock<'ctx>,
     ) -> Result<(), CodegenError> {
-        self.add_incoming(target.block, &target.arguments, predecessor)
+        self.add_implicit_incoming(target.block, implicit, &target.arguments, predecessor)
     }
 
     fn add_result_incoming(
         &self,
         target: &ResultTarget,
-        result: BasicValueEnum<'ctx>,
+        implicit: &[BasicValueEnum<'ctx>],
         predecessor: BasicBlock<'ctx>,
     ) -> Result<(), CodegenError> {
-        let mut values = Vec::with_capacity(target.arguments.len() + 1);
-        values.push(result);
-        for argument in &target.arguments {
+        self.add_implicit_incoming(target.block, implicit, &target.arguments, predecessor)
+    }
+
+    fn add_implicit_incoming(
+        &self,
+        block: BlockId,
+        implicit: &[BasicValueEnum<'ctx>],
+        arguments: &[ValueId],
+        predecessor: BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let mut values = Vec::with_capacity(implicit.len() + arguments.len());
+        values.extend_from_slice(implicit);
+        for argument in arguments {
             values.push(self.value(*argument)?);
         }
-        self.add_basic_incoming(target.block, &values, predecessor)
+        self.add_basic_incoming(block, &values, predecessor)
     }
 
     fn add_incoming(

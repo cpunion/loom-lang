@@ -78,7 +78,7 @@ fn scalar_negation_and_boolean_comparison_are_typed_pure_instructions() {
             .expect("return");
     }
 
-    let checked = program.finish_checked().expect("valid pure scalar LCIR");
+    let checked = program.finish_checked().expect("valid pure typed LCIR");
     let dump = dump_program(&checked);
     assert!(dump.contains("bool.compare.not_equal"));
     assert!(dump.contains("float.negate"));
@@ -242,9 +242,7 @@ fn fallible_results_exist_only_on_normal_edges_and_faults_resume_on_unwind_paths
             .expect("resume fault");
     }
 
-    let checked = program
-        .finish_checked()
-        .expect("valid fallible scalar LCIR");
+    let checked = program.finish_checked().expect("valid fallible typed LCIR");
     let first = dump_program(&checked);
     let second = dump_program(&checked);
     assert_eq!(first, second);

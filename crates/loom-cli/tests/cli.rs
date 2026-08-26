@@ -670,7 +670,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
         .arg("run")
         .arg(&scalar.0)
         .output()
-        .expect("run scalar artifact through the production CLI");
+        .expect("run typed artifact through the production CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
     let tests = loomc()

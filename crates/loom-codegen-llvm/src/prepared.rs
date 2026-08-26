@@ -8,7 +8,7 @@ use std::path::Path;
 use loom_codegen_ir::{
     CheckedArtifact, InvalidRootCode, LoweringDefectCode, LoweringError, LoweringOutcome,
     ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, TargetLayout,
-    analyze_source_reachability, lower_scalar_artifact, write_artifact_identity,
+    analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
 };
 use loom_mir::{CheckedProgram, Type};
 use serde::Serialize;
@@ -23,7 +23,7 @@ use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
 use crate::{CodegenError, NativeTargetIdentity};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v1";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v2";
 
 /// Policy controlling the whole-artifact native route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,7 +223,7 @@ pub fn prepare_native_object(
                 )
             })?;
             let request = source_request(&options);
-            match lower_scalar_artifact(mir, &request, layout)
+            match lower_typed_artifact(mir, &request, layout)
                 .map_err(NativePreparationError::lowering)?
             {
                 LoweringOutcome::Complete(artifact) => PreparedRoute::Lcir(artifact),
@@ -513,7 +513,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v1"
+            "loom-lcir-native-object-v2"
         );
     }
 }

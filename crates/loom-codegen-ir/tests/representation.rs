@@ -2,10 +2,10 @@ use loom_codegen_ir::{Repr, RepresentationPlan, ScalarRepr, TargetLayout};
 use loom_mir::Type;
 
 #[test]
-fn scalar_representation_catalog_is_canonical() {
+fn direct_representation_catalog_is_canonical() {
     let target = TargetLayout::new(64).expect("64-bit pointers are valid");
-    let first = RepresentationPlan::scalar(target);
-    let second = RepresentationPlan::scalar(target);
+    let first = RepresentationPlan::direct(target);
+    let second = RepresentationPlan::direct(target);
 
     assert_ne!(first, second, "plans from distinct programs are branded");
     assert_eq!(first.target().pointer_bits(), 64);

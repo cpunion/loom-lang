@@ -1,6 +1,6 @@
 use loom_codegen_ir::{
     InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
-    SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program, lower_scalar_artifact,
+    SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program, lower_typed_artifact,
 };
 use loom_core::FileId;
 use loom_hir::{SourceUnit, lower_files};
@@ -36,14 +36,14 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
 
 fn lower_run(source: &str) -> LoweringOutcome {
     let mir = compile(source);
-    lower_scalar_artifact(
+    lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
         TargetLayout::new(64).expect("test target"),
     )
-    .expect("lower scalar artifact")
+    .expect("lower typed artifact")
 }
 
 fn complete_dump(source: &str) -> String {
@@ -56,7 +56,7 @@ fn complete_dump(source: &str) -> String {
 #[test]
 fn empty_tests_are_one_complete_empty_artifact() {
     let mir = compile("module empty\n");
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
         TargetLayout::new(64).expect("test target"),
@@ -73,7 +73,7 @@ fn empty_tests_are_one_complete_empty_artifact() {
 fn ordered_test_roots_form_one_complete_artifact() {
     let mir =
         compile("module tests\n\ntest fn first() { Unit }\n\ntest fn second() Unit { Unit }\n");
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
         TargetLayout::new(64).expect("test target"),
@@ -187,14 +187,14 @@ enum Problem { Failed }
 test fn fallible() Result[Unit, Problem] { Ok(Unit) }
 ",
     );
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
         TargetLayout::new(64).expect("test target"),
     )
     .expect("a sema-valid test signature must reach coverage classification");
     let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("Result-returning test is outside the scalar slice")
+        panic!("Result-returning test is outside the typed slice")
     };
     assert!(
         report
@@ -246,7 +246,7 @@ fn sema_invalid_test_return_is_an_invalid_root_not_fallback() {
     .into_checked()
     .expect("checked MIR permits the command boundary to validate test returns");
 
-    let error = lower_scalar_artifact(
+    let error = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
         TargetLayout::new(64).expect("test target"),
@@ -302,7 +302,7 @@ fn hidden_run_root_inputs_are_invalid_not_unsupported() {
         }
         .into_checked()
         .expect("hidden run inputs are valid inside checked MIR");
-        let error = lower_scalar_artifact(
+        let error = lower_typed_artifact(
             &mir,
             &SourceArtifactRequest::Run {
                 entry: "main".into(),
@@ -354,7 +354,7 @@ fn hidden_run_root_inputs_are_invalid_not_unsupported() {
 #[test]
 fn invalid_run_name_is_an_error_not_unsupported() {
     let mir = compile("module roots\n\npub fn main() Unit { Unit }\n");
-    let error = lower_scalar_artifact(
+    let error = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "missing".into(),
@@ -599,7 +599,7 @@ fn diverging_prefixes_do_not_require_unmaterialized_unsupported_heads() {
     .into_checked()
     .expect("checked dead-head MIR");
 
-    let LoweringOutcome::Complete(artifact) = lower_scalar_artifact(
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
         TargetLayout::new(64).expect("target"),
@@ -626,7 +626,7 @@ pub fn main() Unit {
 }
 "#,
     );
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -637,7 +637,7 @@ pub fn main() Unit {
     let LoweringOutcome::Unsupported(report) = outcome else {
         panic!("reachable Text must select whole-artifact fallback")
     };
-    let repeated = lower_scalar_artifact(
+    let repeated = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -860,7 +860,7 @@ fn arithmetic_after_a_diverging_operand_does_not_seed_fault_effects() {
     }
     .into_checked()
     .expect("checked diverging arithmetic MIR");
-    let LoweringOutcome::Complete(artifact) = lower_scalar_artifact(
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -1040,7 +1040,7 @@ fn checked_mir_move_reassignment_and_readonly_inherent_scalar_call_are_supported
     .into_checked()
     .expect("checked manual scalar MIR");
 
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -1212,7 +1212,7 @@ fn conditional_moves_preserve_only_values_available_on_continuing_paths() {
     .into_checked()
     .expect("conditional moves satisfy checked-MIR continuation rules");
 
-    let LoweringOutcome::Complete(artifact) = lower_scalar_artifact(
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -1528,7 +1528,7 @@ fn checked_mir_locals_initialized_in_a_block_or_both_if_arms_survive() {
     .into_checked()
     .expect("checked local-flow MIR");
 
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -1624,7 +1624,7 @@ pub fn main() Unit {
 }
 ",
     );
-    let outcome = lower_scalar_artifact(
+    let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
@@ -1649,4 +1649,387 @@ pub fn main() Unit {
         "{features:?}"
     );
 }
+
+#[test]
+fn closed_pod_records_lower_to_products_with_direct_and_fault_writebacks() {
+    let dump = complete_dump(
+        r"module product_records
+
+record Counter { total Int, calls Int }
+record Holder { counter Counter, enabled Bool }
+
+impl Counter {
+    method reset(mut self) Unit {
+        self.total = 0
+        Unit
+    }
+
+    method add(mut self, value Int) Unit {
+        self.total = self.total + value
+        self.calls = self.calls + 1
+        Unit
+    }
+}
+
+impl Holder {
+    method setTotal(mut self, value Int) Unit {
+        self.counter.total = value
+        Unit
+    }
+}
+
+fn make() Holder {
+    var holder = Holder {
+        counter = Counter { total = 1, calls = 2 },
+        enabled = true,
+    }
+    holder.setTotal(3)
+    holder
+}
+
+pub fn main() Unit {
+    var counter = Counter { total = 0, calls = 0 }
+    counter.reset()
+    counter.add(4)
+    discard counter.total
+    let holder = make()
+    discard holder.counter.total
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("product p0(t3, t3)"), "{dump}");
+    assert!(dump.contains("product p1(t5, t2)"), "{dump}");
+    assert!(dump.contains("registration k5 = Nominal#"), "{dump}");
+    assert!(dump.contains("=> t5"), "{dump}");
+    assert!(dump.contains("registration k6 = Nominal#"), "{dump}");
+    assert!(dump.contains("=> t6"), "{dump}");
+    assert!(dump.contains("product.construct"), "{dump}");
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("product.insert"), "{dump}");
+    assert!(dump.contains("inout=[0]"), "{dump}");
+    assert!(dump.contains("writebacks("), "{dump}");
+    assert!(dump.contains(" = call "), "{dump}");
+    assert!(dump.contains("invoke "), "{dump}");
+}
+
+#[test]
+fn unsupported_record_boundaries_select_one_atomic_fallback() {
+    let managed = lower_run(
+        r#"module managed_record
+
+record Message { text Text }
+
+pub fn main() Unit {
+    let message = Message { text = "managed" }
+    discard message.text
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Unsupported(managed) = managed else {
+        panic!("managed record must select fallback")
+    };
+    assert!(
+        managed.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::SignatureType
+                | UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::NominalValue
+                | UnsupportedFeature::TextConstant
+        )),
+        "{managed:?}"
+    );
+
+    let invariant = lower_run(
+        r"module invariant_record
+
+record Positive {
+    value Int
+    invariant self.value >= 0
+}
+
+pub fn main() Unit {
+    discard Positive { value = 1 }
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(invariant) = invariant else {
+        panic!("invariant/runtime construction must select fallback")
+    };
+    assert!(
+        invariant.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::NominalValue
+                | UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::PatternMatch
+        )),
+        "{invariant:?}"
+    );
+
+    let projected_inout = lower_run(
+        r"module projected_inout
+
+record Counter { value Int }
+record Holder { counter Counter }
+
+impl Counter {
+    method add(mut self, value Int) Unit {
+        self.value = self.value + value
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    var holder = Holder { counter = Counter { value = 0 } }
+    holder.counter.add(1)
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(projected_inout) = projected_inout else {
+        panic!("projected inout must select fallback atomically")
+    };
+    assert!(projected_inout.items().iter().any(|item| {
+        item.feature() == UnsupportedFeature::InOutArgument && item.path().contains("arguments[0]")
+    }));
+    assert!(projected_inout.items().iter().any(|item| {
+        item.feature() == UnsupportedFeature::ProjectedPlace
+            && item.path().contains("arguments[0].place")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn over_budget_product_depth_and_structure_select_atomic_fallback() {
+    use loom_mir::{
+        Block, CallArgument, CallPlan, CallTarget, Constant, ConstructionMode, Expr, ExprKind,
+        FieldDef, Function, FunctionId, LocalDecl, LocalId, Program, Statement, StatementKind,
+        Type, TypeDef, TypeDefKind, TypeId,
+    };
+
+    const OVER_BUDGET_RECORDS: usize = 257;
+    let span = loom_core::Span::default();
+    let nominal = |index: usize| {
+        Type::Nominal(
+            TypeId(u32::try_from(index).expect("test type identity")),
+            Vec::new(),
+        )
+    };
+    let record_type = |index: usize, fields: Vec<FieldDef>| TypeDef {
+        id: TypeId(u32::try_from(index).expect("test type identity")),
+        name: format!("R{index}"),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields,
+            invariant: None,
+        },
+    };
+    let function = |id: usize, name: String, result: Type, tail: Expr| {
+        let mut function = Function {
+            id: FunctionId(u32::try_from(id).expect("test function identity")),
+            name,
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: result,
+            receiver: None,
+            body: Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(tail)),
+                span,
+            },
+            call_plan: CallPlan::default(),
+        };
+        function.renumber_expr_ids().expect("number test function");
+        function
+    };
+    let root = |id: usize, record: Type, callee: FunctionId| {
+        let call = Expr::new(
+            ExprKind::Call {
+                target: CallTarget::Direct(callee),
+                type_arguments: Vec::new(),
+                arguments: Vec::new(),
+                witnesses: Vec::new(),
+            },
+            record.clone(),
+            span,
+        );
+        let mut root = Function {
+            id: FunctionId(u32::try_from(id).expect("root identity")),
+            name: "manual.main".into(),
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: vec![LocalDecl {
+                id: LocalId(0),
+                name: "value".into(),
+                ty: record,
+                mutable: false,
+                span,
+            }],
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: call,
+                    },
+                    span,
+                }],
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::Constant(Constant::Unit),
+                    Type::Unit,
+                    span,
+                ))),
+                span,
+            },
+            call_plan: CallPlan::default(),
+        };
+        root.renumber_expr_ids().expect("number root");
+        root
+    };
+
+    let deep_types = (0..OVER_BUDGET_RECORDS)
+        .map(|index| {
+            let field = if index + 1 == OVER_BUDGET_RECORDS {
+                FieldDef {
+                    name: "value".into(),
+                    ty: Type::Int,
+                    span,
+                }
+            } else {
+                FieldDef {
+                    name: "next".into(),
+                    ty: nominal(index + 1),
+                    span,
+                }
+            };
+            record_type(index, vec![field])
+        })
+        .collect::<Vec<_>>();
+    let mut deep_functions: Vec<Function> = Vec::with_capacity(OVER_BUDGET_RECORDS + 1);
+    for index in (0..OVER_BUDGET_RECORDS).rev() {
+        let field = if index + 1 == OVER_BUDGET_RECORDS {
+            Expr::new(ExprKind::Constant(Constant::Int(0)), Type::Int, span)
+        } else {
+            let child = deep_functions.last().expect("child factory").id;
+            Expr::new(
+                ExprKind::Call {
+                    target: CallTarget::Direct(child),
+                    type_arguments: Vec::new(),
+                    arguments: Vec::<CallArgument>::new(),
+                    witnesses: Vec::new(),
+                },
+                nominal(index + 1),
+                span,
+            )
+        };
+        let result = nominal(index);
+        deep_functions.push(function(
+            deep_functions.len(),
+            format!("manual.make_r{index}"),
+            result.clone(),
+            Expr::new(
+                ExprKind::Record {
+                    ty: TypeId(u32::try_from(index).expect("record identity")),
+                    type_arguments: Vec::new(),
+                    fields: vec![field],
+                    construction: ConstructionMode::Plain,
+                },
+                result,
+                span,
+            ),
+        ));
+    }
+    let deep_factory = deep_functions.last().expect("root factory").id;
+    deep_functions.push(root(OVER_BUDGET_RECORDS, nominal(0), deep_factory));
+    let deep = Program {
+        types: deep_types,
+        functions: deep_functions,
+        exports: BTreeMap::from([(
+            "main".into(),
+            FunctionId(u32::try_from(OVER_BUDGET_RECORDS).expect("root identity")),
+        )]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("checked deep product graph");
+
+    let wide_id = TypeId(0);
+    let wide_types = vec![record_type(
+        0,
+        (0..OVER_BUDGET_RECORDS)
+            .map(|index| FieldDef {
+                name: format!("f{index}"),
+                ty: Type::Int,
+                span,
+            })
+            .collect(),
+    )];
+    let wide_type = Type::Nominal(wide_id, Vec::new());
+    let wide_fields = (0..OVER_BUDGET_RECORDS)
+        .map(|_| Expr::new(ExprKind::Constant(Constant::Int(0)), Type::Int, span))
+        .collect();
+    let wide_factory = function(
+        0,
+        "manual.make_wide".into(),
+        wide_type.clone(),
+        Expr::new(
+            ExprKind::Record {
+                ty: wide_id,
+                type_arguments: Vec::new(),
+                fields: wide_fields,
+                construction: ConstructionMode::Plain,
+            },
+            wide_type.clone(),
+            span,
+        ),
+    );
+    let wide = Program {
+        types: wide_types,
+        functions: vec![wide_factory, root(1, wide_type, FunctionId(0))],
+        exports: BTreeMap::from([("main".into(), FunctionId(1))]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("checked wide product graph");
+
+    for mir in [&deep, &wide] {
+        let outcome = lower_typed_artifact(
+            mir,
+            &SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect("over-budget product classification");
+        let LoweringOutcome::Unsupported(report) = outcome else {
+            panic!("an over-budget direct product graph must select atomic fallback")
+        };
+        assert!(
+            report.items().iter().any(|item| matches!(
+                item.feature(),
+                UnsupportedFeature::SignatureType
+                    | UnsupportedFeature::ExpressionType
+                    | UnsupportedFeature::NominalValue
+            )),
+            "{report:?}"
+        );
+    }
+}
+
 use std::collections::BTreeMap;

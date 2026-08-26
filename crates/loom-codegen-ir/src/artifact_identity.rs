@@ -7,7 +7,7 @@ use crate::{ArtifactKind, CheckedArtifact, DumpOptions, write_program_with_optio
 /// This is an invalidation boundary, not a compatibility promise. A change to
 /// the encoded LCIR meaning must change this number before the identity is used
 /// by a persistent object cache.
-pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 2;
+pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 3;
 
 /// Route tag which separates whole-artifact LCIR code generation from other
 /// native object pipelines.

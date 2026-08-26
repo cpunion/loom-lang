@@ -422,9 +422,9 @@ fn scalar_abis_direct_calls_phi_predicates_and_float_bits_are_mechanical() {
 
     let artifact = program
         .finish_checked()
-        .expect("checked scalar LCIR")
+        .expect("checked typed LCIR")
         .into_artifact(ArtifactRootRequest::Run(root))
-        .expect("closed scalar artifact");
+        .expect("closed typed artifact");
     let directory = tempfile::tempdir().expect("temp directory");
     let ir = emit_ir(&artifact, &directory, "scalar-abi");
     for signature in [

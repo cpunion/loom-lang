@@ -88,7 +88,7 @@ fn branch_merge_is_a_typed_block_parameter_and_dump_is_deterministic() {
     assert_eq!(first_dump, second_dump);
     assert_eq!(
         first_dump,
-        r#"lcir 1
+        r#"lcir 2
 target pointer_bits=64
 
 repr r0 = uninhabited
@@ -102,6 +102,12 @@ type t1 = Unit => r1
 type t2 = Bool => r2
 type t3 = Int => r3
 type t4 = Float => r4
+
+registration k0 = Never => t0
+registration k1 = Unit => t1
+registration k2 = Bool => t2
+registration k3 = Int => t3
+registration k4 = Float => t4
 
 instance i0 = source=f7 types=[] witnesses=[]
 
