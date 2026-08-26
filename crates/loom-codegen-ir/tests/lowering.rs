@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use loom_codegen_ir::{
     InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
     SourceArtifactRequest, TargetLayout, UnsupportedFeature, artifact_identity, dump_program,
@@ -2213,6 +2215,61 @@ pub fn main() Unit {
     Unit
 }
 ",
+        r"module list_sum
+
+enum Values { Items(List[Int]) }
+
+pub fn main() Unit {
+    discard Values.Items(List[Int]())
+    Unit
+}
+",
+        r"module refined_sum
+
+type Positive = Int where self >= 0
+
+enum Measure { Value(Positive) }
+
+pub fn main() Unit {
+    discard Measure.Value(Positive(1))
+    Unit
+}
+",
+        r"module dynamic_sum
+
+dyn concept Numbered {
+    method number(self) Int
+}
+
+record Number { value Int }
+
+impl Numbered for Number {
+    method number(self) Int { self.value }
+}
+
+enum Packet { Item(dyn Numbered) }
+
+fn erase(value Number) dyn Numbered { value }
+
+pub fn main() Unit {
+    discard Packet.Item(erase(Number { value = 1 }))
+    Unit
+}
+",
+        r"module task_sum
+
+enum Work { Pending(Task[Int]) }
+
+async fn child() Int { 1 }
+
+pub async fn main() Unit {
+    let work = Work.Pending(child())
+    match work {
+        Pending(task) => { discard task.await }
+    }
+    Unit
+}
+",
     ] {
         let LoweringOutcome::Unsupported(report) = lower_run(source) else {
             panic!("unsupported sum graph must select atomic fallback")
@@ -2222,7 +2279,32 @@ pub fn main() Unit {
             UnsupportedFeature::ExpressionType
                 | UnsupportedFeature::NominalValue
                 | UnsupportedFeature::TextConstant
+                | UnsupportedFeature::ListValue
+                | UnsupportedFeature::RefinedValue
+                | UnsupportedFeature::View
+                | UnsupportedFeature::AsyncFunction
+                | UnsupportedFeature::TaskOperation
         )));
+    }
+}
+
+#[test]
+fn over_budget_match_plans_select_atomic_fallback() {
+    for constant_arms in [300_usize, 513] {
+        let mut arms = String::new();
+        for value in 0..constant_arms {
+            writeln!(arms, "        {value} => {value}").expect("write match arm");
+        }
+        let source = format!(
+            "module match_budget_{constant_arms}\n\nfn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(42)\n    Unit\n}}\n"
+        );
+        let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
+            panic!("over-budget match must select atomic fallback")
+        };
+        assert!(report.items().iter().any(|item| {
+            item.feature() == UnsupportedFeature::PatternMatch
+                && item.path() == "function[0].body.tail"
+        }));
     }
 }
 

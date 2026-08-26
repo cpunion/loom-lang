@@ -149,6 +149,16 @@ fn emit_and_run_legacy_with_fault_format(
     command.output().expect("run legacy comparison executable")
 }
 
+fn emit_and_run_legacy_tests(program: &CheckedProgram, stem: &str) -> Output {
+    let directory = tempfile::tempdir().expect("create legacy test output directory");
+    let executable = directory.path().join(stem);
+    emit_native(program, &executable, &EmitOptions::tests())
+        .expect("emit legacy comparison test executable");
+    Command::new(executable)
+        .output()
+        .expect("run legacy comparison test executable")
+}
+
 #[test]
 fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
     let source = include_str!("../../../fixtures/lcir-debug-fallible/main.loom");
@@ -417,6 +427,21 @@ fn assert_no_legacy_surface(ir: &str) {
         assert!(
             !ir.contains(forbidden),
             "legacy/EH token `{forbidden}` in source-lowered IR:\n{ir}"
+        );
+    }
+}
+
+fn assert_no_indirect_calls(ir: &str) {
+    for line in ir.lines() {
+        let Some(call) = line.find("call ") else {
+            continue;
+        };
+        let callee_prefix = line[call + "call ".len()..]
+            .split_once('(')
+            .map_or(line, |(prefix, _)| prefix);
+        assert!(
+            callee_prefix.contains('@'),
+            "indirect LLVM call in typed LCIR:\n{line}\n\n{ir}"
         );
     }
 }
@@ -1416,6 +1441,391 @@ pub fn main() Unit {
         );
     }
     assert_pure_surface(&release.ir);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end fixture keeps tagless, tag-only, aligned tagged, nested aggregate, dead managed, and three-backend evidence together"
+)]
+fn closed_sums_cross_exact_abi_and_match_across_three_backends() {
+    let source = r"module lcir_source_sums
+
+enum Single { Wrapped(Int) }
+
+enum Flag { Off, On }
+
+enum Odd {
+    Empty
+    Wide(Int)
+    Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+}
+
+enum Dead { Managed(Text) }
+
+fn unreachableManaged(value Text) Dead { Dead.Managed(value) }
+
+record Envelope { value Odd }
+
+enum Container {
+    Boxed(Envelope)
+    Paired((Int, Bool))
+}
+
+fn unwrap(input Single) Int {
+    match input { Wrapped(value) => value }
+}
+
+fn flag(input Flag) Int {
+    match input {
+        Off => 0
+        On => 1
+    }
+}
+
+fn odd(input Odd) Int {
+    match input {
+        Empty => 0
+        Wide(0) => 700
+        Wide(value) => value
+        Bytes(a, b, c, d, e, f, g, h, i) => {
+            discard a
+            discard b
+            discard c
+            discard d
+            discard e
+            discard f
+            discard g
+            discard h
+            if i { 9 } else { 8 }
+        }
+    }
+}
+
+fn container(input Container) Int {
+    match input {
+        Boxed(envelope) => odd(envelope.value)
+        Paired(pair) => {
+            let value, enabled = pair
+            if enabled { value } else { 0 }
+        }
+    }
+}
+
+fn requireEqual(actual Int, expected Int) Unit {
+    if actual == expected { Unit } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    requireEqual(unwrap(Single.Wrapped(41)), 41)
+    requireEqual(flag(Flag.Off), 0)
+    requireEqual(flag(Flag.On), 1)
+    requireEqual(odd(Odd.Empty), 0)
+    requireEqual(odd(Odd.Wide(0)), 700)
+    requireEqual(odd(Odd.Wide(73)), 73)
+    requireEqual(odd(Odd.Bytes(false, false, false, false, false, false, false, false, true)), 9)
+    requireEqual(container(Container.Boxed(Envelope { value = Odd.Wide(81) })), 81)
+    requireEqual(container(Container.Paired((12, true))), 12)
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic sum route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-sums",
+        NativeObjectOptions {
+            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            ..NativeObjectOptions::default()
+        },
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-sums");
+
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(lcir.ir.contains("switch i8"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("name: \"LoomSum<t"), "{}", lcir.ir);
+    assert!(
+        lcir.ir.lines().any(|line| {
+            line.contains("name: \"LoomSum<t")
+                && line.contains("size: 192")
+                && line.contains("align: 64")
+        }),
+        "the 9-byte/align-8 carrier must round to an exact 24-byte tagged ABI:\n{}",
+        lcir.ir
+    );
+    assert_no_indirect_calls(&lcir.ir);
+    assert_no_legacy_surface(&lcir.ir);
+}
+
+#[test]
+fn release_sum_ir_eliminates_carrier_scratch_and_runtime_surfaces() {
+    let source = r"module lcir_release_sums
+
+enum Odd {
+    Empty
+    Wide(Int)
+    Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+}
+
+fn score(input Odd) Int {
+    match input {
+        Empty => 0
+        Wide(value) => value
+        Bytes(a, b, c, d, e, f, g, h, i) => {
+            discard a
+            discard b
+            discard c
+            discard d
+            discard e
+            discard f
+            discard g
+            discard h
+            if i { 9 } else { 8 }
+        }
+    }
+}
+
+pub fn main() Unit {
+    discard score(Odd.Empty)
+    discard score(Odd.Wide(73))
+    discard score(Odd.Bytes(false, false, false, false, false, false, false, false, true))
+    Unit
+}
+";
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let release = emit_and_run_lcir_with_options(
+        &artifact,
+        "release-sums",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+
+    assert!(release.output.status.success(), "{:?}", release.output);
+    assert_eq!(release.output.stdout, b"Unit\n");
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_runtime_",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(
+            !release.ir.contains(forbidden),
+            "unexpected `{forbidden}` in release sum IR:\n{}",
+            release.ir
+        );
+    }
+    assert_no_indirect_calls(&release.ir);
+    assert_pure_surface(&release.ir);
+}
+
+#[test]
+fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
+    let source = r"module lcir_msvc_sums
+
+enum Packet {
+    Empty
+    Wide(Int)
+    Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+}
+
+fn score(input Packet) Int {
+    match input {
+        Empty => 0
+        Wide(value) => value
+        Bytes(a, b, c, d, e, f, g, h, i) => {
+            discard a
+            discard b
+            discard c
+            discard d
+            discard e
+            discard f
+            discard g
+            discard h
+            if i { 9 } else { 8 }
+        }
+    }
+}
+
+pub fn main() Unit {
+    discard score(Packet.Wide(7))
+    Unit
+}
+";
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create MSVC sum output directory");
+    let object = directory.path().join("sum.obj");
+    let ir_path = directory.path().join("sum-msvc.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            target_triple: Some("x86_64-pc-windows-msvc".to_owned()),
+            optimization: OptimizationProfile::Release,
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit direct closed-sum MSVC object");
+    assert!(object.is_file());
+    let ir = std::fs::read_to_string(ir_path).expect("read MSVC sum IR");
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_runtime_",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
+    }
+    assert_no_indirect_calls(&ir);
+    assert_pure_surface(&ir);
+}
+
+#[test]
+fn result_unit_test_outcomes_drive_native_and_legacy_harnesses() {
+    let source = r"module lcir_result_tests
+
+enum Problem { Failed(Int) }
+
+test fn succeeds() Result[Unit, Problem] { Ok(Unit) }
+
+test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
+";
+    let program = compile_source(source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 2);
+    assert_eq!(
+        interpreted
+            .iter()
+            .find(|result| result.name == "lcir_result_tests.succeeds")
+            .expect("success test")
+            .status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    assert_eq!(
+        interpreted
+            .iter()
+            .find(|result| result.name == "lcir_result_tests.fails")
+            .expect("failure test")
+            .status,
+        TestStatus::Failed,
+        "{interpreted:#?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let lcir = emit_and_run_lcir(&artifact, "result-tests");
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-result-tests");
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!legacy.status.success(), "{legacy:?}");
+    let stdout = String::from_utf8(lcir.output.stdout).expect("UTF-8 LCIR test output");
+    assert!(
+        stdout.contains("passed lcir_result_tests.succeeds"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("failed lcir_result_tests.fails"),
+        "{stdout}"
+    );
+    assert!(lcir.ir.contains("test.result.succeeded"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom_runtime_"), "{}", lcir.ir);
+    assert_no_indirect_calls(&lcir.ir);
+    assert_no_legacy_surface(&lcir.ir);
+}
+
+#[test]
+fn fallible_result_test_checks_runtime_status_before_the_sum_outcome() {
+    let source = r"module lcir_fallible_result_tests
+
+enum Problem { Failed }
+
+test fn passes() Result[Unit, Problem] { Ok(Unit) }
+
+test fn faults() Result[Unit, Problem] {
+    discard 1 / 0
+    Ok(Unit)
+}
+";
+    let program = compile_source(source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 2);
+    assert_eq!(
+        interpreted
+            .iter()
+            .find(|result| result.name == "lcir_fallible_result_tests.passes")
+            .expect("passing test")
+            .status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    assert_eq!(
+        interpreted
+            .iter()
+            .find(|result| result.name == "lcir_fallible_result_tests.faults")
+            .expect("faulting test")
+            .status,
+        TestStatus::Failed,
+        "{interpreted:#?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "fallible-result-tests",
+        NativeObjectOptions {
+            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            ..NativeObjectOptions::default()
+        },
+    );
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    let stdout = String::from_utf8(lcir.output.stdout).expect("UTF-8 LCIR test output");
+    assert!(
+        stdout.contains("passed lcir_fallible_result_tests.passes"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("failed lcir_fallible_result_tests.faults"),
+        "{stdout}"
+    );
+    assert!(lcir.ir.contains("test.outcome.succeeded"), "{}", lcir.ir);
+    assert!(
+        lcir.ir.contains("name: \"LoomFallible<LoomSum<t"),
+        "{}",
+        lcir.ir
+    );
+    assert_no_indirect_calls(&lcir.ir);
+    assert_fallible_surface(&lcir.ir);
 }
 
 #[test]

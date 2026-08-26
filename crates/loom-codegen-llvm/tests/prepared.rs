@@ -312,6 +312,39 @@ pub fn main() Unit { consume((1, 1.0)) }
 }
 
 #[test]
+fn closed_sum_semantics_participate_in_the_lcir_object_cache_identity() {
+    let fingerprint = |source| {
+        let program = compile_source(source);
+        let prepared = prepare_native_object(
+            &program,
+            EmitOptions::run("main"),
+            NativeRoutePolicy::Automatic,
+        )
+        .expect("prepare closed-sum artifact");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        prepared_native_object_fingerprint(&prepared).expect("fingerprint closed-sum artifact")
+    };
+    let boolean = fingerprint(
+        r"module prepared_sum_identity
+
+enum Choice { Empty, Value(Bool) }
+
+pub fn main() Unit { discard Choice.Value(true) }
+",
+    );
+    let floating = fingerprint(
+        r"module prepared_sum_identity
+
+enum Choice { Empty, Value(Float) }
+
+pub fn main() Unit { discard Choice.Value(1.0) }
+",
+    );
+
+    assert_ne!(boolean, floating);
+}
+
+#[test]
 fn fingerprint_excludes_output_and_ir_side_artifact_paths() {
     let program = scalar_program();
     let fingerprint = |path| {
