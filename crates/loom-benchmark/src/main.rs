@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use wait_timeout::ChildExt;
 
 const REPORT_KIND: &str = "loom-cross-language-basic-benchmark";
 const REPORT_WARNING: &str = "Controlled microbenchmark evidence, not a general language ranking.";
@@ -17,7 +18,6 @@ const THROUGHPUT_RUNS: usize = 5;
 const QUICK_TIMEOUT: Duration = Duration::from_secs(10);
 const STANDARD_TIMEOUT: Duration = Duration::from_secs(30);
 const THROUGHPUT_TIMEOUT: Duration = Duration::from_secs(60);
-const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Clone, Copy)]
 struct CaseSpec {
@@ -213,6 +213,7 @@ struct ConfigReport {
     warmups: usize,
     measured_runs: usize,
     invocation_timeout_ms: u64,
+    timing_policy: &'static str,
     optimization_policy: &'static str,
     execution_order: &'static str,
 }
@@ -324,6 +325,7 @@ fn run() -> Result<(), String> {
             warmups: config.warmups,
             measured_runs: config.runs,
             invocation_timeout_ms: duration_millis(config.invocation_timeout),
+            timing_policy: "spawn_to_exit_notification",
             optimization_policy: "native release/O2, no cross-language LTO assumption",
             execution_order: "rotated by case and round to reduce fixed-order bias",
         },
@@ -762,7 +764,6 @@ fn run_fixture(
 ) -> Result<Duration, String> {
     let scale = scale.to_string();
     let expected = expected.to_string();
-    let started = Instant::now();
     let action = format!("execute {} {case}", language.language);
     let mut command = Command::new(&language.executable);
     command
@@ -770,11 +771,10 @@ fn run_fixture(
         .envs(language.runtime_environment.iter().copied())
         .env("LC_ALL", "C")
         .current_dir(workspace);
-    let output = output_with_timeout(&mut command, timeout, &action)?;
-    let elapsed = started.elapsed();
-    require_success(output, &action).and_then(|stdout| {
+    let timed_output = output_with_timeout(&mut command, timeout, &action)?;
+    require_success(timed_output.output, &action).and_then(|stdout| {
         if matches!(stdout.as_bytes(), b"Unit\n" | b"Unit\r\n") {
-            Ok(elapsed)
+            Ok(timed_output.elapsed)
         } else {
             Err(format!(
                 "execute {} {case}: expected one platform line `Unit`, got {stdout:?}",
@@ -792,29 +792,21 @@ fn output_with_timeout(
     command: &mut Command,
     timeout: Duration,
     action: &str,
-) -> Result<Output, String> {
+) -> Result<TimedOutput, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| format!("{action}: {error}"))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| format!("collect {action} output: {error}"));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("poll {action}: {error}"));
-            }
+    match child.wait_timeout(timeout) {
+        Ok(Some(_)) => {
+            let elapsed = started.elapsed();
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("collect {action} output: {error}"))?;
+            Ok(TimedOutput { output, elapsed })
         }
-
-        let elapsed = started.elapsed();
-        if elapsed >= timeout {
+        Ok(None) => {
             let kill_error = child.kill().err();
             let output = child
                 .wait_with_output()
@@ -823,15 +815,25 @@ fn output_with_timeout(
                 || "process killed and reaped".to_owned(),
                 |error| format!("kill reported {error}"),
             );
-            return Err(format!(
+            Err(format!(
                 "{action} timed out after {} ms ({kill_note})\nstdout:\n{}\nstderr:\n{}",
                 duration_millis(timeout),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
-            ));
+            ))
         }
-        std::thread::sleep(CHILD_POLL_INTERVAL.min(timeout - elapsed));
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("wait for {action}: {error}"))
+        }
     }
+}
+
+#[derive(Debug)]
+struct TimedOutput {
+    output: Output,
+    elapsed: Duration,
 }
 
 fn execute_command(
@@ -1060,7 +1062,7 @@ fn ns_to_ms(nanoseconds: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
     use super::{
@@ -1211,6 +1213,7 @@ mod tests {
                 warmups: 2,
                 measured_runs: 5,
                 invocation_timeout_ms: 60_000,
+                timing_policy: "spawn_to_exit_notification",
                 optimization_policy: "test",
                 execution_order: "test",
             },
@@ -1237,6 +1240,7 @@ mod tests {
         assert_eq!(json["schemaVersion"], 1);
         assert_eq!(json["config"]["profile"], "throughput");
         assert_eq!(json["config"]["invocationTimeoutMs"], 60_000);
+        assert_eq!(json["config"]["timingPolicy"], "spawn_to_exit_notification");
         assert_eq!(json["cases"][0]["scale"], 10_000_000);
         assert_eq!(json["cases"][0]["expectedChecksum"], 5_114_877_120_i64);
         assert_eq!(
@@ -1268,6 +1272,80 @@ mod tests {
         assert!(error.contains("timed out after 20 ms"), "{error}");
         assert!(error.contains("process killed and reaped"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn successful_output_child() {
+        if std::env::var_os("LOOM_BENCH_OUTPUT_CHILD").is_some() {
+            println!("benchmark child stdout");
+            eprintln!("benchmark child stderr");
+        }
+    }
+
+    #[test]
+    fn successful_children_preserve_status_and_output() {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .args(["--exact", "tests::successful_output_child", "--nocapture"])
+            .env("LOOM_BENCH_OUTPUT_CHILD", "1");
+        let started = Instant::now();
+        let timed = output_with_timeout(
+            &mut command,
+            Duration::from_secs(10),
+            "successful output child",
+        )
+        .expect("child must exit successfully");
+        let wall_elapsed = started.elapsed();
+
+        assert!(timed.output.status.success());
+        assert!(String::from_utf8_lossy(&timed.output.stdout).contains("benchmark child stdout"));
+        assert!(String::from_utf8_lossy(&timed.output.stderr).contains("benchmark child stderr"));
+        assert!(timed.elapsed <= wall_elapsed);
+        assert!(wall_elapsed < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn pipe_holding_grandchild() {
+        if std::env::var_os("LOOM_BENCH_PIPE_HOLDER_GRANDCHILD").is_some() {
+            std::thread::sleep(Duration::from_millis(350));
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the self-terminating grandchild must outlive the direct child to hold its pipes"
+    )]
+    fn pipe_holding_child() {
+        if std::env::var_os("LOOM_BENCH_PIPE_HOLDER_CHILD").is_some() {
+            Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", "tests::pipe_holding_grandchild"])
+                .env_remove("LOOM_BENCH_PIPE_HOLDER_CHILD")
+                .env("LOOM_BENCH_PIPE_HOLDER_GRANDCHILD", "1")
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("spawn pipe-holding grandchild");
+        }
+    }
+
+    #[test]
+    fn reported_time_excludes_post_exit_pipe_drain() {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .args(["--exact", "tests::pipe_holding_child"])
+            .env("LOOM_BENCH_PIPE_HOLDER_CHILD", "1");
+        let started = Instant::now();
+        let timed = output_with_timeout(&mut command, Duration::from_secs(10), "pipe holder child")
+            .expect("direct child must exit successfully");
+        let wall_elapsed = started.elapsed();
+
+        assert!(timed.output.status.success());
+        assert!(
+            wall_elapsed.saturating_sub(timed.elapsed) >= Duration::from_millis(150),
+            "wall time {wall_elapsed:?}, reported time {:?}",
+            timed.elapsed
+        );
     }
 
     #[test]
