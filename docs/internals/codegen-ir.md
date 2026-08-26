@@ -77,10 +77,11 @@ includes the target and representation plan, checked functions and control
 flow, operations, and complete function, instruction, and terminator origins.
 The dump uses explicit enum spellings and string escaping rather than Rust
 `Debug`. Dense numeric IDs are content, but the process-local generative
-`ProgramBrand` is deliberately excluded, so independently built isomorphic
-artifacts have the same identity. A future LLVM object route can hash this
-value together with its backend, target-machine, optimization, and runtime
-identities; the production fingerprint does not consume it yet.
+`ProgramBrand` is deliberately excluded, so independently built artifacts with
+the same deterministic numbering and content have the same identity. A future
+LLVM object route can hash this value together with its backend, target-machine,
+optimization, and runtime identities; the production fingerprint does not
+consume it yet.
 
 A function contains:
 
