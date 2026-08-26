@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use loom_core::{FileId, Severity};
@@ -875,8 +875,11 @@ fn atomic_write(destination: &Path, bytes: &[u8], executable: bool) -> Result<()
         .as_file()
         .sync_all()
         .map_err(|error| CacheError::io(destination, error))?;
+    #[cfg(unix)]
     set_executable(temporary.as_file(), executable)
         .map_err(|error| CacheError::io(destination, error))?;
+    #[cfg(not(unix))]
+    let _ = executable;
     temporary
         .persist(destination)
         .map_err(|error| CacheError::io(destination, error.error))?;
@@ -884,14 +887,9 @@ fn atomic_write(destination: &Path, bytes: &[u8], executable: bool) -> Result<()
 }
 
 #[cfg(unix)]
-fn set_executable(file: &fs::File, executable: bool) -> io::Result<()> {
+fn set_executable(file: &fs::File, executable: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = if executable { 0o755 } else { 0o644 };
     file.set_permissions(fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_file: &fs::File, _executable: bool) -> io::Result<()> {
-    Ok(())
 }
