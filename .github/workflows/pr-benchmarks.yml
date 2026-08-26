@@ -15,6 +15,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
+  LOOM_CC: clang-19
+  LOOM_BENCH_CC: clang-19
+  LOOM_BENCH_CXX: clang++-19
 
 jobs:
   compare:
@@ -38,14 +42,9 @@ jobs:
           persist-credentials: false
 
       - name: Install LLVM 19.1.7
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: 19.1.7
-          env: true
-
-      - name: Configure LLVM discovery
-        shell: bash
-        run: echo "LLVM_SYS_191_PREFIX=$LLVM_PATH" >> "$GITHUB_ENV"
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
 
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
@@ -77,8 +76,6 @@ jobs:
 
       - name: Build and benchmark base
         working-directory: base
-        env:
-          LLVM_SYS_191_PREFIX: ${{ env.LLVM_PATH }}
         shell: bash
         run: |
           cargo build --release --locked -p loom-cli -p loom-benchmark
@@ -90,8 +87,6 @@ jobs:
 
       - name: Build and benchmark candidate
         working-directory: candidate
-        env:
-          LLVM_SYS_191_PREFIX: ${{ env.LLVM_PATH }}
         shell: bash
         run: |
           cargo build --release --locked -p loom-cli -p loom-benchmark
@@ -110,4 +105,3 @@ jobs:
             benchmark-candidate.json
           if-no-files-found: error
           retention-days: 14
-
