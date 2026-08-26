@@ -56,7 +56,7 @@ input tests.
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; native final link intentionally uncached. |
-| Debug source info | Linux DWARF checked in CI; macOS dSYM generation covered by workspace tests/build and native implementation. `debug` currently forces the legacy route until LCIR has function-level source metadata. |
+| Debug source info | Linux DWARF checked in CI; macOS dSYM generation covered by workspace tests/build and native implementation. Complete scalar LCIR artifacts retain typed emission for `debug` and carry source functions, signatures, and instruction locations; unsupported reachable artifacts use the complete legacy route. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |

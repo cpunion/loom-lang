@@ -180,12 +180,13 @@ The production checked-MIR backend emits source line information from stable
 project-relative paths. Linux executables retain DWARF in the ELF output. On
 macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loomc debug`
 keeps temporary executable and debug data alive for the debugger session and
-launches in the project root. It uses `NativeRoutePolicy::LegacyOnly` because
-LCIR currently publishes only compile-unit and file metadata; LCIR withholds
-`DISubprogram` metadata until the source-level debug signature for fallible
-status returns and the hidden fault context is specified. Development
-optimization alone is not a debugger contract and does not otherwise disable
-LCIR.
+launches in the project root. LCIR publishes compile-unit, file,
+`DISubprogram`, source-signature, and instruction-location metadata. Its DWARF
+signature describes Loom parameters and results; the fallible status aggregate
+and hidden fault-context pointer are compiler ABI details, analogous to an
+`sret` pointer, and are not exposed as source parameters. `loomc debug` uses
+the same atomic automatic route as build, run, and test. Development
+optimization alone is not a debugger contract and does not disable LCIR.
 
 There is no stable native library, debugger pretty-printer, plugin, or FFI ABI
 in the current implementation.

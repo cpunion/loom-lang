@@ -120,9 +120,10 @@ failures never select fallback.
 The prepared plan owns its `EmitOptions` and exact target machine. Cache
 identity, runtime-bundle validation, optimization, and object emission reuse
 that plan instead of reconstructing target or reachability state. Ordinary
-`build`, `run`, and `test` use automatic selection. `debug` deliberately uses
-the legacy route until LCIR carries truthful function-level source debug
-metadata. Linking remains a separate step.
+`build`, `run`, `test`, and `debug` use automatic selection. A complete LCIR
+artifact keeps the typed route in development debug builds; an unsupported
+reachable construct selects the complete legacy route exactly as it does for
+the other commands. Linking remains a separate step.
 
 Source diagnostics exit before either backend executes. Errors discovered
 after checked MIR—missing MIR references, LLVM verifier failures, or malformed
