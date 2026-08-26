@@ -49,7 +49,7 @@ input tests.
 | Capability | Status and evidence boundary |
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
-| Code generation IR foundation | Checked-MIR roots/reachability are production-used from `loom-codegen-ir` and require `loom_mir::CheckedProgram`; its scalar typed-SSA builders, validator, and dump are implemented and tested, while MIR-to-LCIR lowering and production emission do not use `loom_codegen_ir::CheckedProgram` yet. |
+| Code generation IR foundation | Checked-MIR roots/reachability are production-used from `loom-codegen-ir` and require `loom_mir::CheckedProgram`. Scalar LCIR builders, validation, checked artifact roots, and direct checked-artifact-to-object LLVM emission are implemented and tested independently. MIR-to-LCIR lowering, the production router, the LCIR cache fingerprint, and structured contract-fault metadata remain unconnected. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |

@@ -824,17 +824,24 @@ impl<'a> Validator<'a> {
                 ),
             );
         }
-        let mut targets = BTreeSet::new();
-        for edge in terminator.control_flow_edges() {
-            if !targets.insert(edge.block) {
-                self.error(
-                    ValidationCode::DuplicateSuccessor,
-                    path.clone(),
-                    format!(
-                        "terminator has multiple edges from one block to {}; split the edges",
-                        edge.block
-                    ),
-                );
+        // A conditional branch may select two distinct argument lists for the
+        // same destination. Backends normalize those logical edges to distinct
+        // physical predecessor blocks before constructing phis. Result and
+        // unwind edges still have incompatible value/fault-state semantics and
+        // must remain unique.
+        if !matches!(terminator.kind(), TerminatorKind::Branch { .. }) {
+            let mut targets = BTreeSet::new();
+            for edge in terminator.control_flow_edges() {
+                if !targets.insert(edge.block) {
+                    self.error(
+                        ValidationCode::DuplicateSuccessor,
+                        path.clone(),
+                        format!(
+                            "terminator has multiple edges from one block to {}; split the edges",
+                            edge.block
+                        ),
+                    );
+                }
             }
         }
         match terminator.kind() {

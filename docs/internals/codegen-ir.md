@@ -4,13 +4,17 @@
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar representations, typed SSA data structures,
-builders, an independent validator, and a textual dump for tests and review.
+builders, independent program and artifact-root validators, and a textual dump
+for tests and review.
 
-The typed LCIR boundary is not connected to MIR lowering, the production LLVM
-emitter, object emission, or the runtime. Production native compilation uses
-the source graph from this crate but still lowers its reachable checked MIR
-directly through `loom-codegen-llvm`'s legacy implementation. The accepted
-LCIR integration and migration design is in the
+`loom-codegen-llvm::emit_lcir_native_object` consumes the resulting
+`CheckedArtifact` directly and emits its scalar functions and run/test harness
+without the universal value ABI or an executor. This is an independent object
+boundary exercised by hand-built LCIR tests, not the production route.
+Production native compilation still sends reachable checked MIR directly to
+the legacy LLVM implementation. MIR-to-LCIR lowering, atomic route selection,
+and the LCIR cache fingerprint remain unconnected. The accepted integration
+and migration design is in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 LCIR is compiler-private and target-specific. It is not a source IR, a public
@@ -66,8 +70,9 @@ boundary.
 empty test-root list. `check_artifact` independently checks branded function
 identity, existence, duplicate tests, the zero-parameter `Unit` root signature,
 and exact direct/invoke callable closure. It then returns a `CheckedArtifact`
-which owns both the checked program and privately checked roots. This artifact
-boundary is not connected to the production emitter yet.
+which owns both the checked program and privately checked roots. The independent
+LLVM object API consumes that wrapper without accepting unchecked roots or
+falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
 compiler-private identity for that complete checked artifact. Schema 1 carries
@@ -154,12 +159,21 @@ not repair a malformed program. Current checks include:
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
-- no duplicate successor from one terminator;
+- no duplicate successor from one terminator, except the two logical arms of a
+  conditional branch may select one destination;
 - no `Uninhabited` signature or SSA value;
 - reachable blocks, dominance, and use-after-definition rules.
 
-These checks apply only when clients construct LCIR explicitly. No current
-production compiler stage constructs such a program.
+When both branch arms carry the same arguments, LLVM emission collapses them to
+one unconditional edge. When their arguments differ, the emitter creates two
+physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
+distinct-target branches remain direct.
+
+These checks currently apply when clients construct LCIR explicitly. No
+production compiler stage lowers checked MIR into this program yet. In
+particular, source contracts must remain `Unsupported`: the generic
+`ContractFailed` code does not yet carry category, user code, contract span, or
+blame span, so it cannot replace production contract diagnostics.
 
 ## Text dump
 
@@ -182,6 +196,10 @@ representation catalog, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
-origins, and malformed SSA programs. The
-platform-independent Windows CI job checks, lints, tests, and builds this crate
-without claiming a Windows LLVM backend.
+origins, and malformed SSA programs. LLVM-side tests additionally cover typed
+ABIs, block insertion order independent of dominance order, same-target edge
+normalization, exact scalar predicates, checked arithmetic, first-primary fault
+suppression, fatal runtime setup failures, ordered tests, linking, execution,
+and verifier/optimization gates on Linux and macOS. The platform-independent
+Windows CI job checks, lints, tests, and builds `loom-codegen-ir` without
+claiming a Windows LLVM backend.
