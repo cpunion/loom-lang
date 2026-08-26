@@ -75,13 +75,9 @@ pub fn write_program_with_options(
 
     for function in program.functions() {
         writeln!(output)?;
-        write!(
-            output,
-            "fn {} mir=f{} {:?} (",
-            function.id(),
-            function.source().0,
-            function.name()
-        )?;
+        write!(output, "fn {} mir=f{} ", function.id(), function.source().0)?;
+        write_quoted_string(output, function.name())?;
+        write!(output, " (")?;
         for (index, parameter) in function.signature().params().iter().enumerate() {
             if index != 0 {
                 write!(output, ", ")?;
@@ -273,12 +269,16 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
             success,
             fault,
         } => {
-            write!(output, "assert %{condition}, {code:?}, success ")?;
+            write!(
+                output,
+                "assert %{condition}, {}, success ",
+                fault_code_name(*code)
+            )?;
             write_target(output, success)?;
             write!(output, ", fault ")?;
             write_unwind_target(output, fault)
         }
-        TerminatorKind::Fault { code } => write!(output, "fault {code:?}"),
+        TerminatorKind::Fault { code } => write!(output, "fault {}", fault_code_name(*code)),
         TerminatorKind::ResumeFault => write!(output, "resume_fault"),
     }
 }
@@ -312,6 +312,24 @@ fn write_arguments(output: &mut impl Write, arguments: &[crate::ValueId]) -> fmt
         write!(output, "%{argument}")?;
     }
     Ok(())
+}
+
+fn write_quoted_string(output: &mut impl Write, value: &str) -> fmt::Result {
+    output.write_char('"')?;
+    for character in value.chars() {
+        match character {
+            '"' => output.write_str("\\\"")?,
+            '\\' => output.write_str("\\\\")?,
+            '\n' => output.write_str("\\n")?,
+            '\r' => output.write_str("\\r")?,
+            '\t' => output.write_str("\\t")?,
+            character if character.is_control() => {
+                write!(output, "\\u{{{:x}}}", u32::from(character))?;
+            }
+            character => output.write_char(character)?,
+        }
+    }
+    output.write_char('"')
 }
 
 fn write_origin(output: &mut impl Write, origin: Origin, prefix: &str) -> fmt::Result {
@@ -410,5 +428,15 @@ const fn float_predicate_name(predicate: FloatPredicate) -> &'static str {
         FloatPredicate::OrderedLessEqual => "ordered_less_equal",
         FloatPredicate::OrderedGreater => "ordered_greater",
         FloatPredicate::OrderedGreaterEqual => "ordered_greater_equal",
+    }
+}
+
+const fn fault_code_name(code: crate::FaultCode) -> &'static str {
+    match code {
+        crate::FaultCode::IntegerOverflow => "IntegerOverflow",
+        crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
+        crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
+        crate::FaultCode::AssertionFailed => "AssertionFailed",
+        crate::FaultCode::ContractFailed => "ContractFailed",
     }
 }
