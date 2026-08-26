@@ -160,15 +160,16 @@ be snapshotted.
 
 ## The contract expression subset
 
-Contract expressions are intentionally closed and total. They include literals,
-parameters, fields, `self`, `result`, valid `old` expressions, Boolean logic,
-comparisons, Float arithmetic, exhaustive matching, and the compiler-known
-pure predicate `standard.float.is_finite`.
+Contract expressions use an intentionally closed, effect-restricted subset.
+They include literals, parameters, fields, `self`, `result`, valid `old`
+expressions, Boolean logic, comparisons, Float arithmetic, exhaustive matching,
+and the compiler-known pure predicate `standard.float.is_finite`.
 
 User function calls, indexing, assignment, I/O, checked construction, and other
 potentially effectful operations are rejected in a contract. Checked `Int`
 arithmetic is also excluded because it can fault. `Int` literals and comparisons
-remain valid.
+remain valid. Unary Int negation is checked as in ordinary code, so negating
+the minimum Int produces a `RuntimeFault` rather than a contract failure.
 
 This restriction keeps contracts executable without requiring a general effect
 or termination system.

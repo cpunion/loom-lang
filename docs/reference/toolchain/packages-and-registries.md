@@ -55,9 +55,11 @@ The current protocol schema is `1`:
 - `PUT /v1/packages/{package}/versions/{version}` publishes that bundle.
 
 `loomc publish --registry public` publishes the root package and refuses a
-bundle whose declared identity does not match the manifest. Published versions
-are immutable: encountering different bytes for an already cached package
-version is an error.
+bundle whose declared identity does not match the manifest. The registry
+protocol requires a server to reject replacement bytes for an existing package
+version; the current client does not perform a preflight existence check before
+`PUT`. On download, the client rejects a changed digest for a version already
+present in its validated cache. A lockfile also pins the selected digest.
 
 ### Transport and credential rules
 

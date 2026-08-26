@@ -90,7 +90,8 @@ The native object fingerprint is format `loom-native-object-v4` and includes:
 - MIR format/version;
 - exact target-machine identity and optimization;
 - roots and reachability;
-- reachable type, concept, requirement, function, and live witness-slot data;
+- complete type, concept, requirement, and prelude metadata;
+- reachable function and live witness-slot data;
 - stable debug source metadata.
 
 Host linking uses the Rust runtime archive embedded in the compiler build.

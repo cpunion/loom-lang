@@ -64,9 +64,10 @@ Bind a resource with `scoped`, not `scoped let`:
 scoped resource = Resource { value = 3 }
 ```
 
-The binding is stable and cannot be reassigned. A resource can still change
-its internal logical state through a `mut self` method. On scope exit, the
-compiler invokes exactly one statically selected disposal operation.
+The binding is stable and cannot be reassigned. In the current language,
+`scoped` does not also make the binding a mutable place, so source code cannot
+call an ordinary `mut self` method through it. The compiler can still invoke
+the statically selected disposal operation exactly once on scope exit.
 
 Built-in `File` and `Socket` values have compiler-known close operations. A
 custom resource uses the canonical concepts in module `standard.resource`:

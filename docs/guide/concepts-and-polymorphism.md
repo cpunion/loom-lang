@@ -121,8 +121,9 @@ fn take_one(source Source[Item = Int]) Option[Int] {
 }
 ```
 
-An erased interface binds every associated type that affects a method
-signature. Missing, conflicting, or cyclic bindings are compile-time errors.
+An erased interface binds every associated type declared by the concept,
+including associated types that do not appear in a method signature. Missing,
+conflicting, or cyclic bindings are compile-time errors.
 Associated bindings use brackets and `=`, while the colon remains reserved for
 generic bounds.
 
