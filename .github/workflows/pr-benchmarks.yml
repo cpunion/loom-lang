@@ -71,7 +71,7 @@ jobs:
         shell: bash
         run: |
           test "$(rustc --version)" = "rustc 1.88.0 (6b00bc388 2025-06-23)"
-          test "$(llvm-config --version)" = "19.1.7"
+          test "$("$LLVM_SYS_191_PREFIX/bin/llvm-config" --version)" = "19.1.7"
           test "$(go version | awk '{print $3}')" = "go1.27.0"
 
       - name: Build and benchmark base
