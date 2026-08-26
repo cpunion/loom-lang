@@ -20,13 +20,15 @@ fn test_runtime() -> &'static TestRuntime {
     TEST_RUNTIME.get_or_init(|| {
         let root = std::env::var_os("LOOM_TEST_RUNTIME_BUNDLE")
             .or_else(|| std::env::var_os("LOOM_RUNTIME_BUNDLE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                panic!(
-                    "native LLVM tests require LOOM_TEST_RUNTIME_BUNDLE or \
+            .map_or_else(
+                || {
+                    panic!(
+                        "native LLVM tests require LOOM_TEST_RUNTIME_BUNDLE or \
                      LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
-                )
-            });
+                    )
+                },
+                PathBuf::from,
+            );
         let target = native_target_identity().expect("load host target identity");
         let bundle = RuntimeBundle::load(&root, &target).expect("load test runtime bundle");
         let linker =

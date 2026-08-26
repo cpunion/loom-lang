@@ -83,13 +83,15 @@ fn test_runtime_bundle_root() -> &'static PathBuf {
     TEST_RUNTIME.get_or_init(|| {
         let root = std::env::var_os("LOOM_TEST_RUNTIME_BUNDLE")
             .or_else(|| std::env::var_os("LOOM_RUNTIME_BUNDLE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                panic!(
-                    "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
+            .map_or_else(
+                || {
+                    panic!(
+                        "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
                      LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
-                )
-            });
+                    )
+                },
+                PathBuf::from,
+            );
         let target =
             loom_codegen_llvm::native_target_identity().expect("load host target identity");
         loom_codegen_llvm::RuntimeBundle::load(&root, &target)
