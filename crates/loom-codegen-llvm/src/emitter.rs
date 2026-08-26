@@ -425,6 +425,7 @@ struct Backend<'ctx, 'program> {
     witness_descriptors: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     witness_instances: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     names: Cell<u64>,
+    io_wait_handles_are_i32: bool,
 }
 
 struct DebugState<'ctx> {
@@ -750,6 +751,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             witness_descriptors: BTreeMap::new(),
             witness_instances: BTreeMap::new(),
             names: Cell::new(0),
+            io_wait_handles_are_i32: !crate::target_uses_windows_artifacts(Some(target_triple)),
         }
     }
 
@@ -7038,17 +7040,42 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return Ok(false);
         }
         let handle = self.int_scalar(source_value)?;
-        let negative = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::SLT,
-                handle,
-                self.backend.i64_type.const_zero(),
-                "io.task.handle.negative",
-            )
-            .map_err(builder_error)?;
-        self.fail_if(negative, "InvalidWaitHandle")?;
+        if self.backend.io_wait_handles_are_i32 {
+            let negative = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::SLT,
+                    handle,
+                    self.backend.i64_type.const_zero(),
+                    "io.task.handle.negative",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(negative, "InvalidWaitHandle")?;
+            let too_large = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::SGT,
+                    handle,
+                    self.backend.i64_type.const_int(i32::MAX as u64, false),
+                    "io.task.handle.too_large",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(too_large, "InvalidWaitHandle")?;
+        } else {
+            let all_ones = self
+                .backend
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    handle,
+                    self.backend.signed_i64(-1),
+                    "io.task.handle.invalid",
+                )
+                .map_err(builder_error)?;
+            self.fail_if(all_ones, "InvalidWaitHandle")?;
+        }
         let interests = if writable {
             WAIT_INTEREST_WRITABLE
         } else {

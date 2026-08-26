@@ -147,7 +147,9 @@ Task.waitWritable(handle).await
 `Task.sleep` accepts a non-negative millisecond `Int` or a `Duration`.
 Readiness waits borrow an opaque platform I/O handle for one registration; they
 do not own or close it. Higher-level file and socket APIs are safer for ordinary
-code.
+code. The raw `Int` is a low-level host-integration boundary: it must name a
+real live source for the current platform, and portable Loom code must not use
+magic Unix descriptor numbers such as `0`, `1`, or `2`.
 
 The native runtime uses a generation-checked, one-shot wait-registration ABI,
 kqueue on macOS, epoll on Linux, and the `polling` crate's IOCP/AFD backend on

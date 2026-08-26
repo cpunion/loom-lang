@@ -175,7 +175,9 @@ Sleep duration must be non-negative. The standard function
 produce a RuntimeFault.
 
 File and socket operations expose typed tasks rather than requiring raw
-readiness waits. See [I/O and logging](../standard-library/io-and-logging.md).
+readiness waits. Raw handles are supplied only by host integration and must not
+be hard-coded as Unix descriptor numbers in portable source. See
+[I/O and logging](../standard-library/io-and-logging.md).
 
 ## Result propagation and cleanup
 

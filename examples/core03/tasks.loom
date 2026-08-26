@@ -222,7 +222,7 @@ pub async fn main() Unit {
     assert delayed == 12
     let nested = nestedChoice(true).await
     assert nested == 12
-    Task.waitWritable(1).await
+    Task.sleep(1).await
     let storedFirst = delayedValue()
     let storedSecond = delayedValue()
     let storedValues = Task.all([storedFirst, storedSecond]).await
@@ -308,7 +308,7 @@ test async fn task_and_cleanup() {
     assert delayed == 12
     let nested = nestedChoice(false).await
     assert nested == 7
-    Task.waitWritable(1).await
+    Task.sleep(1).await
     let storedFirst = delayedValue()
     let storedSecond = delayedValue()
     let storedValues = Task.all([storedFirst, storedSecond]).await
