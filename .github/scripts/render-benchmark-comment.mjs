@@ -173,6 +173,7 @@ function validateComparison(base, candidate, label) {
       runtime.set(`${caseName}\0${language}`, {
         caseName,
         language,
+        scale: candidateCase.scale,
         base: baseMedian,
         candidate: candidateMedian,
       });
@@ -310,6 +311,11 @@ function requireSameSuite(comparisons) {
     ) {
       fail("platform reports do not describe the same benchmark suite and profile");
     }
+    for (const key of runtimeKeys) {
+      if (comparison.runtime.get(key).scale !== first.runtime.get(key).scale) {
+        fail("platform reports do not use the same case scales");
+      }
+    }
   }
   return { first, runtimeKeys, toolKeys };
 }
@@ -322,7 +328,11 @@ export function renderComment(comparisons, sha) {
     fail("comparison list has an invalid size");
   }
   const byPlatform = new Map();
+  const supportedPlatforms = new Set(PLATFORM_COLUMNS.map((platform) => platform.key));
   for (const comparison of comparisons) {
+    if (!supportedPlatforms.has(comparison.key)) {
+      fail(`platform ${comparison.key} has no report column`);
+    }
     if (byPlatform.has(comparison.key)) {
       fail(`platform ${comparison.key} appears more than once`);
     }
@@ -336,13 +346,19 @@ export function renderComment(comparisons, sha) {
     "",
     "> Each cell is `base / candidate / delta`. Deltas compare revisions only within the same platform and shared runner; they are diagnostic evidence, not a release gate or a cross-platform language ranking.",
     "",
-    "Windows remains a frontend-only CI target, so its native runtime cells are unavailable until the Windows backend, runtime, and I/O reactor are complete.",
-    "",
+  ];
+  if (!byPlatform.has("windows/x86_64")) {
+    lines.push(
+      "Windows remains a frontend-only CI target, so its native runtime cells are unavailable until the Windows backend, runtime, and I/O reactor are complete.",
+      "",
+    );
+  }
+  lines.push(
     "### Runtime median (ms)",
     "",
     `| Case | Language | ${PLATFORM_COLUMNS.map((platform) => `${platform.label} (base / candidate / Δ)`).join(" | ")} |`,
     `| --- | --- | ${PLATFORM_COLUMNS.map(() => "---:").join(" | ")} |`,
-  ];
+  );
   for (const key of runtimeKeys) {
     const exemplar = first.runtime.get(key);
     const cells = PLATFORM_COLUMNS.map((platform) =>

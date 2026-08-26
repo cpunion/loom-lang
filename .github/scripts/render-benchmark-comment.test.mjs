@@ -64,7 +64,13 @@ function comparison(platform, baseMedian, candidateMedian, candidateCompileMs = 
     runtime: new Map([
       [
         "integer\0loom",
-        { caseName: "integer", language: "loom", base: baseMedian, candidate: candidateMedian },
+        {
+          caseName: "integer",
+          language: "loom",
+          scale: 100,
+          base: baseMedian,
+          candidate: candidateMedian,
+        },
       ],
     ]),
     tools: new Map([
