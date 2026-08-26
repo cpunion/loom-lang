@@ -1408,7 +1408,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let one = |value: BasicValueEnum<'ctx>| vec![value];
         let values = match instruction.kind() {
             InstructionKind::Constant(constant) => one(self.emit_constant(*constant)?),
-            InstructionKind::ProductConstruct { fields } => {
+            InstructionKind::ProductConstruct { fields }
+            | InstructionKind::InvariantRecordProven { fields } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
                     CodegenError::new(
                         "LlvmAbiDefect",
@@ -1466,6 +1467,13 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?
                 .into_struct_value()
                 .into()),
+            InstructionKind::RefineProven { value } | InstructionKind::Unrefine { value } => {
+                // Checked LCIR requires both semantic types to select the exact
+                // same physical representation. Preserve the SSA value
+                // directly; the instruction exists to retain the nominal
+                // proof boundary in LCIR and artifact identity.
+                one(self.value(*value)?)
+            }
             InstructionKind::BoolNot { value } => one(self
                 .backend
                 .builder

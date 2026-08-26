@@ -3,7 +3,8 @@
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, lower_typed_artifact,
+    CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, dump_program,
+    lower_typed_artifact,
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
@@ -1144,6 +1145,123 @@ pub fn main() Unit {
         );
     }
     assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn proven_refinements_and_invariant_records_are_zero_cost_typed_lcir_values() {
+    let source = r"module lcir_source_refined
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+fn established() (Money, Range) {
+    let money = Money(10.0)
+    let range = Range { low = Money(1.0), high = Money(2.0) }
+    (money, range)
+}
+
+fn widen(value Money) Float {
+    value
+}
+
+pub fn main() Unit {
+    let money, range = established()
+    if widen(money) == 10.0 {
+        discard range
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic refined route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("unrefine"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("transparent(t4)"), "{dump}");
+    assert!(dump.contains("invariant_product"), "{dump}");
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-refined",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-refined");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_gc_",
+        "loom_executor_",
+        "loom_context_",
+        "indirect",
+    ] {
+        assert!(
+            !lowered_functions.contains(forbidden),
+            "unexpected `{forbidden}` in proven refined LCIR:\n{lowered_functions}"
+        );
+    }
+}
+
+#[test]
+fn runtime_refinement_checks_still_select_atomic_fallback() {
+    let source = r"module lcir_source_dynamic_refined
+
+type Money = Float where self >= 0.0
+
+fn checked(raw Float) Result[Money, ConstraintError] {
+    Money(raw)
+}
+
+pub fn main() Unit {
+    discard checked(-1.0)
+    Unit
+}
+";
+    let program = compile_source(source);
+    let outcome = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        host_layout(),
+    )
+    .expect("classify runtime refinement");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("runtime refinement must not enter the proven-only LCIR slice")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| { item.feature() == loom_codegen_ir::UnsupportedFeature::RefinedValue }),
+        "{report:?}"
+    );
 }
 
 #[test]

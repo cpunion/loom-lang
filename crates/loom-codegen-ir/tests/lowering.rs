@@ -1825,8 +1825,12 @@ record Positive {
     invariant self.value >= 0
 }
 
+fn checked(value Int) Result[Positive, ConstraintError] {
+    Positive { value = value }
+}
+
 pub fn main() Unit {
-    discard Positive { value = 1 }
+    discard checked(1)
     Unit
 }
 ",

@@ -28,21 +28,54 @@ pub(crate) fn closed_record_fields<'program>(
     invariant.is_none().then_some(fields)
 }
 
-fn direct_aggregate_fields(program: &mir::Program, ty: &Type) -> Option<Vec<Type>> {
+fn direct_type_plan(program: &mir::Program, ty: &Type) -> Option<DirectTypePlan> {
     match ty {
-        Type::Tuple(elements) => Some(elements.clone()),
-        Type::Nominal(_, _) => closed_record_fields(program, ty).map(|fields| {
-            fields
-                .iter()
-                .map(|field| field.ty.clone())
-                .collect::<Vec<_>>()
+        Type::Tuple(elements) => Some(DirectTypePlan::Product {
+            fields: elements.clone().into_boxed_slice(),
+            invariant: false,
         }),
+        Type::Nominal(id, arguments) if arguments.is_empty() => {
+            let definition = program.type_def(*id)?;
+            if definition.type_parameters != 0 {
+                return None;
+            }
+            match &definition.kind {
+                mir::TypeDefKind::Record { fields, invariant } => Some(DirectTypePlan::Product {
+                    fields: fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    invariant: invariant.is_some(),
+                }),
+                mir::TypeDefKind::Refined { base, .. } => {
+                    Some(DirectTypePlan::Transparent { base: base.clone() })
+                }
+                mir::TypeDefKind::Enum { .. } => None,
+            }
+        }
         _ => None,
     }
 }
 
-fn is_direct_aggregate(program: &mir::Program, ty: &Type) -> bool {
-    matches!(ty, Type::Tuple(_)) || closed_record_fields(program, ty).is_some()
+#[derive(Clone)]
+enum DirectTypePlan {
+    Product {
+        fields: Box<[Type]>,
+        invariant: bool,
+    },
+    Transparent {
+        base: Type,
+    },
+}
+
+impl DirectTypePlan {
+    fn dependencies(&self) -> Vec<Type> {
+        match self {
+            Self::Product { fields, .. } => fields.to_vec(),
+            Self::Transparent { base } => vec![base.clone()],
+        }
+    }
 }
 
 /// Classifies concrete immutable aggregates without constructing LCIR.
@@ -52,7 +85,7 @@ fn is_direct_aggregate(program: &mir::Program, ty: &Type) -> bool {
 /// every concrete tuple and record required by supported reachable values.
 pub(crate) struct AggregatePlanner<'program> {
     program: &'program mir::Program,
-    planned: BTreeMap<Type, Box<[Type]>>,
+    planned: BTreeMap<Type, DirectTypePlan>,
     rejected_roots: BTreeSet<Type>,
 }
 
@@ -95,13 +128,14 @@ impl<'program> AggregatePlanner<'program> {
                 supported = false;
                 break;
             }
-            let Some(fields) = direct_aggregate_fields(self.program, &semantic) else {
+            let Some(plan) = direct_type_plan(self.program, &semantic) else {
                 supported = false;
                 break;
             };
+            let dependencies = plan.dependencies();
             let Some(next_structural_nodes) = structural_nodes
                 .checked_add(1)
-                .and_then(|nodes| nodes.checked_add(fields.len()))
+                .and_then(|nodes| nodes.checked_add(dependencies.len()))
             else {
                 supported = false;
                 break;
@@ -113,18 +147,18 @@ impl<'program> AggregatePlanner<'program> {
             structural_nodes = next_structural_nodes;
             discovered
                 .entry(semantic.clone())
-                .or_insert_with(|| fields.clone().into_boxed_slice());
+                .or_insert_with(|| plan.clone());
 
             let mut children = Vec::new();
-            for field in &fields {
-                if is_direct_scalar(field) {
+            for dependency in dependencies {
+                if is_direct_scalar(&dependency) {
                     continue;
                 }
-                if !is_direct_aggregate(self.program, field) {
+                if direct_type_plan(self.program, &dependency).is_none() {
                     supported = false;
                     break;
                 }
-                children.push(field.clone());
+                children.push(dependency);
             }
             if !supported {
                 break;
@@ -160,7 +194,7 @@ pub(crate) enum AggregateRegistrationError {
 
 /// A complete concrete direct-aggregate plan built before LCIR allocation.
 pub(crate) struct AggregatePlan {
-    entries: BTreeMap<Type, Box<[Type]>>,
+    entries: BTreeMap<Type, DirectTypePlan>,
 }
 
 impl AggregatePlan {
@@ -172,26 +206,26 @@ impl AggregatePlan {
         let mut dependents: BTreeMap<Type, Vec<Type>> = BTreeMap::new();
         let mut ready = BTreeSet::new();
 
-        for (semantic, fields) in &self.entries {
-            if let Type::Tuple(elements) = semantic
-                && elements.as_slice() != fields.as_ref()
+        for (semantic, plan) in &self.entries {
+            if let (Type::Tuple(elements), DirectTypePlan::Product { fields, invariant }) =
+                (semantic, plan)
+                && (elements.as_slice() != fields.as_ref() || *invariant)
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "tuple plan {semantic:?} does not match its element types"
                 )));
             }
-            if fields
-                .iter()
-                .any(|field| !is_direct_scalar(field) && !self.entries.contains_key(field))
-            {
+            let plan_dependencies = plan.dependencies();
+            if plan_dependencies.iter().any(|dependency| {
+                !is_direct_scalar(dependency) && !self.entries.contains_key(dependency)
+            }) {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
-                    "direct aggregate {semantic:?} depends on an unplanned field type"
+                    "direct type {semantic:?} depends on an unplanned value type"
                 )));
             }
-            let dependencies = fields
-                .iter()
-                .filter(|field| self.entries.contains_key(*field))
-                .cloned()
+            let dependencies = plan_dependencies
+                .into_iter()
+                .filter(|dependency| self.entries.contains_key(dependency))
                 .collect::<BTreeSet<_>>();
             for dependency in &dependencies {
                 dependents
@@ -207,19 +241,35 @@ impl AggregatePlan {
 
         let mut registered = 0_usize;
         while let Some(semantic) = ready.pop_first() {
-            let fields = self.entries.get(&semantic).ok_or_else(|| {
+            let plan = self.entries.get(&semantic).ok_or_else(|| {
                 AggregateRegistrationError::Inconsistent(format!(
-                    "ready aggregate {semantic:?} disappeared from its plan"
+                    "ready direct type {semantic:?} disappeared from its plan"
                 ))
             })?;
-            let _: ValueTypeId = match &semantic {
-                Type::Tuple(elements) => builder.add_tuple_type(elements),
-                Type::Nominal(_, arguments) if arguments.is_empty() => {
-                    builder.add_pod_record_type(semantic.clone(), fields)
+            let _: ValueTypeId = match (&semantic, plan) {
+                (
+                    Type::Tuple(elements),
+                    DirectTypePlan::Product {
+                        invariant: false, ..
+                    },
+                ) => builder.add_tuple_type(elements),
+                (Type::Nominal(_, arguments), DirectTypePlan::Product { fields, invariant })
+                    if arguments.is_empty() =>
+                {
+                    if *invariant {
+                        builder.add_invariant_record_type(semantic.clone(), fields)
+                    } else {
+                        builder.add_pod_record_type(semantic.clone(), fields)
+                    }
+                }
+                (Type::Nominal(_, arguments), DirectTypePlan::Transparent { base })
+                    if arguments.is_empty() =>
+                {
+                    builder.add_transparent_type(semantic.clone(), base)
                 }
                 _ => {
                     return Err(AggregateRegistrationError::Inconsistent(format!(
-                        "aggregate plan contains invalid semantic type {semantic:?}"
+                        "direct-type plan contains invalid semantic type {semantic:?}"
                     )));
                 }
             }

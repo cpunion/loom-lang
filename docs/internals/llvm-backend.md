@@ -26,7 +26,8 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values, structural tuples, and closed, invariant-free POD records.
+primitive values, structural tuples, closed records, and established
+transparent refined values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -149,8 +150,15 @@ infallible call with source result `T` and ordered writebacks `W...` returns
 the usual fault-context pointer. Both normal and fault exits carry the current
 receiver value, so a mutation completed before a later fault remains visible
 to the caller. Only whole-local inout arguments are in this slice; projected
-inout, contracts, refined values, managed fields, and runtime construction
-select atomic whole-artifact fallback.
+inout, contracts, managed fields, and runtime-checked construction select
+atomic whole-artifact fallback.
+
+Proven record invariants and refined predicates do not add an LLVM wrapper or
+check. LCIR retains their distinct semantic types and proof opcodes, while the
+emitter forwards the already established physical SSA value. A refined scalar
+therefore uses the base scalar ABI; a refined product uses the base product
+ABI; and an invariant record uses its field product ABI. Unknown construction
+proofs still return language `Result` values on the legacy route.
 
 ## Legacy native specialization
 

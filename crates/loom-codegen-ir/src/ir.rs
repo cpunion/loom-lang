@@ -396,6 +396,13 @@ pub enum InstructionKind {
     ProductConstruct {
         fields: Box<[ValueId]>,
     },
+    /// Constructs an immutable product whose source invariant was discharged
+    /// by semantic analysis. Independent validation requires the result type
+    /// to be registered as an invariant product; ordinary product
+    /// construction cannot create that semantic type.
+    InvariantRecordProven {
+        fields: Box<[ValueId]>,
+    },
     /// Reads one field from an immutable product value.
     ProductExtract {
         aggregate: ValueId,
@@ -406,6 +413,18 @@ pub enum InstructionKind {
     ProductInsert {
         aggregate: ValueId,
         field: u32,
+        value: ValueId,
+    },
+    /// Establishes a transparent refined nominal type from its exact declared
+    /// base after a compiler proof. The source and result have the same
+    /// physical representation but distinct semantic value-type identities.
+    RefineProven {
+        value: ValueId,
+    },
+    /// Explicitly observes a transparent refined value as its exact declared
+    /// base. This is representation-preserving and cannot target an arbitrary
+    /// type with the same physical layout.
+    Unrefine {
         value: ValueId,
     },
     BoolNot {
@@ -460,12 +479,17 @@ impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Constant(_) => Vec::new(),
-            Self::ProductConstruct { fields } => fields.to_vec(),
+            Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
+                fields.to_vec()
+            }
             Self::ProductExtract { aggregate, .. } => vec![*aggregate],
             Self::ProductInsert {
                 aggregate, value, ..
             } => vec![*aggregate, *value],
-            Self::BoolNot { value } | Self::FloatNegate { value } => vec![*value],
+            Self::RefineProven { value }
+            | Self::Unrefine { value }
+            | Self::BoolNot { value }
+            | Self::FloatNegate { value } => vec![*value],
             Self::BoolCompare { left, right, .. }
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }

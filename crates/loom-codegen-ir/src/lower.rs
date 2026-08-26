@@ -1033,11 +1033,29 @@ impl<'program> Classifier<'program> {
                 if !self.visit_exprs(function, fields, &format!("{path}.fields")) {
                     return false;
                 }
-                let plain_pod = *construction == mir::ConstructionMode::Plain
-                    && type_arguments.is_empty()
+                let direct_product = type_arguments.is_empty()
                     && expression.ty == Type::Nominal(*ty, Vec::new())
-                    && self.supported_value_type(&expression.ty);
-                if !plain_pod {
+                    && self.supported_value_type(&expression.ty)
+                    && self.program.type_def(*ty).is_some_and(|definition| {
+                        definition.type_parameters == 0
+                            && matches!(
+                                (&definition.kind, construction),
+                                (
+                                    mir::TypeDefKind::Record {
+                                        invariant: None,
+                                        ..
+                                    },
+                                    mir::ConstructionMode::Plain
+                                ) | (
+                                    mir::TypeDefKind::Record {
+                                        invariant: Some(_),
+                                        ..
+                                    },
+                                    mir::ConstructionMode::Proven
+                                )
+                            )
+                    });
+                if !direct_product {
                     self.expression_item(
                         UnsupportedFeature::NominalValue,
                         function,
@@ -1054,11 +1072,60 @@ impl<'program> Classifier<'program> {
                 self.expression_item(UnsupportedFeature::NominalValue, function, expression, path);
                 expression.ty != Type::Never
             }
-            ExprKind::Refine { value, .. } | ExprKind::Unrefine(value) => {
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => {
                 if !self.visit_expr(function, value, &format!("{path}.value")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::RefinedValue, function, expression, path);
+                let proven = *construction == mir::ConstructionMode::Proven
+                    && expression.ty == Type::Nominal(*ty, Vec::new())
+                    && self.supported_value_type(&expression.ty)
+                    && self.program.type_def(*ty).is_some_and(|definition| {
+                        definition.type_parameters == 0
+                            && matches!(
+                                &definition.kind,
+                                mir::TypeDefKind::Refined { base, .. } if base == &value.ty
+                            )
+                    });
+                if !proven {
+                    self.expression_item(
+                        UnsupportedFeature::RefinedValue,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
+                expression.ty != Type::Never
+            }
+            ExprKind::Unrefine(value) => {
+                if !self.visit_expr(function, value, &format!("{path}.value")) {
+                    return false;
+                }
+                let supported = match &value.ty {
+                    Type::Nominal(ty, arguments) if arguments.is_empty() => {
+                        self.program.type_def(*ty).is_some_and(|definition| {
+                            definition.type_parameters == 0
+                                && matches!(
+                                    &definition.kind,
+                                    mir::TypeDefKind::Refined { base, .. }
+                                        if base == &expression.ty
+                                )
+                        }) && self.supported_value_type(&value.ty)
+                            && self.supported_value_type(&expression.ty)
+                    }
+                    _ => false,
+                };
+                if !supported {
+                    self.expression_item(
+                        UnsupportedFeature::RefinedValue,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Call {
@@ -1936,6 +2003,12 @@ enum StatementFlow {
     Terminated,
 }
 
+#[derive(Clone, Copy)]
+enum ProductConstruction {
+    Plain,
+    InvariantProven,
+}
+
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
     source: &'function mir::Function,
@@ -2594,17 +2667,62 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 witnesses,
                 expression,
             ),
-            ExprKind::Tuple(values) => self.lower_product_values(flow, values, expression),
+            ExprKind::Tuple(values) => {
+                self.lower_product_values(flow, values, expression, ProductConstruction::Plain)
+            }
             ExprKind::List(values) => self.lower_unsupported_values(flow, values, "list value"),
             ExprKind::Match { scrutinee, .. } => {
                 self.lower_unsupported_operand(flow, scrutinee, "pattern match")
             }
-            ExprKind::Record { fields, .. } => self.lower_product_values(flow, fields, expression),
+            ExprKind::Record {
+                fields,
+                construction,
+                ..
+            } => {
+                let instruction = match construction {
+                    mir::ConstructionMode::Plain => ProductConstruction::Plain,
+                    mir::ConstructionMode::Proven => ProductConstruction::InvariantProven,
+                    mir::ConstructionMode::Runtime => {
+                        return Err(self.unsupported_reached("runtime record constraint"));
+                    }
+                };
+                self.lower_product_values(flow, fields, expression, instruction)
+            }
             ExprKind::Variant { payload, .. } => {
                 self.lower_unsupported_values(flow, payload, "variant value")
             }
-            ExprKind::Refine { value, .. } | ExprKind::Unrefine(value) => {
-                self.lower_unsupported_operand(flow, value, "refined value")
+            ExprKind::Refine {
+                value,
+                construction,
+                ..
+            } => {
+                if *construction != mir::ConstructionMode::Proven {
+                    return self.lower_unsupported_operand(
+                        flow,
+                        value,
+                        "runtime refinement constraint",
+                    );
+                }
+                let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
+                    return Ok(EvalFlow::Terminated);
+                };
+                self.one_instruction(
+                    flow,
+                    InstructionKind::RefineProven { value },
+                    self.type_id(&expression.ty)?,
+                    self.expression_origin(expression),
+                )
+            }
+            ExprKind::Unrefine(value) => {
+                let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
+                    return Ok(EvalFlow::Terminated);
+                };
+                self.one_instruction(
+                    flow,
+                    InstructionKind::Unrefine { value },
+                    self.type_id(&expression.ty)?,
+                    self.expression_origin(expression),
+                )
             }
             ExprKind::MakeView { value, .. } => {
                 self.lower_unsupported_operand(flow, value, "view construction")
@@ -2627,6 +2745,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         mut flow: Flow,
         fields: &[mir::Expr],
         expression: &mir::Expr,
+        construction: ProductConstruction,
     ) -> Result<EvalFlow, LoweringError> {
         let mut lowered = Vec::with_capacity(fields.len());
         for field in fields {
@@ -2640,11 +2759,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow = next_flow;
             lowered.push(value);
         }
-        self.one_instruction(
-            flow,
-            InstructionKind::ProductConstruct {
+        let instruction = match construction {
+            ProductConstruction::Plain => InstructionKind::ProductConstruct {
                 fields: lowered.into_boxed_slice(),
             },
+            ProductConstruction::InvariantProven => InstructionKind::InvariantRecordProven {
+                fields: lowered.into_boxed_slice(),
+            },
+        };
+        self.one_instruction(
+            flow,
+            instruction,
             self.type_id(&expression.ty)?,
             self.expression_origin(expression),
         )

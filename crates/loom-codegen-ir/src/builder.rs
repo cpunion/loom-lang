@@ -119,6 +119,65 @@ impl ProgramBuilder {
             })
     }
 
+    /// Adds a monomorphic record whose invariant has already been proved by
+    /// semantic analysis. Its physical layout is an ordinary direct product,
+    /// but independent validation prevents the ordinary product-construction
+    /// instruction from creating values of this type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same registration constraints as
+    /// [`Self::add_pod_record_type`].
+    pub fn add_invariant_record_type(
+        &mut self,
+        semantic: Type,
+        fields: &[Type],
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidProductType,
+                "LCIR invariant record types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_invariant_record(semantic, fields)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidProductType,
+                    "LCIR invariant record requires one unique monomorphic nominal type whose fields already have direct representations",
+                )
+            })
+    }
+
+    /// Adds a semantically distinct nominal type which transparently reuses
+    /// its already-registered base representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a duplicate/non-nominal semantic type, an
+    /// unregistered or uninhabited base, registration after function
+    /// declaration, or an exhausted value-type identity domain.
+    pub fn add_transparent_type(
+        &mut self,
+        semantic: Type,
+        base: &Type,
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidValueType,
+                "LCIR transparent types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_transparent(semantic, base)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidValueType,
+                    "LCIR transparent type requires one unique monomorphic nominal type and an already-registered inhabited base",
+                )
+            })
+    }
+
     /// Adds one structural tuple whose elements already have canonical direct
     /// representations. Nested products must be registered before their
     /// containing tuple, and all product types must be registered before any

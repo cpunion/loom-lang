@@ -111,7 +111,8 @@ The interpreter executes MIR deterministically and provides an independent
 semantic oracle for end-to-end tests. The production LLVM path prepares one
 representation-neutral target machine, derives LCIR's pointer-width layout
 from its target data, and attempts one atomic whole-artifact direct lowering
-for primitive values and closed POD records.
+for primitive values, structural tuples, closed records, and established
+transparent refined values.
 A complete result retains only the independently validated `CheckedArtifact`
 and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
 legacy source graph and universal-value emitter for the complete artifact.

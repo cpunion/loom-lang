@@ -7,7 +7,7 @@ use loom_mir::Type;
 use crate::{
     BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
     ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, Terminator, TerminatorKind,
-    UnwindTarget, ValueDefinition, ValueId, ValueTypeId,
+    UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -414,6 +414,43 @@ impl<'a> Validator<'a> {
         }
         let mut product_value_uses = vec![0_usize; representations.products().len()];
         for (index, value_type) in representations.value_types().iter().enumerate() {
+            match value_type.kind() {
+                ValueTypeKind::Direct => {}
+                ValueTypeKind::Transparent { base } => {
+                    let valid = representations.value_type(base).is_some_and(|base_type| {
+                        base_type.semantic() != &Type::Never
+                            && base.index() < index
+                            && base_type.semantic() != value_type.semantic()
+                            && base_type.repr() == value_type.repr()
+                            && matches!(
+                                value_type.semantic(),
+                                Type::Nominal(_, arguments) if arguments.is_empty()
+                            )
+                    });
+                    if !valid {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}].transparent"),
+                            "transparent nominal type must name an inhabited base value type with the exact same representation",
+                        );
+                    }
+                }
+                ValueTypeKind::InvariantProduct => {
+                    if !matches!(
+                        value_type.semantic(),
+                        Type::Nominal(_, arguments) if arguments.is_empty()
+                    ) || !matches!(
+                        representations.repr(value_type.repr()),
+                        Some(Repr::Product(_))
+                    ) {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}].invariant_product"),
+                            "invariant-product type must be a monomorphic nominal value backed by a product representation",
+                        );
+                    }
+                }
+            }
             if let Some(Repr::Product(product)) = representations.repr(value_type.repr()).copied() {
                 match value_type.semantic() {
                     Type::Nominal(_, arguments) if arguments.is_empty() => {}
@@ -576,6 +613,80 @@ impl<'a> Validator<'a> {
                 "representations.products",
                 "product representation fields form a cycle",
             );
+        }
+        // Validate the semantic direct-value closure as well as the physical
+        // product graph. Transparent aliases are representation-free, so a
+        // deep refined chain would otherwise evade the same finite planning
+        // budget enforced by source classification.
+        for root in 0..representations.value_types().len() {
+            let Some(root_id) = ValueTypeId::from_index(self.program.brand, root) else {
+                break;
+            };
+            let mut pending = vec![(root_id, 1_usize)];
+            let mut structural_nodes = 0_usize;
+            let mut exceeded = false;
+            while let Some((value, depth)) = pending.pop() {
+                let Some(value_type) = representations.value_type(value) else {
+                    continue;
+                };
+                let dependencies = match value_type.kind() {
+                    ValueTypeKind::Transparent { base } => vec![base],
+                    ValueTypeKind::Direct | ValueTypeKind::InvariantProduct => {
+                        match representations.repr(value_type.repr()).copied() {
+                            Some(Repr::Product(product)) => representations
+                                .product(product)
+                                .map(crate::ProductRepr::fields)
+                                .unwrap_or_default()
+                                .to_vec(),
+                            Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
+                                Vec::new()
+                            }
+                        }
+                    }
+                };
+                if dependencies.is_empty() {
+                    continue;
+                }
+                if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH {
+                    exceeded = true;
+                    break;
+                }
+                let Some(next_structural_nodes) = structural_nodes
+                    .checked_add(1)
+                    .and_then(|nodes| nodes.checked_add(dependencies.len()))
+                else {
+                    exceeded = true;
+                    break;
+                };
+                if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+                    exceeded = true;
+                    break;
+                }
+                structural_nodes = next_structural_nodes;
+                pending.extend(dependencies.into_iter().filter_map(|dependency| {
+                    let dependency_type = representations.value_type(dependency)?;
+                    let nested = matches!(
+                        dependency_type.kind(),
+                        ValueTypeKind::Transparent { .. } | ValueTypeKind::InvariantProduct
+                    ) || matches!(
+                        representations.repr(dependency_type.repr()),
+                        Some(Repr::Product(_))
+                    );
+                    nested.then_some((dependency, depth.saturating_add(1)))
+                }));
+            }
+            if exceeded {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.type[{root}].structure"),
+                    format!(
+                        "direct semantic value closure exceeds the {}-node or {}-level structural budget",
+                        crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES,
+                        crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
+                    ),
+                );
+                break;
+            }
         }
         for (index, value_type) in self
             .program
@@ -1018,7 +1129,8 @@ impl<'a> Validator<'a> {
                 };
                 self.require_results(function, instruction, &[expected], &path);
             }
-            InstructionKind::ProductConstruct { fields } => {
+            InstructionKind::ProductConstruct { fields }
+            | InstructionKind::InvariantRecordProven { fields } => {
                 self.require_results(function, instruction, &[None], &path);
                 let result_type = instruction
                     .results
@@ -1036,6 +1148,25 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
+                let result_kind = result_type
+                    .and_then(|ty| self.program.representations.value_type(ty))
+                    .map(crate::ValueType::kind);
+                let construction_kind_valid = match &instruction.kind {
+                    InstructionKind::ProductConstruct { .. } => {
+                        result_kind == Some(ValueTypeKind::Direct)
+                    }
+                    InstructionKind::InvariantRecordProven { .. } => {
+                        result_kind == Some(ValueTypeKind::InvariantProduct)
+                    }
+                    _ => false,
+                };
+                if !construction_kind_valid {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "product construction opcode does not match the result type's checked construction boundary",
+                    );
+                }
                 if fields.len() != expected_fields.len() {
                     self.error(
                         ValidationCode::InstructionShape,
@@ -1061,6 +1192,16 @@ impl<'a> Validator<'a> {
             }
             InstructionKind::ProductExtract { aggregate, field } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if aggregate_type
+                    .and_then(|ty| self.program.representations.value_type(ty))
+                    .is_some_and(|ty| matches!(ty.kind(), ValueTypeKind::Transparent { .. }))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product extraction from a transparent nominal value requires explicit unrefinement",
+                    );
+                }
                 let expected = aggregate_type
                     .and_then(|ty| self.product_fields(ty))
                     .and_then(|fields| {
@@ -1090,6 +1231,16 @@ impl<'a> Validator<'a> {
                 value,
             } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if aggregate_type
+                    .and_then(|ty| self.program.representations.value_type(ty))
+                    .is_some_and(|ty| ty.kind() != ValueTypeKind::Direct)
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product insertion cannot mutate a transparent or invariant-protected semantic value",
+                    );
+                }
                 let expected_field = aggregate_type
                     .and_then(|ty| self.product_fields(ty))
                     .and_then(|fields| {
@@ -1119,6 +1270,59 @@ impl<'a> Validator<'a> {
                     format!("{path}.value"),
                 );
                 self.require_results(function, instruction, &[aggregate_type], &path);
+            }
+            InstructionKind::RefineProven { value } => {
+                let operand_type = function.value(*value).map(|value| value.ty);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                self.require_results(function, instruction, &[None], &path);
+                let expected_base = result_type
+                    .and_then(|result| self.program.representations.value_type(result))
+                    .and_then(|result| match result.kind() {
+                        ValueTypeKind::Transparent { base } => Some(base),
+                        ValueTypeKind::Direct | ValueTypeKind::InvariantProduct => None,
+                    });
+                if result_type.is_some() && expected_base.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "refine.proven result must be a registered transparent nominal type",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    expected_base,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                if expected_base.is_some() && operand_type != expected_base {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.value"),
+                        "refine.proven operand must have the transparent type's exact declared base",
+                    );
+                }
+            }
+            InstructionKind::Unrefine { value } => {
+                let operand_type = function.value(*value).map(|value| value.ty);
+                let expected_result = operand_type
+                    .and_then(|operand| self.program.representations.value_type(operand))
+                    .and_then(|operand| match operand.kind() {
+                        ValueTypeKind::Transparent { base } => Some(base),
+                        ValueTypeKind::Direct | ValueTypeKind::InvariantProduct => None,
+                    });
+                if operand_type.is_some() && expected_result.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.value"),
+                        "unrefine operand must be a registered transparent nominal type",
+                    );
+                }
+                self.require_results(function, instruction, &[expected_result], &path);
             }
             InstructionKind::BoolNot { value } => {
                 self.require_known_value_type(
