@@ -87,6 +87,10 @@ fn loomc() -> Command {
     command
 }
 
+fn loomc_without_test_runtime() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_loomc"))
+}
+
 fn test_runtime_archive() -> PathBuf {
     let compiler = PathBuf::from(env!("CARGO_BIN_EXE_loomc"));
     let profile = compiler
@@ -1908,6 +1912,48 @@ fn native_target_preparation_errors_are_usage_errors() {
     assert!(error.contains("LlvmTargetUnavailable"), "{error}");
 }
 
+#[test]
+fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
+    let project = TestProject::new(
+        "module no_runtime\n\ntest fn passes() Unit { Unit }\n\npub fn main() Unit { Unit }\n",
+    );
+    let unavailable = project.0.join("unavailable-runtime-bundle");
+
+    let checked = loomc_without_test_runtime()
+        .args(["--json", "check"])
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("check without a native runtime bundle");
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+
+    let object = project.0.join("program-object");
+    let built_object = loomc_without_test_runtime()
+        .args(["--json", "build", "--emit", "object", "--output"])
+        .arg(&object)
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("emit an object without a native runtime bundle");
+    assert_eq!(built_object.status.code(), Some(0), "{built_object:?}");
+    assert!(
+        loom_codegen_llvm::native_artifact_path(
+            &object,
+            None,
+            loom_codegen_llvm::NativeArtifactKind::Object,
+        )
+        .is_file()
+    );
+
+    let interpreted = loomc_without_test_runtime()
+        .args(["--json", "--backend", "interpreter", "test"])
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("run interpreter tests without a native runtime bundle");
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+}
+
 #[cfg(unix)]
 #[test]
 fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
@@ -2003,6 +2049,26 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
         .expect("reject removed runtime export command");
     assert_eq!(removed_export.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&removed_export.stderr).contains("unknown runtime operation"));
+}
+
+#[test]
+fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
+    let project = TestProject::new("module no_fallback\n\npub fn main() Unit { Unit }\n");
+    let invalid_explicit_bundle = project.0.join("invalid-explicit-runtime");
+    fs::write(&invalid_explicit_bundle, b"not a runtime directory")
+        .expect("write invalid explicit bundle");
+
+    let no_fallback = loomc()
+        .args(["--json", "--runtime-bundle"])
+        .arg(&invalid_explicit_bundle)
+        .args(["build", "--output"])
+        .arg(project.0.join("must-not-link"))
+        .arg(&project.0)
+        .output()
+        .expect("invalid explicit bundle must not fall back to the valid environment bundle");
+
+    assert_eq!(no_fallback.status.code(), Some(2), "{no_fallback:?}");
+    assert!(String::from_utf8_lossy(&no_fallback.stdout).contains("RuntimeBundleInvalid"));
 }
 
 #[cfg(unix)]
