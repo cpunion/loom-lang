@@ -2070,7 +2070,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .into_array_type();
         let mut byte_array = byte_array_type.const_zero();
         for index in 0..bytes {
-            let shift = wide_type.const_int(u64::from(index).saturating_mul(8), false);
+            let shift = wide_type.const_int(Self::sum_carrier_shift(u64::from(index))?, false);
             let shifted = if index == 0 {
                 bits
             } else {
@@ -2136,7 +2136,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .builder
                     .build_left_shift(
                         extended,
-                        wide_type.const_int(u64::from(index).saturating_mul(8), false),
+                        wide_type.const_int(Self::sum_carrier_shift(u64::from(index))?, false),
                         "sum.unpack.byte.shift",
                     )
                     .map_err(builder_error)?
@@ -2188,6 +2188,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .len())
     }
 
+    fn sum_carrier_shift(byte_offset: u64) -> Result<u64, CodegenError> {
+        byte_offset.checked_mul(8).ok_or_else(|| {
+            CodegenError::new("ProgramTooLarge", "sum carrier bit offset overflowed")
+        })
+    }
+
     fn pack_value_bits(
         &self,
         accumulator: IntValue<'ctx>,
@@ -2220,7 +2226,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .builder
                         .build_left_shift(
                             value,
-                            wide_type.const_int(byte_offset.saturating_mul(8), false),
+                            wide_type.const_int(Self::sum_carrier_shift(byte_offset)?, false),
                             "sum.pack.shift",
                         )
                         .map_err(builder_error)?
@@ -2320,7 +2326,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .builder
                         .build_right_shift(
                             bits,
-                            wide_type.const_int(byte_offset.saturating_mul(8), false),
+                            wide_type.const_int(Self::sum_carrier_shift(byte_offset)?, false),
                             false,
                             "sum.unpack.shift",
                         )

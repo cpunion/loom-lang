@@ -118,7 +118,8 @@ pub(crate) fn plan_match(
     scrutinee: &Type,
     arms: &[mir::MatchArm],
 ) -> Option<MatchPlan> {
-    if arms.is_empty() || !patterns_fit_budget(arms) {
+    if arms.is_empty() || arms.len() > DIRECT_MATCH_MAX_PATTERN_NODES || !patterns_fit_budget(arms)
+    {
         return None;
     }
 
@@ -145,7 +146,7 @@ pub(crate) fn plan_match(
         planning_work: 0,
     };
     let root = planner.compile(rows, vec![MatchValueId(0)])?;
-    let cfg_blocks = planner.nodes.iter().try_fold(0_usize, |blocks, node| {
+    let cfg_blocks = planner.nodes.iter().try_fold(1_usize, |blocks, node| {
         blocks.checked_add(match node {
             MatchNode::Arm { .. } => 1,
             MatchNode::Constant { .. } => 2,
