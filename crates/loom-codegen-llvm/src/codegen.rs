@@ -382,9 +382,15 @@ pub fn emit_native(
     options: &EmitOptions,
 ) -> Result<NativeArtifact, CodegenError> {
     validate_native_link_target(options)?;
+    let object_extension = crate::native_artifact_extension(
+        options.target_triple.as_deref(),
+        crate::NativeArtifactKind::Object,
+    )
+    .unwrap_or("o");
+    let object_suffix = format!(".{object_extension}");
     let object = tempfile::Builder::new()
         .prefix("loom-")
-        .suffix(".o")
+        .suffix(&object_suffix)
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
     let emitted = emit_native_object(program, object.path(), options)?;

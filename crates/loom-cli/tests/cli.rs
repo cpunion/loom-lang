@@ -63,6 +63,14 @@ fn loomc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
 }
 
+fn native_executable(path: impl AsRef<std::path::Path>) -> PathBuf {
+    loom_codegen_llvm::native_artifact_path(
+        path,
+        None,
+        loom_codegen_llvm::NativeArtifactKind::Executable,
+    )
+}
+
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -1903,14 +1911,14 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
         Some(&serde_json::json!(loom_codegen_llvm::RUNTIME_CPU_FEATURES))
     );
 
-    let executable = project.0.join("host-bundle-program");
+    let output = project.0.join("host-bundle-program");
     let built = loomc()
         .args(["--json", "--runtime-bundle"])
         .arg(&bundle)
         .arg("--linker")
         .arg(std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into()))
         .args(["build", "--output"])
-        .arg(&executable)
+        .arg(&output)
         .arg(&project.0)
         .output()
         .expect("link host bundle with explicit linker");
@@ -1922,7 +1930,7 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
         String::from_utf8_lossy(&built.stderr)
     );
     assert!(
-        Command::new(&executable)
+        Command::new(native_executable(&output))
             .output()
             .expect("run host bundle executable")
             .status
@@ -2093,17 +2101,17 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
 #[test]
 fn release_build_produces_a_runnable_native_executable() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
-    let release_executable = project.0.join("release-native");
+    let release_output = project.0.join("release-native");
     let native = loomc()
         .args(["--release", "build", "--output"])
-        .arg(&release_executable)
+        .arg(&release_output)
         .arg(&project.0)
         .output()
         .expect("build release native executable");
     assert_eq!(native.status.code(), Some(0));
     let executed = loomc()
         .args(["run", "--artifact"])
-        .arg(&release_executable)
+        .arg(native_executable(&release_output))
         .output()
         .expect("run release executable");
     assert_eq!(executed.status.code(), Some(0));

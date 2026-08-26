@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::emitter::native_runtime_bytes;
+use crate::native_artifact::native_runtime_archive_name;
+use crate::native_link::{linker_version_arguments, native_link_command, native_runtime_link_args};
 use crate::{CodegenError, NATIVE_RUNTIME_ABI, NativeTargetIdentity, native_target_identity};
 
 pub const RUNTIME_BUNDLE_SCHEMA_VERSION: u32 = 2;
@@ -17,7 +19,6 @@ pub const RUNTIME_BUNDLE_MANIFEST: &str = "loom-runtime-bundle.json";
 pub const RUNTIME_CPU: &str = "generic";
 pub const RUNTIME_CPU_FEATURES: &str = "";
 
-const RUNTIME_ARCHIVE_NAME: &str = "libloom_runtime.a";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_LINKER_BYTES: u64 = 512 * 1024 * 1024;
@@ -222,6 +223,7 @@ pub fn export_native_runtime_bundle(
         .tempdir_in(parent)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let target = native_target_identity()?;
+    let archive_name = native_runtime_archive_name(Some(&target.triple)).to_owned();
     let archive_sha256 = digest(native_runtime_bytes());
     let manifest = RuntimeBundleManifest {
         schema_version: RUNTIME_BUNDLE_SCHEMA_VERSION,
@@ -230,15 +232,12 @@ pub fn export_native_runtime_bundle(
         runtime_cpu: RUNTIME_CPU.to_owned(),
         runtime_cpu_features: RUNTIME_CPU_FEATURES.to_owned(),
         runtime_abi: NATIVE_RUNTIME_ABI.to_owned(),
-        archive: RUNTIME_ARCHIVE_NAME.to_owned(),
+        archive: archive_name.clone(),
         archive_sha256: archive_sha256.clone(),
-        link_args: native_runtime_link_args(),
+        link_args: native_runtime_link_args(&target.triple),
     };
-    fs::write(
-        staging.path().join(RUNTIME_ARCHIVE_NAME),
-        native_runtime_bytes(),
-    )
-    .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    fs::write(staging.path().join(&archive_name), native_runtime_bytes())
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     manifest_bytes.push(b'\n');
@@ -269,7 +268,7 @@ pub fn export_native_runtime_bundle(
     Ok(RuntimeBundleExport {
         root: output.to_path_buf(),
         manifest: output.join(RUNTIME_BUNDLE_MANIFEST),
-        archive: output.join(RUNTIME_ARCHIVE_NAME),
+        archive: output.join(archive_name),
         target_triple: target.triple,
         data_layout: target.data_layout,
         runtime_cpu: RUNTIME_CPU.to_owned(),
@@ -284,6 +283,22 @@ pub fn export_native_runtime_bundle(
 pub struct RuntimeLinker {
     program: PathBuf,
     program_sha256: String,
+}
+
+struct RemoveFileOnDrop(Option<PathBuf>);
+
+impl RemoveFileOnDrop {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self(path)
+    }
+}
+
+impl Drop for RemoveFileOnDrop {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 impl RuntimeLinker {
@@ -301,7 +316,7 @@ impl RuntimeLinker {
                     CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned())
                 })?;
         let output = Command::new(&program)
-            .arg("--version")
+            .args(linker_version_arguments(&program))
             .output()
             .map_err(|error| {
                 CodegenError::new(
@@ -312,7 +327,7 @@ impl RuntimeLinker {
         if !output.status.success() {
             return Err(CodegenError::new(
                 "RuntimeLinkerUnavailable",
-                "explicit linker did not accept --version",
+                "explicit linker did not accept its version/help probe",
             ));
         }
         if output.stdout.len().saturating_add(output.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
@@ -346,9 +361,9 @@ impl RuntimeLinker {
 
 /// Links an emitted target object using exactly one validated runtime bundle.
 ///
-/// Arguments are always ordered as target object, runtime archive, declared
-/// manifest arguments, then `-o STAGED_OUTPUT`. The staged output is published
-/// atomically only after all inputs and the linked file are revalidated.
+/// Arguments are ordered by the detected linker driver convention. The staged
+/// executable (and an MSVC PDB) are published only after all inputs and linked
+/// files are revalidated.
 ///
 /// # Errors
 ///
@@ -400,12 +415,17 @@ pub fn link_object_with_runtime_bundle(
             )
         })?
         .into_temp_path();
+    let link = native_link_command(
+        linker.program(),
+        bundle.target_triple(),
+        object,
+        &[bundle.archive()],
+        bundle.link_args(),
+        &staged,
+    );
+    let _staged_pdb_cleanup = RemoveFileOnDrop::new(link.pdb.clone());
     let result = Command::new(linker.program())
-        .arg(object)
-        .arg(bundle.archive())
-        .args(bundle.link_args())
-        .arg("-o")
-        .arg(&staged)
+        .args(&link.arguments)
         .output()
         .map_err(|error| {
             CodegenError::new(
@@ -434,6 +454,7 @@ pub fn link_object_with_runtime_bundle(
     verify_link_inputs(bundle, linker)?;
     validate_regular_file(&staged, MAX_LINK_OUTPUT_BYTES, "linked executable")
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.message().to_owned()))?;
+    validate_staged_pdb(link.pdb.as_deref())?;
     File::options()
         .read(true)
         .write(true)
@@ -450,7 +471,45 @@ pub fn link_object_with_runtime_bundle(
             "ArtifactWriteFailed",
             format!("{}: {}", output.display(), error.error),
         )
-    })
+    })?;
+    publish_staged_pdb(link.pdb.as_deref(), output, Some(bundle.target_triple()))?;
+    Ok(())
+}
+
+fn validate_staged_pdb(pdb: Option<&Path>) -> Result<(), CodegenError> {
+    if let Some(pdb) = pdb {
+        validate_regular_file(pdb, MAX_LINK_OUTPUT_BYTES, "linked PDB").map_err(|error| {
+            CodegenError::new("DebugInfoWriteFailed", error.message().to_owned())
+        })?;
+    }
+    Ok(())
+}
+
+fn publish_staged_pdb(
+    pdb: Option<&Path>,
+    output: &Path,
+    target_triple: Option<&str>,
+) -> Result<(), CodegenError> {
+    let Some(pdb) = pdb else {
+        return Ok(());
+    };
+    let destination = crate::native_artifact_path(
+        output,
+        target_triple,
+        crate::NativeArtifactKind::DebugDatabase,
+    );
+    fs::copy(pdb, &destination).map_err(|error| {
+        CodegenError::new(
+            "DebugInfoWriteFailed",
+            format!("{}: {error}", destination.display()),
+        )
+    })?;
+    File::options()
+        .read(true)
+        .write(true)
+        .open(&destination)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.to_string()))
 }
 
 fn verify_link_inputs(bundle: &RuntimeBundle, linker: &RuntimeLinker) -> Result<(), CodegenError> {
@@ -647,12 +706,12 @@ fn portable_path_component(component: &str) -> bool {
 
 fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
     let candidates = if program.components().count() > 1 || program.is_absolute() {
-        vec![program.to_path_buf()]
+        program_path_candidates(program.to_path_buf())
     } else {
         std::env::var_os("PATH")
             .map(|path| {
                 std::env::split_paths(&path)
-                    .map(|directory| directory.join(program))
+                    .flat_map(|directory| program_path_candidates(directory.join(program)))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -687,6 +746,16 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
         }
     }
     Ok(resolved)
+}
+
+fn program_path_candidates(program: PathBuf) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        if program.extension().is_none() {
+            return vec![program.clone(), program.with_extension("exe")];
+        }
+    }
+    vec![program]
 }
 
 fn read_bounded_regular_file(
@@ -729,18 +798,6 @@ fn validate_regular_file(path: &Path, maximum: u64, label: &str) -> Result<(), C
         )));
     }
     Ok(())
-}
-
-fn native_runtime_link_args() -> Vec<String> {
-    #[cfg(target_os = "linux")]
-    {
-        ["-ldl", "-lpthread", "-lm", "-lrt", "-lutil"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    }
-    #[cfg(not(target_os = "linux"))]
-    Vec::new()
 }
 
 fn bundle_error(message: impl Into<String>) -> CodegenError {

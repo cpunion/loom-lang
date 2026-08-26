@@ -164,7 +164,9 @@ pub fn native_runtime_identity() -> String {
 
 /// Links Mach-O object debug sections into a standard dSYM bundle.
 ///
-/// Linux ELF executables already carry their DWARF and this is a no-op there.
+/// Linux ELF executables already carry their DWARF. MSVC links `CodeView` into a
+/// sibling PDB while constructing the executable, so this function validates
+/// that companion instead of invoking a second post-link tool.
 ///
 /// # Errors
 ///
@@ -218,7 +220,18 @@ pub fn emit_native_debug_companion(executable: &Path) -> Result<(), CodegenError
             )
         })?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_env = "msvc")]
+    {
+        let pdb =
+            crate::native_artifact_path(executable, None, crate::NativeArtifactKind::DebugDatabase);
+        if !pdb.is_file() {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                format!("linker did not produce {}", pdb.display()),
+            ));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_env = "msvc")))]
     let _ = executable;
     Ok(())
 }

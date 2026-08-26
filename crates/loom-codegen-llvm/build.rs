@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 
 #[path = "../../build-support/fingerprint.rs"]
 mod fingerprint;
+#[allow(dead_code)]
+#[path = "src/native_artifact.rs"]
+mod native_artifact;
 
 use fingerprint::{BuildFingerprint, assert_no_local_feature_table, emit_rerun_inputs};
 
@@ -63,17 +66,36 @@ fn main() {
     let status = command.status().expect("run Cargo for Loom native runtime");
     assert!(status.success(), "failed to build Loom native runtime");
 
-    let candidates = target_dir.join(&target).join(&profile).join("deps");
-    let archive = fs::read_dir(&candidates)
-        .expect("read Loom runtime artifacts")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let profile_root = target_dir.join(&target).join(&profile);
+    let archive_extension = native_artifact::native_artifact_extension(
+        Some(&target),
+        native_artifact::NativeArtifactKind::StaticLibrary,
+    )
+    .expect("static libraries always have a target extension");
+    let archive_prefix = if native_artifact::target_uses_msvc_artifacts(Some(&target)) {
+        "loom_runtime"
+    } else {
+        "libloom_runtime"
+    };
+    let archive = [&profile_root, &profile_root.join("deps")]
+        .into_iter()
+        .flat_map(|directory| {
+            fs::read_dir(directory)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "read Loom runtime artifacts {}: {error}",
+                        directory.display()
+                    )
+                })
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+        })
         .filter(|path| {
-            path.extension() == Some(OsStr::new("a"))
+            path.extension() == Some(OsStr::new(archive_extension))
                 && path
                     .file_name()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.starts_with("libloom_runtime-"))
+                    .is_some_and(|name| name.starts_with(archive_prefix))
         })
         .max_by_key(|path| {
             fs::metadata(path)
@@ -81,7 +103,7 @@ fn main() {
                 .ok()
         })
         .expect("find Loom runtime static library");
-    fs::copy(archive, output.join("libloom_runtime.a")).expect("copy Loom runtime static library");
+    fs::copy(archive, output.join("loom-runtime.bin")).expect("copy Loom runtime static library");
 }
 
 fn emit_object_build_fingerprint() {
