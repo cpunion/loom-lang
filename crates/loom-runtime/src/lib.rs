@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn real_completion_timer_and_fd_are_one_shot() {
+    fn real_completion_timer_and_io_are_one_shot() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
