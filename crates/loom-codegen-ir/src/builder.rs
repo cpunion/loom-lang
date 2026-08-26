@@ -5,14 +5,18 @@ use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
 use crate::{
-    Block, BlockId, CheckedProgram, Effects, Function, InstanceId, Instruction, InstructionId,
-    InstructionKind, Origin, Program, RepresentationPlan, Signature, TargetLayout, Terminator,
-    Value, ValueDefinition, ValueId, ValueTypeId, check_program,
+    Block, BlockId, CheckedProgram, Effects, Function, InstanceId, InstanceKey, InstancePlan,
+    Instruction, InstructionId, InstructionKind, Origin, PlannedInstance, Program,
+    RepresentationPlan, Signature, TargetLayout, Terminator, Value, ValueDefinition, ValueId,
+    ValueTypeId, check_program,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildErrorCode {
     ProgramTooLarge,
+    DuplicateInstance,
+    InstanceSourceMismatch,
+    InstanceKeyStructureBudget,
     InvalidFunction,
     InvalidBlock,
     InvalidValueType,
@@ -53,6 +57,7 @@ impl Error for BuildError {}
 pub struct ProgramBuilder {
     brand: ProgramBrand,
     representations: RepresentationPlan,
+    instances: InstancePlan,
     functions: Vec<Function>,
 }
 
@@ -63,6 +68,7 @@ impl ProgramBuilder {
         Self {
             brand,
             representations: RepresentationPlan::scalar_with_brand(target, brand),
+            instances: InstancePlan::with_brand(brand),
             functions: Vec::new(),
         }
     }
@@ -77,8 +83,15 @@ impl ProgramBuilder {
         self.representations.type_id(semantic)
     }
 
-    /// Declares a function before its CFG is built. Declaring all functions
-    /// first permits direct recursive and mutually recursive call references.
+    #[must_use]
+    pub const fn instances(&self) -> &InstancePlan {
+        &self.instances
+    }
+
+    /// Declares a monomorphic function before its CFG is built. Declaring all
+    /// functions first permits direct recursive and mutually recursive call
+    /// references. Producers with explicit arguments use
+    /// [`Self::declare_instance`].
     ///
     /// # Errors
     ///
@@ -91,15 +104,66 @@ impl ProgramBuilder {
         signature: Signature,
         effects: Effects,
     ) -> Result<InstanceId, BuildError> {
+        self.declare_instance(
+            InstanceKey::monomorphic(origin.source_function),
+            origin,
+            name,
+            signature,
+            effects,
+        )
+    }
+
+    /// Declares one explicitly keyed callable instance before its CFG is built.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate or structurally oversized keys, a source
+    /// mismatch between semantic identity and diagnostic origin, an oversized
+    /// LCIR table, or a signature type outside this representation plan.
+    pub fn declare_instance(
+        &mut self,
+        key: InstanceKey,
+        origin: Origin,
+        name: impl Into<String>,
+        signature: Signature,
+        effects: Effects,
+    ) -> Result<InstanceId, BuildError> {
         for ty in signature.params().iter().chain([&signature.result()]) {
             self.require_type(*ty)?;
         }
-        let id = InstanceId::from_index(self.brand, self.functions.len()).ok_or_else(|| {
-            BuildError::new(
-                BuildErrorCode::ProgramTooLarge,
-                "LCIR has too many function instances",
-            )
-        })?;
+        if key.source() != origin.source_function {
+            return Err(BuildError::new(
+                BuildErrorCode::InstanceSourceMismatch,
+                format!(
+                    "LCIR instance source #{} does not match origin source #{}",
+                    key.source().0,
+                    origin.source_function.0
+                ),
+            ));
+        }
+        if key.validate_structure().is_err() {
+            return Err(BuildError::new(
+                BuildErrorCode::InstanceKeyStructureBudget,
+                format!(
+                    "LCIR instance key exceeds the {0}-node structural budget",
+                    crate::INSTANCE_KEY_STRUCTURE_BUDGET
+                ),
+            ));
+        }
+        if let Some(existing) = self.instances.find(&key) {
+            return Err(BuildError::new(
+                BuildErrorCode::DuplicateInstance,
+                format!("LCIR instance key is already assigned to {existing}"),
+            ));
+        }
+        let id =
+            InstanceId::from_index(self.brand, self.instances.entries.len()).ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::ProgramTooLarge,
+                    "LCIR has too many function instances",
+                )
+            })?;
+        self.instances.entries.push(PlannedInstance { id, key });
         self.functions.push(Function {
             id,
             origin,
@@ -120,10 +184,17 @@ impl ProgramBuilder {
     ///
     /// Returns an error when `function` is not declared in this program.
     pub fn function(&mut self, function: InstanceId) -> Result<FunctionBuilder<'_>, BuildError> {
+        if self.instances.key(function).is_none() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidFunction,
+                format!("LCIR function {function} does not exist"),
+            ));
+        }
         let representations = &self.representations;
-        let Some(function) = (function.brand() == self.brand)
-            .then(|| self.functions.get_mut(function.index()))
-            .flatten()
+        let Some(function) = self
+            .functions
+            .get_mut(function.index())
+            .filter(|candidate| candidate.id == function)
         else {
             return Err(BuildError::new(
                 BuildErrorCode::InvalidFunction,
@@ -141,6 +212,7 @@ impl ProgramBuilder {
         Program {
             brand: self.brand,
             representations: self.representations,
+            instances: self.instances,
             functions: self.functions,
         }
     }

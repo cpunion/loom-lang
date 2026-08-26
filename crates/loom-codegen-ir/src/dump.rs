@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 0")?;
+    writeln!(output, "lcir 1")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -71,6 +71,11 @@ pub fn write_program_with_options(
             type_name(value_type.semantic()),
             value_type.repr()
         )?;
+    }
+
+    for instance in program.instances().entries() {
+        writeln!(output)?;
+        writeln!(output, "instance {} = {}", instance.id(), instance.key())?;
     }
 
     for function in program.functions() {

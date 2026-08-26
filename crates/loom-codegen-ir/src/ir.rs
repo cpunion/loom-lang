@@ -2,13 +2,17 @@ use loom_core::Span;
 use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId};
 
 use crate::ids::ProgramBrand;
-use crate::{BlockId, InstanceId, InstructionId, RepresentationPlan, ValueId, ValueTypeId};
+use crate::{
+    BlockId, InstanceId, InstanceKey, InstancePlan, InstructionId, RepresentationPlan, ValueId,
+    ValueTypeId,
+};
 
 /// A target-specific LCIR program before or after independent validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
     pub(crate) brand: ProgramBrand,
     pub(crate) representations: RepresentationPlan,
+    pub(crate) instances: InstancePlan,
     pub(crate) functions: Vec<Function>,
 }
 
@@ -19,15 +23,26 @@ impl Program {
     }
 
     #[must_use]
+    pub const fn instances(&self) -> &InstancePlan {
+        &self.instances
+    }
+
+    #[must_use]
+    pub fn instance_key(&self, id: InstanceId) -> Option<&InstanceKey> {
+        self.instances.key(id)
+    }
+
+    #[must_use]
     pub fn functions(&self) -> &[Function] {
         &self.functions
     }
 
     #[must_use]
     pub fn function(&self, id: InstanceId) -> Option<&Function> {
-        (id.brand() == self.brand)
+        (self.instances.key(id).is_some())
             .then(|| self.functions.get(id.index()))
             .flatten()
+            .filter(|function| function.id == id)
     }
 }
 

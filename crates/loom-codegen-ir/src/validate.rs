@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -13,6 +13,8 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
     RepresentationPlan,
+    InstancePlan,
+    InstanceKeyStructureBudget,
     IndexMismatch,
     InvalidFunctionReference,
     InvalidBlockReference,
@@ -45,6 +47,8 @@ impl ValidationCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RepresentationPlan => "LcirRepresentationPlan",
+            Self::InstancePlan => "LcirInstancePlan",
+            Self::InstanceKeyStructureBudget => "LcirInstanceKeyStructureBudget",
             Self::IndexMismatch => "LcirIndexMismatch",
             Self::InvalidFunctionReference => "LcirInvalidFunctionReference",
             Self::InvalidBlockReference => "LcirInvalidBlockReference",
@@ -232,6 +236,7 @@ impl<'a> Validator<'a> {
     }
 
     fn run(mut self) -> Vec<ValidationError> {
+        self.validate_instances();
         self.validate_representations();
         for (index, function) in self.program.functions.iter().enumerate() {
             let expected = InstanceId::from_index(self.program.brand, index);
@@ -245,9 +250,82 @@ impl<'a> Validator<'a> {
                     ),
                 );
             }
+            if let Some(key) = self
+                .program
+                .instances
+                .entries
+                .get(index)
+                .map(|entry| &entry.key)
+                && key.source() != function.origin.source_function
+            {
+                self.error(
+                    ValidationCode::OriginMismatch,
+                    format!("function[{index}].origin.source"),
+                    format!(
+                        "function origin source #{} does not match instance-key source #{}",
+                        function.origin.source_function.0,
+                        key.source().0
+                    ),
+                );
+            }
             self.validate_function(function, index);
         }
         self.errors
+    }
+
+    fn validate_instances(&mut self) {
+        if self.program.instances.brand != self.program.brand {
+            self.error(
+                ValidationCode::InstancePlan,
+                "instances",
+                "instance plan belongs to a different LCIR program",
+            );
+        }
+        if self.program.instances.entries.len() != self.program.functions.len() {
+            self.error(
+                ValidationCode::InstancePlan,
+                "instances",
+                format!(
+                    "instance plan has {} entries, but the function table has {}",
+                    self.program.instances.entries.len(),
+                    self.program.functions.len()
+                ),
+            );
+        }
+
+        let mut identities = BTreeMap::new();
+        for (index, instance) in self.program.instances.entries.iter().enumerate() {
+            let expected = InstanceId::from_index(self.program.brand, index);
+            if expected != Some(instance.id) {
+                self.error(
+                    ValidationCode::IndexMismatch,
+                    format!("instances[{index}]"),
+                    format!(
+                        "instance-plan table index {index} carries identity {}",
+                        instance.id
+                    ),
+                );
+            }
+            if instance.key.validate_structure().is_err() {
+                self.error(
+                    ValidationCode::InstanceKeyStructureBudget,
+                    format!("instances[{index}].key"),
+                    format!(
+                        "instance key exceeds the {}-node structural budget",
+                        crate::INSTANCE_KEY_STRUCTURE_BUDGET
+                    ),
+                );
+                continue;
+            }
+            let identity = instance.key.canonical_identity();
+            if let Some(previous) = identities.insert(identity, index) {
+                self.error(
+                    ValidationCode::InstancePlan,
+                    format!("instances[{index}].key"),
+                    format!("instance key duplicates instances[{previous}].key"),
+                );
+            }
+        }
     }
 
     fn validate_representations(&mut self) {
@@ -1176,9 +1254,8 @@ impl<'a> Validator<'a> {
     }
 
     fn exact_effect(&self, function: InstanceId) -> Option<Effects> {
-        (function.brand() == self.program.brand)
-            .then(|| self.exact_effects.get(function.index()).copied())
-            .flatten()
+        canonical_function_index(self.program, function)
+            .and_then(|index| self.exact_effects.get(index).copied())
     }
 
     /// Validates the edge-sensitive fact consumed by `int.successor_below`.
@@ -1623,8 +1700,12 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
 }
 
 fn canonical_function_index(program: &Program, function: InstanceId) -> Option<usize> {
-    (function.brand() == program.brand && function.index() < program.functions.len())
-        .then_some(function.index())
+    program
+        .instances
+        .key(function)
+        .and_then(|_| program.functions.get(function.index()))
+        .filter(|candidate| candidate.id == function)
+        .map(|_| function.index())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1995,10 +2076,80 @@ fn dominator_intervals(entry: usize, children: &[Vec<usize>]) -> Vec<Option<Domi
 
 #[cfg(test)]
 mod tests {
-    use loom_mir::FunctionId as MirFunctionId;
+    use loom_mir::{FunctionId as MirFunctionId, WitnessId};
 
     use super::*;
-    use crate::{Constant, Origin, ProgramBuilder, Signature, TargetLayout, Terminator};
+    use crate::{
+        Constant, INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument, Origin,
+        ProgramBuilder, Signature, TargetLayout, Terminator,
+    };
+
+    fn declared_program(sources: &[u32]) -> Program {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+        for source in sources {
+            builder
+                .declare_function(
+                    Origin::synthetic(MirFunctionId(*source)),
+                    format!("instance.{source}"),
+                    Signature::new(Vec::new(), unit_ty),
+                    Effects::NONE,
+                )
+                .expect("declare");
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn instance_plan_validates_dense_order_uniqueness_and_source_consistency() {
+        let mut non_dense = declared_program(&[80]);
+        non_dense.instances.entries[0].id =
+            InstanceId::from_index(non_dense.brand, 1).expect("malformed id");
+        let errors = validate_program(&non_dense).expect_err("non-dense plan must fail");
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code() == ValidationCode::IndexMismatch)
+        );
+
+        let mut duplicate = declared_program(&[81, 82]);
+        duplicate.instances.entries[1].key = duplicate.instances.entries[0].key.clone();
+        let errors = validate_program(&duplicate).expect_err("duplicate plan key must fail");
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code() == ValidationCode::InstancePlan)
+        );
+
+        let mut mismatched = declared_program(&[83]);
+        mismatched.instances.entries[0].key = InstanceKey::monomorphic(MirFunctionId(84));
+        let errors = validate_program(&mismatched).expect_err("source mismatch must fail");
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code() == ValidationCode::OriginMismatch)
+        );
+    }
+
+    #[test]
+    fn instance_plan_validation_enforces_the_non_recursive_structure_budget() {
+        let mut program = declared_program(&[85]);
+        let mut witness = InstanceWitnessArgument::Concrete(WitnessId(0));
+        for _ in 0..INSTANCE_KEY_STRUCTURE_BUDGET {
+            witness = InstanceWitnessArgument::apply(WitnessId(0), vec![witness]);
+        }
+        program.instances.entries[0].key =
+            InstanceKey::new(MirFunctionId(85), Vec::new(), vec![witness]);
+
+        let errors = validate_program(&program).expect_err("oversized key must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstanceKeyStructureBudget
+                && error.path() == "instances[0].key"
+        }));
+    }
 
     #[test]
     fn malformed_block_identity_does_not_enter_cfg_indices() {

@@ -74,17 +74,24 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 1 carries
+compiler-private identity for that complete checked artifact. Schema 2 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
-includes the target and representation plan, checked functions and control
-flow, operations, and complete function, instruction, and terminator origins.
+includes the target, representation, and instance plans, checked functions and
+control flow, operations, and complete function, instruction, and terminator
+origins.
 The dump uses explicit enum spellings and string escaping rather than Rust
 `Debug`. Dense numeric IDs are content, but the process-local generative
 `ProgramBrand` is deliberately excluded, so independently built artifacts with
 the same deterministic numbering and content have the same identity. The
 production LCIR fingerprint streams this identity together with backend,
 target-machine, optimization, runtime ABI, and debug-source identities.
+
+The callable-instance plan changed the compiler-private artifact identity but
+not the emitted machine ABI. Advancing the artifact identity to schema 2 is
+therefore the complete persistent-cache invalidation for this change because
+that identity is an input to the native-object fingerprint. The
+`loom-lcir-native-object-v1` format tag does not require an independent bump.
 
 `lower_scalar_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -140,6 +147,34 @@ A function contains:
 - a dense instruction table and typed SSA values;
 - exactly one terminator per completed block.
 
+`InstancePlan` is the single source of callable identity. It is a dense,
+deterministic table from each `InstanceId` to an `InstanceKey`. A key contains
+the source MIR `FunctionId`, ordered type arguments, and ordered witness
+arguments; witness arguments distinguish concrete witnesses, witness
+parameters, and owned nested applications. A `Function` stores its
+`InstanceId`, not a duplicate key. Its source function in `Origin` is retained
+only as provenance, and validation requires it to equal the key's source.
+Roots, declarations, direct calls, invokes, and effect analysis consequently
+refer to planned instances rather than rebuilding a bare
+`FunctionId -> InstanceId` map.
+
+The current source lowerer creates only `InstanceKey::monomorphic(source)`, so
+every produced key has empty type and witness arguments. This foundation does
+not instantiate a generic function. Reachable generic source still produces
+`Unsupported` during whole-artifact classification and selects the complete
+legacy route atomically. Explicit builders can construct distinct keys to test
+planning and validation, but that API is not a claim of generic lowering.
+
+One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
+witness structure of a key to 256 nodes. Builders report
+`InstanceKeyStructureBudget` before admitting an oversized key, and the
+independent validator reports `LcirInstanceKeyStructureBudget` for malformed
+unchecked input. Structure validation, canonical key encoding, and text output
+use bounded iterative traversal instead of recursive descent. The validator
+also checks the plan's program brand, dense order, one-to-one length with the
+function table, key uniqueness, source-provenance agreement, and every callable
+reference.
+
 `BlockId`, `InstructionId`, and `ValueId` are local to one `InstanceId` and
 carry that owner in their identity. Entry block parameters correspond to
 function parameters. Other block parameters carry values across CFG edges.
@@ -191,6 +226,8 @@ The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
 
 - canonical representation tables and dense identities;
+- a branded, dense, unique, structurally bounded instance plan whose entries
+  agree with function origins and all callable references;
 - valid function, block, instruction, value, and value-type references;
 - entry parameters matching the function signature;
 - no CFG predecessor for the entry block;
@@ -230,15 +267,17 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 0` text is
-compiler-private and has no compatibility or serialization guarantee.
+text even when the graphs are otherwise equivalent. The `lcir 1` text includes
+the dense instance plan and complete instance keys. It is compiler-private and
+has no compatibility or serialization guarantee.
 
 ## Repository evidence
 
 The crate's focused tests cover source-root selection, recursive graph closure,
 stable source-graph serialization and errors, branded artifact roots and root
-signatures, artifact identity and invalidation inputs, the scalar
-representation catalog, target pointer-width validation, block-parameter
+signatures, distinct type/witness instance keys, dense-plan and
+structural-budget validation, artifact identity and invalidation inputs, the
+scalar representation catalog, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional

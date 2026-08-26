@@ -11,9 +11,9 @@ use loom_mir::{
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
-    FunctionBuilder, InstanceId, InstructionKind, IntPredicate, Origin, ProgramBuilder,
-    ResultTarget, Signature, SourceRoots, TargetLayout, Terminator, TerminatorKind, UnwindTarget,
-    ValueId, ValueTypeId, analyze_source_reachability,
+    FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstructionKind, IntPredicate, Origin,
+    ProgramBuilder, ResultTarget, Signature, SourceRoots, TargetLayout, Terminator, TerminatorKind,
+    UnwindTarget, ValueId, ValueTypeId, analyze_source_reachability,
 };
 
 /// Source-level roots selected for one attempted LCIR artifact.
@@ -406,14 +406,17 @@ pub fn lower_scalar_artifact(
                     format!("reachable function #{} disappeared", id.0),
                 )
             })?;
-            Ok((*id, summarize_effects(function)))
+            Ok(InstanceEffectSummary::monomorphic(
+                *id,
+                summarize_effects(function),
+            ))
         })
-        .collect::<Result<BTreeMap<_, _>, LoweringError>>()?;
-    let effects = solve_effects(&summaries)?;
+        .collect::<Result<Vec<_>, LoweringError>>()?;
+    let effects = solve_effects(summaries)?;
     let mut builder = ProgramBuilder::new(target);
-    let mut instances = BTreeMap::new();
-    for function_id in &graph.functions {
-        let function = mir.function(*function_id).ok_or_else(|| {
+    for (index, planned) in effects.entries().iter().enumerate() {
+        let function_id = planned.key.source();
+        let function = mir.function(function_id).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::SourceGraph,
                 format!("reachable function #{} disappeared", function_id.0),
@@ -425,9 +428,9 @@ pub fn lower_scalar_artifact(
             .map(|parameter| required_type(&builder, &parameter.ty))
             .collect::<Result<Vec<_>, _>>()?;
         let result = required_type(&builder, &function.return_ty)?;
-        let effect = effect_for(&effects, *function_id)?;
         let instance = builder
-            .declare_function(
+            .declare_instance(
+                planned.key.clone(),
                 Origin {
                     source_function: function.id,
                     expression: None,
@@ -435,26 +438,40 @@ pub fn lower_scalar_artifact(
                 },
                 &function.name,
                 Signature::new(params, effect_result(result)),
-                effect,
+                planned.effects,
             )
             .map_err(LoweringError::from)?;
-        instances.insert(*function_id, instance);
+        if instance.index() != index {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "effect-plan entry {index} was assigned unexpected LCIR instance {instance}"
+                ),
+            ));
+        }
     }
-    for function_id in &graph.functions {
-        let source = mir.function(*function_id).ok_or_else(|| {
+    let instances = InstanceLookup::new(builder.instances())?;
+    let instance_effects = effects
+        .entries()
+        .iter()
+        .map(|entry| entry.effects)
+        .collect::<Vec<_>>();
+    for planned in effects.entries() {
+        let function_id = planned.key.source();
+        let source = mir.function(function_id).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::SourceGraph,
                 format!("reachable function #{} disappeared", function_id.0),
             )
         })?;
-        let instance = instances.get(function_id).copied().ok_or_else(|| {
+        let instance = instances.get(&planned.key).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 format!("function #{} has no LCIR declaration", function_id.0),
             )
         })?;
         let function_builder = builder.function(instance).map_err(LoweringError::from)?;
-        FunctionLowerer::new(source, function_builder, &instances, &effects).lower()?;
+        FunctionLowerer::new(source, function_builder, &instances, &instance_effects).lower()?;
     }
     let checked = builder.finish_checked().map_err(|errors| {
         LoweringError::defect(
@@ -466,7 +483,8 @@ pub fn lower_scalar_artifact(
         .ordered
         .iter()
         .map(|source| {
-            instances.get(source).copied().ok_or_else(|| {
+            let key = InstanceKey::monomorphic(*source);
+            instances.get(&key).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
                     format!("root function #{} has no LCIR instance", source.0),
@@ -1081,6 +1099,68 @@ struct EffectSummary {
     calls: BTreeSet<FunctionId>,
 }
 
+#[derive(Clone, Debug)]
+struct InstanceEffectSummary {
+    key: InstanceKey,
+    local_fault: bool,
+    calls: Box<[InstanceKey]>,
+}
+
+impl InstanceEffectSummary {
+    fn monomorphic(source: FunctionId, summary: EffectSummary) -> Self {
+        Self {
+            key: InstanceKey::monomorphic(source),
+            local_fault: summary.local_fault,
+            calls: summary
+                .calls
+                .into_iter()
+                .map(InstanceKey::monomorphic)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EffectPlanEntry {
+    key: InstanceKey,
+    effects: Effects,
+}
+
+#[derive(Clone, Debug)]
+struct EffectPlan {
+    entries: Vec<EffectPlanEntry>,
+}
+
+impl EffectPlan {
+    fn entries(&self) -> &[EffectPlanEntry] {
+        &self.entries
+    }
+}
+
+struct InstanceLookup {
+    indexes: BTreeMap<String, InstanceId>,
+}
+
+impl InstanceLookup {
+    fn new(plan: &InstancePlan) -> Result<Self, LoweringError> {
+        let mut indexes = BTreeMap::new();
+        for instance in plan.entries() {
+            let identity = instance.key().canonical_identity();
+            if indexes.insert(identity, instance.id()).is_some() {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("duplicate LCIR declaration for {}", instance.key()),
+                ));
+            }
+        }
+        Ok(Self { indexes })
+    }
+
+    fn get(&self, key: &InstanceKey) -> Option<InstanceId> {
+        self.indexes.get(&key.canonical_identity()).copied()
+    }
+}
+
 fn summarize_effects(function: &mir::Function) -> EffectSummary {
     let mut summary = EffectSummary::default();
     scan_effect_block(&function.body, &mut summary);
@@ -1404,19 +1484,18 @@ fn scan_mutation_expr(expression: &mir::Expr, changed: &mut BTreeSet<LocalId>) -
     continues && expression.ty != Type::Never
 }
 
-fn solve_effects(
-    summaries: &BTreeMap<FunctionId, EffectSummary>,
-) -> Result<Vec<Option<Effects>>, LoweringError> {
-    let slot_count = match summaries.keys().next_back().copied() {
-        Some(function) => function_index(function)?.checked_add(1).ok_or_else(|| {
-            LoweringError::ResourceLimit {
-                code: ResourceLimitCode::ProgramTooLarge,
-                message: "effect-plan slot count exceeds the host address space".to_owned(),
-            }
-        })?,
-        None => 0,
-    };
-    let mut planned = allocated_slots(slot_count, false, "effect-plan membership")?;
+fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, LoweringError> {
+    let slot_count = summaries.len();
+    let mut indexes = BTreeMap::new();
+    for (index, summary) in summaries.iter().enumerate() {
+        let identity = summary.key.canonical_identity();
+        if indexes.insert(identity, index).is_some() {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("duplicate effect summary for {}", summary.key),
+            ));
+        }
+    }
     let mut incoming_counts = allocated_slots(slot_count, 0_usize, "reverse-call counts")?;
     let mut may_fault = allocated_slots(slot_count, false, "effect states")?;
     let mut pending = VecDeque::new();
@@ -1427,31 +1506,28 @@ fn solve_effects(
             message: format!("cannot allocate effect worklist: {error}"),
         })?;
 
-    for (function, summary) in summaries {
-        let caller = function_index(*function)?;
-        planned[caller] = true;
+    for (caller, summary) in summaries.iter().enumerate() {
         if summary.local_fault {
             may_fault[caller] = true;
             pending.push_back(caller);
         }
     }
-    for (function, summary) in summaries {
+    for summary in &summaries {
         for callee in &summary.calls {
-            let callee_index = function_index(*callee)?;
-            if !planned.get(callee_index).copied().unwrap_or(false) {
-                return Err(LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!(
-                        "reachable function #{} calls unplanned function #{}",
-                        function.0, callee.0
-                    ),
-                ));
-            }
+            let callee_index = indexes
+                .get(&callee.canonical_identity())
+                .copied()
+                .ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("{} calls unplanned {callee}", summary.key),
+                    )
+                })?;
             incoming_counts[callee_index] = incoming_counts[callee_index]
                 .checked_add(1)
                 .ok_or_else(|| LoweringError::ResourceLimit {
                     code: ResourceLimitCode::ProgramTooLarge,
-                    message: format!("too many calls to function #{}", callee.0),
+                    message: format!("too many calls to {callee}"),
                 })?;
         }
     }
@@ -1467,10 +1543,12 @@ fn solve_effects(
                 ),
             })?;
     }
-    for (function, summary) in summaries {
-        let caller = function_index(*function)?;
+    for (caller, summary) in summaries.iter().enumerate() {
         for callee in &summary.calls {
-            let callee_index = function_index(*callee)?;
+            let callee_index = indexes
+                .get(&callee.canonical_identity())
+                .copied()
+                .expect("all effect callees were checked before graph allocation");
             reverse_calls[callee_index].push(caller);
         }
     }
@@ -1484,16 +1562,19 @@ fn solve_effects(
         }
     }
 
-    let mut effects = allocated_slots(slot_count, None, "effect plan")?;
-    for function in summaries.keys().copied() {
-        let index = function_index(function)?;
-        effects[index] = Some(if may_fault[index] {
-            Effects::MAY_FAULT
-        } else {
-            Effects::NONE
-        });
-    }
-    Ok(effects)
+    let entries = summaries
+        .into_iter()
+        .zip(may_fault)
+        .map(|(summary, may_fault)| EffectPlanEntry {
+            key: summary.key,
+            effects: if may_fault {
+                Effects::MAY_FAULT
+            } else {
+                Effects::NONE
+            },
+        })
+        .collect();
+    Ok(EffectPlan { entries })
 }
 
 fn allocated_slots<T: Clone>(
@@ -1512,27 +1593,13 @@ fn allocated_slots<T: Clone>(
     Ok(slots)
 }
 
-fn function_index(function: FunctionId) -> Result<usize, LoweringError> {
-    usize::try_from(function.0).map_err(|_| LoweringError::ResourceLimit {
-        code: ResourceLimitCode::ProgramTooLarge,
-        message: format!(
-            "function #{} cannot be represented in the host address space",
-            function.0
-        ),
+fn effect_for(effects: &[Effects], function: InstanceId) -> Result<Effects, LoweringError> {
+    effects.get(function.index()).copied().ok_or_else(|| {
+        LoweringError::defect(
+            LoweringDefectCode::InconsistentPlan,
+            format!("LCIR instance {function} has no fixed-point effect"),
+        )
     })
-}
-
-fn effect_for(effects: &[Option<Effects>], function: FunctionId) -> Result<Effects, LoweringError> {
-    effects
-        .get(function_index(function)?)
-        .copied()
-        .flatten()
-        .ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::InconsistentPlan,
-                format!("function #{} has no fixed-point effect", function.0),
-            )
-        })
 }
 
 type EnvironmentRoot = u32;
@@ -1745,8 +1812,8 @@ enum StatementFlow {
 struct FunctionLowerer<'function, 'builder, 'plan> {
     source: &'function mir::Function,
     builder: FunctionBuilder<'builder>,
-    instances: &'plan BTreeMap<FunctionId, InstanceId>,
-    effects: &'plan [Option<Effects>],
+    instances: &'plan InstanceLookup,
+    effects: &'plan [Effects],
     local_types: BTreeMap<LocalId, Type>,
     environments: EnvironmentArena,
     fault_block: Option<BlockId>,
@@ -1756,8 +1823,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn new(
         source: &'function mir::Function,
         builder: FunctionBuilder<'builder>,
-        instances: &'plan BTreeMap<FunctionId, InstanceId>,
-        effects: &'plan [Option<Effects>],
+        instances: &'plan InstanceLookup,
+        effects: &'plan [Effects],
     ) -> Self {
         let local_types = source
             .params
@@ -2779,13 +2846,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             CallTarget::Direct(callee) | CallTarget::Inherent(callee) => *callee,
             _ => return Err(self.unsupported_reached("non-direct call")),
         };
-        let instance = self.instances.get(&callee).copied().ok_or_else(|| {
+        let key = InstanceKey::monomorphic(callee);
+        let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 format!("call target #{} has no LCIR instance", callee.0),
             )
         })?;
-        let effect = effect_for(self.effects, callee)?;
+        let effect = effect_for(self.effects, instance)?;
         let origin = self.expression_origin(expression);
         let result_type = self.type_id(&expression.ty)?;
         if effect == Effects::NONE {
@@ -3005,7 +3073,7 @@ mod tests {
     #[test]
     fn effect_solver_propagates_through_a_long_chain() {
         const FUNCTION_COUNT: u32 = 4_096;
-        let mut summaries = BTreeMap::new();
+        let mut summaries = Vec::new();
         for raw in 0..FUNCTION_COUNT {
             let mut summary = EffectSummary {
                 local_fault: raw == 0,
@@ -3014,15 +3082,13 @@ mod tests {
             if raw != 0 {
                 summary.calls.insert(FunctionId(raw - 1));
             }
-            summaries.insert(FunctionId(raw), summary);
+            summaries.push(InstanceEffectSummary::monomorphic(FunctionId(raw), summary));
         }
 
-        let effects = solve_effects(&summaries).expect("long-chain effects must solve");
-        for raw in 0..FUNCTION_COUNT {
-            assert_eq!(
-                effect_for(&effects, FunctionId(raw)).expect("planned function"),
-                Effects::MAY_FAULT
-            );
+        let effects = solve_effects(summaries).expect("long-chain effects must solve");
+        for (raw, entry) in (0..FUNCTION_COUNT).zip(effects.entries()) {
+            assert_eq!(entry.key, InstanceKey::monomorphic(FunctionId(raw)));
+            assert_eq!(entry.effects, Effects::MAY_FAULT);
         }
     }
 
@@ -3053,30 +3119,30 @@ mod tests {
             (FunctionId(3), EffectSummary::default()),
         ]);
 
-        let effects = solve_effects(&summaries).expect("recursive effects must solve");
-        for raw in 0..3 {
-            assert_eq!(
-                effect_for(&effects, FunctionId(raw)).expect("planned SCC member"),
-                Effects::MAY_FAULT
-            );
-        }
-        assert_eq!(
-            effect_for(&effects, FunctionId(3)).expect("planned pure function"),
-            Effects::NONE
+        let summaries = summaries
+            .into_iter()
+            .map(|(source, summary)| InstanceEffectSummary::monomorphic(source, summary))
+            .collect();
+        let effects = solve_effects(summaries).expect("recursive effects must solve");
+        assert!(
+            effects.entries()[..3]
+                .iter()
+                .all(|entry| entry.effects == Effects::MAY_FAULT)
         );
+        assert_eq!(effects.entries()[3].effects, Effects::NONE);
     }
 
     #[test]
     fn effect_solver_rejects_an_unplanned_callee_as_a_defect() {
-        let summaries = BTreeMap::from([(
+        let summaries = vec![InstanceEffectSummary::monomorphic(
             FunctionId(0),
             EffectSummary {
                 calls: BTreeSet::from([FunctionId(1)]),
                 ..EffectSummary::default()
             },
-        )]);
+        )];
 
-        let error = solve_effects(&summaries).expect_err("unplanned callee must be rejected");
+        let error = solve_effects(summaries).expect_err("unplanned callee must be rejected");
         assert_eq!(
             error.code(),
             LoweringErrorCode::Defect(LoweringDefectCode::InconsistentPlan)
