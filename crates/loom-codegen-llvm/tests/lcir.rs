@@ -1676,8 +1676,8 @@ fn msvc_debug_sources_emit_codeview_module_flags() {
     assert!(ir.contains("CodeView"), "{ir}");
     assert!(!ir.contains("Dwarf Version"), "{ir}");
     assert!(ir.contains("!DICompileUnit"), "{ir}");
-    assert!(
-        !ir.contains("!DISubprogram"),
-        "LCIR must not claim function-level source metadata:\n{ir}"
-    );
+    assert!(ir.contains("!DISubprogram"), "{ir}");
+    assert!(ir.contains("name: \"main\""), "{ir}");
+    assert!(ir.contains("!DISubroutineType"), "{ir}");
+    assert!(ir.contains("!DILocation"), "{ir}");
 }

@@ -159,7 +159,6 @@ impl<'ctx> DebugState<'ctx> {
         context: &'ctx Context,
         module: &Module<'ctx>,
         sources: &[DebugSource],
-        target_triple: &str,
         optimized: bool,
         target_data: &TargetData,
         ptr_type: inkwell::types::PointerType<'ctx>,
@@ -169,7 +168,8 @@ impl<'ctx> DebugState<'ctx> {
             .first()
             .map_or("<loom-generated>.loom", |source| source.path.as_str());
         module.set_source_file_name(primary);
-        configure_debug_module_flags(context, module, target_triple);
+        let target_triple = module.get_triple();
+        configure_debug_module_flags(context, module, &target_triple.as_str().to_string_lossy());
         let (builder, unit) = module.create_debug_info_builder(
             true,
             DWARFSourceLanguage::C,
@@ -941,14 +941,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let unit_type = context.struct_type(&[], false);
         let fault_context_type = context.opaque_struct_type("loom.lcir.FaultContext");
         fault_context_type.set_body(&[ptr_type.into(), context.bool_type().into()], false);
-        let target_triple = target.triple.as_str().to_string_lossy();
         let debug = (!options.debug_sources.is_empty())
             .then(|| {
                 DebugState::new(
                     context,
                     &module,
                     &options.debug_sources,
-                    &target_triple,
                     options.optimization == crate::OptimizationProfile::Release,
                     &target_data,
                     ptr_type,
