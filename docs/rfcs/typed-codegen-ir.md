@@ -233,6 +233,13 @@ Sum construction and exhaustive switching preserve ordered variants and move
 typed payloads through block parameters. `Result[Unit, E]` test roots carry an
 explicit success/failure variant plan; the harness never guesses from a source
 name or an implicit tag convention.
+Tagged carrier conversion is pure SSA bit packing and unpacking at LLVM
+target-data offsets on the supported little-endian targets. It does not use a
+stack reinterpretation buffer or `memcpy`, including when a live sum crosses a
+loop phi. Match plans use IEEE ordered equality for float constants, share one
+typed capture block per selected source arm, and are rejected before LCIR
+allocation if their bounded pattern, decision, value, work, or CFG-block
+budgets are exceeded.
 It creates no runtime for an infallible direct root and creates a runtime, but
 no executor, for a synchronous faulting root.
 

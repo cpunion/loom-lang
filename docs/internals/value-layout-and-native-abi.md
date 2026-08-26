@@ -77,6 +77,15 @@ mutation reconstructs the changed path and therefore cannot write through an
 earlier copy. No LCIR product requires a `ValueSlot`, record allocation, GC
 trace metadata, executor, or source-function `alloca`.
 
+An eligible closed enum is also a direct value. A single variant is its payload
+without a tag; multiple empty variants use only the checked minimal integer
+tag; otherwise LLVM uses `{ tag, exact target-aligned carrier }`. On the
+supported little-endian native targets, payload insertion and extraction pack
+and unpack that carrier with SSA integer and aggregate operations at target-data
+field offsets. Live carriers remain register values through calls, phis, and
+loops: emission introduces no stack scratch, `memcpy`, universal value, GC, or
+executor surface. The carrier layout is compiler-private and is not an FFI ABI.
+
 An infallible function with no inout parameters returns its source result `T`
 directly. With ordered functional writebacks `W...`, it returns `{ T, W... }`.
 A faulting function returns `{ i32 status, T, W... }` and receives one hidden

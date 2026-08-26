@@ -77,8 +77,12 @@ allocating LCIR. The plan covers every reachable structural tuple, closed
 record, concrete closed enum, and transparent refined chain, orders
 registrations after their direct-value dependencies, and rejects mixed
 product/sum/transparent by-value cycles. Classification walks each candidate
-aggregate graph iteratively
-and limits both nesting depth and the expanded structural size to 256.
+aggregate graph iteratively. Before substituting or cloning a
+generic payload, it walks borrowed declaration schemas with a path-local
+nominal `TypeId` set. A repeated by-value nominal type is rejected immediately;
+this prevents non-regular recursive instantiations from expanding during
+substitution. The preflight and concrete walks both enforce a 256-node type
+budget, and the concrete walk also limits nesting depth to 256.
 Structural size counts every aggregate occurrence, sum variant, and payload or
 product field occurrence. A wide tuple, record, or enum and repeated nested
 aggregates therefore consume the same finite budget as a deep chain. Crossing
@@ -195,9 +199,15 @@ translated to `RefineProven` or `InvariantRecordProven`. Enum construction
 uses `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
 subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
-payload edge parameters at each sum decision. Pattern, decision-node, and
-abstract-value budgets are each 512; exceeding any budget selects whole-artifact
-fallback before LCIR allocation. A mutable inherent
+payload edge parameters at each sum decision. Every selected source arm has
+one shared LCIR block with typed capture parameters, so multiple DAG paths do
+not duplicate its body. Float-pattern equality is IEEE ordered equality:
+`+0.0` and `-0.0` select the same constant arm, while a NaN pattern can never
+match and is removed from the decision plan. Pattern, decision-node, and
+abstract-value budgets are each 512, planning work is limited to 32,768 units,
+and the complete match may require at most 1,024 CFG blocks including its join.
+All limits are checked before the lowerer allocates any match LCIR; exceeding a
+limit selects whole-artifact fallback. A mutable inherent
 receiver is a functional inout parameter:
 the callee returns its current product on both normal and fault exits. Only a
 whole local may cross that boundary; projected inout selects atomic fallback.
@@ -385,6 +395,13 @@ not repair a malformed program. Current checks include:
 - no `Uninhabited` signature or SSA value;
 - reachable blocks, dominance, and use-after-definition rules.
 
+Aggregate-use validation borrows the canonical representation catalog. A
+product construction compares directly against its field slice, and a sum use
+selects only its referenced variant. Validation therefore does not clone all
+fields or variants for every use; its allocation cost remains bounded by the
+program and CFG being checked rather than schema width multiplied by use
+count.
+
 When both branch arms carry the same arguments, LLVM emission collapses them to
 one unconditional edge. When their arguments differ, the emitter creates two
 physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
@@ -443,11 +460,15 @@ runtime setup failures, ordered tests, atomic automatic/legacy route selection,
 direct-product construction and mutation, closed-sum construction and ordered
 exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
 `Result` test outcomes, normal and fault writebacks,
-source/interpreter/legacy differentials, route-separated identity, object-cache
+source/interpreter/legacy differentials, an explicit checked-MIR float-pattern
+differential across the interpreter and both native routes, shared typed arm
+blocks for wide enums, high-use validation against wide schemas, live
+optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
 legacy route because its root also reaches Text, List, parsing, and matching;
 the direct aggregate tests are the current closed-workload evidence. The
 platform-independent Windows CI job checks, lints, tests, and builds
 `loom-codegen-ir`; cross-target LLVM tests also emit direct closed-sum MSVC
-objects without selecting the legacy route.
+COFF objects from the same live carrier fixture without selecting the legacy
+route.
