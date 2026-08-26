@@ -6,6 +6,8 @@ const MAX_REPORT_BYTES = 2 * 1024 * 1024;
 const MAX_CASES = 32;
 const MAX_LANGUAGES = 16;
 const MAX_PLATFORMS = 4;
+const MAX_CHART_ENTRIES = 64;
+const MAX_CHART_INDEX = 10_000;
 const REPORT_KIND = "loom-cross-language-basic-benchmark";
 const SAFE_NAME = /^[A-Za-z0-9_.+()-]{1,64}$/;
 const SAFE_ARTIFACT_SUFFIX = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -269,7 +271,11 @@ export function readComparisons(evidenceDirectory, runId) {
 }
 
 function deltaPercent(base, candidate) {
-  return ((candidate / base) - 1) * 100;
+  const delta = ((candidate / base) - 1) * 100;
+  if (!Number.isFinite(delta)) {
+    fail("comparison delta must be finite");
+  }
+  return delta;
 }
 
 function formatDelta(value) {
@@ -302,6 +308,46 @@ function sizeCell(entry, unavailable) {
     return unavailable;
   }
   return comparisonCell(entry.base.binaryBytes, entry.candidate.binaryBytes, "B", 0, unavailable);
+}
+
+function chartIndex(base, candidate) {
+  const rounded = Number((deltaPercent(base, candidate) + 100).toFixed(1));
+  const index = Object.is(rounded, -0) ? 0 : rounded;
+  if (index > MAX_CHART_INDEX) {
+    fail("runtime chart index exceeds the supported limit");
+  }
+  return index;
+}
+
+function chartUpperBound(values) {
+  const maximum = Math.max(100, ...values);
+  const padded = maximum + Math.max(5, (maximum - 100) * 0.1);
+  const step = 10 ** Math.max(1, Math.floor(Math.log10(padded)) - 1);
+  return Math.ceil(padded / step) * step;
+}
+
+function runtimeChart(platform, comparison, runtimeKeys) {
+  if (runtimeKeys.length > MAX_CHART_ENTRIES) {
+    fail("benchmark suite contains too many runtime entries for a bounded chart");
+  }
+  const entries = runtimeKeys.map((key) => comparison.runtime.get(key));
+  const labels = entries.map((entry) => JSON.stringify(`${entry.caseName}/${entry.language}`));
+  const indices = entries.map((entry) => chartIndex(entry.base, entry.candidate));
+  const upperBound = chartUpperBound(indices);
+  const baseLine = indices.map(() => 100);
+  return [
+    `#### ${platform.label}`,
+    "",
+    "```mermaid",
+    "xychart-beta horizontal",
+    `  title "${platform.label} runtime index (base = 100)"`,
+    `  x-axis [${labels.join(", ")}]`,
+    `  y-axis "Runtime index" 0 --> ${upperBound}`,
+    `  bar [${indices.join(", ")}]`,
+    `  line [${baseLine.join(", ")}]`,
+    "```",
+    "",
+  ];
 }
 
 function requireSameSuite(comparisons) {
@@ -387,7 +433,19 @@ export function renderComment(comparisons, sha) {
     );
     lines.push(`| Artifact size | ${language} | ${cells.join(" | ")} |`);
   }
-  lines.push("");
+  lines.push(
+    "",
+    "### Runtime comparison charts",
+    "",
+    "Base is 100. Lower bars are faster, higher bars are slower, and the line marks the base revision.",
+    "",
+  );
+  for (const platform of PLATFORM_COLUMNS) {
+    const comparison = byPlatform.get(platform.key);
+    if (comparison) {
+      lines.push(...runtimeChart(platform, comparison, runtimeKeys));
+    }
+  }
   return lines.join("\n");
 }
 

@@ -104,6 +104,60 @@ test("renders exactly one horizontal table for macOS, Linux, and unavailable Win
   assert.match(output, /4096 B \\\| 4096 B \\\| 0\.0%/);
   assert.equal(output.match(/^\| ---/gm)?.length, 1);
   assert.doesNotMatch(output, /<details>/);
+  assert.equal(output.match(/^```mermaid$/gm)?.length, 2);
+  assert.match(output, /#### macOS\n\n```mermaid\nxychart-beta horizontal/);
+  assert.match(output, /#### Linux\n\n```mermaid\nxychart-beta horizontal/);
+  assert.match(output, /x-axis \["integer\/loom"\]/);
+  assert.match(output, /y-axis "Runtime index" 0 --> 110/);
+  assert.match(output, /bar \[90\]/);
+  assert.match(output, /line \[100\]/);
+  assert.ok(output.indexOf("| Case |") < output.indexOf("### Runtime comparison charts"));
+});
+
+test("renders charts only for platforms with measured evidence", () => {
+  const output = renderComment(
+    [comparison("linux/x86_64", 10, 9)],
+    "0123456789abcdef",
+  );
+  assert.equal(output.match(/^```mermaid$/gm)?.length, 1);
+  assert.match(output, /#### Linux/);
+  assert.doesNotMatch(output, /#### macOS/);
+  assert.doesNotMatch(output, /#### Windows/);
+});
+
+test("rejects a comparison whose percentage delta overflows", () => {
+  assert.throws(
+    () =>
+      renderComment(
+        [comparison("linux/x86_64", Number.MIN_VALUE, Number.MAX_VALUE)],
+        "0123456789abcdef",
+      ),
+    /comparison delta must be finite/,
+  );
+});
+
+test("rejects an unbounded runtime chart index", () => {
+  assert.throws(
+    () => renderComment([comparison("linux/x86_64", 1, 101)], "0123456789abcdef"),
+    /runtime chart index exceeds the supported limit/,
+  );
+});
+
+test("rejects a runtime chart with too many entries", () => {
+  const linux = comparison("linux/x86_64", 10, 9);
+  for (let index = 0; index < 64; index += 1) {
+    linux.runtime.set(`case${index}\0loom`, {
+      caseName: `case${index}`,
+      language: "loom",
+      scale: 100,
+      base: 10,
+      candidate: 9,
+    });
+  }
+  assert.throws(
+    () => renderComment([linux], "0123456789abcdef"),
+    /too many runtime entries for a bounded chart/,
+  );
 });
 
 test("rejects platform reports that use different profiles", () => {
