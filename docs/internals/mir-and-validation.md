@@ -40,7 +40,10 @@ Validation covers:
 
 - dense table indices and all referenced type/function/concept/requirement,
   witness, variant, local, and expression identities;
-- local initialization, moves, projections, mutability, and place legality;
+- control-flow-sensitive local initialization and moves, including
+  short-circuit joins and preservation of every available loop-entry local on
+  continuing range backedges;
+- projections, mutability, place legality, and call-scoped loan state;
 - expression and statement type equality;
 - call, receiver, generic proof, witness, record, variant, pattern, and builtin
   arity/shape;
