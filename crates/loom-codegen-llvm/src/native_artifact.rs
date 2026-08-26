@@ -61,8 +61,9 @@ pub fn native_artifact_extension(
 /// Applies the selected target's conventional suffix to one artifact path.
 ///
 /// Explicit non-debug suffixes are preserved. Extensionless default and
-/// temporary paths receive the target convention; debug database paths always
-/// replace the executable suffix with `.pdb`.
+/// temporary paths receive the target convention. Debug database paths replace
+/// only an ASCII-case-insensitive `.exe` suffix; all other paths append `.pdb`
+/// so an arbitrary requested output cannot collide with its debug companion.
 #[must_use]
 pub fn native_artifact_path(
     path: impl AsRef<Path>,
@@ -73,7 +74,20 @@ pub fn native_artifact_path(
     let Some(extension) = native_artifact_extension(target_triple, kind) else {
         return path.to_path_buf();
     };
-    if kind != NativeArtifactKind::DebugDatabase && path.extension().is_some() {
+    if kind == NativeArtifactKind::DebugDatabase {
+        if path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+        {
+            return path.with_extension(extension);
+        }
+        let mut appended = path.as_os_str().to_owned();
+        appended.push(".");
+        appended.push(extension);
+        return PathBuf::from(appended);
+    }
+    if path.extension().is_some() {
         path.to_path_buf()
     } else {
         path.with_extension(extension)
@@ -113,6 +127,14 @@ mod tests {
         assert_eq!(
             native_artifact_path("program.exe", target, NativeArtifactKind::DebugDatabase),
             Path::new("program.pdb")
+        );
+        assert_eq!(
+            native_artifact_path("program.EXE", target, NativeArtifactKind::DebugDatabase),
+            Path::new("program.pdb")
+        );
+        assert_eq!(
+            native_artifact_path("program.bin", target, NativeArtifactKind::DebugDatabase),
+            Path::new("program.bin.pdb")
         );
     }
 

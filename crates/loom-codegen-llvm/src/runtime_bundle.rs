@@ -24,8 +24,6 @@ const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_LINKER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_LINK_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_BUNDLE_ENTRIES: usize = 32;
-const MAX_LINK_ARGS: usize = 128;
-const MAX_LINK_ARG_BYTES: usize = 512;
 const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -592,37 +590,10 @@ fn validate_manifest(
             "runtime bundle manifest has an invalid identity field",
         ));
     }
-    validate_link_args(&manifest.link_args)
-}
-
-fn validate_link_args(arguments: &[String]) -> Result<(), CodegenError> {
-    if arguments.len() > MAX_LINK_ARGS {
+    if manifest.link_args != native_runtime_link_args(&expected.triple) {
         return Err(bundle_error(
-            "runtime bundle declares too many linker arguments",
+            "runtime bundle linker arguments do not match the compiler-derived target closure",
         ));
-    }
-    for argument in arguments {
-        let valid = !argument.is_empty()
-            && argument.len() <= MAX_LINK_ARG_BYTES
-            && argument.starts_with('-')
-            && !argument.contains('@')
-            && !argument.contains(['/', '\\'])
-            && argument.bytes().all(|byte| byte.is_ascii_graphic())
-            && !matches!(argument.as_str(), "-o" | "--output")
-            && !argument.starts_with("-o=")
-            && !argument.starts_with("--output=")
-            && !argument.starts_with("-L")
-            && !argument.starts_with("-F")
-            && !argument.starts_with("-B")
-            && !argument.starts_with("--sysroot")
-            && !argument.starts_with("-isysroot")
-            && !argument.contains(",-o,")
-            && !argument.contains(",--output,");
-        if !valid {
-            return Err(bundle_error(
-                "runtime bundle contains an unsafe linker argument",
-            ));
-        }
     }
     Ok(())
 }

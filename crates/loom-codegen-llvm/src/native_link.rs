@@ -113,10 +113,10 @@ pub(crate) fn native_link_command(
         }
         LinkerFlavor::GnuDriver => {
             if let Some(pdb) = &pdb {
-                arguments.push(OsString::from("-Wl,/DEBUG"));
-                let mut argument = OsString::from("-Wl,/PDB:");
-                argument.push(pdb);
-                arguments.push(argument);
+                arguments.push(OsString::from("-Xlinker"));
+                arguments.push(OsString::from("/DEBUG"));
+                arguments.push(OsString::from("-Xlinker"));
+                arguments.push(prefixed_path("/PDB:", pdb));
             }
             arguments.push(OsString::from("-o"));
             arguments.push(output.as_os_str().to_owned());
@@ -198,7 +198,7 @@ mod tests {
             Path::new("program.obj"),
             &[Path::new("loom_runtime.lib")],
             &link_args,
-            Path::new("program.exe"),
+            Path::new("build dir/程序,debug.EXE"),
         );
         assert_eq!(
             text(&command.arguments),
@@ -211,11 +211,17 @@ mod tests {
                 "-lws2_32",
                 "-ldbghelp",
                 "-lmsvcrt",
-                "-Wl,/DEBUG",
-                "-Wl,/PDB:program.pdb",
+                "-Xlinker",
+                "/DEBUG",
+                "-Xlinker",
+                "/PDB:build dir/程序,debug.pdb",
                 "-o",
-                "program.exe",
+                "build dir/程序,debug.EXE",
             ]
+        );
+        assert_eq!(
+            command.pdb.as_deref(),
+            Some(Path::new("build dir/程序,debug.pdb"))
         );
     }
 

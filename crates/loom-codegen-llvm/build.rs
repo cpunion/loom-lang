@@ -52,6 +52,7 @@ fn main() {
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("CARGO_ENCODED_RUSTFLAGS", "-Ctarget-cpu=generic")
         .arg("build")
+        .arg("--locked")
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--package")
@@ -67,42 +68,7 @@ fn main() {
     assert!(status.success(), "failed to build Loom native runtime");
 
     let profile_root = target_dir.join(&target).join(&profile);
-    let archive_extension = native_artifact::native_artifact_extension(
-        Some(&target),
-        native_artifact::NativeArtifactKind::StaticLibrary,
-    )
-    .expect("static libraries always have a target extension");
-    let archive_prefix = if native_artifact::target_uses_msvc_artifacts(Some(&target)) {
-        "loom_runtime"
-    } else {
-        "libloom_runtime"
-    };
-    let archive = [&profile_root, &profile_root.join("deps")]
-        .into_iter()
-        .flat_map(|directory| {
-            fs::read_dir(directory)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "read Loom runtime artifacts {}: {error}",
-                        directory.display()
-                    )
-                })
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-        })
-        .filter(|path| {
-            path.extension() == Some(OsStr::new(archive_extension))
-                && path
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.starts_with(archive_prefix))
-        })
-        .max_by_key(|path| {
-            fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        })
-        .expect("find Loom runtime static library");
+    let archive = profile_root.join(native_artifact::native_runtime_archive_name(Some(&target)));
     fs::copy(archive, output.join("loom-runtime.bin")).expect("copy Loom runtime static library");
 }
 

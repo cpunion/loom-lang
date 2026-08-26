@@ -98,7 +98,7 @@ fn write_fake_runtime_bundle(root: &std::path::Path, archive: &[u8]) {
             "runtime_abi": loom_codegen_llvm::NATIVE_RUNTIME_ABI,
             "archive": "runtime.a",
             "archive_sha256": archive_sha256,
-            "link_args": ["-loom-system-one", "-loom-system-two"],
+            "link_args": ["-ldl", "-lpthread", "-lm", "-lrt", "-lutil"],
         }))
         .expect("encode fake runtime manifest"),
     )
@@ -2028,7 +2028,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     );
     let arguments = fs::read_to_string(&link_log).expect("deterministic linker arguments");
     let arguments = arguments.lines().collect::<Vec<_>>();
-    assert_eq!(arguments.len(), 6, "{arguments:#?}");
+    assert_eq!(arguments.len(), 9, "{arguments:#?}");
     assert!(arguments[0].ends_with("loom-target.o"), "{arguments:#?}");
     assert_eq!(
         arguments[1],
@@ -2037,10 +2037,10 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
             .to_string_lossy()
     );
     assert_eq!(
-        &arguments[2..5],
-        ["-loom-system-one", "-loom-system-two", "-o"]
+        &arguments[2..8],
+        ["-ldl", "-lpthread", "-lm", "-lrt", "-lutil", "-o"]
     );
-    let staged_output = std::path::Path::new(arguments[5]);
+    let staged_output = std::path::Path::new(arguments[8]);
     assert_eq!(staged_output.parent(), first_output.parent());
     assert!(
         staged_output
