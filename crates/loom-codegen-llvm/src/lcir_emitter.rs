@@ -643,6 +643,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .map(Into::into)
                     .map_err(builder_error)?
             }
+            InstructionKind::IntSuccessorBelow { value, .. } => {
+                // The CheckedArtifact boundary has already proved the exact
+                // dominating true-edge fact carried by the other operands.
+                // They are evidence, not runtime values for this operation.
+                self.backend
+                    .builder
+                    .build_int_nsw_add(
+                        self.int(*value)?,
+                        self.backend.context.i64_type().const_int(1, false),
+                        "int.successor",
+                    )
+                    .map(Into::into)
+                    .map_err(builder_error)?
+            }
             InstructionKind::FloatCompare {
                 predicate,
                 left,

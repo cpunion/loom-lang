@@ -1111,15 +1111,7 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
             if !scan_effect_expr(start, summary) || !scan_effect_expr(end, summary) {
                 return false;
             }
-            if scan_effect_block(body, summary) {
-                // LCIR has no unchecked integer add. The source proof
-                // `current < end` makes this checked edge unobservable, while
-                // the IR still models it explicitly and therefore carries the
-                // structural MAY_FAULT effect. This is correct route-selection
-                // scaffolding, not the final production path: removing the
-                // effect requires a general validated no-overflow LCIR form.
-                summary.local_fault = true;
-            }
+            scan_effect_block(body, summary);
             true
         }
         StatementKind::Assert { condition } => {
@@ -2712,28 +2704,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow: body_flow, ..
         } = lowered_body
         {
-            let (increment_flow, one) =
-                match self.constant(body_flow, Constant::Int(1), &Type::Int, origin)? {
-                    EvalFlow::Continue { flow, value } => (flow, value),
-                    EvalFlow::Terminated => {
-                        return Err(LoweringError::defect(
-                            LoweringDefectCode::Builder,
-                            "range increment constant unexpectedly terminated",
-                        ));
-                    }
-                };
-            let (next_flow, next) = match self.lower_checked_binary(
-                increment_flow,
-                CheckedIntBinaryOp::Add,
-                current,
-                one,
+            let (next_flow, next) = match self.one_instruction(
+                body_flow,
+                InstructionKind::IntSuccessorBelow {
+                    value: current,
+                    upper_bound: end,
+                    proof: condition,
+                },
+                integer,
                 origin,
             )? {
                 EvalFlow::Continue { flow, value } => (flow, value),
                 EvalFlow::Terminated => {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::Builder,
-                        "range increment instruction unexpectedly terminated",
+                        "range successor instruction unexpectedly terminated",
                     ));
                 }
             };
