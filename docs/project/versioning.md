@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `17` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `18` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
 | Runtime bundle manifest | schema `2` |
