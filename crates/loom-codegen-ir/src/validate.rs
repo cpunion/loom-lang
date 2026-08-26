@@ -1313,7 +1313,7 @@ impl<'a> Validator<'a> {
                     .first()
                     .and_then(|result| function.value(*result))
                     .map(|result| result.ty);
-                let Some(expected_field_count) = result_type
+                let Some(expected_count) = result_type
                     .and_then(|ty| self.product_fields(ty))
                     .map(<[_]>::len)
                 else {
@@ -1324,7 +1324,7 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
-                if expected_field_count > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+                if expected_count > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.fields"),
@@ -1354,35 +1354,23 @@ impl<'a> Validator<'a> {
                         "product construction opcode does not match the result type's checked construction boundary",
                     );
                 }
-                if fields.len() != expected_field_count {
+                if fields.len() != expected_count {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.fields"),
                         format!(
                             "product construction has {} fields, representation requires {}",
                             fields.len(),
-                            expected_field_count
+                            expected_count
                         ),
                     );
                 }
-                for (index, field) in fields
-                    .iter()
-                    .copied()
-                    .take(expected_field_count)
-                    .enumerate()
-                {
-                    let Some(expected) = result_type
+                for (index, field) in fields.iter().copied().take(expected_count).enumerate() {
+                    let expected = result_type
                         .and_then(|ty| self.product_fields(ty))
                         .and_then(|expected| expected.get(index))
                         .copied()
-                    else {
-                        self.error(
-                            ValidationCode::InvalidTypeReference,
-                            format!("{path}.field[{index}]"),
-                            "product field type disappeared during validation",
-                        );
-                        continue;
-                    };
+                        .expect("validated product field count remains stable");
                     self.require_value_type(
                         function,
                         field,
@@ -1533,13 +1521,8 @@ impl<'a> Validator<'a> {
                     .first()
                     .and_then(|result| function.value(*result))
                     .map(|result| result.ty);
-                let variants = result_type.and_then(|ty| self.sum_variants(ty));
-                let expected = variants.as_deref().and_then(|variants| {
-                    usize::try_from(*variant)
-                        .ok()
-                        .and_then(|index| variants.get(index))
-                });
-                if result_type.is_some() && variants.is_none() {
+                let sum = result_type.and_then(|ty| self.sum_repr(ty));
+                if result_type.is_some() && sum.is_none() {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
@@ -1547,7 +1530,11 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 }
-                let Some(expected) = expected else {
+                let variant_index = usize::try_from(*variant).ok();
+                let expected_count = sum.and_then(|sum| {
+                    variant_index.and_then(|index| self.sum_variant_field_count(sum, index))
+                });
+                let Some(expected_count) = expected_count else {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.variant"),
@@ -1555,23 +1542,23 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
-                if payload.len() != expected.len() {
+                if payload.len() != expected_count {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.payload"),
                         format!(
                             "sum construction has {} payload value(s), variant requires {}",
                             payload.len(),
-                            expected.len()
+                            expected_count
                         ),
                     );
                 }
-                for (index, (value, expected)) in payload
-                    .iter()
-                    .copied()
-                    .zip(expected.iter().copied())
-                    .enumerate()
-                {
+                let sum = sum.expect("sum representation was checked above");
+                let variant_index = variant_index.expect("variant index was checked above");
+                for (index, value) in payload.iter().copied().take(expected_count).enumerate() {
+                    let expected = self
+                        .sum_variant_field(sum, variant_index, index)
+                        .expect("validated sum payload count remains stable");
                     self.require_value_type(
                         function,
                         value,
@@ -1851,29 +1838,35 @@ impl<'a> Validator<'a> {
             }
             TerminatorKind::SumSwitch { scrutinee, cases } => {
                 let scrutinee_type = function.value(*scrutinee).map(|value| value.ty);
-                let variants = scrutinee_type.and_then(|ty| self.sum_variants(ty));
-                if scrutinee_type.is_some() && variants.is_none() {
+                let sum = scrutinee_type.and_then(|ty| self.sum_repr(ty));
+                if scrutinee_type.is_some() && sum.is_none() {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.scrutinee"),
                         "sum switch scrutinee must use a sum representation",
                     );
                 }
-                let Some(variants) = variants else {
+                let Some(sum) = sum else {
                     return;
                 };
-                if cases.len() != variants.len() {
+                let variants = self
+                    .program
+                    .representations
+                    .sum(sum)
+                    .map(|sum| sum.variants().len())
+                    .unwrap_or_default();
+                if cases.len() != variants {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.cases"),
                         format!(
                             "sum switch has {} case(s), representation requires {}",
                             cases.len(),
-                            variants.len()
+                            variants
                         ),
                     );
                 }
-                for (index, (case, payload)) in cases.iter().zip(&variants).enumerate() {
+                for (index, case) in cases.iter().take(variants).enumerate() {
                     if usize::try_from(case.variant).ok() != Some(index) {
                         self.error(
                             ValidationCode::InstructionShape,
@@ -1887,7 +1880,8 @@ impl<'a> Validator<'a> {
                     self.validate_sum_case(
                         function,
                         case,
-                        payload,
+                        sum,
+                        index,
                         &format!("{path}.case[{index}]"),
                     );
                 }
@@ -2088,27 +2082,33 @@ impl<'a> Validator<'a> {
         &mut self,
         function: &Function,
         case: &crate::SumCase,
-        implicit_types: &[ValueTypeId],
+        sum: SumReprId,
+        variant: usize,
         path: &str,
     ) {
-        let optional = implicit_types.iter().copied().map(Some).collect::<Vec<_>>();
-        self.validate_forwarded_target(
+        let implicit_count = self
+            .sum_variant_field_count(sum, variant)
+            .unwrap_or_default();
+        self.validate_forwarded_target_shape(
             function,
             case.block,
             &case.arguments,
-            &optional,
+            implicit_count,
             path.to_owned(),
         );
         let Some(block) = function.block(case.block) else {
             return;
         };
-        for (index, (parameter, expected)) in block
+        for (index, parameter) in block
             .params
             .iter()
             .copied()
-            .zip(implicit_types.iter().copied())
+            .take(implicit_count)
             .enumerate()
         {
+            let Some(expected) = self.sum_variant_field(sum, variant, index) else {
+                continue;
+            };
             self.require_value_type(
                 function,
                 parameter,
@@ -2163,6 +2163,23 @@ impl<'a> Validator<'a> {
         implicit_types: &[Option<ValueTypeId>],
         path: String,
     ) {
+        self.validate_forwarded_target_shape(
+            function,
+            target_block,
+            arguments,
+            implicit_types.len(),
+            path,
+        );
+    }
+
+    fn validate_forwarded_target_shape(
+        &mut self,
+        function: &Function,
+        target_block: BlockId,
+        arguments: &[ValueId],
+        implicit_count: usize,
+        path: String,
+    ) {
         let Some(block) = function.block(target_block) else {
             self.error(
                 ValidationCode::InvalidBlockReference,
@@ -2171,7 +2188,7 @@ impl<'a> Validator<'a> {
             );
             return;
         };
-        let parameter_offset = implicit_types.len();
+        let parameter_offset = implicit_count;
         let supplied = arguments.len().saturating_add(parameter_offset);
         if supplied != block.params.len() {
             self.error(
@@ -2586,7 +2603,7 @@ impl<'a> Validator<'a> {
             .map(crate::ProductRepr::fields)
     }
 
-    fn sum_variants(&self, ty: ValueTypeId) -> Option<Vec<Box<[ValueTypeId]>>> {
+    fn sum_repr(&self, ty: ValueTypeId) -> Option<SumReprId> {
         let value_type = self.program.representations.value_type(ty)?;
         let Repr::Sum(sum) = self
             .program
@@ -2596,15 +2613,32 @@ impl<'a> Validator<'a> {
         else {
             return None;
         };
-        Some(
-            self.program
-                .representations
-                .sum(sum)?
-                .variants()
-                .iter()
-                .map(|variant| variant.fields().into())
-                .collect(),
-        )
+        self.program.representations.sum(sum).map(|_| sum)
+    }
+
+    fn sum_variant_field_count(&self, sum: SumReprId, variant: usize) -> Option<usize> {
+        self.program
+            .representations
+            .sum(sum)?
+            .variants()
+            .get(variant)
+            .map(|variant| variant.fields().len())
+    }
+
+    fn sum_variant_field(
+        &self,
+        sum: SumReprId,
+        variant: usize,
+        field: usize,
+    ) -> Option<ValueTypeId> {
+        self.program
+            .representations
+            .sum(sum)?
+            .variants()
+            .get(variant)?
+            .fields()
+            .get(field)
+            .copied()
     }
 
     fn signature_writeback_types(function: &Function) -> Vec<ValueTypeId> {

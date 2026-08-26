@@ -209,6 +209,93 @@ fn malformed_sum_construction_and_switch_are_rejected_independently() {
 }
 
 #[test]
+fn aggregate_validation_scales_with_uses_without_copying_schemas() {
+    const VARIANTS: usize = 128;
+    const FIELDS: usize = 64;
+    const USES: usize = 4_096;
+
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let sum = builder
+        .add_sum_type(nominal(35), &vec![Box::<[Type]>::default(); VARIANTS])
+        .expect("wide tag-only sum");
+    let product = builder
+        .add_tuple_type(&vec![Type::Int; FIELDS])
+        .expect("wide product");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let origin = Origin::synthetic(FunctionId(35));
+    let root = builder
+        .declare_function(
+            origin,
+            "aggregate.validation.scale",
+            Signature::new(Vec::new(), unit),
+            Effects::NONE,
+        )
+        .expect("declare");
+    {
+        let mut function = builder.function(root).expect("builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let mut fields = Vec::with_capacity(FIELDS);
+        for value in 0..FIELDS {
+            fields.push(
+                function
+                    .append_instruction(
+                        entry,
+                        InstructionKind::Constant(loom_codegen_ir::Constant::Int(
+                            i64::try_from(value).expect("field value"),
+                        )),
+                        &[integer],
+                        origin,
+                    )
+                    .expect("integer")[0],
+            );
+        }
+        for _ in 0..USES {
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::SumConstruct {
+                        variant: 0,
+                        payload: Box::new([]),
+                    },
+                    &[sum],
+                    origin,
+                )
+                .expect("sum use");
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ProductConstruct {
+                        fields: fields.clone().into_boxed_slice(),
+                    },
+                    &[product],
+                    origin,
+                )
+                .expect("product use");
+        }
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(loom_codegen_ir::Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin),
+            )
+            .expect("return");
+    }
+
+    validate_program(&builder.finish()).expect(
+        "validator must borrow aggregate metadata or select one variant instead of cloning schemas per use",
+    );
+}
+
+#[test]
 fn result_test_roots_require_an_explicit_checked_outcome_plan() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let result_semantic = nominal(40);
