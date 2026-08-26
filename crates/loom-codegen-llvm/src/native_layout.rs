@@ -148,6 +148,7 @@ pub(crate) enum NativeEffectAbi {
 pub(crate) struct NativeSignature {
     shape: NativeSignatureShape,
     effect: NativeEffectAbi,
+    caller_span: bool,
 }
 
 impl NativeSignatureShape {
@@ -235,10 +236,12 @@ impl NativeSignatureShape {
     }
 
     #[must_use]
-    pub(crate) fn with_effect(self, effect: NativeEffectAbi) -> NativeSignature {
+    pub(crate) fn with_effect(self, effect: NativeEffectAbi, caller_span: bool) -> NativeSignature {
+        debug_assert!(!caller_span || effect == NativeEffectAbi::RuntimeStatus);
         NativeSignature {
             shape: self,
             effect,
+            caller_span,
         }
     }
 }
@@ -252,6 +255,11 @@ impl NativeSignature {
     #[must_use]
     pub(crate) const fn effect(&self) -> NativeEffectAbi {
         self.effect
+    }
+
+    #[must_use]
+    pub(crate) const fn carries_caller_span(&self) -> bool {
+        self.caller_span
     }
 }
 
@@ -421,11 +429,15 @@ mod tests {
         assert_eq!(shape.parameters()[0].mode(), NativePassMode::Value);
         assert_eq!(shape.result(), &int);
 
-        let signature = shape.clone().with_effect(NativeEffectAbi::PureNoFault);
+        let signature = shape
+            .clone()
+            .with_effect(NativeEffectAbi::PureNoFault, false);
         assert_eq!(signature.shape(), &shape);
         assert_eq!(signature.effect(), NativeEffectAbi::PureNoFault);
         assert_eq!(
-            shape.with_effect(NativeEffectAbi::RuntimeStatus).effect(),
+            shape
+                .with_effect(NativeEffectAbi::RuntimeStatus, false)
+                .effect(),
             NativeEffectAbi::RuntimeStatus
         );
 

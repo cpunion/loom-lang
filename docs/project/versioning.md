@@ -16,7 +16,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `7` |
+| Native runtime ABI component | `8` |
 | Coroutine/Task ABI component | `2` |
 | Wait ABI component | `1` |
 | Standard-library ABI component | `4` |
