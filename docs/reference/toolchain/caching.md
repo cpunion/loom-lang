@@ -9,6 +9,12 @@ Loom uses two separate caches:
 Neither cache is a source of authority. Cached bytes are untrusted and are
 validated before reuse.
 
+Here “untrusted” means that malformed or accidentally corrupted bytes cannot
+bypass decoding and structural validation. The project-local content hashes
+are not authentication against an actor that can rewrite both a reference and
+its blob. Do not share a writable compiler cache across trust principals or
+reuse one in a more privileged build context.
+
 ## Compiler cache
 
 The default compiler cache is:

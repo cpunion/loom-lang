@@ -1,8 +1,10 @@
 //! Persistent content-addressed compiler cache.
 //!
 //! Cache identities are derived only from normalized semantic inputs. Cache
-//! files are untrusted: every blob is size/hash checked and cached MIR crosses
-//! the ordinary artifact decoder and MIR validator before it is returned.
+//! files are untrusted for parsing and corruption: every blob is size/hash
+//! checked and cached MIR crosses the ordinary artifact decoder and MIR
+//! validator before it is returned. Content hashes are not authentication
+//! against a principal that can rewrite both a reference and its blob.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

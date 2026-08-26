@@ -54,6 +54,35 @@ fn complete_dump(source: &str) -> String {
 }
 
 #[test]
+fn checked_mir_is_the_only_source_of_proven_refinement_instructions() {
+    let dump = complete_dump(
+        r"module proven_boundaries
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+fn widen(value Money) Float { value }
+
+pub fn main() Unit {
+    let money = Money(10.0)
+    let range = Range { low = Money(1.0), high = Money(2.0) }
+    discard widen(money)
+    discard range
+    Unit
+}
+",
+    );
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("unrefine"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+}
+
+#[test]
 fn empty_tests_are_one_complete_empty_artifact() {
     let mir = compile("module empty\n");
     let outcome = lower_typed_artifact(

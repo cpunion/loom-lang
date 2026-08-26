@@ -101,6 +101,12 @@ A future serialized proof format may avoid replay only if it carries a
 structured certificate that the decoder can independently validate. A boolean
 or enum disposition is not such a certificate.
 
+Within one fresh compilation, validation still checks that `Proven` appears
+only at a matching refined predicate or record-invariant construction and that
+all operand/result types agree. It does not rerun semantic proof search. Thus
+checked MIR is a structural and execution-safety boundary; it is not an
+authenticated proof-provenance format.
+
 ## Suspension liveness
 
 Async lowering records state-machine suspension points and live Task-frame
@@ -133,6 +139,11 @@ proof rule above.
 Neither serialization is a public extension API. Tools must use the project
 decoder and validator rather than constructing JSON that happens to match the
 current wire shape.
+
+The wire format is also not an authenticated proof interchange. A `.loomi` or
+`.loomlib` input is executable code and its publisher/provenance must be trusted
+for any embedded `ConstructionMode::Proven` certificate. The decoder remains
+responsible for bounded parsing and complete structural validation.
 
 ## Failure policy
 

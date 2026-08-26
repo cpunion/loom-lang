@@ -1,6 +1,6 @@
 use loom_codegen_ir::{
-    Constant, Effects, InstructionKind, Origin, ProgramBuilder, Signature, TargetLayout,
-    Terminator, TerminatorKind, ValidationCode, ValueTypeKind, dump_program, validate_program,
+    BuildErrorCode, Constant, Effects, InstructionKind, Origin, ProgramBuilder, Signature,
+    TargetLayout, Terminator, TerminatorKind, ValidationCode, ValueTypeKind, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -29,57 +29,72 @@ fn transparent_nominal_values_keep_semantic_identity_and_share_only_physical_rep
         ValueTypeKind::Transparent { base: float }
     );
 
+    validate_program(&builder.finish()).expect("transparent representation plan");
+}
+
+#[test]
+fn public_raw_builder_cannot_mint_frontend_proof_certificates() {
+    let money = Type::Nominal(TypeId(12), Vec::new());
+    let protected = Type::Nominal(TypeId(13), Vec::new());
+    let mut builder = ProgramBuilder::new(target());
+    let float = builder.type_id(&Type::Float).expect("Float type");
+    let integer = builder.type_id(&Type::Int).expect("Int type");
+    let unit = builder.type_id(&Type::Unit).expect("Unit type");
+    let money_id = builder
+        .add_transparent_type(money, &Type::Float)
+        .expect("transparent Money type");
+    let protected_id = builder
+        .add_invariant_record_type(protected, &[Type::Int])
+        .expect("protected record");
     let function = builder
         .declare_function(
             Origin::synthetic(FunctionId(0)),
-            "round_trip",
-            Signature::new(Vec::new(), float),
+            "raw_proof",
+            Signature::new(Vec::new(), unit),
             Effects::NONE,
         )
         .expect("declare function");
-    {
-        let mut function_builder = builder.function(function).expect("function builder");
-        let entry = function_builder.create_block().expect("entry");
-        function_builder.set_entry(entry).expect("set entry");
-        let raw = function_builder
-            .append_instruction(
-                entry,
-                InstructionKind::Constant(Constant::float(10.0)),
-                &[float],
-                Origin::synthetic(FunctionId(0)),
-            )
-            .expect("raw value")[0];
-        let established = function_builder
-            .append_instruction(
-                entry,
-                InstructionKind::RefineProven { value: raw },
-                &[money_id],
-                Origin::synthetic(FunctionId(0)),
-            )
-            .expect("established value")[0];
-        let widened = function_builder
-            .append_instruction(
-                entry,
-                InstructionKind::Unrefine { value: established },
-                &[float],
-                Origin::synthetic(FunctionId(0)),
-            )
-            .expect("widened value")[0];
-        function_builder
-            .terminate(
-                entry,
-                Terminator::new(
-                    TerminatorKind::Return(widened),
-                    Origin::synthetic(FunctionId(0)),
-                ),
-            )
-            .expect("return");
-    }
-    let checked = builder.finish_checked().expect("checked semantic casts");
-    let dump = dump_program(&checked);
-    assert!(dump.contains("transparent(t4)"), "{dump}");
-    assert!(dump.contains("refine.proven"), "{dump}");
-    assert!(dump.contains("unrefine"), "{dump}");
+    let mut function_builder = builder.function(function).expect("function builder");
+    let entry = function_builder.create_block().expect("entry");
+    function_builder.set_entry(entry).expect("set entry");
+    let raw_float = function_builder
+        .append_instruction(
+            entry,
+            InstructionKind::Constant(Constant::float(10.0)),
+            &[float],
+            Origin::synthetic(FunctionId(0)),
+        )
+        .expect("raw float")[0];
+    let raw_integer = function_builder
+        .append_instruction(
+            entry,
+            InstructionKind::Constant(Constant::Int(10)),
+            &[integer],
+            Origin::synthetic(FunctionId(0)),
+        )
+        .expect("raw integer")[0];
+
+    let refine = function_builder
+        .append_instruction(
+            entry,
+            InstructionKind::RefineProven { value: raw_float },
+            &[money_id],
+            Origin::synthetic(FunctionId(0)),
+        )
+        .expect_err("public builder must reject a refinement proof certificate");
+    assert_eq!(refine.code(), BuildErrorCode::TrustedInstruction);
+
+    let invariant = function_builder
+        .append_instruction(
+            entry,
+            InstructionKind::InvariantRecordProven {
+                fields: Box::from([raw_integer]),
+            },
+            &[protected_id],
+            Origin::synthetic(FunctionId(0)),
+        )
+        .expect_err("public builder must reject an invariant proof certificate");
+    assert_eq!(invariant.code(), BuildErrorCode::TrustedInstruction);
 }
 
 #[test]
@@ -134,59 +149,6 @@ fn ordinary_product_construction_cannot_forge_an_invariant_record() {
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::TypeMismatch
             && error.message().contains("construction boundary")
-    }));
-}
-
-#[test]
-fn proven_refinement_requires_the_exact_declared_base_type() {
-    let money = Type::Nominal(TypeId(12), Vec::new());
-    let mut builder = ProgramBuilder::new(target());
-    let integer = builder.type_id(&Type::Int).expect("Int type");
-    let money_id = builder
-        .add_transparent_type(money, &Type::Float)
-        .expect("transparent Money type");
-    let function = builder
-        .declare_function(
-            Origin::synthetic(FunctionId(2)),
-            "wrong_base",
-            Signature::new(Vec::new(), money_id),
-            Effects::NONE,
-        )
-        .expect("declare function");
-    {
-        let mut function_builder = builder.function(function).expect("function builder");
-        let entry = function_builder.create_block().expect("entry");
-        function_builder.set_entry(entry).expect("set entry");
-        let raw = function_builder
-            .append_instruction(
-                entry,
-                InstructionKind::Constant(Constant::Int(10)),
-                &[integer],
-                Origin::synthetic(FunctionId(2)),
-            )
-            .expect("wrong raw value")[0];
-        let forged = function_builder
-            .append_instruction(
-                entry,
-                InstructionKind::RefineProven { value: raw },
-                &[money_id],
-                Origin::synthetic(FunctionId(2)),
-            )
-            .expect("unchecked refinement")[0];
-        function_builder
-            .terminate(
-                entry,
-                Terminator::new(
-                    TerminatorKind::Return(forged),
-                    Origin::synthetic(FunctionId(2)),
-                ),
-            )
-            .expect("return");
-    }
-    let errors = validate_program(&builder.finish()).expect_err("wrong base must be rejected");
-    assert!(errors.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::TypeMismatch
-            && error.message().contains("exact declared base")
     }));
 }
 

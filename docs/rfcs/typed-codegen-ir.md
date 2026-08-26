@@ -70,6 +70,15 @@ Each stage has one responsibility:
 Target emission must not resolve names, reinterpret contracts, infer a physical
 representation from an expression shape, or create new callable instances.
 
+For a statically established source predicate, checked MIR is also the proof
+certificate boundary. The public raw LCIR builder cannot mint proof-bearing
+instructions, and LCIR validation checks their exact typed construction shape;
+it does not claim to reconstruct and re-prove a predicate that LCIR does not
+encode. Serialized MIR crosses the ordinary structural decoder, but its
+`Proven` certificate is executable-input provenance rather than an
+authenticated proof interchange; consumers must not confuse the checked-MIR
+wrapper with publisher authentication.
+
 ## Representation policy
 
 Statically known values use direct representations by default. The implemented

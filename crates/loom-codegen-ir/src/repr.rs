@@ -566,6 +566,71 @@ mod tests {
     }
 
     #[test]
+    fn semantic_alternatives_inherit_canonical_construction_protection() {
+        let invariant_semantic = Type::Nominal(TypeId(73), Vec::new());
+        let other_semantic = Type::Nominal(TypeId(74), Vec::new());
+        let transparent_semantic = Type::Nominal(TypeId(75), Vec::new());
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let invariant = builder
+            .add_invariant_record_type(invariant_semantic, &[Type::Int])
+            .expect("canonical invariant product");
+        let other = builder
+            .add_transparent_type(other_semantic, &Type::Float)
+            .expect("other transparent type");
+        let transparent = builder
+            .add_transparent_type(transparent_semantic, &Type::Float)
+            .expect("canonical transparent type");
+        let mut program = builder.finish();
+
+        let mut unprotected_invariant = program.representations.types[invariant.index()].clone();
+        unprotected_invariant.kind = ValueTypeKind::Direct;
+        program.representations.types.push(unprotected_invariant);
+
+        let mut unprotected_transparent =
+            program.representations.types[transparent.index()].clone();
+        unprotected_transparent.kind = ValueTypeKind::Direct;
+        program.representations.types.push(unprotected_transparent);
+
+        let mut wrong_base = program.representations.types[transparent.index()].clone();
+        wrong_base.kind = ValueTypeKind::Transparent { base: other };
+        program.representations.types.push(wrong_base);
+
+        let errors = validate_program(&program)
+            .expect_err("representation alternatives must not weaken canonical protection");
+        assert_eq!(
+            errors
+                .as_slice()
+                .iter()
+                .filter(|error| error
+                    .message()
+                    .contains("canonical construction protection"))
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn transparent_base_must_be_physically_inhabited() {
+        let semantic = Type::Nominal(TypeId(76), Vec::new());
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let float = builder.type_id(&Type::Float).expect("Float type");
+        let transparent = builder
+            .add_transparent_type(semantic, &Type::Float)
+            .expect("transparent type");
+        let mut program = builder.finish();
+        let never_repr = program.representations.types[0].repr;
+        program.representations.types[float.index()].repr = never_repr;
+        program.representations.types[transparent.index()].repr = never_repr;
+
+        let errors =
+            validate_program(&program).expect_err("uninhabited transparent base must be rejected");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.path() == format!("representations.type[{}].transparent", transparent.index())
+                && error.message().contains("inhabited base")
+        }));
+    }
+
+    #[test]
     fn cyclic_product_representation_graph_is_rejected() {
         let first_semantic = Type::Nominal(TypeId(71), Vec::new());
         let second_semantic = Type::Nominal(TypeId(72), Vec::new());

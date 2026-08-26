@@ -23,6 +23,7 @@ pub enum BuildErrorCode {
     InvalidProductType,
     DuplicateEntry,
     BlockAlreadyTerminated,
+    TrustedInstruction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -443,6 +444,48 @@ impl FunctionBuilder<'_> {
     /// Returns an error for an unknown/terminated block, an unknown result
     /// type, or an exhausted identity domain.
     pub fn append_instruction(
+        &mut self,
+        block: BlockId,
+        kind: InstructionKind,
+        result_types: &[ValueTypeId],
+        origin: Origin,
+    ) -> Result<Box<[ValueId]>, BuildError> {
+        if matches!(
+            kind,
+            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+        ) {
+            return Err(BuildError::new(
+                BuildErrorCode::TrustedInstruction,
+                "proof-establishing LCIR instructions may only be emitted from checked MIR",
+            ));
+        }
+        self.append_instruction_inner(block, kind, result_types, origin)
+    }
+
+    /// Appends an instruction carrying a frontend proof certificate.
+    ///
+    /// This entry point is deliberately crate-private: only lowering from
+    /// checked MIR may establish a refined or invariant-protected value.
+    pub(crate) fn append_trusted_instruction(
+        &mut self,
+        block: BlockId,
+        kind: InstructionKind,
+        result_types: &[ValueTypeId],
+        origin: Origin,
+    ) -> Result<Box<[ValueId]>, BuildError> {
+        if !matches!(
+            kind,
+            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+        ) {
+            return Err(BuildError::new(
+                BuildErrorCode::TrustedInstruction,
+                "the checked-MIR instruction path accepts only proof-establishing instructions",
+            ));
+        }
+        self.append_instruction_inner(block, kind, result_types, origin)
+    }
+
+    fn append_instruction_inner(
         &mut self,
         block: BlockId,
         kind: InstructionKind,

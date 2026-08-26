@@ -2275,6 +2275,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Ok(EvalFlow::Continue { flow, value })
     }
 
+    fn one_trusted_instruction(
+        &mut self,
+        flow: Flow,
+        kind: InstructionKind,
+        ty: ValueTypeId,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let results = self
+            .builder
+            .append_trusted_instruction(flow.block, kind, &[ty], origin)
+            .map_err(LoweringError::from)?;
+        let value = results.first().copied().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "one-result trusted instruction returned no value",
+            )
+        })?;
+        Ok(EvalFlow::Continue { flow, value })
+    }
+
     fn constant(
         &mut self,
         flow: Flow,
@@ -2706,7 +2726,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
                     return Ok(EvalFlow::Terminated);
                 };
-                self.one_instruction(
+                self.one_trusted_instruction(
                     flow,
                     InstructionKind::RefineProven { value },
                     self.type_id(&expression.ty)?,
@@ -2767,12 +2787,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 fields: lowered.into_boxed_slice(),
             },
         };
-        self.one_instruction(
-            flow,
-            instruction,
-            self.type_id(&expression.ty)?,
-            self.expression_origin(expression),
-        )
+        match construction {
+            ProductConstruction::Plain => self.one_instruction(
+                flow,
+                instruction,
+                self.type_id(&expression.ty)?,
+                self.expression_origin(expression),
+            ),
+            ProductConstruction::InvariantProven => self.one_trusted_instruction(
+                flow,
+                instruction,
+                self.type_id(&expression.ty)?,
+                self.expression_origin(expression),
+            ),
+        }
     }
 
     fn lower_unsupported_operand(

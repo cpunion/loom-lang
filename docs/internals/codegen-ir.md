@@ -89,7 +89,11 @@ to add another representation for the same semantic type without making
 semantic type equality an accidental layout key. The plan maintains a
 deterministic ordered map for logarithmic canonical lookup; validation rebuilds
 that map from the ordered registrations and rejects a duplicate or stale
-index.
+index. Every alternative for one semantic type must inherit the canonical
+construction protection. An invariant product cannot acquire a direct
+alternative, and every transparent alternative must retain the canonical
+base semantic relation even when a future plan chooses a different physical
+representation.
 
 `TargetLayout::new` accepts nonzero, byte-sized pointer widths no greater than
 128 bits. Acceptance by this standalone type is not a Loom native-target claim;
@@ -289,6 +293,17 @@ span for each function, instruction, and terminator. There is no inlining
 provenance model yet.
 
 ## Validation boundary
+
+Checked MIR carries the frontend's `ConstructionMode::Proven` certificate for
+a predicate or record invariant already established during semantic analysis.
+The public raw LCIR builder rejects `RefineProven` and
+`InvariantRecordProven`; only the crate-private checked-MIR lowerer can append
+them. LCIR deliberately does not encode or re-evaluate the arbitrary source
+predicate. Its independent validator checks the certificate's structural
+boundary: exact base/result types, protected construction kind, protection on
+every representation alternative, representation identity, and the usual SSA
+rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting the
+checked-MIR frontend certificate for predicate truth.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:

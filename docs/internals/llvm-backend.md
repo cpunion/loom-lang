@@ -31,8 +31,10 @@ transparent refined values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
-closure, representations, CFG, types, proofs, and exact fault effects have
-already crossed independent validation. It declares every source function
+closure, representations, CFG, types, proof-boundary shapes, and exact fault
+effects have already crossed independent validation. Predicate truth itself is
+a certificate supplied by checked MIR; LCIR does not re-prove an omitted source
+predicate. The emitter declares every source function
 with its typed LCIR ABI, keeps source symbols internal, emits a run or ordered
 test harness, verifies before and after optimization, and writes a relocatable
 object.
@@ -159,6 +161,13 @@ emitter forwards the already established physical SSA value. A refined scalar
 therefore uses the base scalar ABI; a refined product uses the base product
 ABI; and an invariant record uses its field product ABI. Unknown construction
 proofs still return language `Result` values on the legacy route.
+
+The current debug-info boundary describes that physical ABI as well. A
+transparent scalar is reported as its base scalar debug type, and transparent
+or invariant products use compiler-private physical product types; LLVM debug
+metadata does not yet synthesize nominal source aliases such as `Money` or
+`Range`. This deliberate display limitation does not erase nominal identity
+from LCIR dumps, validation, cache fingerprints, or object artifact identity.
 
 ## Legacy native specialization
 
