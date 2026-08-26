@@ -36,7 +36,7 @@ paths must preserve their original fault, blame, and source location.
 
 ### Strengthen reproducible evidence
 
-Keep Linux and macOS native closure tests, Windows platform-independent tests,
+Keep Linux and macOS native closure tests, the configured Windows native gate,
 fuzzing, package integrity tests, and base-versus-candidate PR benchmarks
 reproducible. Expand performance evidence with fixed-host trends, warm and
 incremental builds, peak memory, and profiler data before making broader claims.
