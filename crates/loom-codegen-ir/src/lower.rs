@@ -3248,6 +3248,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "match setup validates and creates each shared typed arm before one decision walk"
+    )]
     fn lower_match(
         &mut self,
         flow: Flow,

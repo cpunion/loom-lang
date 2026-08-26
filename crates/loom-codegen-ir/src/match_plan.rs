@@ -459,6 +459,10 @@ fn constant_matches_type(constant: &mir::Constant, ty: &Type) -> bool {
     )
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "Loom float patterns deliberately use exact IEEE ordered equality"
+)]
 fn same_constant(left: &mir::Constant, right: &mir::Constant) -> bool {
     match (left, right) {
         (mir::Constant::Unit, mir::Constant::Unit) => true,

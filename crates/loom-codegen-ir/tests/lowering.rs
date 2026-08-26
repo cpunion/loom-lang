@@ -2183,7 +2183,7 @@ fn wide_sum_match_shares_one_typed_capturing_arm_block() {
             .blocks()
             .iter()
             .filter(|block| matches!(
-                block.terminator().map(|terminator| terminator.kind()),
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
                 Some(TerminatorKind::CheckedIntBinary {
                     op: CheckedIntBinaryOp::Add,
                     ..
@@ -2195,7 +2195,9 @@ fn wide_sum_match_shares_one_typed_capturing_arm_block() {
     );
     let mut incoming_jumps = BTreeMap::new();
     for block in classify.blocks() {
-        if let Some(TerminatorKind::Jump(target)) = block.terminator().map(|term| term.kind()) {
+        if let Some(TerminatorKind::Jump(target)) =
+            block.terminator().map(loom_codegen_ir::Terminator::kind)
+        {
             *incoming_jumps.entry(target.block).or_insert(0_usize) += 1;
         }
     }

@@ -399,8 +399,8 @@ fn has_by_value_nominal_cycle(program: &mir::Program, root: TypeId) -> Option<bo
                     dependencies.insert(*dependency);
                     push_schema_types(&mut types, arguments, inspected)?;
                 }
-                Type::Parameter(_) => {}
-                Type::Never
+                Type::Parameter(_)
+                | Type::Never
                 | Type::Unit
                 | Type::Bool
                 | Type::Int

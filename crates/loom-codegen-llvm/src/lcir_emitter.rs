@@ -2053,7 +2053,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         payload_type: StructType<'ctx>,
         carrier_type: StructType<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        if self.carrier_byte_len(carrier_type)? == 0 {
+        if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(carrier_type.const_zero().into());
         }
         let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
@@ -2106,7 +2106,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         carrier_type: StructType<'ctx>,
         payload_type: StructType<'ctx>,
     ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
-        if self.carrier_byte_len(carrier_type)? == 0 {
+        if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(payload_type.const_zero());
         }
         let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
@@ -2162,7 +2162,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 "direct LCIR sum carriers currently require a little-endian target",
             ));
         }
-        let bytes = self.carrier_byte_len(carrier_type)?;
+        let bytes = Self::carrier_byte_len(carrier_type)?;
         let width = bytes
             .checked_mul(8)
             .and_then(NonZeroU32::new)
@@ -2180,7 +2180,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok((bytes, wide_type))
     }
 
-    fn carrier_byte_len(&self, carrier_type: StructType<'ctx>) -> Result<u32, CodegenError> {
+    fn carrier_byte_len(carrier_type: StructType<'ctx>) -> Result<u32, CodegenError> {
         Ok(carrier_type
             .get_field_type_at_index(1)
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum carrier has no byte array"))?
@@ -2194,6 +2194,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "all recursively supported LLVM aggregate kinds remain visible in one bounded carrier packing routine"
+    )]
     fn pack_value_bits(
         &self,
         accumulator: IntValue<'ctx>,
