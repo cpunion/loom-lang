@@ -1,5 +1,7 @@
 # loom-lang
 
+[![compiler CI](https://github.com/cpunion/loom-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/cpunion/loom-lang/actions/workflows/ci.yml)
+
 状态：**Core 0.1–0.3 Executable Reference + C3 Multi-Package Repository Gate**
 
 阶段：Core 0.1–0.3 已接入同一条 source → package graph → checked MIR → LLVM object → native executable 工具链；解释器保留为显式语义对照后端，三个冻结任务及一个 3-package/24-module repository workload 的正确性、性能、优化 IR 与 fuzz smoke 已进入自动门禁

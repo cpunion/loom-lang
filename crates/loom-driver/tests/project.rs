@@ -1303,7 +1303,8 @@ async fn one() Int {
 }
 
 async fn two() Int {
-    Task.sleep(1).await
+    // An immediately ready sibling makes Task.any deterministic without using
+    // wall-clock timing as an ordering oracle.
     2
 }
 
@@ -1530,7 +1531,6 @@ async fn slow() Int {
 }
 
 async fn fast() Int {
-    Task.sleep(1).await
     2
 }
 

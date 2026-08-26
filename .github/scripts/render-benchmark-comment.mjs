@@ -102,8 +102,8 @@ function validateReport(report, label) {
 }
 
 export function readReport(filename, label) {
-  const stat = fs.statSync(filename);
-  if (!stat.isFile() || stat.size === 0 || stat.size > MAX_REPORT_BYTES) {
+  const stat = fs.lstatSync(filename);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size === 0 || stat.size > MAX_REPORT_BYTES) {
     fail(`${label} is not a bounded regular report file`);
   }
   let report;

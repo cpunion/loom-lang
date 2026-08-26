@@ -6,7 +6,9 @@ use inkwell::targets::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 
 use crate::CodegenError;
 use crate::emitter::native_runtime_bytes;

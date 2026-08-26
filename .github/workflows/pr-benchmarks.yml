@@ -1,0 +1,110 @@
+name: PR Benchmarks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
+  LOOM_CC: clang-19
+  LOOM_BENCH_CC: clang-19
+  LOOM_BENCH_CXX: clang++-19
+
+jobs:
+  compare:
+    name: Compare base and candidate
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Check out candidate merge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Install LLVM 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+
+      - name: Install Go 1.27.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.0
+          cache: false
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            base -> target
+            candidate -> target
+          cache-targets: false
+          key: pr-benchmark-llvm-19
+          env-vars: LLVM_SYS_191_PREFIX
+
+      - name: Verify pinned toolchains
+        shell: bash
+        run: |
+          test "$(rustc --version)" = "rustc 1.88.0 (6b00bc388 2025-06-23)"
+          case "$("$LLVM_SYS_191_PREFIX/bin/llvm-config" --version)" in
+            19.*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(go version | awk '{print $3}')" = "go1.27.0"
+
+      - name: Build and benchmark base
+        working-directory: base
+        shell: bash
+        run: |
+          cargo build --release --locked -p loom-cli -p loom-benchmark
+          target/release/loom-benchmark \
+            --throughput \
+            --allow-busy-host \
+            --output ../benchmark-base.json \
+            >/dev/null
+
+      - name: Build and benchmark candidate
+        working-directory: candidate
+        shell: bash
+        run: |
+          cargo build --release --locked -p loom-cli -p loom-benchmark
+          target/release/loom-benchmark \
+            --throughput \
+            --allow-busy-host \
+            --output ../benchmark-candidate.json \
+            >/dev/null
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-benchmark-${{ github.run_id }}
+          path: |
+            benchmark-base.json
+            benchmark-candidate.json
+          if-no-files-found: error
+          retention-days: 14

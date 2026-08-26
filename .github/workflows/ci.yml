@@ -2,13 +2,15 @@ name: compiler-ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: compiler-ci-${{ github.ref }}
+  group: compiler-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,13 +20,15 @@ jobs:
       LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
       LOOM_CC: clang-19
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install LLVM 19
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
       - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
@@ -32,65 +36,69 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check workspace
-        run: cargo check --workspace --all-targets
+        run: cargo check --locked --workspace --all-targets
       - name: Lint workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test workspace
-        run: cargo test --workspace --all-targets
+        run: cargo test --locked --workspace --all-targets
+      - name: Build complete workspace
+        run: cargo build --locked --workspace --all-targets
+      - name: Test benchmark comment renderer
+        run: node --test .github/scripts/render-benchmark-comment.test.mjs
       - name: Core 0.1-0.3 dual-backend closure
         run: |
           for version in core01 core02 core03; do
             source="examples/$version"
             native="target/ci-$version"
             interpreted="target/ci-$version.loomi"
-            cargo run -p loom-cli -- --no-cache check "$source"
-            cargo run -p loom-cli -- --no-cache build --output "$native" "$source"
-            cargo run -p loom-cli -- --no-cache test "$source"
-            cargo run -p loom-cli -- --no-cache run "$source"
-            cargo run -p loom-cli -- run --artifact "$native"
-            cargo run -p loom-cli -- --backend interpreter --no-cache check "$source"
-            cargo run -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
-            cargo run -p loom-cli -- --backend interpreter --no-cache test "$source"
-            cargo run -p loom-cli -- --backend interpreter --no-cache run "$source"
-            cargo run -p loom-cli -- --backend interpreter run --artifact "$interpreted"
+            cargo run --locked -p loom-cli -- --no-cache check "$source"
+            cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
+            cargo run --locked -p loom-cli -- --no-cache test "$source"
+            cargo run --locked -p loom-cli -- --no-cache run "$source"
+            cargo run --locked -p loom-cli -- run --artifact "$native"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache check "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache test "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache run "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter run --artifact "$interpreted"
           done
       - name: Package targets on both backends
         run: |
-          cargo run -p loom-cli -- --no-cache check --target app examples/packages/application
-          cargo run -p loom-cli -- --no-cache build --target app --output target/ci-package examples/packages/application
-          cargo run -p loom-cli -- --no-cache test --target unit examples/packages/application
-          cargo run -p loom-cli -- --no-cache run --target app examples/packages/application
-          cargo run -p loom-cli -- run --artifact target/ci-package
-          cargo run -p loom-cli -- --backend interpreter --no-cache check --target app examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-package.loomi examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
-          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
+          cargo run --locked -p loom-cli -- --no-cache check --target app examples/packages/application
+          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-package examples/packages/application
+          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/packages/application
+          cargo run --locked -p loom-cli -- --no-cache run --target app examples/packages/application
+          cargo run --locked -p loom-cli -- run --artifact target/ci-package
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/packages/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-package.loomi examples/packages/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
+          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
       - name: Standard library differential gate
         run: |
-          cargo test -p loom-codegen-llvm --test standard_values
-          cargo test -p loom-codegen-llvm --test structured_standard_values
-          cargo test -p loom-codegen-llvm --test runtime_bundle
+          cargo test --locked -p loom-codegen-llvm --test standard_values
+          cargo test --locked -p loom-codegen-llvm --test structured_standard_values
+          cargo test --locked -p loom-codegen-llvm --test runtime_bundle
       - name: C3 repository check/build/test/run on both backends
         run: |
-          cargo run -p loom-cli -- --no-cache check --target app examples/c3/application
-          cargo run -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
-          cargo run -p loom-cli -- --no-cache test --target unit examples/c3/application
-          cargo run -p loom-cli -- --no-cache run --target app examples/c3/application
-          cargo run -p loom-cli -- run --artifact target/ci-c3
-          cargo run -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
+          cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache run --target app examples/c3/application
+          cargo run --locked -p loom-cli -- run --artifact target/ci-c3
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
       - name: Verify embedded Linux DWARF
         run: |
           llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
           llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'
       - name: C3 controlled correctness and performance gates
-        run: cargo run --release -p loom-quality | tee target/c3-evidence.json
+        run: cargo run --locked --release -p loom-quality | tee target/c3-evidence.json
       - name: Upload C3 evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: c3-evidence-linux-llvm19
@@ -101,29 +109,33 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: nightly
+          persist-credentials: false
+      - name: Install pinned nightly Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2025-06-26
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: fuzz -> target
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked --version 0.13.1
       - name: Fuzz lossless syntax and recovery
-        run: cargo +nightly fuzz run syntax -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
+        run: cargo +nightly-2025-06-26 fuzz run syntax -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
       - name: Fuzz artifact decoding and MIR validation
-        run: cargo +nightly fuzz run artifact -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
+        run: cargo +nightly-2025-06-26 fuzz run artifact -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
       - name: Fuzz proof and runtime-check semantics
-        run: cargo +nightly fuzz run semantics -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
+        run: cargo +nightly-2025-06-26 fuzz run semantics -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
 
   macos-llvm19:
     runs-on: macos-14
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install and discover LLVM 19
         run: |
           brew install llvm@19
@@ -133,7 +145,7 @@ jobs:
           echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
           "$llvm_prefix/bin/llvm-config" --version
       - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
@@ -141,22 +153,53 @@ jobs:
       - name: Check and test workspace
         run: |
           cargo fmt --all -- --check
-          cargo check --workspace --all-targets
-          cargo test --workspace --all-targets
+          cargo check --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace --all-targets
+          cargo build --locked --workspace --all-targets
       - name: Standard library differential gate
         run: |
-          cargo test -p loom-codegen-llvm --test standard_values
-          cargo test -p loom-codegen-llvm --test structured_standard_values
-          cargo test -p loom-codegen-llvm --test runtime_bundle
+          cargo test --locked -p loom-codegen-llvm --test standard_values
+          cargo test --locked -p loom-codegen-llvm --test structured_standard_values
+          cargo test --locked -p loom-codegen-llvm --test runtime_bundle
       - name: C3 repository check/build/test/run on both backends
         run: |
-          cargo run -p loom-cli -- --no-cache check --target app examples/c3/application
-          cargo run -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
-          cargo run -p loom-cli -- --no-cache test --target unit examples/c3/application
-          cargo run -p loom-cli -- --no-cache run --target app examples/c3/application
-          cargo run -p loom-cli -- run --artifact target/ci-c3
-          cargo run -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
-          cargo run -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
+          cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/c3/application
+          cargo run --locked -p loom-cli -- --no-cache run --target app examples/c3/application
+          cargo run --locked -p loom-cli -- run --artifact target/ci-c3
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
+          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
+
+  windows-frontend:
+    name: Windows x86-64 frontend
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Test platform-independent compiler layers
+        shell: bash
+        run: |
+          package_args=()
+          for package in \
+            loom-core loom-syntax loom-hir loom-sema loom-mir loom-lowering \
+            loom-runtime-abi loom-benchmark; do
+            package_args+=(-p "$package")
+          done
+          cargo fmt --all -- --check
+          cargo check --locked "${package_args[@]}" --all-targets
+          cargo clippy --locked "${package_args[@]}" --all-targets -- -D warnings
+          cargo test --locked "${package_args[@]}" --all-targets
+          cargo build --locked "${package_args[@]}" --all-targets
