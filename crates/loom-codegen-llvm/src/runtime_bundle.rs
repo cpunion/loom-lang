@@ -308,7 +308,7 @@ impl Drop for RemoveFileOnDrop {
 }
 
 impl RuntimeLinker {
-    /// Resolves and identifies an explicit linker program.
+    /// Resolves and identifies the selected linker program.
     ///
     /// # Errors
     ///
@@ -333,13 +333,13 @@ impl RuntimeLinker {
         if !output.status.success() {
             return Err(CodegenError::new(
                 "RuntimeLinkerUnavailable",
-                "explicit linker did not accept its version/help probe",
+                "selected linker did not accept its version/help probe",
             ));
         }
         if output.stdout.len().saturating_add(output.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
             return Err(CodegenError::new(
                 "RuntimeLinkerInvalid",
-                "explicit linker returned oversized version output",
+                "selected linker returned oversized version output",
             ));
         }
         if output
@@ -350,7 +350,7 @@ impl RuntimeLinker {
         {
             return Err(CodegenError::new(
                 "RuntimeLinkerInvalid",
-                "explicit linker returned an empty version identity",
+                "selected linker returned an empty version identity",
             ));
         }
         Ok(Self {
@@ -442,7 +442,7 @@ pub fn link_object_with_runtime_bundle(
     if result.stdout.len().saturating_add(result.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
         return Err(CodegenError::new(
             "NativeLinkFailed",
-            "explicit linker returned oversized output",
+            "selected linker returned oversized output",
         ));
     }
     if !result.status.success() {
@@ -451,7 +451,7 @@ pub fn link_object_with_runtime_bundle(
         return Err(CodegenError::new(
             "NativeLinkFailed",
             if detail.is_empty() {
-                "explicit linker failed".to_owned()
+                "selected linker failed".to_owned()
             } else {
                 detail.to_owned()
             },
@@ -552,7 +552,7 @@ fn verify_link_inputs(bundle: &RuntimeBundle, linker: &RuntimeLinker) -> Result<
     if linker_sha256 != linker.program_sha256 {
         return Err(CodegenError::new(
             "RuntimeLinkerInvalid",
-            "explicit linker changed after identity validation",
+            "selected linker changed after identity validation",
         ));
     }
     Ok(())
@@ -717,7 +717,7 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
         .ok_or_else(|| {
             CodegenError::new(
                 "RuntimeLinkerUnavailable",
-                format!("cannot resolve explicit linker `{}`", program.display()),
+                format!("cannot resolve selected linker `{}`", program.display()),
             )
         })?;
     let resolved = fs::canonicalize(&requested).map_err(|error| {
@@ -736,7 +736,7 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
         if metadata.permissions().mode() & 0o111 == 0 {
             return Err(CodegenError::new(
                 "RuntimeLinkerInvalid",
-                "explicit linker is not executable",
+                "selected linker is not executable",
             ));
         }
     }

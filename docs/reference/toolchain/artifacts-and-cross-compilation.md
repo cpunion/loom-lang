@@ -12,10 +12,10 @@ rather than assuming every build output is executable.
 | Relocatable object | LLVM `build --emit object` | target-specific | no |
 | `.loomi` | Interpreter `build` | yes within its validated format/language version | via `loomc run --artifact` |
 | Portable library (`.loomlib` convention) | `build` of a `lib` target | yes within its validated format/language version | no |
-| Runtime bundle | `runtime export` or a release archive | target-specific | used by the linker |
+| Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`17`. Portable libraries have format version `1`. The compiler does not append
+`18`. Portable libraries have format version `1`. The compiler does not append
 the `.loomlib` extension automatically. Both formats also record the Loom
 language version and are fully decoded and MIR-validated before use.
 
@@ -25,15 +25,23 @@ the compiler version needed to reproduce important artifacts.
 ## Host-native builds
 
 With no `--target-triple`, LLVM creates a host target machine using the actual
-host CPU and feature set. The emitted PIC object is linked with the runtime
-embedded in the same compiler build:
+host CPU and feature set. The emitted PIC object is linked only through a
+validated runtime bundle. The compiler resolves that bundle in this order:
+
+1. `--runtime-bundle DIR`;
+2. `LOOM_RUNTIME_BUNDLE`;
+3. `runtime/` beside the resolved `loomc` executable.
+
+Release archives use the third form, so an installed compiler works without a
+machine-specific flag:
 
 ```sh
 loomc build --release --target app --output target/app .
 ```
 
-The native runtime ABI is checked inside the toolchain, but no stable public
-native ABI is promised.
+The host linker is selected by `--linker PROGRAM`, then `LOOM_CC`, then
+`clang`. The runtime manifest and archive are validated before linking. The
+native runtime ABI remains compiler-private and has no stable public promise.
 
 ## Relocatable cross-target objects
 
@@ -75,9 +83,16 @@ archive digest, target, ABI, and linker input both before and around linking.
 The bundle must be a real directory containing bounded regular files; symlinks
 and extra entries are rejected.
 
-`loomc runtime export --output DIR` exports a bundle for the compiler's host
-target. The destination must not already exist. A host export does not create
-a runtime for another target.
+`loomc runtime pack --archive FILE --output DIR` packages a separately built
+host runtime archive. The input must be one bounded regular file rather than a
+directory or symlink. Its bytes are copied to the target's canonical archive
+name, and the compiler generates and reloads the exact manifest before
+publishing the directory. The destination must not already exist.
+
+Packing does not compile a runtime and does not turn a host archive into a
+cross-target archive. Build `loom-runtime` for the intended target with the
+generic CPU policy before packing it. Object emission, `check`, and the
+interpreter never discover or load a native runtime bundle.
 
 ## Release artifacts
 

@@ -94,7 +94,7 @@ pub fn native_artifact_path(
     }
 }
 
-/// Returns the embedded/bundled runtime archive file name for a target.
+/// Returns the canonical runtime-bundle archive file name for a target.
 #[must_use]
 pub fn native_runtime_archive_name(target_triple: Option<&str>) -> &'static str {
     if target_uses_msvc_artifacts(target_triple) {

@@ -61,18 +61,25 @@ Confirm that LLVM 19 is selected before compiling:
 
 ## Build from source
 
-Clone the repository and build the compiler and language server:
+Clone the repository, build the runtime archive with the portable CPU policy,
+build the tools, and pack the runtime beside `loomc`:
 
 ```sh
 git clone https://github.com/cpunion/loom-lang.git
 cd loom-lang
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked --release -p loom-runtime
 cargo +1.88.0 build --locked --release -p loom-cli -p loom-lsp
+target/release/loomc runtime pack \
+  --archive target/release/libloom_runtime.a \
+  --output target/release/runtime
 ```
 
 The binaries are written to:
 
 - `target/release/loomc`
 - `target/release/loom-lsp`
+- `target/release/runtime/loom-runtime-bundle.json` and its runtime archive
 
 Verify the compiler:
 
@@ -81,8 +88,11 @@ target/release/loomc --version
 target/release/loomc check examples/core01
 ```
 
-Loom has no installer or shell-completion command yet. Add `target/release` to
-your `PATH`, or invoke the binaries by their explicit paths.
+Loom has no installer or shell-completion command yet. Keep the `runtime/`
+directory beside the resolved `loomc` executable, then add `target/release` to
+your `PATH` or invoke the binaries by their explicit paths. If a deployment
+stores the bundle elsewhere, set `LOOM_RUNTIME_BUNDLE` or pass
+`--runtime-bundle`; the explicit option takes precedence.
 
 ## Release archives
 
@@ -97,9 +107,10 @@ If Cargo cannot find LLVM, check that `LLVM_SYS_191_PREFIX` points to the prefix
 containing `bin/llvm-config`, `include/llvm`, and the LLVM libraries. Multiple
 LLVM installations on the same host are a common cause of link failures.
 
-If Loom builds but cannot link a program, confirm that `LOOM_CC` names Clang 19
-and that the host's native linker and system SDK are installed. The interpreter
-backend can still exercise language semantics without LLVM code generation:
+If Loom builds but cannot link a program, confirm that the adjacent runtime
+bundle exists and validates, `LOOM_CC` names Clang 19, and the host's native
+linker and system SDK are installed. The interpreter backend can still exercise
+language semantics without a native runtime bundle or LLVM linking:
 
 ```sh
 target/release/loomc --backend interpreter test examples/core01

@@ -8,8 +8,9 @@ language reference; compiler implementation details belong in
 
 Loom currently ships two execution backends:
 
-- `llvm` is the default. It emits a native object and, for a supported host or
-  an explicitly supplied runtime bundle, links an executable.
+- `llvm` is the default. It emits a native object and links an executable only
+  through a validated runtime bundle selected explicitly, from the
+  environment, or beside the installed compiler.
 - `interpreter` executes validated Loom MIR and can produce a portable `.loomi`
   artifact. It is primarily a semantic reference and diagnostic backend.
 

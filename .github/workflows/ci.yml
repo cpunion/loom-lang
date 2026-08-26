@@ -39,6 +39,25 @@ jobs:
         run: cargo check --locked --workspace --all-targets
       - name: Lint workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Prove cold codegen builds do not recurse into Cargo
+        run: |
+          cold_target="$RUNNER_TEMP/loom-cold-codegen-target"
+          CARGO_TARGET_DIR="$cold_target" CARGO_NET_OFFLINE=true \
+            cargo check --offline --locked -p loom-codegen-llvm
+          CARGO_TARGET_DIR="$cold_target" CARGO_NET_OFFLINE=true \
+            cargo build --offline --locked -p loom-codegen-llvm
+          if find "$cold_target" -type d -name runtime-target -print -quit | grep -q .; then
+            echo "codegen created a forbidden nested runtime-target" >&2
+            exit 1
+          fi
+      - name: Prepare host runtime sidecar
+        run: |
+          CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
+          cargo build --locked -p loom-cli
+          target/debug/loomc runtime pack \
+            --archive target/debug/libloom_runtime.a \
+            --output target/debug/runtime
+          echo "LOOM_RUNTIME_BUNDLE=$PWD/target/debug/runtime" >> "$GITHUB_ENV"
       - name: Test workspace
         run: cargo test --locked --workspace --all-targets
       - name: Build complete workspace
@@ -168,6 +187,13 @@ jobs:
           cargo fmt --all -- --check
           cargo check --locked --workspace --all-targets
           cargo clippy --locked --workspace --all-targets -- -D warnings
+          CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
+          cargo build --locked -p loom-cli
+          target/debug/loomc runtime pack \
+            --archive target/debug/libloom_runtime.a \
+            --output target/debug/runtime
+          export LOOM_RUNTIME_BUNDLE="$PWD/target/debug/runtime"
+          echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
       - name: Standard library differential gate
@@ -285,6 +311,13 @@ jobs:
           cargo fmt --all -- --check
           cargo check --locked --workspace --all-targets
           cargo clippy --locked --workspace --all-targets -- -D warnings
+          CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
+          cargo build --locked -p loom-cli
+          target/debug/loomc.exe runtime pack \
+            --archive target/debug/loom_runtime.lib \
+            --output target/debug/runtime
+          export LOOM_RUNTIME_BUNDLE="$PWD/target/debug/runtime"
+          echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
       - name: Core native and interpreter check/build/test/run closure

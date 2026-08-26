@@ -191,10 +191,13 @@ paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
 versioned and never suppresses fingerprint errors.
 
-Host linking uses the Rust runtime archive embedded in the compiler build.
-Cross-target linking accepts only a validated matching runtime bundle and an
-explicit linker. Final native executables are not persistently cached because
-the link environment is not yet hermetic.
+Every executable link consumes one validated runtime bundle; the compiler
+contains no runtime archive and its build script never starts Cargo. The CLI
+discovers a host bundle from an explicit option, the environment, or the
+installed sibling directory. Cross-target linking additionally requires an
+explicit linker. Object emission is independent of this link input. Final
+native executables are not persistently cached because the system linker, SDK,
+and debug-companion environment are not yet hermetic.
 
 ## Debug information
 

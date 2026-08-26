@@ -19,7 +19,7 @@ The commands are:
 | --- | --- |
 | `resolve [--update]` | Resolve dependencies and materialize `loom.lock`. |
 | `publish --registry NAME` | Publish the root package to an HTTP registry configured in the manifest. |
-| `runtime export --output DIR` | Export the embedded runtime as a validated host runtime bundle. |
+| `runtime pack --archive FILE --output DIR` | Pack a separately built host runtime archive into a validated bundle. |
 | `check [--target NAME]` | Parse, resolve, lower, and type-check the project. |
 | `build [--target NAME \| --entry NAME]` | Build an executable, object, interpreted artifact, or portable library. |
 | `test [--target NAME]` | Compile and execute ordinary `test fn` declarations. |
@@ -38,7 +38,7 @@ The commands are:
 - `--release` selects the LLVM release optimization profile. It is valid only
   for source `check`, `build`, `test`, and `run` commands.
 
-The interpreter does not support `runtime export`, `debug`, `--release`,
+The interpreter does not support `runtime pack`, `debug`, `--release`,
 `--target-triple`, or `build --emit object`.
 
 ### Dependency resolution
@@ -50,7 +50,7 @@ The interpreter does not support `runtime export`, `debug`, `--release`,
   and validated registry cache entries.
 
 These options apply to `resolve` and source commands. They do not apply to
-`fmt`, `publish`, `runtime export`, or `run --artifact`. `resolve --update`
+`fmt`, `publish`, `runtime pack`, or `run --artifact`. `resolve --update`
 cannot be combined with `--locked` or `--offline`.
 
 ### Compiler cache
@@ -103,11 +103,28 @@ asynchronous entries use the same selection rules.
 
 Use `--output FILE` to override the destination.
 
-`build --emit object` produces a relocatable object and does not link a runtime.
-`--target-triple TRIPLE` is valid only for `build`. An executable for a
-non-host target additionally requires both `--runtime-bundle DIR` and
-`--linker PROGRAM`. Those two options must always appear together and apply
-only to LLVM executable builds.
+`build --emit object` produces a relocatable object and does not resolve or
+link a runtime. `--target-triple TRIPLE` is valid only for `build`.
+
+Native executable `build`, `test`, `run`, and `debug` resolve a validated
+runtime bundle in strict precedence order: `--runtime-bundle DIR`, then
+`LOOM_RUNTIME_BUNDLE`, then `runtime/` beside the canonicalized `loomc`
+executable. An invalid higher-precedence bundle fails closed; it does not fall
+through to another source. The host linker is selected by `--linker PROGRAM`,
+then `LOOM_CC`, then `clang`.
+
+A non-host executable additionally requires an explicit `--linker PROGRAM`;
+`LOOM_CC` is intentionally insufficient at that boundary. The selected bundle
+must match the emitted target triple and data layout. Runtime and linker
+options are not accepted by `check`, object emission, portable libraries, the
+interpreter, or `run --artifact`.
+
+`runtime pack --archive FILE --output DIR` does not compile the archive. It
+copies one bounded regular input file to the canonical host archive name,
+writes the exact target/runtime ABI/checksum/link-closure manifest, validates
+the completed staging directory, and publishes a new destination directory.
+It rejects symlinks, oversized inputs, unexpected bundle entries, and an
+existing output path.
 
 A `lib` target produces a portable checked-MIR library artifact. Use an
 explicit `--output NAME.loomlib`; `.loomlib` is the convention, not an
