@@ -10013,6 +10013,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn propagate_status(&self, status: IntValue<'ctx>) -> Result<(), CodegenError> {
+        if self
+            .native_signature
+            .is_some_and(|signature| signature.effect() == NativeEffectAbi::PureNoFault)
+        {
+            // A universal boundary always returns a status word, even when the closed-world
+            // requirement graph proves that its selected callee cannot fault. Preserve the pure
+            // native ABI and fail closed if emission or runtime ever violates that proof.
+            return self.trap_on_runtime_status(status, "pure.call");
+        }
         let success = self.append_block("call.success");
         let failure = self.append_block("call.failure");
         let ok = self
