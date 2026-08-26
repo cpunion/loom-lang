@@ -21,7 +21,9 @@ use inkwell::debug_info::{
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{FileType, TargetData};
-use inkwell::types::{AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
+use inkwell::types::{
+    AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, IntType, StructType,
+};
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PhiValue,
     PointerValue,
@@ -32,7 +34,8 @@ use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant, Effects,
     FaultCode, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId,
     Instruction, InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget,
-    ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueId, ValueTypeId,
+    ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
+    ValueId, ValueTypeId,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 
@@ -148,6 +151,7 @@ struct DebugState<'ctx> {
     fallible_int_type: DIType<'ctx>,
     fallible_float_type: DIType<'ctx>,
     product_types: RefCell<BTreeMap<u32, DIType<'ctx>>>,
+    sum_types: RefCell<BTreeMap<u32, DIType<'ctx>>>,
     optimized: bool,
 }
 
@@ -319,6 +323,7 @@ impl<'ctx> DebugState<'ctx> {
             fallible_int_type,
             fallible_float_type,
             product_types: RefCell::new(BTreeMap::new()),
+            sum_types: RefCell::new(BTreeMap::new()),
             optimized,
         })
     }
@@ -358,6 +363,10 @@ impl<'ctx> DebugState<'ctx> {
         self.value_type_with_stack(backend, ty, &mut BTreeSet::new())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive debug-type mapping keeps every physical LCIR representation and recursive guard in one audited boundary"
+    )]
     fn value_type_with_stack(
         &self,
         backend: &Backend<'ctx, '_>,
@@ -429,6 +438,128 @@ impl<'ctx> DebugState<'ctx> {
                 self.product_types.borrow_mut().insert(ty.raw(), debug_type);
                 Ok(debug_type)
             }
+            Some(Repr::Sum(_)) => {
+                if let Some(existing) = self.sum_types.borrow().get(&ty.raw()).copied() {
+                    return Ok(existing);
+                }
+                if !visiting.insert(ty.raw()) {
+                    return Err(CodegenError::new(
+                        "LlvmDebugInfoFailed",
+                        format!("cyclic LCIR sum type {ty} reached debug emission"),
+                    ));
+                }
+                let sum = backend.sum_repr(ty)?;
+                let layout = backend.sum_layout(ty)?;
+                let name = format!("LoomSum<t{}>", ty.raw());
+                let identifier = format!("loom.compiler.LoomSum.t{}", ty.raw());
+                let debug_type = match layout.tag {
+                    SumTagRepr::Tagless => {
+                        let variant = sum.variants().first().ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmDebugInfoFailed",
+                                format!("tagless LCIR sum type {ty} has no variant"),
+                            )
+                        })?;
+                        let mut members = Vec::with_capacity(variant.fields().len());
+                        for (index, field) in variant.fields().iter().copied().enumerate() {
+                            members.push(DebugAggregateField {
+                                name: format!("variant0.field{index}"),
+                                debug_type: self.value_type_with_stack(backend, field, visiting)?,
+                                llvm_type: backend.llvm_type(field)?,
+                                flags: DIFlags::ZERO,
+                            });
+                        }
+                        create_aggregate_debug_type(
+                            &self.builder,
+                            self.type_file,
+                            &backend.target_data,
+                            &name,
+                            &identifier,
+                            layout.physical.into_struct_type(),
+                            &members,
+                            DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+                        )?
+                    }
+                    SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 if sum.is_tag_only() => self
+                        .builder
+                        .create_basic_type(
+                            &name,
+                            backend.target_data.get_bit_size(&layout.physical),
+                            0x07,
+                            DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+                        )
+                        .map_err(|error| debug_info_error(&error))?
+                        .as_type(),
+                    SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                        let tag_type = backend.sum_tag_type(layout.tag).ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmDebugInfoFailed",
+                                format!("LCIR sum type {ty} has no tag type"),
+                            )
+                        })?;
+                        let tag_debug_type = self
+                            .builder
+                            .create_basic_type(
+                                &format!("{name}.tag"),
+                                backend.target_data.get_bit_size(&tag_type),
+                                0x07,
+                                DIFlags::ARTIFICIAL,
+                            )
+                            .map_err(|error| debug_info_error(&error))?
+                            .as_type();
+                        let carrier = layout.carrier.ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmDebugInfoFailed",
+                                format!("tagged LCIR sum type {ty} has no carrier"),
+                            )
+                        })?;
+                        let carrier_debug_type = self
+                            .builder
+                            .create_struct_type(
+                                self.type_file.as_debug_info_scope(),
+                                &format!("{name}.carrier"),
+                                self.type_file,
+                                0,
+                                backend.target_data.get_bit_size(&carrier),
+                                abi_alignment_bits(&backend.target_data, &carrier)?,
+                                DIFlags::ARTIFICIAL,
+                                None,
+                                &[],
+                                0,
+                                None,
+                                &format!("{identifier}.carrier"),
+                            )
+                            .as_type();
+                        let members = [
+                            DebugAggregateField {
+                                name: "tag".into(),
+                                debug_type: tag_debug_type,
+                                llvm_type: tag_type.into(),
+                                flags: DIFlags::ARTIFICIAL,
+                            },
+                            DebugAggregateField {
+                                name: "carrier".into(),
+                                debug_type: carrier_debug_type,
+                                llvm_type: carrier.into(),
+                                flags: DIFlags::ARTIFICIAL,
+                            },
+                        ];
+                        create_aggregate_debug_type(
+                            &self.builder,
+                            self.type_file,
+                            &backend.target_data,
+                            &name,
+                            &identifier,
+                            layout.physical.into_struct_type(),
+                            &members,
+                            DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+                        )?
+                    }
+                };
+                visiting.remove(&ty.raw());
+                self.sum_types.borrow_mut().insert(ty.raw(), debug_type);
+                Ok(debug_type)
+            }
             Some(Repr::Uninhabited) => Err(CodegenError::new(
                 "LlvmDebugInfoFailed",
                 format!("uninhabited LCIR type {ty} reached a debug signature"),
@@ -468,6 +599,16 @@ impl<'ctx> DebugState<'ctx> {
                 self.type_file,
                 &backend.target_data,
                 &format!("LoomProduct<t{}>", ty.raw()),
+                self.value_type(backend, ty)?,
+                backend.llvm_type(ty)?,
+                self.status_type,
+            ),
+            Some(Repr::Sum(_)) => create_fallible_debug_type(
+                backend.context,
+                &self.builder,
+                self.type_file,
+                &backend.target_data,
+                &format!("LoomSum<t{}>", ty.raw()),
                 self.value_type(backend, ty)?,
                 backend.llvm_type(ty)?,
                 self.status_type,
@@ -912,6 +1053,14 @@ fn debug_info_error(error: &inkwell::error::Error) -> CodegenError {
     CodegenError::new("LlvmDebugInfoFailed", error.to_string())
 }
 
+#[derive(Clone)]
+struct SumLayout<'ctx> {
+    tag: SumTagRepr,
+    payloads: Vec<StructType<'ctx>>,
+    carrier: Option<StructType<'ctx>>,
+    physical: BasicTypeEnum<'ctx>,
+}
+
 struct Backend<'ctx, 'artifact> {
     context: &'ctx Context,
     artifact: &'artifact CheckedArtifact,
@@ -1060,6 +1209,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(self.context.struct_type(&fields, false).into())
             }
+            Some(Repr::Sum(_)) => Ok(self.sum_layout(ty)?.physical),
             Some(Repr::Uninhabited) => Err(CodegenError::new(
                 "LlvmAbiDefect",
                 format!("uninhabited LCIR type {ty} reached an LLVM value boundary"),
@@ -1069,6 +1219,156 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 format!("missing representation for LCIR type {ty}"),
             )),
         }
+    }
+
+    fn sum_repr(&self, ty: ValueTypeId) -> Result<&SumRepr, CodegenError> {
+        let value_type = self
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
+        let Repr::Sum(sum) = self
+            .artifact
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("missing representation for LCIR type {ty}"),
+                )
+            })?
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("LCIR type {ty} is not a sum"),
+            ));
+        };
+        self.artifact.representations().sum(sum).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("missing LCIR sum representation {sum}"),
+            )
+        })
+    }
+
+    fn sum_tag_type(&self, tag: SumTagRepr) -> Option<IntType<'ctx>> {
+        match tag {
+            SumTagRepr::Tagless => None,
+            SumTagRepr::I8 => Some(self.context.i8_type()),
+            SumTagRepr::I16 => Some(self.context.i16_type()),
+            SumTagRepr::I32 => Some(self.context.i32_type()),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "sum layout selection and its target-data size/alignment proof are intentionally one atomic computation"
+    )]
+    fn sum_layout(&self, ty: ValueTypeId) -> Result<SumLayout<'ctx>, CodegenError> {
+        let sum = self.sum_repr(ty)?;
+        let payloads = sum
+            .variants()
+            .iter()
+            .map(|variant| {
+                let fields = variant
+                    .fields()
+                    .iter()
+                    .copied()
+                    .map(|field| self.llvm_type(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.context.struct_type(&fields, false))
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+        if sum.tag() == SumTagRepr::Tagless {
+            let physical = payloads.first().copied().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("LCIR sum type {ty} has no variants"),
+                )
+            })?;
+            return Ok(SumLayout {
+                tag: sum.tag(),
+                payloads,
+                carrier: None,
+                physical: physical.into(),
+            });
+        }
+        let tag_type = self.sum_tag_type(sum.tag()).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("LCIR sum type {ty} has no tag type"),
+            )
+        })?;
+        if sum.is_tag_only() {
+            return Ok(SumLayout {
+                tag: sum.tag(),
+                payloads,
+                carrier: None,
+                physical: tag_type.into(),
+            });
+        }
+
+        let mut maximum_size = 0_u64;
+        let mut anchor = None;
+        let mut maximum_alignment = 0_u32;
+        for payload in &payloads {
+            let size = self.target_data.get_abi_size(payload);
+            let alignment = self.target_data.get_abi_alignment(payload);
+            maximum_size = maximum_size.max(size);
+            if alignment > maximum_alignment {
+                maximum_alignment = alignment;
+                anchor = Some(*payload);
+            }
+        }
+        let anchor = anchor.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("LCIR sum type {ty} has no payload ABI"),
+            )
+        })?;
+        let carrier_bytes = u32::try_from(maximum_size).map_err(|_| {
+            CodegenError::new(
+                "ProgramTooLarge",
+                format!("LCIR sum type {ty} carrier exceeds LLVM array limits"),
+            )
+        })?;
+        let carrier = self.context.struct_type(
+            &[
+                anchor.array_type(0).into(),
+                self.context.i8_type().array_type(carrier_bytes).into(),
+            ],
+            false,
+        );
+        let expected_size = maximum_size
+            .checked_add(u64::from(maximum_alignment.saturating_sub(1)))
+            .map(|size| size / u64::from(maximum_alignment) * u64::from(maximum_alignment))
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    format!("LCIR sum type {ty} is too large"),
+                )
+            })?;
+        let actual_size = self.target_data.get_abi_size(&carrier);
+        let actual_alignment = self.target_data.get_abi_alignment(&carrier);
+        if actual_size != expected_size || actual_alignment != maximum_alignment {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "LCIR sum type {ty} carrier has ABI size/alignment {actual_size}/{actual_alignment}, expected {expected_size}/{maximum_alignment}"
+                ),
+            ));
+        }
+        let physical = self
+            .context
+            .struct_type(&[tag_type.into(), carrier.into()], false)
+            .into();
+        Ok(SumLayout {
+            tag: sum.tag(),
+            payloads,
+            carrier: Some(carrier),
+            physical,
+        })
     }
 
     fn signature_writeback_types(source: &Function) -> Result<Vec<ValueTypeId>, CodegenError> {
@@ -1372,6 +1672,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(else_target.block);
                     pending.push(then_target.block);
                 }
+                TerminatorKind::SumSwitch { cases, .. } => {
+                    for case in cases.iter().rev() {
+                        pending.push(case.block);
+                    }
+                }
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. } => {
                     pending.push(fault.block);
@@ -1473,6 +1778,22 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 // directly; the instruction exists to retain the nominal
                 // proof boundary in LCIR and artifact identity.
                 one(self.value(*value)?)
+            }
+            InstructionKind::SumConstruct { variant, payload } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("{} sum construction has no result", instruction.id()),
+                    )
+                })?;
+                let ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", format!("missing result {result}"))
+                    })?
+                    .ty();
+                one(self.emit_sum_construct(ty, *variant, payload)?)
             }
             InstructionKind::BoolNot { value } => one(self
                 .backend
@@ -1652,6 +1973,96 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
+    fn emit_sum_construct(
+        &self,
+        ty: ValueTypeId,
+        variant: u32,
+        payload: &[ValueId],
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let layout = self.backend.sum_layout(ty)?;
+        let variant_index = usize::try_from(variant).map_err(|_| {
+            CodegenError::new("LlvmAbiDefect", format!("invalid sum variant {variant}"))
+        })?;
+        let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("sum type {ty} has no variant {variant}"),
+            )
+        })?;
+        if usize::try_from(payload_type.count_fields()).ok() != Some(payload.len()) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "sum type {ty} variant {variant} has {} LLVM payload fields but {} LCIR values",
+                    payload_type.count_fields(),
+                    payload.len()
+                ),
+            ));
+        }
+        let mut payload_value = payload_type.get_undef();
+        for (index, value) in payload.iter().copied().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many sum payload fields"))?;
+            payload_value = self
+                .backend
+                .builder
+                .build_insert_value(payload_value, self.value(value)?, index, "sum.payload")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        match layout.tag {
+            SumTagRepr::Tagless => Ok(payload_value.into()),
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                let tag = self
+                    .backend
+                    .sum_tag_type(layout.tag)
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum tag type is missing"))?
+                    .const_int(u64::from(variant), false);
+                let Some(carrier_type) = layout.carrier else {
+                    if !payload.is_empty() {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("tag-only sum type {ty} carried a payload"),
+                        ));
+                    }
+                    return Ok(tag.into());
+                };
+                let carrier_pointer = self
+                    .backend
+                    .builder
+                    .build_alloca(carrier_type, "sum.construct.carrier")
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_store(carrier_pointer, carrier_type.const_zero())
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_store(carrier_pointer, payload_value)
+                    .map_err(builder_error)?;
+                let carrier = self
+                    .backend
+                    .builder
+                    .build_load(carrier_type, carrier_pointer, "sum.construct.carrier.value")
+                    .map_err(builder_error)?;
+                let physical = layout.physical.into_struct_type();
+                let tagged = self
+                    .backend
+                    .builder
+                    .build_insert_value(physical.get_undef(), tag, 0, "sum.construct.tag")
+                    .map_err(builder_error)?
+                    .into_struct_value();
+                Ok(self
+                    .backend
+                    .builder
+                    .build_insert_value(tagged, carrier, 1, "sum.construct.value")
+                    .map_err(builder_error)?
+                    .into_struct_value()
+                    .into())
+            }
+        }
+    }
+
     fn emit_constant(&self, constant: Constant) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         Ok(match constant {
             Constant::Unit => self.backend.unit_type.const_zero().into(),
@@ -1721,6 +2132,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .map_err(builder_error)?;
                 }
                 Ok(())
+            }
+            TerminatorKind::SumSwitch { scrutinee, cases } => {
+                self.emit_sum_switch(*scrutinee, cases)
             }
             TerminatorKind::Return(value) => {
                 self.emit_return(self.value(*value)?, terminator.writebacks())
@@ -1805,6 +2219,143 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive sum dispatch keeps tag extraction, per-case payload decoding, and phi-edge construction together"
+    )]
+    fn emit_sum_switch(
+        &self,
+        scrutinee: ValueId,
+        cases: &[loom_codegen_ir::SumCase],
+    ) -> Result<(), CodegenError> {
+        let ty = self
+            .source
+            .value(scrutinee)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", format!("missing scrutinee {scrutinee}"))
+            })?
+            .ty();
+        let layout = self.backend.sum_layout(ty)?;
+        let value = self.value(scrutinee)?;
+        let edges = cases
+            .iter()
+            .map(|case| {
+                self.backend
+                    .context
+                    .append_basic_block(self.function, &format!("sum.case.{}", case.variant))
+            })
+            .collect::<Vec<_>>();
+
+        let carrier = match layout.tag {
+            SumTagRepr::Tagless => {
+                let [edge] = edges.as_slice() else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("tagless sum switch for {ty} does not have one case"),
+                    ));
+                };
+                self.backend
+                    .builder
+                    .build_unconditional_branch(*edge)
+                    .map_err(builder_error)?;
+                None
+            }
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                let (tag, carrier) = if layout.carrier.is_some() {
+                    let aggregate = value.into_struct_value();
+                    let tag = self
+                        .backend
+                        .builder
+                        .build_extract_value(aggregate, 0, "sum.switch.tag")
+                        .map_err(builder_error)?
+                        .into_int_value();
+                    let carrier = self
+                        .backend
+                        .builder
+                        .build_extract_value(aggregate, 1, "sum.switch.carrier")
+                        .map_err(builder_error)?;
+                    (tag, Some(carrier))
+                } else {
+                    (value.into_int_value(), None)
+                };
+                let default = self
+                    .backend
+                    .context
+                    .append_basic_block(self.function, "sum.switch.invalid");
+                let llvm_cases = cases
+                    .iter()
+                    .zip(&edges)
+                    .map(|(case, edge)| {
+                        (
+                            tag.get_type().const_int(u64::from(case.variant), false),
+                            *edge,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                self.backend
+                    .builder
+                    .build_switch(tag, default, &llvm_cases)
+                    .map_err(builder_error)?;
+                self.backend.builder.position_at_end(default);
+                self.backend
+                    .builder
+                    .build_unreachable()
+                    .map_err(builder_error)?;
+                carrier
+            }
+        };
+
+        for ((case, edge), payload_type) in cases.iter().zip(edges).zip(&layout.payloads) {
+            self.backend.builder.position_at_end(edge);
+            let payload = match layout.tag {
+                SumTagRepr::Tagless => value.into_struct_value(),
+                SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                    if let Some(carrier_type) = layout.carrier {
+                        let pointer = self
+                            .backend
+                            .builder
+                            .build_alloca(carrier_type, "sum.switch.carrier.payload")
+                            .map_err(builder_error)?;
+                        self.backend
+                            .builder
+                            .build_store(
+                                pointer,
+                                carrier.ok_or_else(|| {
+                                    CodegenError::new(
+                                        "LlvmAbiDefect",
+                                        "tagged sum switch has no carrier value",
+                                    )
+                                })?,
+                            )
+                            .map_err(builder_error)?;
+                        self.backend
+                            .builder
+                            .build_load(*payload_type, pointer, "sum.switch.payload")
+                            .map_err(builder_error)?
+                            .into_struct_value()
+                    } else {
+                        payload_type.const_zero()
+                    }
+                }
+            };
+            let implicit = (0..payload_type.count_fields())
+                .map(|field| {
+                    self.backend
+                        .builder
+                        .build_extract_value(payload, field, "sum.switch.field")
+                        .map_err(builder_error)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let predecessor = self.current_block()?;
+            self.add_implicit_incoming(case.block, &implicit, &case.arguments, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(case.block)?)
+                .map_err(builder_error)?;
+        }
+        Ok(())
     }
 
     fn checked_intrinsic(
@@ -2541,7 +3092,7 @@ impl<'ctx> Backend<'ctx, '_> {
 
         self.builder.position_at_end(activated);
         let fault_context = self.initialize_fault_context(runtime)?;
-        let status = self.call_fallible_root(root, fault_context, "run")?;
+        let (status, _) = self.call_fallible_root(root, fault_context, "run")?;
         self.destroy_runtime(runtime)?;
         let success = self.context.append_basic_block(main, "run.success");
         let failure = self.context.append_basic_block(main, "run.failure");
@@ -2581,7 +3132,16 @@ impl<'ctx> Backend<'ctx, '_> {
         let roots = self.artifact.test_roots().ok_or_else(|| {
             CodegenError::new("LlvmAbiDefect", "LCIR test artifact has no ordered roots")
         })?;
-        for root in roots {
+        let outcomes = self.artifact.test_outcomes().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "LCIR test artifact has no outcome plans")
+        })?;
+        if roots.len() != outcomes.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "LCIR test roots and outcome plans have different lengths",
+            ));
+        }
+        for (root, outcome) in roots.iter().zip(outcomes) {
             let source = self.artifact.function(*root).ok_or_else(|| {
                 CodegenError::new(
                     "InvalidFunctionReference",
@@ -2589,12 +3149,12 @@ impl<'ctx> Backend<'ctx, '_> {
                 )
             })?;
             if source.effects().contains(Effects::MAY_FAULT) {
-                self.emit_fallible_test(main, *root, source.name(), failed)?;
+                self.emit_fallible_test(main, *root, source.name(), *outcome, failed)?;
             } else {
-                self.builder
-                    .build_call(self.function(*root)?, &[], "test")
-                    .map_err(builder_error)?;
-                self.puts(&format!("passed {}", source.name()))?;
+                let returned = call_basic(&self.builder, self.function(*root)?, &[], "test")?;
+                let succeeded =
+                    self.test_outcome_succeeded(returned, source.signature().result(), *outcome)?;
+                self.emit_test_completion(main, source.name(), failed, succeeded)?;
             }
         }
         let status = self
@@ -2612,6 +3172,7 @@ impl<'ctx> Backend<'ctx, '_> {
         main: FunctionValue<'ctx>,
         root: InstanceId,
         name: &str,
+        outcome: TestOutcomePlan,
         failed: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
         let runtime = call_pointer(&self.builder, self.runtime_create(), &[], "test.runtime")?;
@@ -2675,11 +3236,9 @@ impl<'ctx> Backend<'ctx, '_> {
         let next = self.context.append_basic_block(main, "test.next");
         self.builder.position_at_end(activated);
         let fault_context = self.initialize_fault_context(runtime)?;
-        let status = self.call_fallible_root(root, fault_context, "test")?;
+        let (status, returned) = self.call_fallible_root(root, fault_context, "test")?;
         self.destroy_runtime(runtime)?;
-        let pass = self.context.append_basic_block(main, "test.pass");
-        let fail = self.context.append_basic_block(main, "test.fail");
-        let succeeded = self
+        let runtime_succeeded = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
@@ -2688,10 +3247,49 @@ impl<'ctx> Backend<'ctx, '_> {
                 "test.succeeded",
             )
             .map_err(builder_error)?;
+        let source = self.artifact.function(root).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("LCIR test root {root} is missing"),
+            )
+        })?;
+        let outcome_succeeded =
+            self.test_outcome_succeeded(returned, source.signature().result(), outcome)?;
+        let succeeded = self
+            .builder
+            .build_and(
+                runtime_succeeded,
+                outcome_succeeded,
+                "test.outcome.succeeded",
+            )
+            .map_err(builder_error)?;
+        self.emit_test_completion_to(main, name, failed, succeeded, next)
+    }
+
+    fn emit_test_completion(
+        &self,
+        main: FunctionValue<'ctx>,
+        name: &str,
+        failed: PointerValue<'ctx>,
+        succeeded: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let next = self.context.append_basic_block(main, "test.next");
+        self.emit_test_completion_to(main, name, failed, succeeded, next)
+    }
+
+    fn emit_test_completion_to(
+        &self,
+        main: FunctionValue<'ctx>,
+        name: &str,
+        failed: PointerValue<'ctx>,
+        succeeded: IntValue<'ctx>,
+        next: BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let pass = self.context.append_basic_block(main, "test.pass");
+        let fail = self.context.append_basic_block(main, "test.fail");
         self.builder
             .build_conditional_branch(succeeded, pass, fail)
             .map_err(builder_error)?;
-
         self.builder.position_at_end(pass);
         self.puts(&format!("passed {name}"))?;
         self.builder
@@ -2707,6 +3305,53 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
         self.builder.position_at_end(next);
         Ok(())
+    }
+
+    fn test_outcome_succeeded(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        ty: ValueTypeId,
+        outcome: TestOutcomePlan,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        match outcome {
+            TestOutcomePlan::Unit => Ok(self.context.bool_type().const_int(1, false)),
+            TestOutcomePlan::Result {
+                success_variant,
+                failure_variant: _,
+            } => {
+                let layout = self.sum_layout(ty)?;
+                let tag = match layout.tag {
+                    SumTagRepr::Tagless => {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("Result test type {ty} unexpectedly has no physical tag"),
+                        ));
+                    }
+                    SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                        if layout.carrier.is_some() {
+                            self.builder
+                                .build_extract_value(
+                                    value.into_struct_value(),
+                                    0,
+                                    "test.result.tag",
+                                )
+                                .map_err(builder_error)?
+                                .into_int_value()
+                        } else {
+                            value.into_int_value()
+                        }
+                    }
+                };
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        tag.get_type().const_int(u64::from(success_variant), false),
+                        "test.result.succeeded",
+                    )
+                    .map_err(builder_error)
+            }
+        }
     }
 
     fn initialize_fault_context(
@@ -2740,14 +3385,19 @@ impl<'ctx> Backend<'ctx, '_> {
         root: InstanceId,
         context: PointerValue<'ctx>,
         name: &str,
-    ) -> Result<IntValue<'ctx>, CodegenError> {
+    ) -> Result<(IntValue<'ctx>, BasicValueEnum<'ctx>), CodegenError> {
         let aggregate = call_basic(&self.builder, self.function(root)?, &[context.into()], name)?
             .into_struct_value();
-        Ok(self
+        let status = self
             .builder
             .build_extract_value(aggregate, 0, &format!("{name}.status"))
             .map_err(builder_error)?
-            .into_int_value())
+            .into_int_value();
+        let value = self
+            .builder
+            .build_extract_value(aggregate, 1, &format!("{name}.value"))
+            .map_err(builder_error)?;
+        Ok((status, value))
     }
 
     fn destroy_runtime(&self, runtime: PointerValue<'ctx>) -> Result<(), CodegenError> {
