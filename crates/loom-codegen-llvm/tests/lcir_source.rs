@@ -7,7 +7,8 @@ use loom_codegen_ir::{
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
-    emit_lcir_native_object, emit_native, link_native_object, prepare_native_object,
+    OptimizationProfile, emit_lcir_native_object, emit_native, link_native_object,
+    prepare_native_object,
 };
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
@@ -51,14 +52,19 @@ fn lower_source_artifact(
 }
 
 fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
+    emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())
+}
+
+fn emit_and_run_lcir_with_options(
+    artifact: &CheckedArtifact,
+    stem: &str,
+    mut options: NativeObjectOptions,
+) -> NativeRun {
     let directory = tempfile::tempdir().expect("create LCIR output directory");
     let object = directory.path().join(format!("{stem}.o"));
     let ir = directory.path().join(format!("{stem}.ll"));
     let executable = directory.path().join(stem);
-    let options = NativeObjectOptions {
-        emit_ir: Some(ir.clone()),
-        ..NativeObjectOptions::default()
-    };
+    options.emit_ir = Some(ir.clone());
     emit_lcir_native_object(artifact, &object, &options).expect("emit source-lowered LCIR object");
     link_native_object(&object, &executable).expect("link source-lowered LCIR executable");
     let output = Command::new(executable)
@@ -804,6 +810,145 @@ pub fn main() Unit {
     assert!(lcir.ir.contains("insertvalue { i64, i64 }"), "{}", lcir.ir);
     assert!(lcir.ir.contains("extractvalue { i64, i64 }"), "{}", lcir.ir);
     assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn source_tuples_cross_direct_abi_and_destructure_across_three_backends() {
+    let source = r"module lcir_source_tuples
+
+record Packet { pair (Int, Bool) }
+
+fn rearrange(input (Packet, Float)) (Bool, Packet) {
+    let packet, ignored = input
+    discard ignored
+    let number, enabled = packet.pair
+    (enabled, Packet { pair = (number, enabled) })
+}
+
+fn requireEqual(actual Int, expected Int) Unit {
+    if actual == expected { Unit } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    let enabled, packet = rearrange((Packet { pair = (40, true) }, 1.5))
+    let number, copied = packet.pair
+    if enabled && copied {
+        requireEqual(number, 40)
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic tuple route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-tuples",
+        NativeObjectOptions {
+            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            ..NativeObjectOptions::default()
+        },
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-tuples");
+
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(
+        lcir.ir.contains(
+            "define internal { i1, { { i64, i1 } } } @loom.lcir.fn.0({ { { i64, i1 } }, double } %arg0)"
+        ),
+        "tuple arguments and results must stay in the direct physical ABI:\n{}",
+        lcir.ir
+    );
+    assert!(lcir.ir.contains("insertvalue"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("extractvalue"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("name: \"LoomProduct<t"), "{}", lcir.ir);
+    let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(
+            !lowered_functions.contains(forbidden),
+            "unexpected `{forbidden}` in tuple LCIR:\n{lowered_functions}"
+        );
+    }
+    assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn release_tuple_ir_needs_no_storage_runtime_or_executor_surface() {
+    let source = r"module lcir_release_tuples
+
+record Packet { pair (Int, Bool) }
+
+fn roundTrip(input (Packet, Float)) (Bool, Packet) {
+    let packet, ignored = input
+    discard ignored
+    let number, enabled = packet.pair
+    (enabled, Packet { pair = (number, enabled) })
+}
+
+pub fn main() Unit {
+    let enabled, packet = roundTrip((Packet { pair = (40, true) }, 1.5))
+    discard enabled
+    let number, copied = packet.pair
+    discard number
+    discard copied
+    Unit
+}
+";
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let release = emit_and_run_lcir_with_options(
+        &artifact,
+        "release-tuples",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+
+    assert!(release.output.status.success(), "{:?}", release.output);
+    assert_eq!(release.output.stdout, b"Unit\n");
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_runtime_",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(
+            !release.ir.contains(forbidden),
+            "unexpected `{forbidden}` in release tuple IR:\n{}",
+            release.ir
+        );
+    }
+    assert_pure_surface(&release.ir);
 }
 
 #[test]

@@ -415,13 +415,45 @@ impl<'a> Validator<'a> {
         let mut product_value_uses = vec![0_usize; representations.products().len()];
         for (index, value_type) in representations.value_types().iter().enumerate() {
             if let Some(Repr::Product(product)) = representations.repr(value_type.repr()).copied() {
-                if !matches!(value_type.semantic(), Type::Nominal(_, arguments) if arguments.is_empty())
-                {
-                    self.error(
-                        ValidationCode::RepresentationPlan,
-                        format!("representations.type[{index}]"),
-                        "POD product value types require a monomorphic nominal semantic type",
-                    );
+                match value_type.semantic() {
+                    Type::Nominal(_, arguments) if arguments.is_empty() => {}
+                    Type::Tuple(elements) => {
+                        if let Some(fields) = representations
+                            .product(product)
+                            .map(crate::ProductRepr::fields)
+                        {
+                            if fields.len() != elements.len() {
+                                self.error(
+                                    ValidationCode::RepresentationPlan,
+                                    format!("representations.type[{index}]"),
+                                    "tuple semantic arity does not match its product representation",
+                                );
+                            }
+                            for (field_index, (field, element)) in
+                                fields.iter().zip(elements).enumerate()
+                            {
+                                if representations
+                                    .value_type(*field)
+                                    .is_none_or(|field_type| field_type.semantic() != element)
+                                {
+                                    self.error(
+                                        ValidationCode::RepresentationPlan,
+                                        format!(
+                                            "representations.type[{index}].field[{field_index}]"
+                                        ),
+                                        "tuple semantic element does not match its product field type",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}]"),
+                            "direct product value types require a structural tuple or monomorphic nominal semantic type",
+                        );
+                    }
                 }
                 if let Some(uses) = product_value_uses.get_mut(product.index()) {
                     *uses = uses.saturating_add(1);

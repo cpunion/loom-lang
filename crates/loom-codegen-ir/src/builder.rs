@@ -119,6 +119,31 @@ impl ProgramBuilder {
             })
     }
 
+    /// Adds one structural tuple whose elements already have canonical direct
+    /// representations. Nested products must be registered before their
+    /// containing tuple, and all product types must be registered before any
+    /// function declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a duplicate tuple, an unregistered element type,
+    /// registration after function declaration, or an exhausted identity
+    /// domain.
+    pub fn add_tuple_type(&mut self, elements: &[Type]) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidProductType,
+                "LCIR product types must be registered before functions",
+            ));
+        }
+        self.representations.add_tuple(elements).ok_or_else(|| {
+            BuildError::new(
+                BuildErrorCode::InvalidProductType,
+                "LCIR tuple requires one unique structural tuple whose elements already have direct representations",
+            )
+        })
+    }
+
     /// Declares a monomorphic function before its CFG is built. Declaring all
     /// functions first permits direct recursive and mutually recursive call
     /// references. Producers with explicit arguments use

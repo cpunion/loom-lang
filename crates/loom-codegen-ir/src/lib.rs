@@ -19,6 +19,7 @@
 //! builder and independent validator never interpret another function's local
 //! identity by its raw table index.
 
+mod aggregate_plan;
 mod artifact;
 mod artifact_identity;
 mod builder;

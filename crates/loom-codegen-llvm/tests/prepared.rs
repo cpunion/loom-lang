@@ -71,6 +71,27 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
     .expect("prepare unsupported artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
 
+    let managed_tuple = compile_source(
+        r#"module prepared_managed_tuple
+
+fn make() (Int, Text) { (1, "legacy") }
+
+pub fn main() Unit {
+    let number, label = make()
+    discard number
+    discard label
+    Unit
+}
+"#,
+    );
+    let prepared = prepare_native_object(
+        &managed_tuple,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare tuple with an unsupported managed element");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+
     let dead_text = compile_source(
         r#"module prepared_dead_text
 
@@ -255,6 +276,39 @@ pub fn main() Unit {
         baseline,
         prepared_native_object_fingerprint(&changed).expect("fingerprint changed object")
     );
+}
+
+#[test]
+fn tuple_semantics_participate_in_the_lcir_object_cache_identity() {
+    let fingerprint = |source| {
+        let program = compile_source(source);
+        let prepared = prepare_native_object(
+            &program,
+            EmitOptions::run("main"),
+            NativeRoutePolicy::Automatic,
+        )
+        .expect("prepare tuple artifact");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        prepared_native_object_fingerprint(&prepared).expect("fingerprint tuple artifact")
+    };
+    let boolean = fingerprint(
+        r"module prepared_tuple_identity
+
+fn consume(value (Int, Bool)) Unit { discard value }
+
+pub fn main() Unit { consume((1, true)) }
+",
+    );
+    let floating = fingerprint(
+        r"module prepared_tuple_identity
+
+fn consume(value (Int, Float)) Unit { discard value }
+
+pub fn main() Unit { consume((1, 1.0)) }
+",
+    );
+
+    assert_ne!(boolean, floating);
 }
 
 #[test]

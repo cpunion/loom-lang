@@ -270,14 +270,8 @@ impl RepresentationPlan {
         self.canonical_types.get(semantic).copied()
     }
 
-    pub(crate) fn add_pod_record(
-        &mut self,
-        semantic: Type,
-        fields: &[Type],
-    ) -> Option<ValueTypeId> {
-        if self.type_id(&semantic).is_some()
-            || !matches!(&semantic, Type::Nominal(_, arguments) if arguments.is_empty())
-        {
+    fn add_product(&mut self, semantic: Type, fields: &[Type]) -> Option<ValueTypeId> {
+        if self.type_id(&semantic).is_some() {
             return None;
         }
         let fields = fields
@@ -301,6 +295,21 @@ impl RepresentationPlan {
         });
         self.canonical_types.insert(semantic, ty);
         Some(ty)
+    }
+
+    pub(crate) fn add_pod_record(
+        &mut self,
+        semantic: Type,
+        fields: &[Type],
+    ) -> Option<ValueTypeId> {
+        if !matches!(&semantic, Type::Nominal(_, arguments) if arguments.is_empty()) {
+            return None;
+        }
+        self.add_product(semantic, fields)
+    }
+
+    pub(crate) fn add_tuple(&mut self, elements: &[Type]) -> Option<ValueTypeId> {
+        self.add_product(Type::Tuple(elements.to_vec()), elements)
     }
 }
 
@@ -539,6 +548,52 @@ mod tests {
         assert!(wide_errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::RepresentationPlan
                 && error.message().contains("structural budget")
+        }));
+
+        let mut wide_tuple = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        wide_tuple
+            .add_tuple_type(&vec![Type::Int; DIRECT_PRODUCT_MAX_STRUCTURAL_NODES])
+            .expect("unchecked builder admits a tuple for independent validation");
+        let tuple_errors = validate_program(&wide_tuple.finish())
+            .expect_err("an over-wide tuple must fail independent validation");
+        assert!(tuple_errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.message().contains("structural budget")
+        }));
+    }
+
+    #[test]
+    fn structural_tuples_share_product_operations_but_validate_their_semantics() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let inner_semantic = Type::Tuple(vec![Type::Int, Type::Bool]);
+        let inner = builder
+            .add_tuple_type(&[Type::Int, Type::Bool])
+            .expect("inner tuple");
+        let record_semantic = Type::Nominal(TypeId(2_100), Vec::new());
+        builder
+            .add_pod_record_type(
+                record_semantic.clone(),
+                std::slice::from_ref(&inner_semantic),
+            )
+            .expect("record containing a tuple");
+        let outer = builder
+            .add_tuple_type(&[record_semantic, Type::Float])
+            .expect("tuple containing a record");
+        assert_ne!(inner, outer);
+        validate_program(&builder.finish()).expect("nested tuple/record products");
+
+        let mut malformed = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let tuple = malformed
+            .add_tuple_type(&[Type::Int, Type::Bool])
+            .expect("tuple");
+        let mut malformed = malformed.finish();
+        malformed.representations.types[tuple.index()].semantic =
+            Type::Tuple(vec![Type::Int, Type::Float]);
+        let errors = validate_program(&malformed)
+            .expect_err("tuple element semantics must match product field types");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.message().contains("semantic element")
         }));
     }
 

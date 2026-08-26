@@ -3,8 +3,8 @@ use std::fmt;
 use loom_codegen_ir::{
     ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget,
     CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind,
-    IntPredicate, Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
-    artifact_identity, dump_program, write_artifact_identity,
+    IntPredicate, Origin, ProgramBuilder, Repr, Signature, TargetLayout, Terminator,
+    TerminatorKind, artifact_identity, dump_program, write_artifact_identity,
 };
 use loom_core::{FileId, Span};
 use loom_mir::{ExprId, FunctionId as MirFunctionId, Type, TypeId};
@@ -188,6 +188,90 @@ fn product_result_artifact(use_second_product: bool) -> CheckedArtifact {
     builder
         .finish_checked()
         .expect("valid typed LCIR")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
+fn tuple_catalog_artifact(second: Type) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
+    builder
+        .add_tuple_type(&[Type::Int, second])
+        .expect("tuple representation");
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let body_origin = Origin::synthetic(MirFunctionId(84));
+    let root = builder
+        .declare_function(
+            body_origin,
+            "identity.tuple_catalog",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                body_origin,
+            )
+            .expect("Unit constant")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(unit), body_origin),
+            )
+            .expect("return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid tuple catalog")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
+fn unit_artifact_with_optional_empty_tuple(register_empty_tuple: bool) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
+    if register_empty_tuple {
+        builder
+            .add_tuple_type(&[])
+            .expect("empty tuple representation");
+    }
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let body_origin = Origin::synthetic(MirFunctionId(85));
+    let root = builder
+        .declare_function(
+            body_origin,
+            "identity.empty_tuple_catalog",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                body_origin,
+            )
+            .expect("Unit constant")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(unit), body_origin),
+            )
+            .expect("return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid optional empty tuple catalog")
         .into_artifact(ArtifactRootRequest::Run(root))
         .expect("closed run artifact")
 }
@@ -458,6 +542,59 @@ fn nominal_product_instruction_result_type_is_a_dump_and_identity_input() {
     );
     assert_ne!(first_dump, second_dump);
     assert_ne!(artifact_identity(&first), artifact_identity(&second));
+}
+
+#[test]
+fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
+    let boolean = tuple_catalog_artifact(Type::Bool);
+    let floating = tuple_catalog_artifact(Type::Float);
+    let boolean_dump = dump_program(boolean.program());
+    let floating_dump = dump_program(floating.program());
+
+    assert!(boolean_dump.contains("Tuple[Int,Bool]"), "{boolean_dump}");
+    assert!(
+        floating_dump.contains("Tuple[Int,Float]"),
+        "{floating_dump}"
+    );
+    assert_ne!(boolean_dump, floating_dump);
+    assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 5, "tuple support reuses schema 5");
+}
+
+#[test]
+fn empty_tuple_is_distinct_from_unit_in_type_representation_and_identity() {
+    let empty_tuple = unit_artifact_with_optional_empty_tuple(true);
+    let representations = empty_tuple.representations();
+    let unit = representations.type_id(&Type::Unit).expect("Unit type");
+    let tuple = representations
+        .type_id(&Type::Tuple(Vec::new()))
+        .expect("empty tuple type");
+
+    assert_ne!(unit, tuple, "semantic types need distinct LCIR type IDs");
+    let unit_repr = representations
+        .value_type(unit)
+        .expect("Unit value type")
+        .repr();
+    let tuple_repr = representations
+        .value_type(tuple)
+        .expect("empty tuple value type")
+        .repr();
+    assert_ne!(
+        unit_repr, tuple_repr,
+        "representations must remain distinct"
+    );
+    assert_eq!(representations.repr(unit_repr), Some(&Repr::Zst));
+    assert!(matches!(
+        representations.repr(tuple_repr),
+        Some(Repr::Product(_))
+    ));
+
+    let unit_only = unit_artifact_with_optional_empty_tuple(false);
+    assert_ne!(
+        artifact_identity(&unit_only),
+        artifact_identity(&empty_tuple),
+        "an unused empty tuple registration is still checked artifact identity"
+    );
 }
 
 #[test]

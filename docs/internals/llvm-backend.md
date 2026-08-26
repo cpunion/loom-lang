@@ -26,8 +26,9 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values and closed, invariant-free POD records. Records are recursive
-acyclic products of other direct values.
+primitive values, structural tuples, and closed, invariant-free POD records.
+Tuples and records are recursive acyclic products of other direct values and
+may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proofs, and exact fault effects have
 already crossed independent validation. It declares every source function
@@ -132,11 +133,12 @@ to attach an executor only when required.
 ## Direct LCIR products
 
 LCIR `Product` values become literal LLVM structs whose fields recursively use
-their validated direct types. Construction and functional mutation use
-`insertvalue`; projection uses `extractvalue`. Parameters and ordinary results
-pass these structs by value, and block parameters become aggregate phi nodes.
-LCIR source functions do not allocate a universal value, private record box, or
-GC object for this representation.
+their validated direct types. Tuple and record construction and functional
+record mutation use `insertvalue`; projection and tuple destructuring use
+`extractvalue`. Parameters and ordinary results pass these structs by value,
+and block parameters become aggregate phi nodes. LCIR source functions do not
+allocate a universal value, tuple node, private record box, or GC object for
+this representation.
 
 A mutable inherent receiver is represented as one functional inout value. An
 infallible call with source result `T` and ordered writebacks `W...` returns

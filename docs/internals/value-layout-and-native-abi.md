@@ -7,9 +7,9 @@ conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values and closed POD records. Any reachable feature outside
-current LCIR coverage selects the complete legacy layout below; the two
-callable ABIs are never mixed in one object.
+LCIR for primitive values, structural tuples, and closed POD records. Any
+reachable feature outside current LCIR coverage selects the complete legacy
+layout below; the two callable ABIs are never mixed in one object.
 
 ## Universal value envelope
 
@@ -52,12 +52,12 @@ internally.
 ## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, `Float` as `F64`, and each supported closed record as
-an immutable `Product` of canonical field value types. Products may contain
-other products as long as the representation graph is acyclic. An explicit
-registration table chooses the canonical value representation for a semantic
-type; other representation alternatives do not compete merely because they
-have the same semantic type.
+as `I1`, `Int` as `I64`, `Float` as `F64`, and each supported structural tuple
+or closed record as an immutable `Product` of canonical element or field value
+types. Tuples and records may contain one another as long as the representation
+graph is acyclic. An explicit registration table chooses the canonical value
+representation for a semantic type; other representation alternatives do not
+compete merely because they have the same semantic type.
 
 The checked-artifact LLVM API maps a product to a literal LLVM struct and emits
 construction, projection, and functional field replacement as `insertvalue`
@@ -75,10 +75,12 @@ values; the source result is zero-filled on a fault. This is a
 compiler-private object ABI, not a native library ABI.
 
 The production automatic route uses this typed ABI for eligible build, run,
-and test artifacts. Generic records, invariants, refined or managed fields,
-runtime-checked construction, projected inout arguments, concepts, contracts,
-cleanup, and async operations still select the complete universal route. Typed
-LCIR does not change the legacy runtime ABI or make either object ABI public.
+and test artifacts. Tuple construction and `let` destructuring are direct SSA
+construction and extraction; they do not allocate tuple nodes. Generic
+records, invariants, refined or managed aggregate elements, runtime-checked
+construction, projected inout arguments, concepts, contracts, cleanup, and
+async operations still select the complete universal route. Typed LCIR does
+not change the legacy runtime ABI or make either object ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
