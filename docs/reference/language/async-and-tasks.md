@@ -118,7 +118,8 @@ The dynamic signatures are:
 
 The join consumes the complete task list. `all` and `settled` accept an empty
 list and complete with an empty list. `any` and `race` require a non-empty list;
-an empty dynamic list produces `RuntimeFault` code `EmptyTaskJoin`.
+awaiting either operation with an empty dynamic list faults. The concrete fault
+code is not yet a cross-backend compatibility guarantee.
 
 ## Join policies
 
@@ -126,7 +127,7 @@ an empty dynamic list produces `RuntimeFault` code `EmptyTaskJoin`.
 | --- | --- | --- |
 | `Task.all` | all tasks complete successfully | a failure cancels unfinished siblings |
 | `Task.settled` | every task reaches a terminal state | a child failure does not cancel siblings |
-| `Task.any` | first successful value | success cancels unfinished siblings; all failures produce `TaskAnyFailed` |
+| `Task.any` | first successful value | success cancels unfinished siblings; all failures fault the combined task |
 | `Task.race` | first success, fault, or cancellation | unfinished siblings are cancelled |
 
 A join does not return until cleanup for siblings it cancelled has completed.
