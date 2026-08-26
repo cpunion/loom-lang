@@ -52,6 +52,15 @@ opaque 64-bit handle bits; Unix descriptor and Windows socket ownership types
 remain private to the platform adapter. Notifications carry the suspended
 frame identity and enqueue the corresponding Task for another resume step.
 
+This ABI is not exposed as a Loom source constructor. Direct registration is
+an unsafe runtime boundary: an I/O source's bits must identify a live, valid
+handle of the expected kind for the current platform, its interests must match
+that handle, and the owner must keep it open and unreused until the one-shot
+registration is delivered or cancelled. Values such as Unix standard-stream
+descriptor numbers are never portable handles. Runtime typed file/socket tasks
+and the typed `WaitSet` adapter establish this contract without exposing raw
+integer handles to Loom programs.
+
 The public safe `WaitSet` utility duplicates registered I/O handles, so a
 caller closing or reusing its source cannot invalidate the registration.
 Compiler-generated resource tasks likewise retain or duplicate the native
@@ -103,5 +112,6 @@ streams, actors, persistent coroutines, and remote execution are not
 implemented language features.
 
 Linux x86-64 and macOS arm64 run the native async/standard-library gates in CI.
-Windows currently runs CI only for selected platform-independent compiler
-layers and is not evidence for this runtime.
+A complete Windows native job is configured, including async fixture closure,
+but it is not verified runtime or release evidence until a real Windows runner
+result is recorded.

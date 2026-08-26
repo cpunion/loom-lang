@@ -2547,35 +2547,6 @@ impl<'program> Interpreter<'program> {
                 self.gc_stats.live = self.tasks.len() as u64;
                 Ok(Value::Task { id: task_id })
             }
-            ExprKind::WaitIo { source, writable } => {
-                let source = self.eval_expr(frame, source)?;
-                let Value::Int { value: handle } = source else {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "I/O wait source did not produce Int",
-                        expression.span,
-                    )));
-                };
-                if handle == -1 {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "InvalidWaitHandle",
-                        "wait source must contain a live platform I/O handle",
-                        expression.span,
-                    )));
-                }
-                let interests = if *writable {
-                    loom_runtime::WAIT_WRITABLE
-                } else {
-                    loom_runtime::WAIT_READABLE
-                };
-                let span = expression.span;
-                self.spawn_host_io_task(span, move || {
-                    loom_runtime::wait_source_once(handle, interests)
-                        .map(|_| HostIoValue::Value(Value::Unit))
-                        .map_err(|error| io_failure("IoWaitFault", &error, span))
-                })
-                .map_err(EvalAbort::from)
-            }
             ExprKind::TaskJoin { mode, arguments } => {
                 let values = arguments
                     .iter()
@@ -6133,10 +6104,13 @@ mod socket_readiness_tests {
             TaskPoll::Pending
         ));
 
+        let io_fixture = tempfile::tempdir().expect("create portable I/O fixture");
+        let empty_file = io_fixture.path().join("empty");
+        std::fs::write(&empty_file, []).expect("write portable I/O fixture");
         let span = Span::default();
         let Value::Task { id: file_task } = interpreter
             .spawn_host_io_task(span, move || {
-                std::fs::read("/dev/null")
+                std::fs::read(empty_file)
                     .map(|bytes| {
                         HostIoValue::Value(Value::Int {
                             value: i64::try_from(bytes.len()).expect("fixture length fits Int"),

@@ -461,13 +461,6 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
             Type::Task(Box::new(Type::Unit)),
         ),
         expr(
-            ExprKind::WaitIo {
-                source: Box::new(constant(Constant::Int(1), Type::Int)),
-                writable: false,
-            },
-            Type::Task(Box::new(Type::Unit)),
-        ),
-        expr(
             ExprKind::TaskJoin {
                 mode: loom_mir::TaskJoinMode::All,
                 arguments: vec![

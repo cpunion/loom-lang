@@ -184,61 +184,6 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
 }
 
 #[test]
-fn raw_wait_handle_range_check_follows_the_target_platform() {
-    let source = r"module wait_handle_width
-
-async fn waitOn(handle Int) Unit {
-    Task.waitWritable(handle).await
-    Unit
-}
-
-pub async fn main() Unit {
-    waitOn(4294967296).await
-    Unit
-}
-";
-    let project = tempfile::tempdir().expect("create wait-handle project");
-    std::fs::write(project.path().join("main.loom"), source).expect("write wait-handle source");
-    let snapshot = AnalysisHost::new(project.path())
-        .expect("load wait-handle project")
-        .snapshot()
-        .expect("analyze wait-handle project");
-    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
-    let program = snapshot.executable().expect("lower wait-handle MIR");
-
-    let linux_ir = project.path().join("linux.ll");
-    let mut linux =
-        EmitOptions::run("main").with_target_triple(Some("x86_64-unknown-linux-gnu".to_owned()));
-    linux.emit_ir = Some(linux_ir.clone());
-    emit_native_object(program, &project.path().join("linux.o"), &linux)
-        .expect("emit Linux wait object");
-    let linux_ir = std::fs::read_to_string(linux_ir).expect("read Linux IR");
-    assert!(linux_ir.contains("io.task.handle.negative"), "{linux_ir}");
-    assert!(linux_ir.contains("io.task.handle.too_large"), "{linux_ir}");
-    assert!(!linux_ir.contains("io.task.handle.invalid"), "{linux_ir}");
-
-    let windows_ir = project.path().join("windows.ll");
-    let mut windows =
-        EmitOptions::run("main").with_target_triple(Some("x86_64-pc-windows-msvc".to_owned()));
-    windows.emit_ir = Some(windows_ir.clone());
-    emit_native_object(program, &project.path().join("windows.obj"), &windows)
-        .expect("emit Windows wait object");
-    let windows_ir = std::fs::read_to_string(windows_ir).expect("read Windows IR");
-    assert!(
-        !windows_ir.contains("io.task.handle.negative"),
-        "{windows_ir}"
-    );
-    assert!(
-        !windows_ir.contains("io.task.handle.too_large"),
-        "{windows_ir}"
-    );
-    assert!(
-        windows_ir.contains("io.task.handle.invalid"),
-        "{windows_ir}"
-    );
-}
-
-#[test]
 fn universal_value_abi_rejects_32_bit_targets() {
     let error = target_identity(
         Some("i686-unknown-linux-gnu"),

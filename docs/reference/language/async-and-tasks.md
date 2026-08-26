@@ -158,25 +158,22 @@ fault.message() Text
 first terminal state. Capturing a fault as `TaskFault` reports it as data from
 the join; it does not add a source operation to resume or rethrow that task.
 
-## Timers and readiness
+## Timers and I/O tasks
 
 The built-in task constructors are:
 
 ```text
 Task.sleep(milliseconds Int) Task[Unit]
 Task.sleep(duration Duration) Task[Unit]
-Task.waitReadable(handle Int) Task[Unit]
-Task.waitWritable(handle Int) Task[Unit]
 ```
 
 Sleep duration must be non-negative. The standard function
 `standard.time.milliseconds` constructs a non-negative `Duration`, whose
-`.as_milliseconds()` method returns `Int`. Invalid durations or I/O handles
-produce a RuntimeFault.
+`.as_milliseconds()` method returns `Int`. Invalid durations produce a
+RuntimeFault.
 
-File and socket operations expose typed tasks rather than requiring raw
-readiness waits. Raw handles are supplied only by host integration and must not
-be hard-coded as Unix descriptor numbers in portable source. See
+File and socket operations expose typed tasks. There is no Loom source
+constructor that converts an `Int` into a raw readiness wait. See
 [I/O and logging](../standard-library/io-and-logging.md).
 
 ## Result propagation and cleanup

@@ -1568,7 +1568,6 @@ impl ContractLowerer<'_, '_> {
             | loom_hir::Expr::RecordLiteral { .. }
             | loom_hir::Expr::Await(_)
             | loom_hir::Expr::Sleep(_)
-            | loom_hir::Expr::WaitIo { .. }
             | loom_hir::Expr::TaskJoin { .. }
             | loom_hir::Expr::Propagate(_)
             | loom_hir::Expr::Return(_) => {
@@ -2259,10 +2258,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             ExprKind::Sleep { milliseconds } => ExprKind::Sleep {
                 milliseconds: Box::new(self.extract_nested_awaits(*milliseconds, output, false)?),
             },
-            ExprKind::WaitIo { source, writable } => ExprKind::WaitIo {
-                source: Box::new(self.extract_nested_awaits(*source, output, false)?),
-                writable,
-            },
             ExprKind::TaskJoin { mode, arguments } => ExprKind::TaskJoin {
                 mode,
                 arguments: arguments
@@ -2555,18 +2550,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 };
                 ExprKind::Sleep {
                     milliseconds: Box::new(self.lower_expr(*milliseconds)?),
-                }
-            }
-            loom_hir::Expr::WaitIo {
-                writable,
-                arguments,
-            } => {
-                let [source] = arguments.as_slice() else {
-                    return Err(defect("checked Task I/O wait has invalid arity", span));
-                };
-                ExprKind::WaitIo {
-                    source: Box::new(self.lower_expr(*source)?),
-                    writable,
                 }
             }
             loom_hir::Expr::TaskJoin { mode, arguments } => ExprKind::TaskJoin {

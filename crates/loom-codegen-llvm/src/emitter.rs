@@ -49,10 +49,9 @@ use crate::abi::{
     VALUE_NODE_FIELD_VALUE, VALUE_TAG_BOOL, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN,
     VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD,
     VALUE_TAG_REFINED, VALUE_TAG_TASK, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE,
-    VALUE_TAG_UNIT, WAIT_ABI_VERSION, WAIT_INTEREST_READABLE, WAIT_INTEREST_WRITABLE,
-    WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE, WAIT_SOURCE_FIELD_HANDLE,
-    WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND, WAIT_SOURCE_FIELD_RESERVED,
-    WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_IO, WAIT_SOURCE_KIND_TIMER,
+    VALUE_TAG_UNIT, WAIT_ABI_VERSION, WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE,
+    WAIT_SOURCE_FIELD_HANDLE, WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND,
+    WAIT_SOURCE_FIELD_RESERVED, WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_TIMER,
     WITNESS_DESCRIPTOR_FIELD_METHODS, WITNESS_INSTANCE_FIELD_DESCRIPTOR,
     WITNESS_INSTANCE_FIELD_PREREQUISITES,
 };
@@ -88,7 +87,6 @@ fn native_fault_message(code: &str) -> &str {
         "InvalidSleepDuration" => "sleep duration must not be negative",
         "SleepDurationOverflow" => "sleep duration overflowed",
         "InvalidPort" => "socket port must fit UInt16",
-        "InvalidWaitHandle" => "platform I/O wait handle is invalid",
         "TaskAllocationFault" => "task allocation failed",
         "TaskJoinFault" => "task join failed",
         "ResourceCloseFault" => "resource close failed",
@@ -139,9 +137,6 @@ fn expression_contains_await(expression: &Expr) -> bool {
         | ExprKind::MakeView { value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        }
-        | ExprKind::WaitIo {
-            source: value, ..
         } => expression_contains_await(value),
         ExprKind::Binary(_, left, right) => {
             expression_contains_await(left) || expression_contains_await(right)
@@ -425,7 +420,6 @@ struct Backend<'ctx, 'program> {
     witness_descriptors: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     witness_instances: BTreeMap<WitnessId, GlobalValue<'ctx>>,
     names: Cell<u64>,
-    io_wait_handles_are_i32: bool,
 }
 
 struct DebugState<'ctx> {
@@ -751,7 +745,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             witness_descriptors: BTreeMap::new(),
             witness_instances: BTreeMap::new(),
             names: Cell::new(0),
-            io_wait_handles_are_i32: !crate::target_uses_windows_artifacts(Some(target_triple)),
         }
     }
 
@@ -6852,9 +6845,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             ExprKind::Sleep { milliseconds } => self.emit_wait_task(milliseconds, destination),
-            ExprKind::WaitIo { source, writable } => {
-                self.emit_io_wait_task(source, *writable, destination)
-            }
             ExprKind::TaskJoin { mode, arguments } => {
                 self.emit_task_join(*mode, arguments, &expression.ty, destination)
             }
@@ -7011,87 +7001,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .backend
             .builder
             .build_is_null(task, "sleep.task.missing")
-            .map_err(builder_error)?;
-        self.fail_if(missing, "TaskAllocationFault")?;
-        self.initialize(destination, VALUE_TAG_TASK)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_AUX,
-            self.backend.tag(TASK_VALUE_DIRECT),
-        )?;
-        self.backend.store_pointer_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_DATA,
-            task,
-        )?;
-        Ok(true)
-    }
-
-    fn emit_io_wait_task(
-        &self,
-        source: &Expr,
-        writable: bool,
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let source_value = self.alloc_value("io.task.handle");
-        if !self.emit_expr(source, source_value)? {
-            return Ok(false);
-        }
-        let handle = self.int_scalar(source_value)?;
-        if self.backend.io_wait_handles_are_i32 {
-            let negative = self
-                .backend
-                .builder
-                .build_int_compare(
-                    IntPredicate::SLT,
-                    handle,
-                    self.backend.i64_type.const_zero(),
-                    "io.task.handle.negative",
-                )
-                .map_err(builder_error)?;
-            self.fail_if(negative, "InvalidWaitHandle")?;
-            let too_large = self
-                .backend
-                .builder
-                .build_int_compare(
-                    IntPredicate::SGT,
-                    handle,
-                    self.backend.i64_type.const_int(i32::MAX as u64, false),
-                    "io.task.handle.too_large",
-                )
-                .map_err(builder_error)?;
-            self.fail_if(too_large, "InvalidWaitHandle")?;
-        } else {
-            let all_ones = self
-                .backend
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    handle,
-                    self.backend.signed_i64(-1),
-                    "io.task.handle.invalid",
-                )
-                .map_err(builder_error)?;
-            self.fail_if(all_ones, "InvalidWaitHandle")?;
-        }
-        let interests = if writable {
-            WAIT_INTEREST_WRITABLE
-        } else {
-            WAIT_INTEREST_READABLE
-        };
-        let source = self.alloc_io_wait_source(handle, interests)?;
-        let task = call_pointer(
-            &self.backend.builder,
-            self.backend.native_task_from_wait_source(),
-            &[self.runtime_context.into(), source.into()],
-            "io.task",
-        )?;
-        let missing = self
-            .backend
-            .builder
-            .build_is_null(task, "io.task.missing")
             .map_err(builder_error)?;
         self.fail_if(missing, "TaskAllocationFault")?;
         self.initialize(destination, VALUE_TAG_TASK)?;
@@ -7673,61 +7582,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             WAIT_SOURCE_FIELD_DEADLINE,
             deadline,
-        )?;
-        Ok(source)
-    }
-
-    fn alloc_io_wait_source(
-        &self,
-        handle: IntValue<'ctx>,
-        interests: u64,
-    ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let source = self.alloc_temporary(self.backend.wait_source_type, "wait.source.io")?;
-        self.backend
-            .builder
-            .build_store(source, self.backend.wait_source_type.const_zero())
-            .map_err(builder_error)?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_ABI_VERSION,
-            self.backend
-                .context
-                .i32_type()
-                .const_int(WAIT_ABI_VERSION, false),
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_KIND,
-            self.backend
-                .context
-                .i32_type()
-                .const_int(WAIT_SOURCE_KIND_IO, false),
-        )?;
-        self.backend.store_i64_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_HANDLE,
-            handle,
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_INTERESTS,
-            self.backend.context.i32_type().const_int(interests, false),
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_RESERVED,
-            self.backend.context.i32_type().const_zero(),
-        )?;
-        self.backend.store_i64_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_DEADLINE,
-            self.backend.i64_type.const_zero(),
         )?;
         Ok(source)
     }

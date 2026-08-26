@@ -812,11 +812,6 @@ fn scan_expr<'mir>(
                 return false;
             }
         }
-        ExprKind::WaitIo { source, .. } => {
-            if !scan_expr(source, edges, flow, active_cleanups) {
-                return false;
-            }
-        }
         ExprKind::Constant(_) | ExprKind::Copy(_) | ExprKind::ReborrowView { .. } => {}
         ExprKind::Move(place) => {
             flow.remove(place.local);

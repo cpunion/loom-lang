@@ -426,11 +426,6 @@ pub enum Expr {
     Await(ExprId),
     /// Compiler-known timer task constructor: `Task.sleep(milliseconds)`.
     Sleep(Vec<ExprId>),
-    /// Compiler-known one-shot platform I/O readiness task.
-    WaitIo {
-        writable: bool,
-        arguments: Vec<ExprId>,
-    },
     /// Compiler-known Task join constructor. Unlike tuple/list literals, this
     /// value carries scheduler mode semantics and must be consumed by await.
     TaskJoin {

@@ -41,7 +41,7 @@ pub use reactor::{
     LoomReadyNotification, LoomRegistration, LoomWaitSource, WaitEvent, WaitSet, WaitToken,
     WaitableSource, executor_cancel, executor_create_for_runtime_v1, executor_destroy,
     executor_last_os_error, executor_notify_completion, executor_pop_ready, executor_register,
-    executor_wait, wait_now_ns, wait_source_once,
+    executor_wait, wait_now_ns,
 };
 pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1};
 pub use scheduler::{

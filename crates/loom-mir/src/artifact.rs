@@ -416,8 +416,7 @@ fn visit_expr(expression: &mut Expr, visitor: &mut impl FnMut(&mut Constant)) {
         | ExprKind::Await { task: value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        }
-        | ExprKind::WaitIo { source: value, .. } => {
+        } => {
             visit_expr(value, visitor);
         }
         ExprKind::Tuple(elements) | ExprKind::List(elements) => {

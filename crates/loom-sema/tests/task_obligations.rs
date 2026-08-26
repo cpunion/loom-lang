@@ -609,3 +609,23 @@ fn invalid(file File) Unit {
     );
     assert_eq!(codes(&diagnostics), ["MustScopeRequiresScoped"]);
 }
+
+#[test]
+fn raw_handle_wait_constructors_are_not_language_builtins() {
+    let diagnostics = analyze_source(
+        r"
+module raw_waits
+
+async fn invalid() Unit {
+    Task.waitReadable(1).await
+    Task.waitWritable(1).await
+    Unit
+}
+",
+    );
+    assert_eq!(
+        codes(&diagnostics),
+        ["UnknownName", "UnknownName", "UnknownName", "UnknownName"],
+        "{diagnostics:#?}"
+    );
+}

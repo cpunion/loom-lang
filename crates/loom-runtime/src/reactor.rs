@@ -20,6 +20,11 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Unsafe runtime descriptor for one timer, completion, or platform I/O wait.
+///
+/// This is not a Loom-language value. For `WAIT_SOURCE_IO`, `handle` must be a
+/// live, valid source of the platform-specific kind and must remain open and
+/// unreused until the registration is delivered or cancelled.
 pub struct LoomWaitSource {
     pub abi_version: u32,
     pub kind: u32,
@@ -549,6 +554,14 @@ pub unsafe extern "C" fn executor_destroy(executor: *mut LoomExecutor) {
 }
 
 #[unsafe(export_name = "loom_executor_register")]
+/// Registers one runtime wait source.
+///
+/// # Safety
+///
+/// All pointers must be valid for this call and belong to `executor`. For an
+/// I/O source, its opaque handle bits must identify a live platform source with
+/// matching interests, and its owner must keep the handle open and unreused
+/// until the returned registration is delivered or cancelled.
 pub unsafe extern "C" fn executor_register(
     executor: *mut LoomExecutor,
     source: *const LoomWaitSource,
@@ -779,52 +792,6 @@ pub(crate) fn has_registrations(executor: &LoomExecutor) -> bool {
         .reactor
         .as_ref()
         .is_some_and(|reactor| !reactor.entries.is_empty())
-}
-
-/// Blocks for one readiness event on a borrowed process I/O handle.
-///
-/// This is the interpreter-side oracle for the same `polling` reactor used by
-/// native executors. The handle is never closed or otherwise owned here.
-///
-/// # Errors
-///
-/// Returns an invalid-input error for malformed handles/interests and
-/// forwards errors from the operating-system poller.
-pub fn wait_source_once(handle: i64, interests: u32) -> io::Result<u32> {
-    if interests == 0 || interests & !(WAIT_READABLE | WAIT_WRITABLE) != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid Loom I/O wait source",
-        ));
-    }
-    let source = raw_poll_source(handle).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Loom wait handle does not fit the platform source type",
-        )
-    })?;
-    let poller = Poller::new()?;
-    let mut event = Event::none(0);
-    event.readable = interests & WAIT_READABLE != 0;
-    event.writable = interests & WAIT_WRITABLE != 0;
-    // SAFETY: RawPollSource does not own or close the handle and remains live
-    // until the one-shot registration is deleted below.
-    unsafe { poller.add(&source, event)? };
-    let mut events = Events::new();
-    let result = poller.wait(&mut events, None);
-    let deleted = poller.delete(source);
-    result?;
-    deleted?;
-    let mut ready = 0;
-    for event in events.iter() {
-        if event.readable {
-            ready |= READY_READABLE;
-        }
-        if event.writable {
-            ready |= READY_WRITABLE;
-        }
-    }
-    Ok(ready)
 }
 
 #[cfg(test)]
