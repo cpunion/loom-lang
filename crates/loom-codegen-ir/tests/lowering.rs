@@ -48,8 +48,9 @@ fn lower_run(source: &str) -> LoweringOutcome {
 }
 
 fn complete_dump(source: &str) -> String {
-    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
-        panic!("source should be completely supported")
+    let outcome = lower_run(source);
+    let LoweringOutcome::Complete(artifact) = &outcome else {
+        panic!("source should be completely supported: {outcome:?}")
     };
     dump_program(artifact.program())
 }
@@ -528,7 +529,7 @@ fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
 }
 
 #[test]
-fn sema_valid_fallible_test_root_is_unsupported_not_invalid() {
+fn sema_valid_result_test_root_is_supported_with_an_explicit_outcome() {
     let mir = compile(
         r"module fallible_tests
 
@@ -543,14 +544,18 @@ test fn fallible() Result[Unit, Problem] { Ok(Unit) }
         TargetLayout::new(64).expect("test target"),
     )
     .expect("a sema-valid test signature must reach coverage classification");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("Result-returning test is outside the typed slice")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("closed Result-returning test should use typed LCIR")
     };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::SignatureType)
+    assert_eq!(
+        artifact.test_outcomes(),
+        Some(
+            [loom_codegen_ir::TestOutcomePlan::Result {
+                success_variant: 0,
+                failure_variant: 1,
+            }]
+            .as_slice()
+        )
     );
 }
 
@@ -2095,6 +2100,130 @@ pub fn main() Unit {
     assert!(dump.matches("product.construct").count() >= 4, "{dump}");
     assert!(dump.matches("product.extract").count() >= 6, "{dump}");
     assert!(dump.contains("checked_int.add"), "{dump}");
+}
+
+#[test]
+fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
+    let dump = complete_dump(
+        r"module closed_sums
+
+enum Inner {
+    Off
+    On(Int)
+}
+
+enum Choice {
+    Empty
+    Value(Int)
+    Nested(Inner)
+    Pair(Int, Bool)
+}
+
+fn choose(input Choice) Int {
+    match input {
+        Value(0) => 10
+        Value(value) => value
+        Nested(On(value)) => value + 1
+        Nested(Off) => 20
+        Pair(value, true) => value
+        Pair(value, false) => 30
+        Empty => 40
+    }
+}
+
+pub fn main() Unit {
+    discard choose(Choice.Value(0))
+    discard choose(Choice.Nested(Inner.On(4)))
+    discard choose(Choice.Pair(5, true))
+    discard choose(Choice.Empty)
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("sum s0 tag=i8"), "{dump}");
+    assert!(dump.contains("sum s1 tag=i8"), "{dump}");
+    assert!(dump.matches("sum.construct").count() >= 5, "{dump}");
+    assert!(dump.matches("sum.switch").count() >= 2, "{dump}");
+    assert!(dump.contains("payload0"), "{dump}");
+    assert!(dump.contains("int.compare.equal"), "{dump}");
+    assert!(dump.contains("bool.compare.equal"), "{dump}");
+}
+
+#[test]
+fn result_unit_tests_carry_explicit_outcome_plans_through_lowering() {
+    let mir = compile(
+        r"module result_tests
+
+enum Problem { Failed }
+
+test fn passes() Result[Unit, Problem] { Ok(Unit) }
+
+test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
+",
+    );
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Tests,
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower Result tests") else {
+        panic!("closed Result tests should use one LCIR artifact")
+    };
+    assert_eq!(artifact.test_roots().expect("roots").len(), 2);
+    assert_eq!(
+        artifact.test_outcomes(),
+        Some(
+            [
+                loom_codegen_ir::TestOutcomePlan::Result {
+                    success_variant: 0,
+                    failure_variant: 1,
+                },
+                loom_codegen_ir::TestOutcomePlan::Result {
+                    success_variant: 0,
+                    failure_variant: 1,
+                },
+            ]
+            .as_slice()
+        )
+    );
+}
+
+#[test]
+fn managed_and_recursive_sums_select_whole_artifact_fallback() {
+    for source in [
+        r#"module managed_sum
+
+enum Message { Textual(Text) }
+
+pub fn main() Unit {
+    discard Message.Textual("managed")
+    Unit
+}
+"#,
+        r"module recursive_sum
+
+enum Chain {
+    End
+    Next(Chain)
+}
+
+pub fn main() Unit {
+    discard Chain.End
+    Unit
+}
+",
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("unsupported sum graph must select atomic fallback")
+        };
+        assert!(report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::NominalValue
+                | UnsupportedFeature::TextConstant
+        )));
+    }
 }
 
 #[test]

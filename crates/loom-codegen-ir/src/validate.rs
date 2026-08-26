@@ -6,8 +6,8 @@ use loom_mir::Type;
 
 use crate::{
     BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
-    ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, Terminator, TerminatorKind,
-    UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId, SumTagRepr,
+    Terminator, TerminatorKind, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -396,23 +396,43 @@ impl<'a> Validator<'a> {
             );
         }
 
-        let mut product_repr_uses = vec![0_usize; representations.products().len()];
+        let product_count = representations.products().len();
+        let sum_count = representations.sums().len();
+        let mut product_repr_uses = vec![0_usize; product_count];
+        let mut sum_repr_uses = vec![0_usize; sum_count];
         for (index, repr) in representations.reprs().iter().copied().enumerate() {
-            if let Repr::Product(product) = repr {
-                if let Some(uses) = product_repr_uses.get_mut(product.index())
-                    && representations.product(product).is_some()
-                {
-                    *uses = uses.saturating_add(1);
-                } else {
-                    self.error(
-                        ValidationCode::RepresentationPlan,
-                        format!("representations.repr[{index}]"),
-                        format!("product representation references missing product {product}"),
-                    );
+            match repr {
+                Repr::Product(product) => {
+                    if let Some(uses) = product_repr_uses.get_mut(product.index())
+                        && representations.product(product).is_some()
+                    {
+                        *uses = uses.saturating_add(1);
+                    } else {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.repr[{index}]"),
+                            format!("product representation references missing product {product}"),
+                        );
+                    }
                 }
+                Repr::Sum(sum) => {
+                    if let Some(uses) = sum_repr_uses.get_mut(sum.index())
+                        && representations.sum(sum).is_some()
+                    {
+                        *uses = uses.saturating_add(1);
+                    } else {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.repr[{index}]"),
+                            format!("sum representation references missing sum {sum}"),
+                        );
+                    }
+                }
+                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
             }
         }
-        let mut product_value_uses = vec![0_usize; representations.products().len()];
+        let mut product_value_uses = vec![0_usize; product_count];
+        let mut sum_value_uses = vec![0_usize; sum_count];
         for (index, value_type) in representations.value_types().iter().enumerate() {
             match value_type.kind() {
                 ValueTypeKind::Direct => {}
@@ -485,53 +505,98 @@ impl<'a> Validator<'a> {
                     "every representation alternative for a semantic type must inherit its canonical construction protection and transparent base relation",
                 );
             }
-            if let Some(Repr::Product(product)) = representations.repr(value_type.repr()).copied() {
-                match value_type.semantic() {
-                    Type::Nominal(_, arguments) if arguments.is_empty() => {}
-                    Type::Tuple(elements) => {
-                        if let Some(fields) = representations
-                            .product(product)
-                            .map(crate::ProductRepr::fields)
-                        {
-                            if fields.len() != elements.len() {
-                                self.error(
-                                    ValidationCode::RepresentationPlan,
-                                    format!("representations.type[{index}]"),
-                                    "tuple semantic arity does not match its product representation",
-                                );
-                            }
-                            for (field_index, (field, element)) in
-                                fields.iter().zip(elements).enumerate()
+            match representations.repr(value_type.repr()).copied() {
+                Some(Repr::Product(product)) => {
+                    match value_type.semantic() {
+                        Type::Nominal(_, arguments) if arguments.is_empty() => {}
+                        Type::Tuple(elements) => {
+                            if let Some(fields) = representations
+                                .product(product)
+                                .map(crate::ProductRepr::fields)
                             {
-                                if representations
-                                    .value_type(*field)
-                                    .is_none_or(|field_type| field_type.semantic() != element)
-                                {
+                                if fields.len() != elements.len() {
                                     self.error(
                                         ValidationCode::RepresentationPlan,
-                                        format!(
-                                            "representations.type[{index}].field[{field_index}]"
-                                        ),
-                                        "tuple semantic element does not match its product field type",
+                                        format!("representations.type[{index}]"),
+                                        "tuple semantic arity does not match its product representation",
                                     );
+                                }
+                                for (field_index, (field, element)) in
+                                    fields.iter().zip(elements).enumerate()
+                                {
+                                    if representations
+                                        .value_type(*field)
+                                        .is_none_or(|field_type| field_type.semantic() != element)
+                                    {
+                                        self.error(
+                                            ValidationCode::RepresentationPlan,
+                                            format!(
+                                                "representations.type[{index}].field[{field_index}]"
+                                            ),
+                                            "tuple semantic element does not match its product field type",
+                                        );
+                                    }
                                 }
                             }
                         }
+                        _ => {
+                            self.error(
+                                ValidationCode::RepresentationPlan,
+                                format!("representations.type[{index}]"),
+                                "direct product value types require a structural tuple or monomorphic nominal semantic type",
+                            );
+                        }
                     }
-                    _ => {
+                    if let Some(uses) = product_value_uses.get_mut(product.index()) {
+                        *uses = uses.saturating_add(1);
+                    }
+                }
+                Some(Repr::Sum(sum)) => {
+                    if !matches!(value_type.semantic(), Type::Nominal(_, _)) {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}]"),
-                            "direct product value types require a structural tuple or monomorphic nominal semantic type",
+                            "direct sum value types require a concrete nominal semantic type",
                         );
                     }
+                    if let Some(uses) = sum_value_uses.get_mut(sum.index()) {
+                        *uses = uses.saturating_add(1);
+                    }
                 }
-                if let Some(uses) = product_value_uses.get_mut(product.index()) {
-                    *uses = uses.saturating_add(1);
-                }
+                Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {}
             }
         }
-        let mut product_edges = vec![Vec::new(); representations.products().len()];
+
+        let aggregate_count = product_count.saturating_add(sum_count);
+        let mut aggregate_edges = vec![Vec::new(); aggregate_count];
+        let mut aggregate_costs = vec![0_usize; aggregate_count];
+        let aggregate_index = |field: ValueTypeId| {
+            representations
+                .value_type(field)
+                .and_then(|value_type| representations.repr(value_type.repr()))
+                .and_then(|repr| match repr {
+                    Repr::Product(product) if representations.product(*product).is_some() => {
+                        Some(product.index())
+                    }
+                    Repr::Sum(sum) if representations.sum(*sum).is_some() => {
+                        product_count.checked_add(sum.index())
+                    }
+                    Repr::Uninhabited
+                    | Repr::Zst
+                    | Repr::Scalar(_)
+                    | Repr::Product(_)
+                    | Repr::Sum(_) => None,
+                })
+        };
+        let supported_field = |field: ValueTypeId| {
+            representations.value_type(field).is_some_and(|value_type| {
+                value_type.semantic() != &Type::Never
+                    && matches!(
+                        representations.repr(value_type.repr()),
+                        Some(Repr::Zst | Repr::Scalar(_) | Repr::Product(_) | Repr::Sum(_))
+                    )
+            })
+        };
         for (index, product) in representations.products().iter().enumerate() {
             let product_id = ProductReprId::from_index(self.program.brand, index);
             if product_id.is_none() || product_repr_uses.get(index) != Some(&1) {
@@ -548,32 +613,79 @@ impl<'a> Validator<'a> {
                     "each product definition must be used by at least one value type",
                 );
             }
+            aggregate_costs[index] = 1_usize.saturating_add(product.fields().len());
             for (field_index, field) in product.fields().iter().copied().enumerate() {
-                let supported = representations.value_type(field).is_some_and(|value_type| {
-                    value_type.semantic() != &Type::Never
-                        && matches!(
-                            representations.repr(value_type.repr()),
-                            Some(Repr::Zst | Repr::Scalar(_) | Repr::Product(_))
-                        )
-                });
-                if !supported {
+                if !supported_field(field) {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
                         "POD product fields must reference inhabited direct value types",
                     );
                 }
-                if let Some(value_type) = representations.value_type(field)
-                    && let Some(Repr::Product(nested)) =
-                        representations.repr(value_type.repr()).copied()
-                    && representations.product(nested).is_some()
-                {
-                    product_edges[index].push(nested.index());
+                if let Some(nested) = aggregate_index(field) {
+                    aggregate_edges[index].push(nested);
                 }
             }
         }
-        let mut incoming = vec![0_usize; product_edges.len()];
-        for edges in &product_edges {
+        for (index, sum) in representations.sums().iter().enumerate() {
+            let aggregate = product_count.saturating_add(index);
+            let sum_id = SumReprId::from_index(self.program.brand, index);
+            if sum_id.is_none() || sum_repr_uses.get(index) != Some(&1) {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.sum[{index}].repr"),
+                    "each sum definition must have exactly one representation-table entry",
+                );
+            }
+            if sum_value_uses.get(index).copied().unwrap_or_default() == 0 {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.sum[{index}].type"),
+                    "each sum definition must be used by at least one value type",
+                );
+            }
+            if sum.variants().is_empty() {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.sum[{index}].variants"),
+                    "direct sums must have at least one closed variant",
+                );
+            }
+            if SumTagRepr::for_variant_count(sum.variants().len()) != Some(sum.tag()) {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.sum[{index}].tag"),
+                    "sum tag representation is not canonical for its variant count",
+                );
+            }
+            let payload_fields = sum
+                .variants()
+                .iter()
+                .map(|variant| variant.fields().len())
+                .sum::<usize>();
+            aggregate_costs[aggregate] = 1_usize
+                .saturating_add(sum.variants().len())
+                .saturating_add(payload_fields);
+            for (variant_index, variant) in sum.variants().iter().enumerate() {
+                for (field_index, field) in variant.fields().iter().copied().enumerate() {
+                    if !supported_field(field) {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!(
+                                "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
+                            ),
+                            "sum payloads must reference inhabited direct value types",
+                        );
+                    }
+                    if let Some(nested) = aggregate_index(field) {
+                        aggregate_edges[aggregate].push(nested);
+                    }
+                }
+            }
+        }
+
+        let mut incoming = vec![0_usize; aggregate_edges.len()];
+        for edges in &aggregate_edges {
             for target in edges {
                 if let Some(count) = incoming.get_mut(*target) {
                     *count = count.saturating_add(1);
@@ -586,9 +698,9 @@ impl<'a> Validator<'a> {
             .filter_map(|(index, count)| (*count == 0).then_some(index))
             .collect::<VecDeque<_>>();
         let mut visited = 0_usize;
-        while let Some(product) = pending.pop_front() {
+        while let Some(aggregate) = pending.pop_front() {
             visited = visited.saturating_add(1);
-            for target in &product_edges[product] {
+            for target in &aggregate_edges[aggregate] {
                 let Some(count) = incoming.get_mut(*target) else {
                     continue;
                 };
@@ -598,20 +710,18 @@ impl<'a> Validator<'a> {
                 }
             }
         }
-        if visited == product_edges.len() {
-            for root in 0..product_edges.len() {
+        if visited == aggregate_edges.len() {
+            for root in 0..aggregate_edges.len() {
                 let mut pending = vec![(root, 1_usize)];
                 let mut structural_nodes = 0_usize;
                 let mut exceeded = false;
-                while let Some((product, depth)) = pending.pop() {
+                while let Some((aggregate, depth)) = pending.pop() {
                     if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH {
                         exceeded = true;
                         break;
                     }
-                    let field_count = representations.products()[product].fields().len();
-                    let Some(next_structural_nodes) = structural_nodes
-                        .checked_add(1)
-                        .and_then(|nodes| nodes.checked_add(field_count))
+                    let Some(next_structural_nodes) =
+                        structural_nodes.checked_add(aggregate_costs[aggregate])
                     else {
                         exceeded = true;
                         break;
@@ -622,7 +732,7 @@ impl<'a> Validator<'a> {
                     }
                     structural_nodes = next_structural_nodes;
                     pending.extend(
-                        product_edges[product]
+                        aggregate_edges[aggregate]
                             .iter()
                             .copied()
                             .map(|child| (child, depth.saturating_add(1))),
@@ -631,9 +741,9 @@ impl<'a> Validator<'a> {
                 if exceeded {
                     self.error(
                         ValidationCode::RepresentationPlan,
-                        format!("representations.product[{root}].structure"),
+                        format!("representations.aggregate[{root}].structure"),
                         format!(
-                            "direct product closure exceeds the {}-node or {}-level structural budget",
+                            "direct aggregate closure exceeds the {}-node or {}-level structural budget",
                             crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES,
                             crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
                         ),
@@ -644,8 +754,8 @@ impl<'a> Validator<'a> {
         } else {
             self.error(
                 ValidationCode::RepresentationPlan,
-                "representations.products",
-                "product representation fields form a cycle",
+                "representations.aggregates",
+                "product and sum representation fields form a cycle",
             );
         }
         // Validate the semantic direct-value closure as well as the physical
@@ -663,24 +773,26 @@ impl<'a> Validator<'a> {
                 let Some(value_type) = representations.value_type(value) else {
                     continue;
                 };
-                let (transparent_base, product_fields) = match value_type.kind() {
+                let (transparent_base, aggregate_repr) = match value_type.kind() {
                     ValueTypeKind::Transparent { base } => (Some(base), None),
                     ValueTypeKind::Direct | ValueTypeKind::InvariantProduct => {
-                        match representations.repr(value_type.repr()).copied() {
-                            Some(Repr::Product(product)) => (
-                                None,
-                                representations
-                                    .product(product)
-                                    .map(crate::ProductRepr::fields),
-                            ),
-                            Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
-                                (None, None)
-                            }
-                        }
+                        (None, representations.repr(value_type.repr()).copied())
                     }
                 };
-                let dependency_count = usize::from(transparent_base.is_some())
-                    .saturating_add(product_fields.map_or(0, <[_]>::len));
+                let aggregate_fields = match aggregate_repr {
+                    Some(Repr::Product(product)) => representations
+                        .product(product)
+                        .map_or(0, |product| product.fields().len()),
+                    Some(Repr::Sum(sum)) => representations.sum(sum).map_or(0, |sum| {
+                        sum.variants()
+                            .iter()
+                            .map(|variant| variant.fields().len())
+                            .sum()
+                    }),
+                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => 0,
+                };
+                let dependency_count =
+                    usize::from(transparent_base.is_some()).saturating_add(aggregate_fields);
                 if dependency_count == 0 {
                     continue;
                 }
@@ -707,7 +819,7 @@ impl<'a> Validator<'a> {
                         ValueTypeKind::Transparent { .. } | ValueTypeKind::InvariantProduct
                     ) || matches!(
                         representations.repr(dependency_type.repr()),
-                        Some(Repr::Product(_))
+                        Some(Repr::Product(_) | Repr::Sum(_))
                     );
                     nested.then_some((dependency, depth.saturating_add(1)))
                 };
@@ -716,8 +828,27 @@ impl<'a> Validator<'a> {
                 {
                     pending.push(dependency);
                 }
-                if let Some(fields) = product_fields {
-                    pending.extend(fields.iter().copied().filter_map(&mut queue_dependency));
+                match aggregate_repr {
+                    Some(Repr::Product(product)) => {
+                        if let Some(fields) = representations
+                            .product(product)
+                            .map(crate::ProductRepr::fields)
+                        {
+                            pending
+                                .extend(fields.iter().copied().filter_map(&mut queue_dependency));
+                        }
+                    }
+                    Some(Repr::Sum(sum)) => {
+                        if let Some(sum) = representations.sum(sum) {
+                            pending.extend(
+                                sum.variants()
+                                    .iter()
+                                    .flat_map(|variant| variant.fields().iter().copied())
+                                    .filter_map(&mut queue_dependency),
+                            );
+                        }
+                    }
+                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {}
                 }
             }
             if exceeded {
@@ -1395,6 +1526,61 @@ impl<'a> Validator<'a> {
                 }
                 self.require_results(function, instruction, &[expected_result], &path);
             }
+            InstructionKind::SumConstruct { variant, payload } => {
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let variants = result_type.and_then(|ty| self.sum_variants(ty));
+                let expected = variants.as_deref().and_then(|variants| {
+                    usize::try_from(*variant)
+                        .ok()
+                        .and_then(|index| variants.get(index))
+                });
+                if result_type.is_some() && variants.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "sum construction result must use a sum representation",
+                    );
+                    return;
+                }
+                let Some(expected) = expected else {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.variant"),
+                        format!("sum variant index {variant} is out of range"),
+                    );
+                    return;
+                };
+                if payload.len() != expected.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.payload"),
+                        format!(
+                            "sum construction has {} payload value(s), variant requires {}",
+                            payload.len(),
+                            expected.len()
+                        ),
+                    );
+                }
+                for (index, (value, expected)) in payload
+                    .iter()
+                    .copied()
+                    .zip(expected.iter().copied())
+                    .enumerate()
+                {
+                    self.require_value_type(
+                        function,
+                        value,
+                        expected,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.payload[{index}]"),
+                    );
+                }
+            }
             InstructionKind::BoolNot { value } => {
                 self.require_known_value_type(
                     function,
@@ -1663,6 +1849,49 @@ impl<'a> Validator<'a> {
                 self.validate_target(function, then_target, format!("{path}.then"));
                 self.validate_target(function, else_target, format!("{path}.else"));
             }
+            TerminatorKind::SumSwitch { scrutinee, cases } => {
+                let scrutinee_type = function.value(*scrutinee).map(|value| value.ty);
+                let variants = scrutinee_type.and_then(|ty| self.sum_variants(ty));
+                if scrutinee_type.is_some() && variants.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.scrutinee"),
+                        "sum switch scrutinee must use a sum representation",
+                    );
+                }
+                let Some(variants) = variants else {
+                    return;
+                };
+                if cases.len() != variants.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.cases"),
+                        format!(
+                            "sum switch has {} case(s), representation requires {}",
+                            cases.len(),
+                            variants.len()
+                        ),
+                    );
+                }
+                for (index, (case, payload)) in cases.iter().zip(&variants).enumerate() {
+                    if usize::try_from(case.variant).ok() != Some(index) {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.case[{index}].variant"),
+                            format!(
+                                "sum switch cases must be ordered 0..n, found variant {}",
+                                case.variant
+                            ),
+                        );
+                    }
+                    self.validate_sum_case(
+                        function,
+                        case,
+                        payload,
+                        &format!("{path}.case[{index}]"),
+                    );
+                }
+            }
             TerminatorKind::Return(value) => {
                 self.require_value_type(
                     function,
@@ -1852,6 +2081,41 @@ impl<'a> Validator<'a> {
                     format!("{path}.implicit[{index}]"),
                 );
             }
+        }
+    }
+
+    fn validate_sum_case(
+        &mut self,
+        function: &Function,
+        case: &crate::SumCase,
+        implicit_types: &[ValueTypeId],
+        path: &str,
+    ) {
+        let optional = implicit_types.iter().copied().map(Some).collect::<Vec<_>>();
+        self.validate_forwarded_target(
+            function,
+            case.block,
+            &case.arguments,
+            &optional,
+            path.to_owned(),
+        );
+        let Some(block) = function.block(case.block) else {
+            return;
+        };
+        for (index, (parameter, expected)) in block
+            .params
+            .iter()
+            .copied()
+            .zip(implicit_types.iter().copied())
+            .enumerate()
+        {
+            self.require_value_type(
+                function,
+                parameter,
+                expected,
+                ValidationCode::BlockArgument,
+                format!("{path}.payload[{index}]"),
+            );
         }
     }
 
@@ -2322,6 +2586,27 @@ impl<'a> Validator<'a> {
             .map(crate::ProductRepr::fields)
     }
 
+    fn sum_variants(&self, ty: ValueTypeId) -> Option<Vec<Box<[ValueTypeId]>>> {
+        let value_type = self.program.representations.value_type(ty)?;
+        let Repr::Sum(sum) = self
+            .program
+            .representations
+            .repr(value_type.repr())
+            .copied()?
+        else {
+            return None;
+        };
+        Some(
+            self.program
+                .representations
+                .sum(sum)?
+                .variants()
+                .iter()
+                .map(|variant| variant.fields().into())
+                .collect(),
+        )
+    }
+
     fn signature_writeback_types(function: &Function) -> Vec<ValueTypeId> {
         function
             .signature
@@ -2457,6 +2742,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 }
                 TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
+                | TerminatorKind::SumSwitch { .. }
                 | TerminatorKind::Return(_)
                 // Propagation cannot seed the least effect fixed point.
                 | TerminatorKind::ResumeFault => {}

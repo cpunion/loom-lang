@@ -29,20 +29,24 @@ mod instance;
 mod instance_closure;
 mod ir;
 mod lower;
+mod match_plan;
 mod repr;
 mod source_graph;
 mod validate;
 
 pub use artifact::{
     ArtifactKind, ArtifactRootRequest, ArtifactValidationCode, ArtifactValidationError,
-    ArtifactValidationErrors, CheckedArtifact, check_artifact, validate_artifact_roots,
+    ArtifactValidationErrors, CheckedArtifact, TestOutcomePlan, check_artifact,
+    validate_artifact_roots,
 };
 pub use artifact_identity::{
     ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, artifact_identity, write_artifact_identity,
 };
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
-pub use ids::{BlockId, InstanceId, InstructionId, ProductReprId, ReprId, ValueId, ValueTypeId};
+pub use ids::{
+    BlockId, InstanceId, InstructionId, ProductReprId, ReprId, SumReprId, ValueId, ValueTypeId,
+};
 pub use instance::{
     INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceWitnessArgument,
     PlannedInstance,
@@ -51,7 +55,7 @@ pub use instance_closure::{INSTANCE_CLOSURE_MAX_CALL_EDGES, INSTANCE_CLOSURE_MAX
 pub use ir::{
     Block, BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, Effects, FaultCode,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
-    Program, ResultTarget, Signature, Terminator, TerminatorKind, UnwindTarget, Value,
+    Program, ResultTarget, Signature, SumCase, Terminator, TerminatorKind, UnwindTarget, Value,
     ValueDefinition,
 };
 pub use lower::{
@@ -60,8 +64,8 @@ pub use lower::{
     lower_typed_artifact,
 };
 pub use repr::{
-    ProductRepr, Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError,
-    TypeRegistration, ValueType, ValueTypeKind,
+    ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr, SumVariantRepr,
+    TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,
 };
 pub use source_graph::{
     GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,

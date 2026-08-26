@@ -560,7 +560,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
         ARTIFACT_IDENTITY_SCHEMA, 6,
-        "transparent semantic boundaries advance the identity schema"
+        "direct nominal and closed-sum semantics advance the identity schema"
     );
 }
 

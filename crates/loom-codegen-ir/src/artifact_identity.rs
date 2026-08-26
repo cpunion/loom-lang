@@ -1,6 +1,8 @@
 use std::fmt::{self, Write};
 
-use crate::{ArtifactKind, CheckedArtifact, DumpOptions, write_program_with_options};
+use crate::{
+    ArtifactKind, CheckedArtifact, DumpOptions, TestOutcomePlan, write_program_with_options,
+};
 
 /// Schema number for the compiler-private checked-artifact identity.
 ///
@@ -45,8 +47,22 @@ pub fn write_artifact_identity(artifact: &CheckedArtifact, output: &mut impl Wri
     writeln!(output, "route={ARTIFACT_IDENTITY_ROUTE}")?;
     writeln!(output, "kind={}", artifact_kind(artifact.kind()))?;
     writeln!(output, "roots={}", artifact.roots().len())?;
+    let outcomes = artifact.test_outcomes();
     for (index, root) in artifact.roots().iter().enumerate() {
-        writeln!(output, "root[{index}]={}", root.raw())?;
+        write!(output, "root[{index}]={}", root.raw())?;
+        if let Some(outcome) = outcomes.and_then(|outcomes| outcomes.get(index)) {
+            match outcome {
+                TestOutcomePlan::Unit => write!(output, " outcome=unit")?,
+                TestOutcomePlan::Result {
+                    success_variant,
+                    failure_variant,
+                } => write!(
+                    output,
+                    " outcome=result success={success_variant} failure={failure_variant}"
+                )?,
+            }
+        }
+        writeln!(output)?;
     }
     writeln!(output, "payload=checked-lcir-with-origins")?;
     write_program_with_options(

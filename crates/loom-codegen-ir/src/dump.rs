@@ -4,7 +4,8 @@ use crate::instance::write_type_identity;
 use crate::{
     BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
-    Repr, ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueTypeKind,
+    Repr, ResultTarget, ScalarRepr, SumTagRepr, Terminator, TerminatorKind, UnwindTarget,
+    ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -211,6 +212,11 @@ fn write_instruction(
         ),
         InstructionKind::RefineProven { value } => write!(output, "refine.proven %{value}"),
         InstructionKind::Unrefine { value } => write!(output, "unrefine %{value}"),
+        InstructionKind::SumConstruct { variant, payload } => {
+            write!(output, "sum.construct variant {variant} (")?;
+            write_arguments(output, payload)?;
+            write!(output, ")")
+        }
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {
             predicate,
@@ -273,6 +279,10 @@ fn write_constant(output: &mut impl Write, constant: Constant) -> fmt::Result {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the canonical textual schema keeps every terminator spelling in one exhaustive match"
+)]
 fn write_terminator(
     output: &mut impl Write,
     program: &crate::Program,
@@ -293,6 +303,38 @@ fn write_terminator(
             write_target(output, then_target)?;
             write!(output, ", ")?;
             write_target(output, else_target)
+        }
+        TerminatorKind::SumSwitch { scrutinee, cases } => {
+            write!(output, "sum.switch %{scrutinee}")?;
+            let payloads = program
+                .function(scrutinee.owner())
+                .and_then(|function| function.value(*scrutinee))
+                .and_then(|value| program.representations().value_type(value.ty()))
+                .and_then(|value_type| program.representations().repr(value_type.repr()))
+                .and_then(|repr| match repr {
+                    Repr::Sum(sum) => program.representations().sum(*sum),
+                    Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::Product(_) => None,
+                })
+                .map(crate::SumRepr::variants);
+            for (index, case) in cases.iter().enumerate() {
+                write!(output, ", case {} => {}(", case.variant, case.block)?;
+                let payload_count = payloads
+                    .and_then(|variants| variants.get(index))
+                    .map(|variant| variant.fields().len())
+                    .unwrap_or_default();
+                for payload in 0..payload_count {
+                    if payload != 0 {
+                        write!(output, ", ")?;
+                    }
+                    write!(output, "payload{payload}")?;
+                }
+                if payload_count != 0 && !case.arguments.is_empty() {
+                    write!(output, "; ")?;
+                }
+                write_arguments(output, &case.arguments)?;
+                write!(output, ")")?;
+            }
+            Ok(())
         }
         TerminatorKind::Return(value) => write!(output, "return %{value}"),
         TerminatorKind::CheckedIntNegate {
@@ -470,6 +512,35 @@ fn write_repr(
             }
             output.write_char(')')
         }
+        Repr::Sum(sum) => {
+            let sum_repr = representations
+                .sum(sum)
+                .expect("checked LCIR sum representation exists");
+            write!(output, "sum {sum} tag={} [", sum_tag_name(sum_repr.tag()))?;
+            for (variant_index, variant) in sum_repr.variants().iter().enumerate() {
+                if variant_index != 0 {
+                    output.write_str(", ")?;
+                }
+                write!(output, "{variant_index}(")?;
+                for (field_index, field) in variant.fields().iter().enumerate() {
+                    if field_index != 0 {
+                        output.write_str(", ")?;
+                    }
+                    write!(output, "{field}")?;
+                }
+                output.write_char(')')?;
+            }
+            output.write_char(']')
+        }
+    }
+}
+
+const fn sum_tag_name(tag: SumTagRepr) -> &'static str {
+    match tag {
+        SumTagRepr::Tagless => "tagless",
+        SumTagRepr::I8 => "i8",
+        SumTagRepr::I16 => "i16",
+        SumTagRepr::I32 => "i32",
     }
 }
 
