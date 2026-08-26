@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,12 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+static TEST_RUNTIME: OnceLock<TestRuntimeBundle> = OnceLock::new();
+
+struct TestRuntimeBundle {
+    _directory: tempfile::TempDir,
+    root: PathBuf,
+}
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -60,7 +66,33 @@ impl Drop for TestProject {
 }
 
 fn loomc() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_loomc"))
+    let runtime = TEST_RUNTIME.get_or_init(|| {
+        let archive = test_runtime_archive();
+        assert!(
+            archive.is_file(),
+            "loom-runtime dev-dependency did not produce {}",
+            archive.display()
+        );
+        let directory = tempfile::tempdir().expect("create CLI test runtime directory");
+        let root = directory.path().join("runtime");
+        loom_codegen_llvm::pack_native_runtime_bundle(&archive, &root)
+            .expect("pack CLI test runtime");
+        TestRuntimeBundle {
+            _directory: directory,
+            root,
+        }
+    });
+    let mut command = Command::new(env!("CARGO_BIN_EXE_loomc"));
+    command.env("LOOM_RUNTIME_BUNDLE", &runtime.root);
+    command
+}
+
+fn test_runtime_archive() -> PathBuf {
+    let compiler = PathBuf::from(env!("CARGO_BIN_EXE_loomc"));
+    let profile = compiler
+        .parent()
+        .expect("loomc test binary is in the Cargo profile directory");
+    profile.join(loom_codegen_llvm::native_runtime_archive_name(None))
 }
 
 fn native_executable(path: impl AsRef<std::path::Path>) -> PathBuf {
@@ -1878,23 +1910,25 @@ fn native_target_preparation_errors_are_usage_errors() {
 
 #[cfg(unix)]
 #[test]
-fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
+fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
     let bundle = project.0.join("host-runtime");
-    let exported = loomc()
-        .args(["--json", "runtime", "export", "--output"])
+    let packed = loomc()
+        .args(["--json", "runtime", "pack", "--archive"])
+        .arg(test_runtime_archive())
+        .arg("--output")
         .arg(&bundle)
         .output()
-        .expect("export host runtime bundle");
+        .expect("pack host runtime bundle");
     assert_eq!(
-        exported.status.code(),
+        packed.status.code(),
         Some(0),
         "stdout={} stderr={}",
-        String::from_utf8_lossy(&exported.stdout),
-        String::from_utf8_lossy(&exported.stderr)
+        String::from_utf8_lossy(&packed.stdout),
+        String::from_utf8_lossy(&packed.stderr)
     );
     let export_record =
-        json_record(&exported.stdout, "runtime_bundle_export").expect("runtime export record");
+        json_record(&packed.stdout, "runtime_bundle_pack").expect("runtime pack record");
     assert_eq!(
         export_record
             .get("archive_sha256")
@@ -1955,22 +1989,70 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     assert_eq!(mismatch.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&mismatch.stdout).contains("RuntimeBundleTargetMismatch"));
 
-    let unpaired = loomc()
-        .arg("--runtime-bundle")
-        .arg(&bundle)
-        .arg("build")
-        .arg(&project.0)
-        .output()
-        .expect("reject an unpaired runtime bundle");
-    assert_eq!(unpaired.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&unpaired.stderr).contains("must be provided together"));
-
     let missing_output = loomc()
-        .args(["runtime", "export"])
+        .args(["runtime", "pack", "--archive"])
+        .arg(test_runtime_archive())
         .output()
-        .expect("reject runtime export without an output");
+        .expect("reject runtime pack without an output");
     assert_eq!(missing_output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing_output.stderr).contains("requires --output DIR"));
+
+    let removed_export = loomc()
+        .args(["runtime", "export"])
+        .output()
+        .expect("reject removed runtime export command");
+    assert_eq!(removed_export.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&removed_export.stderr).contains("unknown runtime operation"));
+}
+
+#[cfg(unix)]
+#[test]
+fn host_linker_resolution_uses_environment_and_prefers_explicit_cli() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    project.write(
+        "passthrough-linker",
+        r#"#!/bin/sh
+set -eu
+if [ "${1-}" = "--version" ]; then
+    printf 'loom passthrough linker v1\n'
+    exit 0
+fi
+printf '%s\n' "$@" > "${LOOM_FAKE_LINK_LOG:?}"
+exec "${LOOM_REAL_LINKER:?}" "$@"
+"#,
+    );
+    project.make_executable("passthrough-linker");
+    let linker = project.0.join("passthrough-linker");
+    let link_log = project.0.join("link-arguments");
+    let real_linker = std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into());
+
+    let environment_output = project.0.join("environment-linker");
+    let environment = loomc()
+        .args(["--json", "build", "--output"])
+        .arg(&environment_output)
+        .arg(&project.0)
+        .env("LOOM_CC", &linker)
+        .env("LOOM_FAKE_LINK_LOG", &link_log)
+        .env("LOOM_REAL_LINKER", &real_linker)
+        .output()
+        .expect("link with LOOM_CC");
+    assert_eq!(environment.status.code(), Some(0), "{environment:?}");
+    assert!(environment_output.is_file());
+
+    let explicit_output = project.0.join("explicit-linker");
+    let explicit = loomc()
+        .arg("--linker")
+        .arg(&linker)
+        .args(["--json", "build", "--output"])
+        .arg(&explicit_output)
+        .arg(&project.0)
+        .env("LOOM_CC", project.0.join("unusable-environment-linker"))
+        .env("LOOM_FAKE_LINK_LOG", &link_log)
+        .env("LOOM_REAL_LINKER", &real_linker)
+        .output()
+        .expect("link with explicit --linker");
+    assert_eq!(explicit.status.code(), Some(0), "{explicit:?}");
+    assert!(explicit_output.is_file());
 }
 
 #[cfg(unix)]

@@ -14,12 +14,12 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] [--runtime-bundle DIR --linker PROGRAM] <resolve|publish|runtime|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
+const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] [--runtime-bundle DIR] [--linker PROGRAM] <resolve|publish|runtime|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     publish --registry NAME [PATH] publish a package to a configured registry\n\
-    runtime export --output DIR export the embedded host runtime bundle\n\
+    runtime pack --archive FILE --output DIR pack a validated host runtime bundle\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
-    build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--runtime-bundle DIR --linker PROGRAM] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
+    build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--runtime-bundle DIR] [--linker PROGRAM] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
     test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
@@ -32,6 +32,8 @@ const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
+const RUNTIME_BUNDLE_ENV: &str = "LOOM_RUNTIME_BUNDLE";
+const LINKER_ENV: &str = "LOOM_CC";
 const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v7";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const DEFAULT_DEBUGGER: &str = "lldb";
@@ -52,7 +54,8 @@ enum Command {
     Publish {
         registry: String,
     },
-    RuntimeExport {
+    RuntimePack {
+        archive: PathBuf,
         output: PathBuf,
     },
     Check,
@@ -101,32 +104,52 @@ struct Options {
     program_arguments: Vec<String>,
 }
 
-enum NativeLinkPlan {
-    EmbeddedHost,
-    RuntimeBundle {
-        bundle: Box<loom_codegen_llvm::RuntimeBundle>,
-        linker: loom_codegen_llvm::RuntimeLinker,
-    },
+struct NativeLinkPlan {
+    bundle: Box<loom_codegen_llvm::RuntimeBundle>,
+    linker: loom_codegen_llvm::RuntimeLinker,
 }
 
 enum NativePipelineError {
     Preparation(loom_codegen_llvm::NativePreparationError),
-    Configuration(loom_codegen_llvm::CodegenError),
+    Configuration(NativeConfigurationError),
     Codegen(loom_codegen_llvm::CodegenError),
+}
+
+#[derive(Debug)]
+struct NativeConfigurationError {
+    code: &'static str,
+    message: String,
+}
+
+impl NativeConfigurationError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<loom_codegen_llvm::CodegenError> for NativeConfigurationError {
+    fn from(error: loom_codegen_llvm::CodegenError) -> Self {
+        Self::new(error.code(), error.message())
+    }
 }
 
 impl NativePipelineError {
     fn code(&self) -> &'static str {
         match self {
             Self::Preparation(error) => error.code(),
-            Self::Configuration(error) | Self::Codegen(error) => error.code(),
+            Self::Configuration(error) => error.code,
+            Self::Codegen(error) => error.code(),
         }
     }
 
     fn message(&self) -> &str {
         match self {
             Self::Preparation(error) => error.message(),
-            Self::Configuration(error) | Self::Codegen(error) => error.message(),
+            Self::Configuration(error) => &error.message,
+            Self::Codegen(error) => error.message(),
         }
     }
 
@@ -146,12 +169,12 @@ impl NativePipelineError {
 
 impl NativeLinkPlan {
     fn link(&self, object: &Path, output: &Path) -> Result<(), loom_codegen_llvm::CodegenError> {
-        match self {
-            Self::EmbeddedHost => loom_codegen_llvm::link_native_object(object, output),
-            Self::RuntimeBundle { bundle, linker } => {
-                loom_codegen_llvm::link_object_with_runtime_bundle(object, output, bundle, linker)
-            }
-        }
+        loom_codegen_llvm::link_object_with_runtime_bundle(
+            object,
+            output,
+            &self.bundle,
+            &self.linker,
+        )
     }
 }
 
@@ -527,7 +550,9 @@ pub fn run(
     match &options.command {
         Command::Resolve { refresh } => run_resolve(&options, *refresh, stdout, stderr),
         Command::Publish { registry } => run_publish(&options, registry, stdout, stderr),
-        Command::RuntimeExport { output } => run_runtime_export(&options, output, stdout, stderr),
+        Command::RuntimePack { archive, output } => {
+            run_runtime_pack(&options, archive, output, stdout, stderr)
+        }
         Command::Format { check } => run_format(&options, *check, stdout, stderr),
         Command::Cache { prune } => run_cache(&options, *prune, stdout, stderr),
         Command::Check => run_check(&options, stdout, stderr),
@@ -678,14 +703,15 @@ fn run_publish(
     Ok(EXIT_SUCCESS)
 }
 
-fn run_runtime_export(
+fn run_runtime_pack(
     options: &Options,
+    archive: &Path,
     output: &Path,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<i32> {
-    let exported = match loom_codegen_llvm::export_native_runtime_bundle(output) {
-        Ok(exported) => exported,
+    let packed = match loom_codegen_llvm::pack_native_runtime_bundle(archive, output) {
+        Ok(packed) => packed,
         Err(error) => {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
             return Ok(EXIT_USAGE);
@@ -696,25 +722,25 @@ fn run_runtime_export(
             stdout,
             &json!({
                 "schema_version": 1,
-                "category": "runtime_bundle_export",
+                "category": "runtime_bundle_pack",
                 "status": "ok",
-                "root": exported.root,
-                "manifest": exported.manifest,
-                "archive": exported.archive,
-                "target_triple": exported.target_triple,
-                "data_layout": exported.data_layout,
-                "runtime_cpu": exported.runtime_cpu,
-                "runtime_cpu_features": exported.runtime_cpu_features,
-                "runtime_abi": exported.runtime_abi,
-                "archive_sha256": exported.archive_sha256,
+                "root": packed.root,
+                "manifest": packed.manifest,
+                "archive": packed.archive,
+                "target_triple": packed.target_triple,
+                "data_layout": packed.data_layout,
+                "runtime_cpu": packed.runtime_cpu,
+                "runtime_cpu_features": packed.runtime_cpu_features,
+                "runtime_abi": packed.runtime_abi,
+                "archive_sha256": packed.archive_sha256,
             }),
         )?;
     } else {
         writeln!(
             stdout,
-            "exported runtime bundle for {} to {}",
-            exported.target_triple,
-            exported.root.display()
+            "packed runtime bundle for {} into {}",
+            packed.target_triple,
+            packed.root.display()
         )?;
     }
     Ok(EXIT_SUCCESS)
@@ -779,6 +805,7 @@ fn run_build(
         if emit == BuildEmit::Object
             || options.target_triple.is_some()
             || options.runtime_bundle.is_some()
+            || options.linker.is_some()
             || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
         {
             emit_tool_error(
@@ -1936,20 +1963,74 @@ fn configured_emit_options(
 
 fn prepare_native_link_plan(
     options: &Options,
-    emit_options: &loom_codegen_llvm::EmitOptions,
+    _emit_options: &loom_codegen_llvm::EmitOptions,
     prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
-) -> Result<NativeLinkPlan, loom_codegen_llvm::CodegenError> {
-    if let (Some(bundle), Some(linker)) = (&options.runtime_bundle, &options.linker) {
-        return Ok(NativeLinkPlan::RuntimeBundle {
-            bundle: Box::new(loom_codegen_llvm::RuntimeBundle::load(
-                bundle,
-                loom_codegen_llvm::prepared_native_target_identity(prepared),
-            )?),
-            linker: loom_codegen_llvm::RuntimeLinker::load(linker)?,
-        });
+) -> Result<NativeLinkPlan, NativeConfigurationError> {
+    let target = loom_codegen_llvm::prepared_native_target_identity(prepared);
+    let host = loom_codegen_llvm::native_target_identity()?;
+    if target.triple != host.triple && options.linker.is_none() {
+        return Err(NativeConfigurationError::new(
+            "CrossLinkUnavailable",
+            "cross-target executable linking requires an explicit --linker PROGRAM",
+        ));
     }
-    loom_codegen_llvm::validate_native_link_target(emit_options)?;
-    Ok(NativeLinkPlan::EmbeddedHost)
+    let bundle_path = resolve_runtime_bundle_path(options.runtime_bundle.as_deref())?;
+    let linker_path = options
+        .linker
+        .clone()
+        .or_else(|| std::env::var_os(LINKER_ENV).map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("clang"));
+    Ok(NativeLinkPlan {
+        bundle: Box::new(loom_codegen_llvm::RuntimeBundle::load(bundle_path, target)?),
+        linker: loom_codegen_llvm::RuntimeLinker::load(linker_path)?,
+    })
+}
+
+fn resolve_runtime_bundle_path(
+    explicit: Option<&Path>,
+) -> Result<PathBuf, NativeConfigurationError> {
+    if let Some(configured) =
+        configured_runtime_bundle_path(explicit, std::env::var_os(RUNTIME_BUNDLE_ENV).as_deref())
+    {
+        return Ok(configured);
+    }
+    let executable = std::env::current_exe().map_err(|error| {
+        NativeConfigurationError::new(
+            "RuntimeBundleUnavailable",
+            format!("cannot locate the running compiler: {error}"),
+        )
+    })?;
+    let real_executable = std::fs::canonicalize(&executable).map_err(|error| {
+        NativeConfigurationError::new(
+            "RuntimeBundleUnavailable",
+            format!(
+                "cannot resolve compiler executable {}: {error}",
+                executable.display()
+            ),
+        )
+    })?;
+    adjacent_runtime_bundle_path(&real_executable)
+}
+
+fn configured_runtime_bundle_path(
+    explicit: Option<&Path>,
+    environment: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| environment.map(PathBuf::from))
+}
+
+fn adjacent_runtime_bundle_path(
+    real_executable: &Path,
+) -> Result<PathBuf, NativeConfigurationError> {
+    let parent = real_executable.parent().ok_or_else(|| {
+        NativeConfigurationError::new(
+            "RuntimeBundleUnavailable",
+            "resolved compiler executable has no parent directory",
+        )
+    })?;
+    Ok(parent.join("runtime"))
 }
 
 fn emit_options_with_debug(
@@ -2475,14 +2556,18 @@ fn parse_command(
         "runtime" => {
             let operation = arguments
                 .first()
-                .ok_or_else(|| "runtime requires `export`".to_owned())?
+                .ok_or_else(|| "runtime requires `pack`".to_owned())?
                 .clone();
             arguments.remove(0);
             match operation.as_str() {
-                "export" => Command::RuntimeExport {
+                "pack" => Command::RuntimePack {
+                    archive: PathBuf::from(
+                        take_option(arguments, "--archive")?
+                            .ok_or_else(|| "runtime pack requires --archive FILE".to_owned())?,
+                    ),
                     output: PathBuf::from(
                         take_option(arguments, "--output")?
-                            .ok_or_else(|| "runtime export requires --output DIR".to_owned())?,
+                            .ok_or_else(|| "runtime pack requires --output DIR".to_owned())?,
                     ),
                 },
                 other => return Err(format!("unknown runtime operation `{other}`")),
@@ -2556,8 +2641,8 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
     if remaining.len() > 1 {
         return Err("expected at most one PATH".to_owned());
     }
-    if matches!(command, Command::RuntimeExport { .. }) && !remaining.is_empty() {
-        return Err("runtime export does not accept a source PATH".to_owned());
+    if matches!(command, Command::RuntimePack { .. }) && !remaining.is_empty() {
+        return Err("runtime pack does not accept a source PATH".to_owned());
     }
     validate_codegen_options(options)?;
     if options.target.is_some()
@@ -2582,7 +2667,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             command,
             Command::Format { .. }
                 | Command::Publish { .. }
-                | Command::RuntimeExport { .. }
+                | Command::RuntimePack { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2607,7 +2692,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
-                | Command::RuntimeExport { .. }
+                | Command::RuntimePack { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
@@ -2623,7 +2708,7 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
-                | Command::RuntimeExport { .. }
+                | Command::RuntimePack { .. }
                 | Command::Run {
                     artifact: Some(_),
                     ..
@@ -2668,7 +2753,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             Command::Resolve { .. }
                 | Command::Format { .. }
                 | Command::Publish { .. }
-                | Command::RuntimeExport { .. }
+                | Command::RuntimePack { .. }
                 | Command::Cache { .. }
                 | Command::Run {
                     artifact: Some(_),
@@ -2680,7 +2765,7 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
     }
     if options.backend == Backend::Interpreter
         && (matches!(command, Command::Debug { .. })
-            || matches!(command, Command::RuntimeExport { .. })
+            || matches!(command, Command::RuntimePack { .. })
             || options.target_triple.is_some()
             || options.optimization == loom_codegen_llvm::OptimizationProfile::Release
             || matches!(
@@ -2692,30 +2777,30 @@ fn validate_codegen_options(options: &Options) -> Result<(), String> {
             ))
     {
         return Err(
-            "runtime export, debug, --release, --target-triple, and --emit object require the LLVM backend"
+            "runtime pack, debug, --release, --target-triple, and --emit object require the LLVM backend"
                 .to_owned(),
         );
     }
     if options.json && matches!(command, Command::Debug { .. }) {
         return Err("debug is interactive and does not accept --json".to_owned());
     }
-    if options.runtime_bundle.is_some() != options.linker.is_some() {
-        return Err("--runtime-bundle and --linker must be provided together".to_owned());
-    }
-    if options.runtime_bundle.is_some()
-        && !matches!(
-            command,
-            Command::Build {
-                emit: BuildEmit::Executable,
-                ..
-            }
-        )
-    {
+    let native_link_options = options.runtime_bundle.is_some() || options.linker.is_some();
+    let native_link_command = matches!(
+        command,
+        Command::Build {
+            emit: BuildEmit::Executable,
+            ..
+        } | Command::Test
+            | Command::Run { artifact: None, .. }
+            | Command::Debug { .. }
+    );
+    if native_link_options && !native_link_command {
         return Err(
-            "--runtime-bundle and --linker are only valid for LLVM executable builds".to_owned(),
+            "--runtime-bundle and --linker are only valid for native executable build/test/run/debug"
+                .to_owned(),
         );
     }
-    if options.runtime_bundle.is_some() && options.backend != Backend::Llvm {
+    if native_link_options && options.backend != Backend::Llvm {
         return Err("--runtime-bundle and --linker require the LLVM backend".to_owned());
     }
     Ok(())
@@ -2765,11 +2850,14 @@ fn take_option(arguments: &mut Vec<String>, option: &str) -> Result<Option<Strin
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
     use loom_driver::{AnalysisHost, PersistentCache, ProjectOptions};
 
     use super::{
         Backend, Command, Compilation, CompilationData, NativePipelineError, Options,
-        emit_object_with_cache,
+        adjacent_runtime_bundle_path, configured_runtime_bundle_path, emit_object_with_cache,
     };
 
     fn valid_sha256(value: &str) -> bool {
@@ -2779,6 +2867,27 @@ mod tests {
     #[test]
     fn llvm_object_cache_domain_is_pinned() {
         assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v7");
+    }
+
+    #[test]
+    fn runtime_bundle_resolution_precedence_is_explicit_environment_then_adjacent() {
+        assert_eq!(
+            configured_runtime_bundle_path(
+                Some(Path::new("explicit")),
+                Some(OsStr::new("environment")),
+            ),
+            Some(PathBuf::from("explicit"))
+        );
+        assert_eq!(
+            configured_runtime_bundle_path(None, Some(OsStr::new("environment"))),
+            Some(PathBuf::from("environment"))
+        );
+        assert_eq!(configured_runtime_bundle_path(None, None), None);
+        assert_eq!(
+            adjacent_runtime_bundle_path(Path::new("/opt/loom/bin/loomc"))
+                .expect("adjacent runtime path"),
+            PathBuf::from("/opt/loom/bin/runtime")
+        );
     }
 
     #[test]
