@@ -301,16 +301,27 @@ fn scan_block_with_flow<'mir>(
                 }
             }
             StatementKind::LetTuple { locals, value } => {
-                let elements = match &value.kind {
-                    ExprKind::Tuple(elements) if elements.len() == locals.len() => Some(
-                        elements
-                            .iter()
-                            .map(|element| expression_witnesses(element, flow))
-                            .collect::<Vec<_>>(),
-                    ),
-                    _ => None,
+                let (continues, elements) = match &value.kind {
+                    ExprKind::Tuple(elements) if elements.len() == locals.len() => {
+                        // Tuple elements evaluate left-to-right. Snapshot each
+                        // element's witness at its own evaluation point, then
+                        // let that element update the flow seen by the next.
+                        // Destination locals are bound only after the entire
+                        // tuple value completes.
+                        let mut witnesses = Vec::with_capacity(elements.len());
+                        let mut continues = true;
+                        for element in elements {
+                            witnesses.push(expression_witnesses(element, flow));
+                            if !scan_expr(element, edges, flow, active_cleanups) {
+                                continues = false;
+                                break;
+                            }
+                        }
+                        (continues && value.ty != Type::Never, Some(witnesses))
+                    }
+                    _ => (scan_expr(value, edges, flow, active_cleanups), None),
                 };
-                if scan_expr(value, edges, flow, active_cleanups) {
+                if continues {
                     for (index, local) in locals.iter().enumerate() {
                         flow.locals.insert(
                             *local,
@@ -375,24 +386,32 @@ fn scan_block_with_flow<'mir>(
                 }
             }
             StatementKind::Return(value) => {
-                let value_continues = value
-                    .as_ref()
-                    .is_none_or(|value| scan_expr(value, edges, flow, active_cleanups));
-                if value_continues {
-                    let cleanups = active_cleanups.clone();
-                    let _ = scan_cleanup_sequence(&cleanups, 0, edges, flow);
+                if let Some(value) = value {
+                    let _ = scan_expr(value, edges, flow, active_cleanups);
                 }
+                // Every registered cleanup was already scanned with unknown
+                // witness state. A Return has no continuation that could use
+                // its exact post-cleanup flow, so replaying the whole active
+                // stack for every returning branch only duplicates edges.
                 false
             }
             StatementKind::Defer(cleanup) => {
                 // A failure after registration can run the cleanup before any
                 // particular normal exit state is reached. Scan that path
-                // conservatively with witness precision forgotten, then keep
-                // the cleanup active for exact normal/Return exit scans.
-                let mut cleanup_flow = flow.clone();
-                forget_witness_precision(&mut cleanup_flow);
-                let mut inherited = active_cleanups.clone();
-                let _ = scan_block_with_flow(cleanup, edges, &mut cleanup_flow, &mut inherited);
+                // conservatively with unknown witness state, then keep
+                // the cleanup active for exact continuing normal-exit scans.
+                // Return needs no post-cleanup flow and uses this conservative
+                // registration coverage instead.
+                // A missing local and an explicitly unknown witness fact are
+                // equivalent to `expression_witnesses`. Starting empty is
+                // therefore conservative without cloning every live local at
+                // each registration (which would make N defers over L locals
+                // cost O(N * L)).
+                let mut cleanup_flow = WitnessFlow::default();
+                // Older cleanups were each scanned with unknown witness state
+                // when registered. They do not need to be recursively replayed
+                // for every newer registration.
+                let _ = scan_block_with_flow(cleanup, edges, &mut cleanup_flow, &mut Vec::new());
                 active_cleanups.push(cleanup);
                 true
             }
@@ -405,9 +424,8 @@ fn scan_block_with_flow<'mir>(
     if continues && let Some(tail) = &block.tail {
         continues = scan_expr(tail, edges, flow, active_cleanups);
     }
-    if continues {
-        let cleanups = active_cleanups.clone();
-        continues = scan_cleanup_sequence(&cleanups, cleanup_base, edges, flow);
+    if continues && active_cleanups.len() > cleanup_base {
+        continues = scan_cleanup_sequence(&active_cleanups[cleanup_base..], edges, flow);
     }
     active_cleanups.truncate(cleanup_base);
     continues
@@ -415,14 +433,15 @@ fn scan_block_with_flow<'mir>(
 
 fn scan_cleanup_sequence(
     cleanups: &[&Block],
-    first: usize,
     edges: &mut FunctionEdges,
     flow: &mut WitnessFlow,
 ) -> bool {
     let mut continues = true;
-    for index in (first..cleanups.len()).rev() {
-        let mut inherited = cleanups[..index].to_vec();
-        continues &= scan_block_with_flow(cleanups[index], edges, flow, &mut inherited);
+    for cleanup in cleanups.iter().rev() {
+        // The driver itself executes the complete LIFO sequence. Scanning a
+        // cleanup with an inherited prefix would make each body recursively
+        // replay every older body and turn a flat stack exponential.
+        continues &= scan_block_with_flow(cleanup, edges, flow, &mut Vec::new());
     }
     continues
 }
@@ -621,12 +640,6 @@ fn scan_expr<'mir>(
     expression.ty != Type::Never
 }
 
-fn forget_witness_precision(flow: &mut WitnessFlow) {
-    for witnesses in flow.locals.values_mut() {
-        *witnesses = None;
-    }
-}
-
 fn expression_witnesses(expression: &Expr, flow: &WitnessFlow) -> Option<BTreeSet<WitnessId>> {
     match &expression.kind {
         ExprKind::MakeView { witness, .. } => {
@@ -745,7 +758,7 @@ mod tests {
         }
     }
 
-    fn dynamic_call() -> Expr {
+    fn dynamic_call_for(local: LocalId) -> Expr {
         Expr {
             id: ExprId::UNASSIGNED,
             kind: ExprKind::Call {
@@ -755,7 +768,7 @@ mod tests {
                 type_arguments: Vec::new(),
                 arguments: vec![CallArgument::Value(Expr {
                     id: ExprId::UNASSIGNED,
-                    kind: ExprKind::Copy(Place::local(LOCAL)),
+                    kind: ExprKind::Copy(Place::local(local)),
                     ty: view_type(),
                     span: Default::default(),
                 })],
@@ -764,6 +777,10 @@ mod tests {
             ty: Type::Unit,
             span: Default::default(),
         }
+    }
+
+    fn dynamic_call() -> Expr {
+        dynamic_call_for(LOCAL)
     }
 
     fn statement(kind: StatementKind) -> loom_mir::Statement {
@@ -805,6 +822,27 @@ mod tests {
         block(vec![statement(StatementKind::Evaluate(dynamic_call()))])
     }
 
+    fn direct_call(target: u32, ty: Type) -> Expr {
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(target)),
+                type_arguments: Vec::new(),
+                arguments: Vec::new(),
+                witnesses: Vec::new(),
+            },
+            ty,
+            span: Default::default(),
+        }
+    }
+
+    fn cleanup_with_direct_and_dynamic_edges(target: u32) -> Block {
+        block(vec![
+            statement(StatementKind::Evaluate(direct_call(target, Type::Unit))),
+            statement(StatementKind::Evaluate(dynamic_call())),
+        ])
+    }
+
     #[test]
     fn deferred_dispatch_uses_the_normal_exit_witness() {
         let edges = scan(vec![
@@ -817,6 +855,43 @@ mod tests {
     }
 
     #[test]
+    fn tuple_binding_snapshots_witnesses_in_element_evaluation_order() {
+        let first_binding = LocalId(1);
+        let second_binding = LocalId(2);
+        let mutating_element = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Block(block(vec![assign_second()])),
+            ty: Type::Unit,
+            span: Default::default(),
+        };
+        let copied_after_mutation = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Copy(Place::local(LOCAL)),
+            ty: view_type(),
+            span: Default::default(),
+        };
+        let tuple = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Tuple(vec![mutating_element, copied_after_mutation]),
+            ty: Type::Tuple(vec![Type::Unit, view_type()]),
+            span: Default::default(),
+        };
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::LetTuple {
+                locals: vec![first_binding, second_binding],
+                value: tuple,
+            }),
+            statement(StatementKind::Evaluate(dynamic_call_for(second_binding))),
+        ]);
+
+        assert_eq!(
+            edges.concrete_methods,
+            BTreeSet::from([(SECOND, REQUIREMENT)])
+        );
+    }
+
+    #[test]
     fn deferred_cleanups_feed_newer_mutations_to_older_cleanups_lifo() {
         let edges = scan(vec![
             initialize(),
@@ -825,6 +900,133 @@ mod tests {
         ]);
 
         assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
+    }
+
+    #[test]
+    fn flat_cleanup_stack_is_scanned_once_per_body() {
+        // A flat cleanup stack is not recursive syntax. Prefix cloning and
+        // inherited replay used to rescan every older cleanup for every newer
+        // one (and then recursively rescan those prefixes at normal exit).
+        let edges = scan(
+            (0..1_024)
+                .map(|_| statement(StatementKind::Defer(block(Vec::new()))))
+                .collect(),
+        );
+
+        assert!(edges.direct.is_empty());
+        assert!(edges.dynamic.is_empty());
+    }
+
+    #[test]
+    fn registration_scan_covers_cleanup_edges_on_absorbed_direct_never_paths() {
+        const CLEANUP_TARGET: u32 = 7;
+        const DIVERGING_TARGET: u32 = 8;
+        const FINAL_TARGET: u32 = 9;
+        let short_circuit = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Binary(
+                BinaryOp::And,
+                Box::new(boolean(true)),
+                Box::new(direct_call(DIVERGING_TARGET, Type::Never)),
+            ),
+            ty: Type::Bool,
+            span: Default::default(),
+        };
+        let matched = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Match {
+                scrutinee: Box::new(boolean(true)),
+                arms: vec![
+                    loom_mir::MatchArm {
+                        pattern: loom_mir::Pattern::Constant(loom_mir::Constant::Bool(true)),
+                        bindings: Vec::new(),
+                        value: direct_call(DIVERGING_TARGET, Type::Never),
+                    },
+                    loom_mir::MatchArm {
+                        pattern: loom_mir::Pattern::Constant(loom_mir::Constant::Bool(false)),
+                        bindings: Vec::new(),
+                        value: unit(),
+                    },
+                ],
+            },
+            ty: Type::Unit,
+            span: Default::default(),
+        };
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::Defer(cleanup_with_direct_and_dynamic_edges(
+                CLEANUP_TARGET,
+            ))),
+            statement(StatementKind::Evaluate(short_circuit)),
+            statement(StatementKind::Evaluate(matched)),
+            // Prevent the scanner's conservative continuing alternatives from
+            // reaching a normal block exit. Cleanup edges therefore come from
+            // the registration scan, including absorbed direct-Never paths.
+            statement(StatementKind::Evaluate(direct_call(
+                FINAL_TARGET,
+                Type::Never,
+            ))),
+        ]);
+
+        assert!(edges.direct.contains(&FunctionId(CLEANUP_TARGET)));
+        assert!(edges.dynamic.contains(&REQUIREMENT));
+        assert!(edges.witnesses.contains(&FIRST));
+    }
+
+    #[test]
+    fn many_live_locals_do_not_multiply_flat_registration_cost() {
+        const COUNT: u32 = 2_048;
+        let mut statements = (0..COUNT)
+            .map(|id| {
+                statement(StatementKind::Let {
+                    local: LocalId(id),
+                    value: make_view(FIRST),
+                })
+            })
+            .collect::<Vec<_>>();
+        statements.extend((0..COUNT).map(|_| statement(StatementKind::Defer(block(Vec::new())))));
+
+        let edges = scan(statements);
+
+        assert_eq!(edges.witnesses, BTreeSet::from([FIRST]));
+    }
+
+    #[test]
+    fn many_returning_arms_do_not_replay_the_active_cleanup_stack() {
+        const COUNT: usize = 2_048;
+        let mut statements = (0..COUNT)
+            .map(|_| statement(StatementKind::Defer(block(Vec::new()))))
+            .collect::<Vec<_>>();
+        let arms = (0..COUNT)
+            .map(|_| loom_mir::MatchArm {
+                pattern: loom_mir::Pattern::Wildcard,
+                bindings: Vec::new(),
+                value: Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Block(Block {
+                        statements: vec![statement(StatementKind::Return(Some(unit())))],
+                        tail: None,
+                        span: Default::default(),
+                    }),
+                    ty: Type::Never,
+                    span: Default::default(),
+                },
+            })
+            .collect();
+        statements.push(statement(StatementKind::Evaluate(Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Match {
+                scrutinee: Box::new(unit()),
+                arms,
+            },
+            ty: Type::Never,
+            span: Default::default(),
+        })));
+
+        let edges = scan(statements);
+
+        assert!(edges.direct.is_empty());
+        assert!(edges.dynamic.is_empty());
     }
 
     #[test]
@@ -847,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn each_returning_branch_runs_active_cleanup_with_its_witness_flow() {
+    fn returning_branches_keep_cleanup_dispatch_through_live_witnesses() {
         let returning = |assign: bool| Block {
             statements: assign
                 .then(assign_second)
@@ -873,7 +1075,12 @@ mod tests {
             statement(StatementKind::Evaluate(branch)),
         ]);
 
-        assert!(edges.concrete_methods.contains(&(FIRST, REQUIREMENT)));
-        assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
+        // Return has no continuation that needs an exact post-cleanup flow.
+        // Registration conservatively records the dynamic requirement, while
+        // scanning the executable branches retains both witnesses that can
+        // reach the cleanup at runtime.
+        assert!(edges.dynamic.contains(&REQUIREMENT));
+        assert!(edges.witnesses.contains(&FIRST));
+        assert!(edges.witnesses.contains(&SECOND));
     }
 }

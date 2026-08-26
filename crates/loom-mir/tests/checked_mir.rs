@@ -1992,6 +1992,132 @@ fn call_arguments_validate_inout_place_shape() {
 }
 
 #[test]
+fn mutable_receiver_cannot_move_the_callers_inout_place() {
+    let mut method = function(
+        0,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Move(Place::local(LocalId(0))),
+                Type::Int,
+            ))),
+            span: span(),
+        },
+    );
+    method.receiver = Some(Receiver::Mutable);
+    let caller = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::Inherent(FunctionId(0)),
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![method, caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ReceiverShape
+            && error.path == "functions[0].body.tail.place"
+    }));
+}
+
+#[test]
+fn mutable_receiver_may_assign_its_whole_value() {
+    let mut method = function(
+        0,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Assign {
+                    place: Place::local(LocalId(0)),
+                    value: constant(Constant::Int(2), Type::Int),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    method.receiver = Some(Receiver::Mutable);
+    let caller = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::Inherent(FunctionId(0)),
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![method, caller],
+        ..Program::default()
+    })
+    .expect("a mutable receiver may overwrite its aliased value without moving it out");
+}
+
+#[test]
 fn for_range_induction_binding_is_immutable_at_the_checked_boundary() {
     let function = function(
         0,
@@ -2248,6 +2374,1298 @@ fn cleanup_copying(local: u32) -> Block {
         tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
         span: span(),
     }
+}
+
+fn cleanup_assigning(local: u32, value: i64) -> Block {
+    Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: Place::local(LocalId(local)),
+                value: constant(Constant::Int(value), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    }
+}
+
+fn mutable_receiver_with_int_argument(id: u32) -> Function {
+    let mut target = function(
+        id,
+        vec![local(0, Type::Int, true), local(1, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    target.receiver = Some(Receiver::Mutable);
+    target
+}
+
+fn checked_division_by_zero() -> Expr {
+    expr(
+        ExprKind::Binary(
+            BinaryOp::Divide,
+            Box::new(constant(Constant::Int(1), Type::Int)),
+            Box::new(constant(Constant::Int(0), Type::Int)),
+        ),
+        Type::Int,
+    )
+}
+
+fn two_argument_inherent_call(target: u32, second: Expr) -> Expr {
+    expr(
+        ExprKind::Call {
+            target: CallTarget::Inherent(FunctionId(target)),
+            type_arguments: Vec::new(),
+            arguments: vec![
+                CallArgument::InOut(Place::local(LocalId(0))),
+                CallArgument::Value(second),
+            ],
+            witnesses: Vec::new(),
+        },
+        Type::Unit,
+    )
+}
+
+fn function_with_flat_assert_cleanups(count: usize) -> Function {
+    let cleanup = || Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assert {
+                condition: constant(Constant::Bool(true), Type::Bool),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    function(
+        0,
+        Vec::new(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: (0..count)
+                .map(|_| Statement {
+                    kind: StatementKind::Defer(cleanup()),
+                    span: span(),
+                })
+                .collect(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    )
+}
+
+#[test]
+fn flat_faulting_cleanup_paths_use_a_linear_abstract_unwind() {
+    // The cleanup syntax is flat. Recursive path enumeration used to trip the
+    // syntax nesting limit and grow exponentially with the registration count.
+    for count in [64, 128] {
+        validate_program(&Program {
+            functions: vec![function_with_flat_assert_cleanups(count)],
+            ..Program::default()
+        })
+        .unwrap_or_else(|errors| panic!("{count} flat cleanups must validate: {errors}"));
+    }
+}
+
+#[test]
+fn very_large_flat_cleanup_stack_has_iterative_storage_and_destruction() {
+    const COUNT: usize = 100_000;
+    let function = function(
+        0,
+        Vec::new(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: (0..COUNT)
+                .map(|_| Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                })
+                .collect(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("a flat cleanup stack must not become recursive storage");
+}
+
+#[test]
+fn sibling_cleanup_heads_join_into_the_same_outer_suffix() {
+    let branch = |restored| Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Defer(cleanup_assigning(1, restored)),
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Assert {
+                    condition: constant(Constant::Bool(true), Type::Bool),
+                },
+                span: span(),
+            },
+        ],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(1))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::If {
+                            condition: Box::new(copy(0, Type::Bool)),
+                            then_branch: branch(10),
+                            else_branch: branch(20),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("both sibling unwind heads restore the local before their shared outer cleanup");
+}
+
+#[test]
+fn returning_branch_and_normal_fallthrough_both_reach_outer_cleanup() {
+    let function = function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(1))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::If {
+                            condition: Box::new(copy(0, Type::Bool)),
+                            then_branch: Block {
+                                statements: vec![
+                                    Statement {
+                                        kind: StatementKind::Assign {
+                                            place: Place::local(LocalId(1)),
+                                            value: constant(Constant::Int(10), Type::Int),
+                                        },
+                                        span: span(),
+                                    },
+                                    Statement {
+                                        kind: StatementKind::Return(Some(constant(
+                                            Constant::Unit,
+                                            Type::Unit,
+                                        ))),
+                                        span: span(),
+                                    },
+                                ],
+                                tail: None,
+                                span: span(),
+                            },
+                            else_branch: Block {
+                                statements: vec![Statement {
+                                    kind: StatementKind::Assign {
+                                        place: Place::local(LocalId(1)),
+                                        value: constant(Constant::Int(20), Type::Int),
+                                    },
+                                    span: span(),
+                                }],
+                                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                span: span(),
+                            },
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("return unwind and normal fallthrough must both validate their outer cleanup state");
+}
+
+#[test]
+fn many_fault_points_share_one_pending_cleanup_suffix() {
+    const COUNT: usize = 8_192;
+    let mut statements = (0..COUNT)
+        .map(|_| Statement {
+            kind: StatementKind::Defer(Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            }),
+            span: span(),
+        })
+        .collect::<Vec<_>>();
+    statements.extend((0..COUNT).map(|_| Statement {
+        kind: StatementKind::Assert {
+            condition: constant(Constant::Bool(true), Type::Bool),
+        },
+        span: span(),
+    }));
+
+    validate_program(&Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("fault points with one active suffix must share one unwind transfer");
+}
+
+#[test]
+fn interleaved_fault_heads_drain_in_cleanup_arena_order() {
+    const COUNT: usize = 8_192;
+    let statements = (0..COUNT)
+        .flat_map(|_| {
+            [
+                Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(true), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ]
+        })
+        .collect();
+
+    validate_program(&Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("distinct pending heads must each transfer once in descending arena order");
+}
+
+#[test]
+fn many_locals_and_pending_heads_share_identical_persistent_state() {
+    const COUNT: u32 = 8_192;
+    let locals = (0..COUNT)
+        .map(|id| local(id, Type::Int, false))
+        .collect::<Vec<_>>();
+    let statements = (0..COUNT)
+        .flat_map(|_| {
+            [
+                Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(true), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ]
+        })
+        .collect();
+
+    validate_program(&Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            locals,
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("dense declarations must not be cloned into every pending cleanup head");
+}
+
+#[test]
+fn distinct_slot_updates_join_persistently_across_cleanup_suffixes() {
+    const COUNT: u32 = 8_192;
+    let locals = (0..COUNT)
+        .map(|id| local(id, Type::Int, false))
+        .collect::<Vec<_>>();
+    let statements = (0..COUNT)
+        .flat_map(|id| {
+            [
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(id),
+                        value: constant(Constant::Int(i64::from(id)), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(true), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ]
+        })
+        .collect();
+
+    validate_program(&Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            locals,
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("suffix joins with one new slot per head must remain polynomial and exact");
+}
+
+#[test]
+fn forbidden_stored_view_carriers_are_sanitized_after_primary_diagnostics() {
+    const COUNT: u32 = 4_096;
+    let view = view_type(false);
+    let locals = (1..=COUNT)
+        .map(|id| local(id, view.clone(), false))
+        .collect::<Vec<_>>();
+    let statements = (1..=COUNT)
+        .flat_map(|id| {
+            [
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(id),
+                        value: expr(
+                            ExprKind::ReborrowView {
+                                owner: Place::local(LocalId(0)),
+                                mutable: false,
+                                token: id,
+                            },
+                            view.clone(),
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(true), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ]
+        })
+        .collect();
+    let borrower = function(
+        0,
+        vec![local(0, view, false)],
+        locals,
+        Type::Unit,
+        Block {
+            statements,
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![borrower],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::BorrowShape));
+}
+
+#[test]
+fn forbidden_wide_aggregate_view_carriers_do_not_accumulate_dataflow_loans() {
+    const COUNT: u32 = 8_192;
+    let view = view_type(false);
+    let params = (0..COUNT)
+        .map(|id| local(id, view.clone(), false))
+        .collect::<Vec<_>>();
+    let elements = (0..COUNT)
+        .map(|id| {
+            expr(
+                ExprKind::ReborrowView {
+                    owner: Place::local(LocalId(id)),
+                    mutable: false,
+                    token: id,
+                },
+                view.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let aggregate_ty = Type::Tuple(vec![view; COUNT as usize]);
+    let aggregate = expr(ExprKind::Tuple(elements), aggregate_ty);
+    let borrower = function(
+        0,
+        params,
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(aggregate),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![borrower],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::BorrowShape));
+}
+
+#[test]
+fn wide_sync_call_indexes_readonly_borrows_without_prefix_scans() {
+    const COUNT: u32 = 8_192;
+    let view = view_type(false);
+    let sink = function(
+        0,
+        (0..COUNT)
+            .map(|id| local(id, view.clone(), false))
+            .collect(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let arguments = (0..COUNT)
+        .map(|token| {
+            CallArgument::Value(expr(
+                ExprKind::ReborrowView {
+                    owner: Place::local(LocalId(0)),
+                    mutable: false,
+                    token,
+                },
+                view.clone(),
+            ))
+        })
+        .collect();
+    let entry = function(
+        1,
+        vec![local(0, view, false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(0)),
+                    type_arguments: Vec::new(),
+                    arguments,
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            ))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![sink, entry],
+        ..Program::default()
+    })
+    .expect("wide readonly call arguments must use the mutable-loan index");
+}
+
+#[test]
+fn distinct_cleanup_fault_states_join_once_per_remaining_suffix() {
+    const COUNT: u32 = 64;
+    let locals = (0..COUNT)
+        .map(|id| local(id, Type::Int, true))
+        .collect::<Vec<_>>();
+    let mut statements = (0..COUNT)
+        .map(|id| Statement {
+            kind: StatementKind::Let {
+                local: LocalId(id),
+                value: constant(Constant::Int(i64::from(id)), Type::Int),
+            },
+            span: span(),
+        })
+        .collect::<Vec<_>>();
+    statements.extend((0..COUNT).map(|id| Statement {
+        kind: StatementKind::Defer(Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(id))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(true), Type::Bool),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(id)),
+                        value: constant(Constant::Int(i64::from(id)), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        }),
+        span: span(),
+    }));
+
+    validate_program(&Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            locals,
+            Type::Unit,
+            Block {
+                statements,
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("distinct fault states are joined per cleanup suffix instead of enumerated");
+}
+
+#[test]
+fn deferred_cleanup_uses_exit_state_not_registration_state() {
+    let uninitialized = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let moved = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(0))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: constant(Constant::Int(2), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![uninitialized, moved],
+        ..Program::default()
+    })
+    .expect("defer captures are checked against actual exits, after infallible restoration");
+}
+
+#[test]
+fn cleanup_fault_state_reaches_every_older_cleanup() {
+    let newer = Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Move(Place::local(LocalId(1))),
+                    Type::Int,
+                )),
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Assert {
+                    condition: copy(0, Type::Bool),
+                },
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Assign {
+                    place: Place::local(LocalId(1)),
+                    value: constant(Constant::Int(2), Type::Int),
+                },
+                span: span(),
+            },
+        ],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(newer),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("statements[1].cleanup")
+    }));
+}
+
+#[test]
+fn fault_entry_drops_argument_reservations_before_cleanup() {
+    let caller = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_assigning(0, 2)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(two_argument_inherent_call(
+                        0,
+                        checked_division_by_zero(),
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let cleanup_caller = function(
+        2,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_assigning(0, 2)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(Block {
+                        statements: vec![Statement {
+                            kind: StatementKind::Evaluate(two_argument_inherent_call(
+                                0,
+                                checked_division_by_zero(),
+                            )),
+                            span: span(),
+                        }],
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![
+            mutable_receiver_with_int_argument(0),
+            caller,
+            cleanup_caller,
+        ],
+        ..Program::default()
+    })
+    .expect("fault and cleanup-fault transitions release all call argument reservations");
+}
+
+#[test]
+fn normal_nested_cleanup_retains_outer_argument_reservations() {
+    let nested_argument = expr(
+        ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Defer(cleanup_assigning(0, 2)),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Int(1), Type::Int))),
+            span: span(),
+        }),
+        Type::Int,
+    );
+    let caller = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(two_argument_inherent_call(0, nested_argument)),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![mutable_receiver_with_int_argument(0), caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape && error.path.contains("cleanup")
+    }));
+}
+
+fn call_never_function() -> Expr {
+    expr(
+        ExprKind::Call {
+            target: CallTarget::Direct(FunctionId(0)),
+            type_arguments: Vec::new(),
+            arguments: Vec::new(),
+            witnesses: Vec::new(),
+        },
+        Type::Never,
+    )
+}
+
+fn never_target_with_int(id: u32) -> Function {
+    function(
+        id,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Never,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(id)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(copy(0, Type::Int))],
+                    witnesses: Vec::new(),
+                },
+                Type::Never,
+            ))),
+            span: span(),
+        },
+    )
+}
+
+fn direct_never_moving(target: u32, local: u32) -> Expr {
+    expr(
+        ExprKind::Call {
+            target: CallTarget::Direct(FunctionId(target)),
+            type_arguments: Vec::new(),
+            arguments: vec![CallArgument::Value(expr(
+                ExprKind::Move(Place::local(LocalId(local))),
+                Type::Int,
+            ))],
+            witnesses: Vec::new(),
+        },
+        Type::Never,
+    )
+}
+
+fn restoring_diverging_block() -> Block {
+    Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: Place::local(LocalId(1)),
+                value: constant(Constant::Int(2), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(call_never_function())),
+        span: span(),
+    }
+}
+
+fn function_with_all_diverging_cleanup_control(id: u32, use_match: bool) -> Function {
+    let control = if use_match {
+        expr(
+            ExprKind::Match {
+                scrutinee: Box::new(copy(0, Type::Bool)),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::Constant(Constant::Bool(true)),
+                        bindings: Vec::new(),
+                        value: expr(ExprKind::Block(restoring_diverging_block()), Type::Never),
+                    },
+                    MatchArm {
+                        pattern: Pattern::Constant(Constant::Bool(false)),
+                        bindings: Vec::new(),
+                        value: expr(ExprKind::Block(restoring_diverging_block()), Type::Never),
+                    },
+                ],
+            },
+            Type::Never,
+        )
+    } else {
+        expr(
+            ExprKind::If {
+                condition: Box::new(copy(0, Type::Bool)),
+                then_branch: restoring_diverging_block(),
+                else_branch: restoring_diverging_block(),
+            },
+            Type::Never,
+        )
+    };
+    let newer = Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Move(Place::local(LocalId(1))),
+                    Type::Int,
+                )),
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Evaluate(control),
+                span: span(),
+            },
+        ],
+        tail: None,
+        span: span(),
+    };
+    function(
+        id,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(newer),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    )
+}
+
+#[test]
+fn all_diverging_cleanup_control_does_not_recollect_its_pre_branch_state() {
+    let diverger = function(
+        0,
+        Vec::new(),
+        Vec::new(),
+        Type::Never,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(call_never_function())),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![
+            diverger,
+            function_with_all_diverging_cleanup_control(1, false),
+            function_with_all_diverging_cleanup_control(2, true),
+        ],
+        ..Program::default()
+    })
+    .expect("If and Match branches already contribute their exact cleanup exit states");
+}
+
+#[test]
+fn direct_never_short_circuit_rhs_consumes_its_cleanup_exit() {
+    let caller = function(
+        1,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Binary(
+                            BinaryOp::And,
+                            Box::new(copy(0, Type::Bool)),
+                            Box::new(direct_never_moving(0, 1)),
+                        ),
+                        Type::Bool,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![never_target_with_int(0), caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error
+                .path
+                .contains("functions[1].body.statements[1].cleanup")
+    }));
+}
+
+#[test]
+fn direct_never_match_arm_consumes_its_mixed_exit() {
+    let mixed = function(
+        1,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(1)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Match {
+                            scrutinee: Box::new(copy(0, Type::Bool)),
+                            arms: vec![
+                                MatchArm {
+                                    pattern: Pattern::Constant(Constant::Bool(true)),
+                                    bindings: Vec::new(),
+                                    value: direct_never_moving(0, 1),
+                                },
+                                MatchArm {
+                                    pattern: Pattern::Constant(Constant::Bool(false)),
+                                    bindings: Vec::new(),
+                                    value: constant(Constant::Unit, Type::Unit),
+                                },
+                            ],
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![never_target_with_int(0), mixed],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error
+                .path
+                .contains("functions[1].body.statements[1].cleanup")
+    }));
+}
+
+#[test]
+fn direct_never_match_arms_consume_every_diverging_exit() {
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(expr(
+                ExprKind::Tuple(vec![copy(1, Type::Int), copy(2, Type::Int)]),
+                Type::Tuple(vec![Type::Int, Type::Int]),
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let all = function(
+        1,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, true), local(2, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(2),
+                        value: constant(Constant::Int(2), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Match {
+                            scrutinee: Box::new(copy(0, Type::Bool)),
+                            arms: vec![
+                                MatchArm {
+                                    pattern: Pattern::Constant(Constant::Bool(true)),
+                                    bindings: Vec::new(),
+                                    value: direct_never_moving(0, 1),
+                                },
+                                MatchArm {
+                                    pattern: Pattern::Constant(Constant::Bool(false)),
+                                    bindings: Vec::new(),
+                                    value: direct_never_moving(0, 2),
+                                },
+                            ],
+                        },
+                        Type::Never,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![never_target_with_int(0), all],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error
+                .path
+                .contains("functions[1].body.statements[2].cleanup")
+            && error.path.contains("elements[0]")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error
+                .path
+                .contains("functions[1].body.statements[2].cleanup")
+            && error.path.contains("elements[1]")
+    }));
 }
 
 #[test]

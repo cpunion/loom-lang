@@ -272,32 +272,305 @@ struct PlaceLoan {
     mutable: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TemporaryLoanSet {
+    /// Registration order makes nested-call checkpoints and rollback exact.
+    ordered: Vec<PlaceLoan>,
+    /// All active loans indexed by owner local. Mutation, Move, mutable
+    /// borrowing, and `InOut` consult this bucket.
+    all_by_local: BTreeMap<LocalId, Vec<usize>>,
+    /// Mutable loans indexed separately so readonly borrow/Copy checks do not
+    /// scan an arbitrarily wide list of readonly call arguments.
+    mutable_by_local: BTreeMap<LocalId, Vec<usize>>,
+}
+
+impl TemporaryLoanSet {
+    fn is_empty(&self) -> bool {
+        self.ordered.is_empty()
+    }
+
+    fn push(&mut self, loan: PlaceLoan) {
+        let position = self.ordered.len();
+        let local = loan.owner.local;
+        self.all_by_local.entry(local).or_default().push(position);
+        if loan.mutable {
+            self.mutable_by_local
+                .entry(local)
+                .or_default()
+                .push(position);
+        }
+        self.ordered.push(loan);
+    }
+
+    fn extend(&mut self, loans: impl IntoIterator<Item = PlaceLoan>) {
+        for loan in loans {
+            self.push(loan);
+        }
+    }
+
+    fn has_overlapping(&self, owner: &Place, include_readonly: bool) -> bool {
+        let buckets = if include_readonly {
+            &self.all_by_local
+        } else {
+            &self.mutable_by_local
+        };
+        buckets.get(&owner.local).is_some_and(|positions| {
+            positions.iter().any(|position| {
+                self.ordered
+                    .get(*position)
+                    .is_some_and(|loan| places_overlap(&loan.owner, owner))
+            })
+        })
+    }
+
+    fn union(left: &Self, right: &Self) -> Self {
+        let mut joined = left.clone();
+        let mut present = left.ordered.iter().cloned().collect::<BTreeSet<_>>();
+        for loan in &right.ordered {
+            if present.insert(loan.clone()) {
+                joined.push(loan.clone());
+            }
+        }
+        joined
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum BorrowedViewPosition {
     DirectCallArgument,
     Other,
 }
 
+type SlotRoot = u32;
+
+const EMPTY_SLOT_ROOT: SlotRoot = 0;
+
+#[derive(Clone, Copy)]
+enum SlotTrieNode {
+    Branch {
+        zero: SlotRoot,
+        one: SlotRoot,
+        all_maybe: bool,
+    },
+    Leaf(SlotState),
+}
+
+struct SlotStateArena {
+    nodes: Vec<SlotTrieNode>,
+    maybe_leaf: SlotRoot,
+    join_cache: BTreeMap<(SlotRoot, SlotRoot), SlotRoot>,
+    maybe_cache: BTreeMap<SlotRoot, SlotRoot>,
+}
+
+impl SlotStateArena {
+    fn new() -> Self {
+        let nodes = vec![SlotTrieNode::Leaf(SlotState::MaybeUnavailable)];
+        Self {
+            nodes,
+            maybe_leaf: 1,
+            join_cache: BTreeMap::new(),
+            maybe_cache: BTreeMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.nodes.truncate(1);
+        self.join_cache.clear();
+        self.maybe_cache.clear();
+    }
+
+    fn get(&self, mut root: SlotRoot, key: u32) -> SlotState {
+        for depth in 0..u32::BITS {
+            let Some(SlotTrieNode::Branch { zero, one, .. }) = self.node(root) else {
+                return SlotState::Uninitialized;
+            };
+            let bit = u32::BITS - depth - 1;
+            root = if key & (1_u32 << bit) == 0 { zero } else { one };
+        }
+        match self.node(root) {
+            Some(SlotTrieNode::Leaf(value)) => value,
+            Some(SlotTrieNode::Branch { .. }) | None => SlotState::Uninitialized,
+        }
+    }
+
+    fn set(&mut self, root: SlotRoot, key: u32, value: SlotState) -> SlotRoot {
+        self.set_at(root, key, value, 0)
+    }
+
+    fn set_at(&mut self, root: SlotRoot, key: u32, value: SlotState, depth: u32) -> SlotRoot {
+        if depth == u32::BITS {
+            if value == SlotState::Uninitialized {
+                return EMPTY_SLOT_ROOT;
+            }
+            if matches!(self.node(root), Some(SlotTrieNode::Leaf(current)) if current == value) {
+                return root;
+            }
+            if value == SlotState::MaybeUnavailable {
+                return self.maybe_leaf;
+            }
+            return self.push_node(SlotTrieNode::Leaf(value));
+        }
+        let (zero, one) = self.children(root);
+        let bit = u32::BITS - depth - 1;
+        let (next_zero, next_one) = if key & (1_u32 << bit) == 0 {
+            (self.set_at(zero, key, value, depth + 1), one)
+        } else {
+            (zero, self.set_at(one, key, value, depth + 1))
+        };
+        self.changed_branch(root, next_zero, next_one)
+    }
+
+    fn join(&mut self, left: SlotRoot, right: SlotRoot) -> SlotRoot {
+        self.join_at(left, right, 0)
+    }
+
+    fn join_at(&mut self, mut left: SlotRoot, mut right: SlotRoot, depth: u32) -> SlotRoot {
+        if left == right {
+            return left;
+        }
+        if left == EMPTY_SLOT_ROOT {
+            return self.map_to_maybe(right);
+        }
+        if right == EMPTY_SLOT_ROOT {
+            return self.map_to_maybe(left);
+        }
+        if left > right {
+            std::mem::swap(&mut left, &mut right);
+        }
+        if let Some(cached) = self.join_cache.get(&(left, right)).copied() {
+            return cached;
+        }
+        let result = if depth == u32::BITS {
+            let left_value = self.leaf_value(left);
+            let right_value = self.leaf_value(right);
+            if left_value == right_value {
+                left
+            } else {
+                self.maybe_leaf
+            }
+        } else {
+            let (left_zero, left_one) = self.children(left);
+            let (right_zero, right_one) = self.children(right);
+            let zero = self.join_at(left_zero, right_zero, depth + 1);
+            let one = self.join_at(left_one, right_one, depth + 1);
+            if self.children(left) == (zero, one) {
+                left
+            } else if self.children(right) == (zero, one) {
+                right
+            } else {
+                self.push_branch(zero, one)
+            }
+        };
+        self.join_cache.insert((left, right), result);
+        result
+    }
+
+    fn map_to_maybe(&mut self, root: SlotRoot) -> SlotRoot {
+        if root == EMPTY_SLOT_ROOT || self.all_maybe(root) {
+            return root;
+        }
+        if let Some(cached) = self.maybe_cache.get(&root).copied() {
+            return cached;
+        }
+        let result = match self.node(root) {
+            Some(SlotTrieNode::Leaf(_)) => self.maybe_leaf,
+            Some(SlotTrieNode::Branch { zero, one, .. }) => {
+                let zero = self.map_to_maybe(zero);
+                let one = self.map_to_maybe(one);
+                self.push_branch(zero, one)
+            }
+            None => EMPTY_SLOT_ROOT,
+        };
+        self.maybe_cache.insert(root, result);
+        result
+    }
+
+    fn changed_branch(&mut self, root: SlotRoot, zero: SlotRoot, one: SlotRoot) -> SlotRoot {
+        if zero == EMPTY_SLOT_ROOT && one == EMPTY_SLOT_ROOT {
+            return EMPTY_SLOT_ROOT;
+        }
+        if self.children(root) == (zero, one) {
+            return root;
+        }
+        self.push_branch(zero, one)
+    }
+
+    fn push_branch(&mut self, zero: SlotRoot, one: SlotRoot) -> SlotRoot {
+        let all_maybe = (zero == EMPTY_SLOT_ROOT || self.all_maybe(zero))
+            && (one == EMPTY_SLOT_ROOT || self.all_maybe(one));
+        self.push_node(SlotTrieNode::Branch {
+            zero,
+            one,
+            all_maybe,
+        })
+    }
+
+    fn push_node(&mut self, node: SlotTrieNode) -> SlotRoot {
+        let id = u32::try_from(self.nodes.len() + 1)
+            .expect("slot-state trie exhausted its u32 node-id domain");
+        self.nodes.push(node);
+        id
+    }
+
+    fn node(&self, root: SlotRoot) -> Option<SlotTrieNode> {
+        if root == EMPTY_SLOT_ROOT {
+            return None;
+        }
+        usize::try_from(root - 1)
+            .ok()
+            .and_then(|index| self.nodes.get(index))
+            .copied()
+    }
+
+    fn children(&self, root: SlotRoot) -> (SlotRoot, SlotRoot) {
+        match self.node(root) {
+            Some(SlotTrieNode::Branch { zero, one, .. }) => (zero, one),
+            Some(SlotTrieNode::Leaf(_)) | None => (EMPTY_SLOT_ROOT, EMPTY_SLOT_ROOT),
+        }
+    }
+
+    fn leaf_value(&self, root: SlotRoot) -> SlotState {
+        match self.node(root) {
+            Some(SlotTrieNode::Leaf(value)) => value,
+            Some(SlotTrieNode::Branch { .. }) | None => SlotState::Uninitialized,
+        }
+    }
+
+    fn all_maybe(&self, root: SlotRoot) -> bool {
+        match self.node(root) {
+            Some(SlotTrieNode::Branch { all_maybe, .. }) => all_maybe,
+            Some(SlotTrieNode::Leaf(value)) => value == SlotState::MaybeUnavailable,
+            None => true,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DataflowState {
-    slots: Vec<SlotState>,
-    /// Possible loans carried by each local. A branch join may retain more
-    /// than one conservative possibility for the same carrier.
-    view_loans: Vec<Vec<PlaceLoan>>,
+    slots: SlotRoot,
+    local_count: usize,
     /// Accesses established by arguments of every active call expression.
     /// Each call restores its entry checkpoint only after every argument has
     /// finished evaluating.
-    temporary_loans: Vec<PlaceLoan>,
+    temporary_loans: Rc<TemporaryLoanSet>,
     /// Cleanups registered by the lexical blocks that are currently active.
     /// They are replayed against the state at each actual exit, rather than
     /// only against the state observed when the defer was registered.
-    active_cleanups: Vec<RegisteredCleanup>,
+    active_cleanup: Option<usize>,
 }
 
 #[derive(Clone)]
 struct RegisteredCleanup {
     block: Rc<Block>,
     path: Rc<str>,
+    depth: u16,
+    older: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum CleanupEntry {
+    Normal,
+    Unwind,
 }
 
 struct ExprFlow {
@@ -348,6 +621,10 @@ struct Validator<'program> {
     program: &'program Program,
     errors: Vec<MirValidationError>,
     nesting_failed: bool,
+    function_tokens: BTreeSet<u32>,
+    cleanup_arena: Vec<RegisteredCleanup>,
+    pending_cleanup_unwinds: BTreeMap<usize, DataflowState>,
+    slot_states: SlotStateArena,
 }
 
 impl<'program> Validator<'program> {
@@ -356,6 +633,10 @@ impl<'program> Validator<'program> {
             program,
             errors: Vec::new(),
             nesting_failed: false,
+            function_tokens: BTreeSet::new(),
+            cleanup_arena: Vec::new(),
+            pending_cleanup_unwinds: BTreeMap::new(),
+            slot_states: SlotStateArena::new(),
         }
     }
 
@@ -2319,6 +2600,7 @@ impl<'program> Validator<'program> {
 
     #[allow(clippy::too_many_lines)]
     fn validate_function(&mut self, function: &Function, path: &str) {
+        self.function_tokens.clear();
         self.validate_expression_ids(function, path);
         let witness_prefix_count =
             usize::try_from(function.witness_prefix_count).unwrap_or(usize::MAX);
@@ -2817,7 +3099,21 @@ impl<'program> Validator<'program> {
                 awaits.entry(state).or_default().push(expression.span);
             }
         }
-        let expected_liveness = crate::analyze_suspension_liveness(&function.body);
+        // Synchronous functions and async functions without Await have no
+        // suspension liveness to validate. Avoid constructing the cleanup CFG
+        // for these overwhelmingly common cases (and, in particular, for a
+        // large flat stack of defers that can never suspend).
+        let expected_liveness = if awaits.is_empty() {
+            BTreeMap::new()
+        } else {
+            crate::analyze_suspension_liveness(&function.body)
+        };
+
+        let declared_states = function
+            .suspension_points
+            .iter()
+            .map(|point| point.state)
+            .collect::<BTreeSet<_>>();
 
         for (index, point) in function.suspension_points.iter().enumerate() {
             self.validate_suspension_point(
@@ -2831,11 +3127,7 @@ impl<'program> Validator<'program> {
         }
 
         for (state, occurrences) in awaits {
-            if !function
-                .suspension_points
-                .iter()
-                .any(|point| point.state == state)
-            {
+            if !declared_states.contains(&state) {
                 self.push(
                     MirValidationCode::SuspensionShape,
                     format!("Await state #{state} has no suspension metadata"),
@@ -3287,6 +3579,19 @@ impl<'program> Validator<'program> {
                 &format!("{path}.place"),
             ),
             ExprKind::Move(place) => {
+                if function.receiver == Some(Receiver::Mutable)
+                    && function
+                        .params
+                        .first()
+                        .is_some_and(|receiver| receiver.id == place.local)
+                {
+                    self.push(
+                        MirValidationCode::ReceiverShape,
+                        "a mutable receiver aliases the caller and cannot be moved",
+                        expression.span,
+                        format!("{path}.place"),
+                    );
+                }
                 if !place.projection.is_empty() {
                     self.push(
                         MirValidationCode::ProjectedMove,
@@ -3470,18 +3775,26 @@ impl<'program> Validator<'program> {
                 writeback,
                 witness,
                 mutable,
-                ..
-            } => self.validate_make_view(
-                function,
-                value,
-                writeback.as_ref(),
-                witness,
-                *mutable,
-                expression,
-                path,
-                depth + 1,
-            ),
-            ExprKind::ReborrowView { owner, mutable, .. } => {
+                token,
+            } => {
+                self.validate_interface_token(*token, expression.span, path);
+                self.validate_make_view(
+                    function,
+                    value,
+                    writeback.as_ref(),
+                    witness,
+                    *mutable,
+                    expression,
+                    path,
+                    depth + 1,
+                )
+            }
+            ExprKind::ReborrowView {
+                owner,
+                mutable,
+                token,
+            } => {
+                self.validate_interface_token(*token, expression.span, path);
                 self.validate_reborrow_view(function, owner, *mutable, expression, path)
             }
             ExprKind::Await { state, task } => {
@@ -3665,6 +3978,17 @@ impl<'program> Validator<'program> {
             );
         }
         expression.ty.clone()
+    }
+
+    fn validate_interface_token(&mut self, token: u32, span: Span, path: &str) {
+        if !self.function_tokens.insert(token) {
+            self.push(
+                MirValidationCode::BorrowShape,
+                format!("interface access token #{token} is reused in one function"),
+                span,
+                format!("{path}.token"),
+            );
+        }
     }
 
     fn validate_unary(
@@ -7580,31 +7904,31 @@ impl<'program> Validator<'program> {
     }
 
     fn validate_function_dataflow(&mut self, function: &Function, path: &str) {
+        self.cleanup_arena.clear();
+        self.pending_cleanup_unwinds.clear();
+        self.slot_states.clear();
         self.validate_borrowed_view_uses(function, path);
         if self.nesting_failed {
             return;
         }
         let local_count = function.params.len() + function.locals.len();
         let mut state = DataflowState {
-            slots: vec![SlotState::Uninitialized; local_count],
-            view_loans: vec![Vec::new(); local_count],
-            temporary_loans: Vec::new(),
-            active_cleanups: Vec::new(),
+            slots: EMPTY_SLOT_ROOT,
+            local_count,
+            temporary_loans: Rc::new(TemporaryLoanSet::default()),
+            active_cleanup: None,
         };
         for parameter in &function.params {
-            if let Some(slot) = state.slots.get_mut(parameter.id.0 as usize) {
-                *slot = SlotState::Available;
-            }
+            self.set_slot_state(&mut state, parameter.id.0 as usize, SlotState::Available);
         }
-        let mut tokens = BTreeSet::new();
         let flow = self.dataflow_block(
             function,
             &function.body,
             &mut state,
-            &mut tokens,
             &format!("{path}.body"),
             0,
         );
+        self.drain_pending_cleanup_unwinds(function);
         if !flow.loans.is_empty() {
             self.push(
                 MirValidationCode::BorrowShape,
@@ -7613,6 +7937,9 @@ impl<'program> Validator<'program> {
                 format!("{path}.body.tail"),
             );
         }
+        self.pending_cleanup_unwinds.clear();
+        self.cleanup_arena.clear();
+        self.slot_states.clear();
     }
 
     fn dataflow_block(
@@ -7620,7 +7947,6 @@ impl<'program> Validator<'program> {
         function: &Function,
         block: &Block,
         state: &mut DataflowState,
-        tokens: &mut BTreeSet<u32>,
         path: &str,
         depth: u16,
     ) -> ExprFlow {
@@ -7630,17 +7956,19 @@ impl<'program> Validator<'program> {
                 loans: Vec::new(),
             };
         }
-        let cleanup_base = state.active_cleanups.len();
+        // Cleanup suffixes are identified by their arena head, not merely by
+        // a depth/count. Distinct sibling stacks can have equal depths and
+        // must never be mistaken for the lexical suffix active on entry.
+        let cleanup_base = state.active_cleanup;
         for (index, statement) in block.statements.iter().enumerate() {
             if self.dataflow_statement(
                 function,
                 statement,
                 state,
-                tokens,
                 &format!("{path}.statements[{index}]"),
                 depth + 1,
             ) {
-                self.dataflow_cleanup_sequence(function, state, 0, depth + 1);
+                self.dataflow_cleanup_exit(function, state);
                 return ExprFlow {
                     diverges: true,
                     loans: Vec::new(),
@@ -7652,76 +7980,121 @@ impl<'program> Validator<'program> {
                 diverges: false,
                 loans: Vec::new(),
             },
-            |tail| {
-                self.dataflow_expr(
-                    function,
-                    tail,
-                    state,
-                    tokens,
-                    &format!("{path}.tail"),
-                    depth + 1,
-                )
-            },
+            |tail| self.dataflow_expr(function, tail, state, &format!("{path}.tail"), depth + 1),
         );
         if flow.diverges {
-            self.dataflow_cleanup_sequence(function, state, 0, depth + 1);
+            self.dataflow_cleanup_exit(function, state);
             flow.loans.clear();
-        } else if !self.dataflow_cleanup_sequence(function, state, cleanup_base, depth + 1) {
+        } else if !self.dataflow_cleanup_sequence(function, state, cleanup_base) {
             flow.diverges = true;
             flow.loans.clear();
         }
         flow
     }
 
-    /// Validate and apply registered cleanups in interpreter order. Each
-    /// replay gets a fresh token set because token uniqueness was already
-    /// checked once at registration; replaying the same syntax must not look
-    /// like a second token occurrence.
+    /// Validate and apply registered cleanups in interpreter order.
     fn dataflow_cleanup_sequence(
         &mut self,
         function: &Function,
         state: &mut DataflowState,
-        first: usize,
-        depth: u16,
+        normal_base: Option<usize>,
     ) -> bool {
-        let cleanups = state.active_cleanups.clone();
-        let first = first.min(cleanups.len());
-        for index in (first..cleanups.len()).rev() {
-            let cleanup = &cleanups[index];
-            // Older cleanups stay active while a newer cleanup runs: if the
-            // newer body faults after mutating state, its fault-point replay
-            // must validate those older cleanups against that exact state.
-            state.active_cleanups = cleanups[..index].to_vec();
-            let mut replay_tokens = BTreeSet::new();
-            let flow = self.dataflow_block(
-                function,
-                cleanup.block.as_ref(),
-                state,
-                &mut replay_tokens,
-                cleanup.path.as_ref(),
-                depth + 1,
-            );
-            if flow.diverges {
-                // The cleanup block already replayed every older active
-                // cleanup on this terminating path.
-                return false;
-            }
+        if state.active_cleanup == normal_base {
+            return true;
         }
-        state.active_cleanups = cleanups[..first].to_vec();
+
+        // Preserve the exact all-success state needed by normal continuation.
+        // Faulting exits are joined by cleanup suffix and drained after the
+        // primary function flow, so they never enumerate path subsets here.
+        let mut normal = state.clone();
+        while normal.active_cleanup != normal_base {
+            let Some(cleanup_id) = normal.active_cleanup else {
+                // A checked lexical stack cannot lose its entry suffix. Keep
+                // malformed/defective input on the diagnostic path rather
+                // than looping or accepting a sibling stack of equal depth.
+                debug_assert!(false, "cleanup chain ended before its lexical base");
+                state.active_cleanup = None;
+                return false;
+            };
+            let Some(cleanup) = self.cleanup_arena.get(cleanup_id).cloned() else {
+                state.active_cleanup = None;
+                return false;
+            };
+            let Some(success) =
+                self.dataflow_cleanup_transfer(function, &cleanup, normal, CleanupEntry::Normal)
+            else {
+                state.active_cleanup = None;
+                return false;
+            };
+            normal = success;
+        }
+        debug_assert_eq!(normal.active_cleanup, normal_base);
+        *state = normal;
         true
+    }
+
+    fn dataflow_cleanup_transfer(
+        &mut self,
+        function: &Function,
+        cleanup: &RegisteredCleanup,
+        mut state: DataflowState,
+        entry: CleanupEntry,
+    ) -> Option<DataflowState> {
+        if matches!(entry, CleanupEntry::Unwind) {
+            state.temporary_loans = Rc::new(TemporaryLoanSet::default());
+        }
+        state.active_cleanup = cleanup.older;
+        let flow = self.dataflow_block(
+            function,
+            cleanup.block.as_ref(),
+            &mut state,
+            cleanup.path.as_ref(),
+            cleanup.depth,
+        );
+        (!flow.diverges).then_some(state)
+    }
+
+    fn dataflow_cleanup_exit(&mut self, _function: &Function, state: &mut DataflowState) {
+        state.temporary_loans = Rc::new(TemporaryLoanSet::default());
+        self.enqueue_cleanup_unwind(state.clone());
+        state.active_cleanup = None;
     }
 
     fn validate_active_cleanups_at_fault_point(
         &mut self,
-        function: &Function,
+        _function: &Function,
         state: &DataflowState,
-        depth: u16,
     ) {
-        if state.active_cleanups.is_empty() {
+        self.enqueue_cleanup_unwind(state.clone());
+    }
+
+    fn enqueue_cleanup_unwind(&mut self, mut state: DataflowState) {
+        state.temporary_loans = Rc::new(TemporaryLoanSet::default());
+        let Some(cleanup) = state.active_cleanup else {
             return;
+        };
+        debug_assert!(cleanup < self.cleanup_arena.len());
+        if let Some(previous) = self.pending_cleanup_unwinds.remove(&cleanup) {
+            debug_assert_eq!(previous.active_cleanup, Some(cleanup));
+            state = self.join_dataflow_states(&[previous, state]);
         }
-        let mut unwind = state.clone();
-        let _ = self.dataflow_cleanup_sequence(function, &mut unwind, 0, depth + 1);
+        debug_assert_eq!(state.active_cleanup, Some(cleanup));
+        self.pending_cleanup_unwinds.insert(cleanup, state);
+    }
+
+    fn drain_pending_cleanup_unwinds(&mut self, function: &Function) {
+        while let Some((cleanup_id, state)) = self.pending_cleanup_unwinds.pop_last() {
+            debug_assert_eq!(state.active_cleanup, Some(cleanup_id));
+            let Some(cleanup) = self.cleanup_arena.get(cleanup_id).cloned() else {
+                continue;
+            };
+            debug_assert!(cleanup.older.is_none_or(|older| older < cleanup_id));
+            if let Some(success) =
+                self.dataflow_cleanup_transfer(function, &cleanup, state, CleanupEntry::Unwind)
+            {
+                self.enqueue_cleanup_unwind(success);
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -7730,20 +8103,13 @@ impl<'program> Validator<'program> {
         function: &Function,
         statement: &Statement,
         state: &mut DataflowState,
-        tokens: &mut BTreeSet<u32>,
         path: &str,
         depth: u16,
     ) -> bool {
         match &statement.kind {
             StatementKind::Let { local, value } => {
-                let value = self.dataflow_expr(
-                    function,
-                    value,
-                    state,
-                    tokens,
-                    &format!("{path}.value"),
-                    depth,
-                );
+                let value =
+                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth);
                 if value.diverges {
                     return true;
                 }
@@ -7754,10 +8120,15 @@ impl<'program> Validator<'program> {
                         statement.span,
                         format!("{path}.value"),
                     );
+                    // Legal borrowed carriers are ephemeral expression
+                    // values consumed only by a proven-sync direct call.
+                    // This program is already invalid, so do not turn its
+                    // forbidden carrier into persistent dataflow state and
+                    // multiply cascading conflicts for hostile unchecked MIR.
                 }
                 let index = local.0 as usize;
-                if let Some(slot) = state.slots.get(index)
-                    && *slot != SlotState::Uninitialized
+                if let Some(slot) = self.slot_state(state, index)
+                    && slot != SlotState::Uninitialized
                 {
                     self.push(
                         MirValidationCode::LocalState,
@@ -7766,18 +8137,12 @@ impl<'program> Validator<'program> {
                         format!("{path}.local"),
                     );
                 }
-                Self::dataflow_store(index, value.loans, state);
+                self.dataflow_store(index, state);
                 false
             }
             StatementKind::LetTuple { locals, value } => {
-                let value = self.dataflow_expr(
-                    function,
-                    value,
-                    state,
-                    tokens,
-                    &format!("{path}.value"),
-                    depth,
-                );
+                let value =
+                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth);
                 if value.diverges {
                     return true;
                 }
@@ -7791,10 +8156,9 @@ impl<'program> Validator<'program> {
                 }
                 for (index, local) in locals.iter().enumerate() {
                     let slot = local.0 as usize;
-                    if state
-                        .slots
-                        .get(slot)
-                        .is_some_and(|slot| *slot != SlotState::Uninitialized)
+                    if self
+                        .slot_state(state, slot)
+                        .is_some_and(|slot| slot != SlotState::Uninitialized)
                     {
                         self.push(
                             MirValidationCode::LocalState,
@@ -7803,7 +8167,7 @@ impl<'program> Validator<'program> {
                             format!("{path}.locals[{index}]"),
                         );
                     }
-                    Self::dataflow_store(slot, Vec::new(), state);
+                    self.dataflow_store(slot, state);
                 }
                 false
             }
@@ -7813,19 +8177,12 @@ impl<'program> Validator<'program> {
                 end,
                 body,
             } => {
-                let start = self.dataflow_expr(
-                    function,
-                    start,
-                    state,
-                    tokens,
-                    &format!("{path}.start"),
-                    depth,
-                );
+                let start =
+                    self.dataflow_expr(function, start, state, &format!("{path}.start"), depth);
                 if start.diverges {
                     return true;
                 }
-                let end =
-                    self.dataflow_expr(function, end, state, tokens, &format!("{path}.end"), depth);
+                let end = self.dataflow_expr(function, end, state, &format!("{path}.end"), depth);
                 if end.diverges {
                     return true;
                 }
@@ -7839,7 +8196,7 @@ impl<'program> Validator<'program> {
                 // intentionally need not be carried.
                 let entry = state.clone();
                 let induction_index = local.0 as usize;
-                if entry.slots.get(induction_index) != Some(&SlotState::Uninitialized) {
+                if self.slot_state(&entry, induction_index) != Some(SlotState::Uninitialized) {
                     self.push(
                         MirValidationCode::LocalState,
                         format!(
@@ -7851,12 +8208,11 @@ impl<'program> Validator<'program> {
                     );
                 }
                 let mut iteration = state.clone();
-                Self::dataflow_store(induction_index, Vec::new(), &mut iteration);
+                self.dataflow_store(induction_index, &mut iteration);
                 let body_flow = self.dataflow_block(
                     function,
                     body,
                     &mut iteration,
-                    tokens,
                     &format!("{path}.body"),
                     depth + 1,
                 );
@@ -7871,19 +8227,13 @@ impl<'program> Validator<'program> {
                         statement.span,
                         path,
                     );
-                    *state = join_dataflow_states(&[entry, iteration]);
+                    *state = self.join_dataflow_states(&[entry, iteration]);
                 }
                 false
             }
             StatementKind::Assign { place, value } => {
-                let value = self.dataflow_expr(
-                    function,
-                    value,
-                    state,
-                    tokens,
-                    &format!("{path}.value"),
-                    depth,
-                );
+                let value =
+                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth);
                 if value.diverges {
                     return true;
                 }
@@ -7898,7 +8248,7 @@ impl<'program> Validator<'program> {
                 let index = place.local.0 as usize;
                 if place.projection.is_empty() {
                     self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
-                    Self::dataflow_store(index, value.loans, state);
+                    self.dataflow_store(index, state);
                 } else {
                     self.require_available(place.local, state, statement.span, path);
                     self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
@@ -7910,30 +8260,25 @@ impl<'program> Validator<'program> {
                     function,
                     condition,
                     state,
-                    tokens,
                     &format!("{path}.condition"),
                     depth,
                 );
                 if !flow.diverges {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 flow.diverges
             }
             StatementKind::Defer(cleanup) => {
-                let mut cleanup_state = state.clone();
-                cleanup_state.active_cleanups.clear();
-                let _ = self.dataflow_block(
-                    function,
-                    cleanup,
-                    &mut cleanup_state,
-                    tokens,
-                    &format!("{path}.cleanup"),
-                    depth + 1,
-                );
-                state.active_cleanups.push(RegisteredCleanup {
+                let older = state.active_cleanup;
+                let cleanup_id = self.cleanup_arena.len();
+                debug_assert!(older.is_none_or(|older| older < cleanup_id));
+                self.cleanup_arena.push(RegisteredCleanup {
                     block: Rc::new(cleanup.clone()),
                     path: Rc::from(format!("{path}.cleanup")),
+                    depth: depth + 1,
+                    older,
                 });
+                state.active_cleanup = Some(cleanup_id);
                 false
             }
             StatementKind::Evaluate(expression) => {
@@ -7941,7 +8286,6 @@ impl<'program> Validator<'program> {
                     function,
                     expression,
                     state,
-                    tokens,
                     &format!("{path}.expression"),
                     depth,
                 )
@@ -7949,14 +8293,8 @@ impl<'program> Validator<'program> {
             }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    let flow = self.dataflow_expr(
-                        function,
-                        value,
-                        state,
-                        tokens,
-                        &format!("{path}.value"),
-                        depth,
-                    );
+                    let flow =
+                        self.dataflow_expr(function, value, state, &format!("{path}.value"), depth);
                     if !flow.loans.is_empty() {
                         self.push(
                             MirValidationCode::BorrowShape,
@@ -7977,7 +8315,6 @@ impl<'program> Validator<'program> {
         function: &Function,
         expression: &Expr,
         state: &mut DataflowState,
-        tokens: &mut BTreeSet<u32>,
         path: &str,
         depth: u16,
     ) -> ExprFlow {
@@ -7991,28 +8328,27 @@ impl<'program> Validator<'program> {
             diverges,
             loans: Vec::new(),
         };
+        // A legal borrowed carrier is the root value expression of a
+        // proven-synchronous direct call argument. The structural pass
+        // rejects MakeView/ReborrowView beneath every compound expression,
+        // so compound nodes validate their children but deliberately do not
+        // aggregate or propagate those invalid child loans.
         match &expression.kind {
             ExprKind::Constant(_) => no_value(expression.ty == Type::Never),
             ExprKind::Tuple(elements) | ExprKind::List(elements) => {
-                let mut loans = Vec::new();
                 for (index, element) in elements.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
                         element,
                         state,
-                        tokens,
                         &format!("{path}.elements[{index}]"),
                         depth + 1,
                     );
                     if flow.diverges {
                         return no_value(true);
                     }
-                    loans = union_loans(loans, flow.loans);
                 }
-                ExprFlow {
-                    diverges: expression.ty == Type::Never,
-                    loans,
-                }
+                no_value(expression.ty == Type::Never)
             }
             ExprKind::Copy(place) => {
                 self.require_available(place.local, state, expression.span, path);
@@ -8033,17 +8369,10 @@ impl<'program> Validator<'program> {
                 self.require_available(place.local, state, expression.span, path);
                 self.reject_owner_mutation_while_borrowed(place, state, expression.span, path);
                 let index = place.local.0 as usize;
-                let loans = state
-                    .view_loans
-                    .get_mut(index)
-                    .map(std::mem::take)
-                    .unwrap_or_default();
-                if let Some(slot) = state.slots.get_mut(index) {
-                    *slot = SlotState::Moved;
-                }
+                self.set_slot_state(state, index, SlotState::Moved);
                 ExprFlow {
                     diverges: expression.ty == Type::Never,
-                    loans,
+                    loans: Vec::new(),
                 }
             }
             ExprKind::Unary(operator, operand) => {
@@ -8051,12 +8380,11 @@ impl<'program> Validator<'program> {
                     function,
                     operand,
                     state,
-                    tokens,
                     &format!("{path}.operand"),
                     depth + 1,
                 );
                 if !flow.diverges && *operator == UnaryOp::Negate && expression.ty == Type::Int {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
@@ -8065,21 +8393,14 @@ impl<'program> Validator<'program> {
                     function,
                     operand,
                     state,
-                    tokens,
                     &format!("{path}.operand"),
                     depth + 1,
                 );
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
             ExprKind::Binary(operator, left, right) => {
-                let left = self.dataflow_expr(
-                    function,
-                    left,
-                    state,
-                    tokens,
-                    &format!("{path}.left"),
-                    depth + 1,
-                );
+                let left =
+                    self.dataflow_expr(function, left, state, &format!("{path}.left"), depth + 1);
                 if left.diverges {
                     return no_value(true);
                 }
@@ -8094,14 +8415,19 @@ impl<'program> Validator<'program> {
                         function,
                         right,
                         &mut right_state,
-                        tokens,
                         &format!("{path}.right"),
                         depth + 1,
                     );
                     *state = if right.diverges {
+                        // The short-circuit path continues, so the RHS
+                        // divergence is absorbed here instead of bubbling to
+                        // the containing block. Consume its unwind path before
+                        // discarding the branch state. A nested block that
+                        // already did so has no active cleanup and is a no-op.
+                        self.dataflow_cleanup_exit(function, &mut right_state);
                         short_circuit
                     } else {
-                        join_dataflow_states(&[short_circuit, right_state])
+                        self.join_dataflow_states(&[short_circuit, right_state])
                     };
                     no_value(expression.ty == Type::Never)
                 } else {
@@ -8109,7 +8435,6 @@ impl<'program> Validator<'program> {
                         function,
                         right,
                         state,
-                        tokens,
                         &format!("{path}.right"),
                         depth + 1,
                     );
@@ -8123,19 +8448,21 @@ impl<'program> Validator<'program> {
                                 | BinaryOp::Divide
                         )
                     {
-                        self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                        self.validate_active_cleanups_at_fault_point(function, state);
                     }
                     no_value(right.diverges || expression.ty == Type::Never)
                 }
             }
-            ExprKind::Block(block) => self.dataflow_block(
-                function,
-                block,
-                state,
-                tokens,
-                &format!("{path}.block"),
-                depth + 1,
-            ),
+            ExprKind::Block(block) => {
+                let flow = self.dataflow_block(
+                    function,
+                    block,
+                    state,
+                    &format!("{path}.block"),
+                    depth + 1,
+                );
+                no_value(flow.diverges || expression.ty == Type::Never)
+            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -8145,7 +8472,6 @@ impl<'program> Validator<'program> {
                     function,
                     condition,
                     state,
-                    tokens,
                     &format!("{path}.condition"),
                     depth + 1,
                 );
@@ -8158,7 +8484,6 @@ impl<'program> Validator<'program> {
                     function,
                     then_branch,
                     &mut then_state,
-                    tokens,
                     &format!("{path}.then"),
                     depth + 1,
                 );
@@ -8166,7 +8491,6 @@ impl<'program> Validator<'program> {
                     function,
                     else_branch,
                     &mut else_state,
-                    tokens,
                     &format!("{path}.else"),
                     depth + 1,
                 );
@@ -8178,25 +8502,21 @@ impl<'program> Validator<'program> {
                 .flatten()
                 .collect::<Vec<_>>();
                 if !continuing.is_empty() {
-                    *state = join_dataflow_states(&continuing);
+                    *state = self.join_dataflow_states(&continuing);
                 } else if then_flow.diverges && else_flow.diverges {
                     // Each terminating branch already replayed all active
                     // cleanups against its own exit state. Mark the aggregate
                     // path consumed so the containing block does not replay
                     // them a second time against the pre-branch state.
-                    state.active_cleanups.clear();
+                    state.active_cleanup = None;
                 }
-                ExprFlow {
-                    diverges: then_flow.diverges && else_flow.diverges,
-                    loans: union_loans(then_flow.loans, else_flow.loans),
-                }
+                no_value(then_flow.diverges && else_flow.diverges)
             }
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee = self.dataflow_expr(
                     function,
                     scrutinee,
                     state,
-                    tokens,
                     &format!("{path}.scrutinee"),
                     depth + 1,
                 );
@@ -8204,113 +8524,95 @@ impl<'program> Validator<'program> {
                     return no_value(true);
                 }
                 let mut continuing = Vec::new();
-                let mut result_loans = Vec::new();
                 let mut all_diverge = !arms.is_empty();
                 for (index, arm) in arms.iter().enumerate() {
                     let mut arm_state = state.clone();
                     for local in &arm.bindings {
-                        Self::dataflow_store(local.0 as usize, Vec::new(), &mut arm_state);
+                        self.dataflow_store(local.0 as usize, &mut arm_state);
                     }
                     let flow = self.dataflow_expr(
                         function,
                         &arm.value,
                         &mut arm_state,
-                        tokens,
                         &format!("{path}.arms[{index}].value"),
                         depth + 1,
                     );
                     all_diverge &= flow.diverges;
-                    result_loans = union_loans(result_loans, flow.loans);
-                    if !flow.diverges {
+                    if flow.diverges {
+                        // A direct Never-valued arm does not cross a block
+                        // boundary of its own. Its unwind path is absorbed by
+                        // Match whenever another arm continues, so consume it
+                        // before dropping this arm state.
+                        self.dataflow_cleanup_exit(function, &mut arm_state);
+                    } else {
                         continuing.push(arm_state);
                     }
                 }
                 if !continuing.is_empty() {
-                    *state = join_dataflow_states(&continuing);
+                    *state = self.join_dataflow_states(&continuing);
                 } else if all_diverge {
                     // As with `If`, every arm validated its own exit state.
-                    state.active_cleanups.clear();
+                    state.active_cleanup = None;
                 }
-                ExprFlow {
-                    diverges: all_diverge,
-                    loans: result_loans,
-                }
+                no_value(all_diverge)
             }
             ExprKind::Record {
                 fields,
                 construction,
                 ..
             } => {
-                let mut loans = Vec::new();
                 for (index, field) in fields.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
                         field,
                         state,
-                        tokens,
                         &format!("{path}.fields[{index}]"),
                         depth + 1,
                     );
                     if flow.diverges {
                         return no_value(true);
                     }
-                    loans = union_loans(loans, flow.loans);
                 }
                 if *construction == ConstructionMode::Runtime {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
-                ExprFlow {
-                    diverges: expression.ty == Type::Never,
-                    loans,
-                }
+                no_value(expression.ty == Type::Never)
             }
             ExprKind::Variant { payload, .. } => {
-                let mut loans = Vec::new();
                 for (index, value) in payload.iter().enumerate() {
                     let flow = self.dataflow_expr(
                         function,
                         value,
                         state,
-                        tokens,
                         &format!("{path}.payload[{index}]"),
                         depth + 1,
                     );
                     if flow.diverges {
                         return no_value(true);
                     }
-                    loans = union_loans(loans, flow.loans);
                 }
-                ExprFlow {
-                    diverges: expression.ty == Type::Never,
-                    loans,
-                }
+                no_value(expression.ty == Type::Never)
             }
             ExprKind::Refine {
                 value,
                 construction,
                 ..
             } => {
-                let flow = self.dataflow_expr(
-                    function,
-                    value,
-                    state,
-                    tokens,
-                    &format!("{path}.value"),
-                    depth + 1,
-                );
+                let flow =
+                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth + 1);
                 if !flow.diverges && *construction == ConstructionMode::Runtime {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
-                ExprFlow {
-                    diverges: flow.diverges || expression.ty == Type::Never,
-                    loans: flow.loans,
-                }
+                no_value(flow.diverges || expression.ty == Type::Never)
             }
             ExprKind::Call {
                 target, arguments, ..
             } => {
                 let target_is_synchronous = self.call_target_is_proven_synchronous(target);
-                let checkpoint = state.temporary_loans.len();
+                // Call-argument accesses form a dynamic scope. Retaining its
+                // entry root makes every normal or diverging exit an O(1)
+                // restoration and preserves pointer identity for joins.
+                let checkpoint = Rc::clone(&state.temporary_loans);
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -8318,12 +8620,11 @@ impl<'program> Validator<'program> {
                                 function,
                                 value,
                                 state,
-                                tokens,
                                 &format!("{path}.arguments[{index}]"),
                                 depth + 1,
                             );
                             if flow.diverges {
-                                state.temporary_loans.truncate(checkpoint);
+                                state.temporary_loans = Rc::clone(&checkpoint);
                                 return no_value(true);
                             }
                             if !target_is_synchronous && !flow.loans.is_empty() {
@@ -8334,7 +8635,7 @@ impl<'program> Validator<'program> {
                                     format!("{path}.arguments[{index}]"),
                                 );
                             }
-                            state.temporary_loans.extend(flow.loans);
+                            Rc::make_mut(&mut state.temporary_loans).extend(flow.loans);
                         }
                         CallArgument::InOut(place) => {
                             self.require_available(place.local, state, expression.span, path);
@@ -8352,7 +8653,7 @@ impl<'program> Validator<'program> {
                                 expression.span,
                                 &format!("{path}.arguments[{index}]"),
                             );
-                            state.temporary_loans.push(PlaceLoan {
+                            Rc::make_mut(&mut state.temporary_loans).push(PlaceLoan {
                                 owner: place.clone(),
                                 // InOut uses a two-phase access. Later arguments may take a
                                 // readonly snapshot (for example `values.add(values.length())`),
@@ -8363,9 +8664,9 @@ impl<'program> Validator<'program> {
                         }
                     }
                 }
-                state.temporary_loans.truncate(checkpoint);
+                state.temporary_loans = checkpoint;
                 if expression.ty != Type::Never {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(expression.ty == Type::Never)
             }
@@ -8373,52 +8674,28 @@ impl<'program> Validator<'program> {
                 value,
                 writeback,
                 mutable,
-                token,
+                token: _,
                 ..
             } => {
-                let flow = self.dataflow_expr(
-                    function,
-                    value,
-                    state,
-                    tokens,
-                    &format!("{path}.value"),
-                    depth + 1,
-                );
+                let flow =
+                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth + 1);
                 if flow.diverges {
                     return no_value(true);
                 }
                 let Some(owner) = writeback else {
-                    if !tokens.insert(*token) {
-                        self.push(
-                            MirValidationCode::BorrowShape,
-                            format!("interface value token #{token} is reused in one function"),
-                            expression.span,
-                            format!("{path}.token"),
-                        );
-                    }
                     return no_value(expression.ty == Type::Never);
                 };
-                self.dataflow_view_borrow(owner, *mutable, *token, expression, state, tokens, path)
+                self.dataflow_view_borrow(owner, *mutable, expression, state, path)
             }
             ExprKind::ReborrowView {
                 owner,
                 mutable,
-                token,
-            } => {
-                self.dataflow_view_borrow(owner, *mutable, *token, expression, state, tokens, path)
-            }
+                token: _,
+            } => self.dataflow_view_borrow(owner, *mutable, expression, state, path),
             ExprKind::Await { task, .. } => {
-                let flow = self.dataflow_expr(
-                    function,
-                    task,
-                    state,
-                    tokens,
-                    &format!("{path}.task"),
-                    depth + 1,
-                );
-                if state.view_loans.iter().any(|loans| !loans.is_empty())
-                    || !state.temporary_loans.is_empty()
-                {
+                let flow =
+                    self.dataflow_expr(function, task, state, &format!("{path}.task"), depth + 1);
+                if !state.temporary_loans.is_empty() {
                     self.push(
                         MirValidationCode::BorrowShape,
                         "call-scoped access cannot remain active across Await",
@@ -8427,7 +8704,7 @@ impl<'program> Validator<'program> {
                     );
                 }
                 if !flow.diverges {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
@@ -8436,12 +8713,11 @@ impl<'program> Validator<'program> {
                     function,
                     milliseconds,
                     state,
-                    tokens,
                     &format!("{path}.milliseconds"),
                     depth + 1,
                 );
                 if !flow.diverges {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
@@ -8450,12 +8726,11 @@ impl<'program> Validator<'program> {
                     function,
                     descriptor,
                     state,
-                    tokens,
                     &format!("{path}.descriptor"),
                     depth + 1,
                 );
                 if !flow.diverges {
-                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
@@ -8465,7 +8740,6 @@ impl<'program> Validator<'program> {
                         function,
                         argument,
                         state,
-                        tokens,
                         &format!("{path}.arguments[{index}]"),
                         depth + 1,
                     );
@@ -8473,39 +8747,28 @@ impl<'program> Validator<'program> {
                         return no_value(true);
                     }
                 }
-                self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                self.validate_active_cleanups_at_fault_point(function, state);
                 no_value(expression.ty == Type::Never)
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn dataflow_view_borrow(
         &mut self,
         owner: &Place,
         mutable: bool,
-        token: u32,
         expression: &Expr,
         state: &mut DataflowState,
-        tokens: &mut BTreeSet<u32>,
         path: &str,
     ) -> ExprFlow {
         self.require_available(owner.local, state, expression.span, path);
-        let conflicts = Self::active_loans(owner, state).any(|loan| mutable || loan.mutable);
+        let conflicts = state.temporary_loans.has_overlapping(owner, mutable);
         if conflicts {
             self.push(
                 MirValidationCode::BorrowShape,
                 "interface argument access conflicts with an already-active interface access",
                 expression.span,
                 path,
-            );
-        }
-        if !tokens.insert(token) {
-            self.push(
-                MirValidationCode::BorrowShape,
-                format!("interface access token #{token} is reused in one function"),
-                expression.span,
-                format!("{path}.token"),
             );
         }
         ExprFlow {
@@ -8517,13 +8780,42 @@ impl<'program> Validator<'program> {
         }
     }
 
-    fn dataflow_store(index: usize, loans: Vec<PlaceLoan>, state: &mut DataflowState) {
-        if let Some(slot) = state.slots.get_mut(index) {
-            *slot = SlotState::Available;
+    fn join_dataflow_states(&mut self, states: &[DataflowState]) -> DataflowState {
+        let mut joined = states[0].clone();
+        for state in &states[1..] {
+            debug_assert_eq!(joined.active_cleanup, state.active_cleanup);
+            debug_assert_eq!(joined.local_count, state.local_count);
+            joined.slots = self.slot_states.join(joined.slots, state.slots);
+            if !Rc::ptr_eq(&joined.temporary_loans, &state.temporary_loans) {
+                joined.temporary_loans = Rc::new(TemporaryLoanSet::union(
+                    joined.temporary_loans.as_ref(),
+                    state.temporary_loans.as_ref(),
+                ));
+            }
         }
-        if let Some(carried) = state.view_loans.get_mut(index) {
-            *carried = loans;
+        joined
+    }
+
+    fn slot_state(&self, state: &DataflowState, index: usize) -> Option<SlotState> {
+        if index >= state.local_count {
+            return None;
         }
+        let key = u32::try_from(index).ok()?;
+        Some(self.slot_states.get(state.slots, key))
+    }
+
+    fn set_slot_state(&mut self, state: &mut DataflowState, index: usize, value: SlotState) {
+        if index >= state.local_count {
+            return;
+        }
+        let Ok(key) = u32::try_from(index) else {
+            return;
+        };
+        state.slots = self.slot_states.set(state.slots, key, value);
+    }
+
+    fn dataflow_store(&mut self, index: usize, state: &mut DataflowState) {
+        self.set_slot_state(state, index, SlotState::Available);
     }
 
     fn validate_for_range_backedge(
@@ -8534,11 +8826,13 @@ impl<'program> Validator<'program> {
         span: Span,
         path: &str,
     ) {
-        for (index, entry_slot) in entry.slots.iter().enumerate() {
-            if index == induction.0 as usize || *entry_slot != SlotState::Available {
+        for index in 0..entry.local_count {
+            if index == induction.0 as usize
+                || self.slot_state(entry, index) != Some(SlotState::Available)
+            {
                 continue;
             }
-            if iteration.slots.get(index) != Some(&SlotState::Available) {
+            if self.slot_state(iteration, index) != Some(SlotState::Available) {
                 self.push(
                     MirValidationCode::LocalState,
                     format!(
@@ -8546,16 +8840,6 @@ impl<'program> Validator<'program> {
                     ),
                     span,
                     format!("{path}.body.backedge.locals[{index}]"),
-                );
-            }
-            if entry.view_loans.get(index) != iteration.view_loans.get(index) {
-                self.push(
-                    MirValidationCode::BorrowShape,
-                    format!(
-                        "continuing ForRange body changes loans carried by loop-entry local #{index}"
-                    ),
-                    span,
-                    format!("{path}.body.backedge.loans[{index}]"),
                 );
             }
         }
@@ -8570,7 +8854,7 @@ impl<'program> Validator<'program> {
     }
 
     fn require_available(&mut self, local: LocalId, state: &DataflowState, span: Span, path: &str) {
-        if state.slots.get(local.0 as usize) != Some(&SlotState::Available) {
+        if self.slot_state(state, local.0 as usize) != Some(SlotState::Available) {
             self.push(
                 MirValidationCode::LocalState,
                 format!(
@@ -8583,20 +8867,8 @@ impl<'program> Validator<'program> {
         }
     }
 
-    fn active_loans<'state>(
-        owner: &'state Place,
-        state: &'state DataflowState,
-    ) -> impl Iterator<Item = &'state PlaceLoan> + 'state {
-        state
-            .view_loans
-            .iter()
-            .flat_map(|loans| loans.iter())
-            .chain(state.temporary_loans.iter())
-            .filter(move |loan| places_overlap(&loan.owner, owner))
-    }
-
     fn owner_has_mutable_loan(owner: &Place, state: &DataflowState) -> bool {
-        Self::active_loans(owner, state).any(|loan| loan.mutable)
+        state.temporary_loans.has_overlapping(owner, false)
     }
 
     fn reject_owner_mutation_while_borrowed(
@@ -8606,7 +8878,7 @@ impl<'program> Validator<'program> {
         span: Span,
         path: &str,
     ) {
-        if Self::active_loans(owner, state).next().is_some() {
+        if state.temporary_loans.has_overlapping(owner, true) {
             self.push(
                 MirValidationCode::BorrowShape,
                 "place cannot be moved or mutated while call-scoped access is active",
@@ -8835,38 +9107,10 @@ fn type_contains_view(ty: &Type) -> bool {
     false
 }
 
-fn union_loans(mut left: Vec<PlaceLoan>, right: Vec<PlaceLoan>) -> Vec<PlaceLoan> {
-    for loan in right {
-        if !left.contains(&loan) {
-            left.push(loan);
-        }
-    }
-    left
-}
-
 fn places_overlap(left: &Place, right: &Place) -> bool {
     left.local == right.local
         && (left.projection.starts_with(&right.projection)
             || right.projection.starts_with(&left.projection))
-}
-
-fn join_dataflow_states(states: &[DataflowState]) -> DataflowState {
-    let mut joined = states[0].clone();
-    for state in &states[1..] {
-        for (slot, other) in joined.slots.iter_mut().zip(&state.slots) {
-            if *slot != *other {
-                *slot = SlotState::MaybeUnavailable;
-            }
-        }
-        for (loans, other) in joined.view_loans.iter_mut().zip(&state.view_loans) {
-            *loans = union_loans(std::mem::take(loans), other.clone());
-        }
-        joined.temporary_loans = union_loans(
-            std::mem::take(&mut joined.temporary_loans),
-            state.temporary_loans.clone(),
-        );
-    }
-    joined
 }
 
 fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
@@ -9417,5 +9661,100 @@ mod tests {
         };
 
         assert!(!expr_definitely_diverges(&expression, 0));
+    }
+
+    #[test]
+    fn slot_state_arena_matches_dense_states_and_bounds_suffix_joins() {
+        const COUNT: u32 = 8_192;
+        let mut arena = SlotStateArena::new();
+        let mut root = EMPTY_SLOT_ROOT;
+        let mut roots = Vec::with_capacity(usize::try_from(COUNT).expect("test count fits usize"));
+        for local in 0..COUNT {
+            root = arena.set(root, local, SlotState::Available);
+            roots.push(root);
+            assert_eq!(arena.get(root, local), SlotState::Available);
+        }
+        let nodes_after_updates = arena.nodes.len();
+        assert!(
+            nodes_after_updates < usize::try_from(COUNT).expect("test count fits usize") * 34,
+            "path-copy updates must allocate at most one radix path each"
+        );
+
+        let mut joined = *roots.last().expect("nonempty roots");
+        for older in roots.iter().rev().skip(1) {
+            joined = arena.join(joined, *older);
+        }
+        assert_eq!(arena.get(joined, 0), SlotState::Available);
+        assert_eq!(arena.get(joined, COUNT - 1), SlotState::MaybeUnavailable);
+        let bound = usize::try_from(COUNT).expect("test count fits usize") * 70;
+        assert!(
+            arena.nodes.len() < bound,
+            "cumulative suffix joins must share prior Maybe subtries: {} nodes",
+            arena.nodes.len()
+        );
+        assert!(
+            arena.join_cache.len() + arena.maybe_cache.len() < bound,
+            "slot operation caches must remain linear"
+        );
+
+        let repeated = arena.join(joined, root);
+        let nodes = arena.nodes.len();
+        let cached = arena.join_cache.len();
+        let reversed = arena.join(root, joined);
+        let repeated_again = arena.join(joined, root);
+        assert_eq!(repeated, reversed);
+        assert_eq!(repeated, repeated_again);
+        assert_eq!(arena.nodes.len(), nodes);
+        assert_eq!(arena.join_cache.len(), cached);
+    }
+
+    #[test]
+    fn twenty_thousand_readonly_temporary_loans_use_one_index_bucket() {
+        const COUNT: usize = 20_000;
+        let owner = Place::local(LocalId(7));
+        let mut loans = TemporaryLoanSet::default();
+        for _ in 0..COUNT {
+            loans.push(PlaceLoan {
+                owner: owner.clone(),
+                mutable: false,
+            });
+        }
+
+        assert_eq!(loans.ordered.len(), COUNT);
+        assert_eq!(loans.all_by_local.len(), 1);
+        assert_eq!(loans.all_by_local[&LocalId(7)].len(), COUNT);
+        assert!(loans.mutable_by_local.is_empty());
+        assert!(!loans.has_overlapping(&owner, false));
+        assert!(loans.has_overlapping(&owner, true));
+    }
+
+    #[test]
+    fn persistent_slot_trie_matches_high_bit_reference_values() {
+        let keys = [0, 1, 17, 1_u32 << 31, u32::MAX];
+        let mut slots = SlotStateArena::new();
+        let mut slot_root = EMPTY_SLOT_ROOT;
+        let mut slot_reference = BTreeMap::new();
+        for (index, key) in keys.into_iter().enumerate() {
+            let value = if index % 2 == 0 {
+                SlotState::Available
+            } else {
+                SlotState::Moved
+            };
+            slot_root = slots.set(slot_root, key, value);
+            slot_reference.insert(key, value);
+        }
+        for key in keys {
+            assert_eq!(slots.get(slot_root, key), slot_reference[&key]);
+        }
+        let mut other = EMPTY_SLOT_ROOT;
+        other = slots.set(other, 0, SlotState::Available);
+        other = slots.set(other, 1_u32 << 31, SlotState::Available);
+        let joined = slots.join(slot_root, other);
+        assert_eq!(slots.get(joined, 0), SlotState::Available);
+        assert_eq!(slots.get(joined, 1_u32 << 31), SlotState::MaybeUnavailable);
+        assert_eq!(slots.get(joined, u32::MAX), SlotState::MaybeUnavailable);
+        let cached = slots.join_cache.len();
+        assert_eq!(joined, slots.join(other, slot_root));
+        assert_eq!(cached, slots.join_cache.len());
     }
 }
