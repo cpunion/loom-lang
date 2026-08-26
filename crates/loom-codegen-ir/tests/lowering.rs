@@ -1,6 +1,6 @@
 use loom_codegen_ir::{
-    InvalidRootCode, LoweringErrorCode, LoweringOutcome, SourceArtifactRequest, TargetLayout,
-    UnsupportedFeature, dump_program, lower_scalar_artifact,
+    InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
+    SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program, lower_scalar_artifact,
 };
 use loom_core::FileId;
 use loom_hir::{SourceUnit, lower_files};
@@ -90,6 +90,90 @@ fn ordered_test_roots_form_one_complete_artifact() {
             .map(|root| artifact.function(*root).expect("root function").name())
             .collect::<Vec<_>>(),
         ["tests.first", "tests.second"]
+    );
+}
+
+#[test]
+fn source_lowering_routes_declarations_calls_and_roots_through_monomorphic_instance_keys() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"module instance_regression
+
+fn helper() Unit { Unit }
+
+pub fn main() Unit { helper() }
+",
+    ) else {
+        panic!("scalar source should lower completely")
+    };
+    let program = artifact.program().as_program();
+    assert_eq!(program.instances().entries().len(), 2);
+    for instance in program.instances().entries() {
+        assert!(instance.key().is_monomorphic());
+        assert_eq!(program.instance_key(instance.id()), Some(instance.key()));
+        assert_eq!(
+            program.instances().find(instance.key()),
+            Some(instance.id())
+        );
+        assert_eq!(
+            program
+                .function(instance.id())
+                .expect("planned function")
+                .source(),
+            instance.key().source()
+        );
+    }
+
+    let root = artifact.run_root().expect("run root");
+    let root_function = program.function(root).expect("root function");
+    assert_eq!(
+        program.instance_key(root),
+        Some(&InstanceKey::monomorphic(root_function.source()))
+    );
+    let callees = program
+        .functions()
+        .iter()
+        .flat_map(loom_codegen_ir::Function::instructions)
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::DirectCall { callee, .. } => Some(*callee),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(callees.len(), 1);
+    let callee = callees[0];
+    let callee_function = program.function(callee).expect("call target");
+    assert_eq!(
+        program.instance_key(callee),
+        Some(&InstanceKey::monomorphic(callee_function.source()))
+    );
+}
+
+#[test]
+fn callable_instance_foundation_does_not_enable_generic_lowering() {
+    let outcome = lower_run(
+        r"module generic_fallback
+
+fn identity[T](value T) T { value }
+
+pub fn main() Unit {
+    discard identity(1)
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("generic source must still select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::GenericFunction)
+    );
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::GenericCall)
     );
 }
 
