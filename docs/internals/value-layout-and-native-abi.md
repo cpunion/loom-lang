@@ -6,7 +6,9 @@ inspect tags, pointers, allocation addresses, witness descriptors, or calling
 conventions, and external code must not depend on them.
 
 Production native compilation currently lowers checked MIR through the legacy
-layouts below. The standalone LCIR catalog does not participate in that path.
+layouts below. The scalar whole-artifact lowerer and checked-LCIR object
+emitter use a separate typed boundary, but the production driver does not yet
+select that route.
 
 ## Universal value envelope
 
@@ -53,9 +55,10 @@ and faulting functions return `{ i32 status, T value }` with one hidden fault
 context pointer. Source symbols are internal, so this is a compiler-private
 object ABI rather than a native library ABI.
 
-These definitions are currently exercised by hand-built LCIR object tests.
-They do not change the production universal value envelope or runtime ABI
-because MIR-to-LCIR lowering and route selection are not connected yet.
+The whole-artifact scalar lowerer constructs programs using the same catalog,
+and focused object tests exercise the typed ABI. These boundaries do not
+change the production universal value envelope or runtime ABI because the
+production route is not connected yet.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted

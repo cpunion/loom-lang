@@ -11,10 +11,10 @@
 //! equal raw table numbers from different programs are not interchangeable,
 //! while the private identity stays out of textual output.
 //!
-//! This foundation intentionally supports only canonical scalar
-//! representations and hand-built SSA graphs. MIR lowering and production
-//! LLVM emission arrive as complete vertical slices rather than partial
-//! universal-value fallbacks.
+//! The first whole-artifact lowerer intentionally supports only canonical
+//! scalar representations and reports every reachable unsupported MIR site
+//! before constructing SSA. Production LLVM emission remains a separate
+//! vertical slice; no LCIR function is mixed with a legacy function.
 //! Block, instruction, and value identities are owned by one function; the
 //! builder and independent validator never interpret another function's local
 //! identity by its raw table index.
@@ -25,6 +25,7 @@ mod builder;
 mod dump;
 mod ids;
 mod ir;
+mod lower;
 mod repr;
 mod source_graph;
 mod validate;
@@ -44,6 +45,11 @@ pub use ir::{
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
     Program, ResultTarget, Signature, Terminator, TerminatorKind, UnwindTarget, Value,
     ValueDefinition,
+};
+pub use lower::{
+    InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,
+    ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature, UnsupportedItem,
+    lower_scalar_artifact,
 };
 pub use repr::{Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError, ValueType};
 pub use source_graph::{
