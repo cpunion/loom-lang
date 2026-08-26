@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::ops::Deref;
+use std::rc::Rc;
 
 use loom_core::Span;
 
@@ -287,6 +288,16 @@ struct DataflowState {
     /// Each call restores its entry checkpoint only after every argument has
     /// finished evaluating.
     temporary_loans: Vec<PlaceLoan>,
+    /// Cleanups registered by the lexical blocks that are currently active.
+    /// They are replayed against the state at each actual exit, rather than
+    /// only against the state observed when the defer was registered.
+    active_cleanups: Vec<RegisteredCleanup>,
+}
+
+#[derive(Clone)]
+struct RegisteredCleanup {
+    block: Rc<Block>,
+    path: Rc<str>,
 }
 
 struct ExprFlow {
@@ -7578,6 +7589,7 @@ impl<'program> Validator<'program> {
             slots: vec![SlotState::Uninitialized; local_count],
             view_loans: vec![Vec::new(); local_count],
             temporary_loans: Vec::new(),
+            active_cleanups: Vec::new(),
         };
         for parameter in &function.params {
             if let Some(slot) = state.slots.get_mut(parameter.id.0 as usize) {
@@ -7618,6 +7630,7 @@ impl<'program> Validator<'program> {
                 loans: Vec::new(),
             };
         }
+        let cleanup_base = state.active_cleanups.len();
         for (index, statement) in block.statements.iter().enumerate() {
             if self.dataflow_statement(
                 function,
@@ -7627,13 +7640,14 @@ impl<'program> Validator<'program> {
                 &format!("{path}.statements[{index}]"),
                 depth + 1,
             ) {
+                self.dataflow_cleanup_sequence(function, state, 0, depth + 1);
                 return ExprFlow {
                     diverges: true,
                     loans: Vec::new(),
                 };
             }
         }
-        block.tail.as_deref().map_or(
+        let mut flow = block.tail.as_deref().map_or(
             ExprFlow {
                 diverges: false,
                 loans: Vec::new(),
@@ -7648,7 +7662,66 @@ impl<'program> Validator<'program> {
                     depth + 1,
                 )
             },
-        )
+        );
+        if flow.diverges {
+            self.dataflow_cleanup_sequence(function, state, 0, depth + 1);
+            flow.loans.clear();
+        } else if !self.dataflow_cleanup_sequence(function, state, cleanup_base, depth + 1) {
+            flow.diverges = true;
+            flow.loans.clear();
+        }
+        flow
+    }
+
+    /// Validate and apply registered cleanups in interpreter order. Each
+    /// replay gets a fresh token set because token uniqueness was already
+    /// checked once at registration; replaying the same syntax must not look
+    /// like a second token occurrence.
+    fn dataflow_cleanup_sequence(
+        &mut self,
+        function: &Function,
+        state: &mut DataflowState,
+        first: usize,
+        depth: u16,
+    ) -> bool {
+        let cleanups = state.active_cleanups.clone();
+        let first = first.min(cleanups.len());
+        for index in (first..cleanups.len()).rev() {
+            let cleanup = &cleanups[index];
+            // Older cleanups stay active while a newer cleanup runs: if the
+            // newer body faults after mutating state, its fault-point replay
+            // must validate those older cleanups against that exact state.
+            state.active_cleanups = cleanups[..index].to_vec();
+            let mut replay_tokens = BTreeSet::new();
+            let flow = self.dataflow_block(
+                function,
+                cleanup.block.as_ref(),
+                state,
+                &mut replay_tokens,
+                cleanup.path.as_ref(),
+                depth + 1,
+            );
+            if flow.diverges {
+                // The cleanup block already replayed every older active
+                // cleanup on this terminating path.
+                return false;
+            }
+        }
+        state.active_cleanups = cleanups[..first].to_vec();
+        true
+    }
+
+    fn validate_active_cleanups_at_fault_point(
+        &mut self,
+        function: &Function,
+        state: &DataflowState,
+        depth: u16,
+    ) {
+        if state.active_cleanups.is_empty() {
+            return;
+        }
+        let mut unwind = state.clone();
+        let _ = self.dataflow_cleanup_sequence(function, &mut unwind, 0, depth + 1);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -7833,18 +7906,22 @@ impl<'program> Validator<'program> {
                 false
             }
             StatementKind::Assert { condition } => {
-                self.dataflow_expr(
+                let flow = self.dataflow_expr(
                     function,
                     condition,
                     state,
                     tokens,
                     &format!("{path}.condition"),
                     depth,
-                )
-                .diverges
+                );
+                if !flow.diverges {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
+                flow.diverges
             }
             StatementKind::Defer(cleanup) => {
                 let mut cleanup_state = state.clone();
+                cleanup_state.active_cleanups.clear();
                 let _ = self.dataflow_block(
                     function,
                     cleanup,
@@ -7853,6 +7930,10 @@ impl<'program> Validator<'program> {
                     &format!("{path}.cleanup"),
                     depth + 1,
                 );
+                state.active_cleanups.push(RegisteredCleanup {
+                    block: Rc::new(cleanup.clone()),
+                    path: Rc::from(format!("{path}.cleanup")),
+                });
                 false
             }
             StatementKind::Evaluate(expression) => {
@@ -7965,7 +8046,21 @@ impl<'program> Validator<'program> {
                     loans,
                 }
             }
-            ExprKind::Unary(_, operand) | ExprKind::Unrefine(operand) => {
+            ExprKind::Unary(operator, operand) => {
+                let flow = self.dataflow_expr(
+                    function,
+                    operand,
+                    state,
+                    tokens,
+                    &format!("{path}.operand"),
+                    depth + 1,
+                );
+                if !flow.diverges && *operator == UnaryOp::Negate && expression.ty == Type::Int {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
+                no_value(flow.diverges || expression.ty == Type::Never)
+            }
+            ExprKind::Unrefine(operand) => {
                 let flow = self.dataflow_expr(
                     function,
                     operand,
@@ -8018,6 +8113,18 @@ impl<'program> Validator<'program> {
                         &format!("{path}.right"),
                         depth + 1,
                     );
+                    if !right.diverges
+                        && expression.ty == Type::Int
+                        && matches!(
+                            operator,
+                            BinaryOp::Add
+                                | BinaryOp::Subtract
+                                | BinaryOp::Multiply
+                                | BinaryOp::Divide
+                        )
+                    {
+                        self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                    }
                     no_value(right.diverges || expression.ty == Type::Never)
                 }
             }
@@ -8072,6 +8179,12 @@ impl<'program> Validator<'program> {
                 .collect::<Vec<_>>();
                 if !continuing.is_empty() {
                     *state = join_dataflow_states(&continuing);
+                } else if then_flow.diverges && else_flow.diverges {
+                    // Each terminating branch already replayed all active
+                    // cleanups against its own exit state. Mark the aggregate
+                    // path consumed so the containing block does not replay
+                    // them a second time against the pre-branch state.
+                    state.active_cleanups.clear();
                 }
                 ExprFlow {
                     diverges: then_flow.diverges && else_flow.diverges,
@@ -8114,13 +8227,20 @@ impl<'program> Validator<'program> {
                 }
                 if !continuing.is_empty() {
                     *state = join_dataflow_states(&continuing);
+                } else if all_diverge {
+                    // As with `If`, every arm validated its own exit state.
+                    state.active_cleanups.clear();
                 }
                 ExprFlow {
                     diverges: all_diverge,
                     loans: result_loans,
                 }
             }
-            ExprKind::Record { fields, .. } => {
+            ExprKind::Record {
+                fields,
+                construction,
+                ..
+            } => {
                 let mut loans = Vec::new();
                 for (index, field) in fields.iter().enumerate() {
                     let flow = self.dataflow_expr(
@@ -8135,6 +8255,9 @@ impl<'program> Validator<'program> {
                         return no_value(true);
                     }
                     loans = union_loans(loans, flow.loans);
+                }
+                if *construction == ConstructionMode::Runtime {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
                 }
                 ExprFlow {
                     diverges: expression.ty == Type::Never,
@@ -8162,7 +8285,11 @@ impl<'program> Validator<'program> {
                     loans,
                 }
             }
-            ExprKind::Refine { value, .. } => {
+            ExprKind::Refine {
+                value,
+                construction,
+                ..
+            } => {
                 let flow = self.dataflow_expr(
                     function,
                     value,
@@ -8171,6 +8298,9 @@ impl<'program> Validator<'program> {
                     &format!("{path}.value"),
                     depth + 1,
                 );
+                if !flow.diverges && *construction == ConstructionMode::Runtime {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
                 ExprFlow {
                     diverges: flow.diverges || expression.ty == Type::Never,
                     loans: flow.loans,
@@ -8234,6 +8364,9 @@ impl<'program> Validator<'program> {
                     }
                 }
                 state.temporary_loans.truncate(checkpoint);
+                if expression.ty != Type::Never {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
                 no_value(expression.ty == Type::Never)
             }
             ExprKind::MakeView {
@@ -8293,6 +8426,9 @@ impl<'program> Validator<'program> {
                         path,
                     );
                 }
+                if !flow.diverges {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
             ExprKind::Sleep { milliseconds } => {
@@ -8304,6 +8440,9 @@ impl<'program> Validator<'program> {
                     &format!("{path}.milliseconds"),
                     depth + 1,
                 );
+                if !flow.diverges {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
             ExprKind::WaitFd { descriptor, .. } => {
@@ -8315,6 +8454,9 @@ impl<'program> Validator<'program> {
                     &format!("{path}.descriptor"),
                     depth + 1,
                 );
+                if !flow.diverges {
+                    self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
+                }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
             ExprKind::TaskJoin { arguments, .. } => {
@@ -8331,6 +8473,7 @@ impl<'program> Validator<'program> {
                         return no_value(true);
                     }
                 }
+                self.validate_active_cleanups_at_fault_point(function, state, depth + 1);
                 no_value(expression.ty == Type::Never)
             }
         }

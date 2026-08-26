@@ -2239,6 +2239,633 @@ fn continuing_for_range_body_may_restore_a_moved_loop_entry_local() {
     .expect("a continuing backedge that restores its outer local is valid");
 }
 
+fn cleanup_copying(local: u32) -> Block {
+    Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy(local, Type::Int)),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    }
+}
+
+#[test]
+fn defer_cleanup_is_checked_against_normal_exit_state() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(0))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
+#[test]
+fn defer_cleanup_accepts_move_then_restore_before_exit() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(0))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: constant(Constant::Int(2), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("a nonfallible reassignment restores a deferred cleanup capture");
+}
+
+#[test]
+fn deferred_cleanups_update_older_cleanups_in_lifo_order() {
+    let restoring_cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: Place::local(LocalId(0)),
+                value: constant(Constant::Int(2), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(restoring_cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Move(Place::local(LocalId(0))),
+                        Type::Int,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("the newer cleanup restores the local before the older cleanup reads it");
+}
+
+#[test]
+fn defer_cleanup_is_checked_on_each_returning_branch() {
+    let returning = |capture: u32| Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Move(Place::local(LocalId(capture))),
+                    Type::Int,
+                )),
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Return(Some(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        ],
+        tail: None,
+        span: span(),
+    };
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(expr(
+                ExprKind::Tuple(vec![copy(1, Type::Int), copy(2, Type::Int)]),
+                Type::Tuple(vec![Type::Int, Type::Int]),
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, false), local(2, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(2),
+                        value: constant(Constant::Int(2), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::If {
+                            condition: Box::new(copy(0, Type::Bool)),
+                            then_branch: returning(1),
+                            else_branch: returning(2),
+                        },
+                        Type::Never,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    for local in [1, 2] {
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code == MirValidationCode::LocalState
+                && error.message.contains(&format!("local #{local}"))
+                && error.path.contains("cleanup")
+        }));
+    }
+}
+
+#[test]
+fn nested_normal_cleanup_mutation_reaches_the_outer_cleanup() {
+    let restoring_cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: Place::local(LocalId(0)),
+                value: constant(Constant::Int(2), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let nested = Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Defer(restoring_cleanup),
+                span: span(),
+            },
+            Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Move(Place::local(LocalId(0))),
+                    Type::Int,
+                )),
+                span: span(),
+            },
+        ],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(ExprKind::Block(nested), Type::Unit)),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("nested normal cleanup mutations feed the eventual outer cleanup");
+}
+
+#[test]
+fn fallible_integer_assignment_checks_cleanup_before_the_store() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(i64::MAX), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: expr(
+                            ExprKind::Binary(
+                                BinaryOp::Add,
+                                Box::new(expr(ExprKind::Move(Place::local(LocalId(0))), Type::Int)),
+                                Box::new(constant(Constant::Int(1), Type::Int)),
+                            ),
+                            Type::Int,
+                        ),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
+#[test]
+fn fallible_call_checks_cleanup_after_moving_arguments() {
+    let target = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Assert {
+                    condition: constant(Constant::Bool(false), Type::Bool),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(copy(0, Type::Int))),
+            span: span(),
+        },
+    );
+    let caller = function(
+        1,
+        Vec::new(),
+        vec![local(0, Type::Int, true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup_copying(0)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: expr(
+                            ExprKind::Call {
+                                target: CallTarget::Direct(FunctionId(0)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![CallArgument::Value(expr(
+                                    ExprKind::Move(Place::local(LocalId(0))),
+                                    Type::Int,
+                                ))],
+                                witnesses: Vec::new(),
+                            },
+                            Type::Int,
+                        ),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![target, caller],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
+#[test]
+fn failing_assert_checks_cleanup_after_evaluating_its_condition() {
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy(0, Type::Bool)),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Bool, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Bool(false), Type::Bool),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: expr(ExprKind::Move(Place::local(LocalId(0))), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
+#[test]
+fn await_cancellation_checks_cleanup_after_moving_the_task() {
+    let task_type = Type::Task(Box::new(Type::Unit));
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy(0, task_type.clone())),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let mut asynchronous = function(
+        0,
+        Vec::new(),
+        vec![local(0, task_type.clone(), false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: expr(
+                            ExprKind::Sleep {
+                                milliseconds: Box::new(constant(Constant::Int(0), Type::Int)),
+                            },
+                            task_type.clone(),
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Await {
+                            state: 1,
+                            task: Box::new(expr(
+                                ExprKind::Move(Place::local(LocalId(0))),
+                                task_type,
+                            )),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    asynchronous.is_async = true;
+    let live_locals = loom_mir::analyze_suspension_liveness(&asynchronous.body)
+        .remove(&1)
+        .expect("await contributes a suspension state");
+    asynchronous.suspension_points = vec![SuspensionPoint {
+        state: 1,
+        span: span(),
+        live_locals,
+    }];
+
+    let errors = validation_errors(&Program {
+        functions: vec![asynchronous],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
+#[test]
+fn task_join_fault_checks_cleanup_after_moving_its_arguments() {
+    let task_type = Type::Task(Box::new(Type::Unit));
+    let list_type = Type::List(Box::new(task_type.clone()));
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy(0, list_type.clone())),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let initial_tasks = expr(
+        ExprKind::List(vec![expr(
+            ExprKind::Sleep {
+                milliseconds: Box::new(constant(Constant::Int(0), Type::Int)),
+            },
+            task_type,
+        )]),
+        list_type.clone(),
+    );
+    let function = function(
+        0,
+        Vec::new(),
+        vec![
+            local(0, list_type.clone(), true),
+            local(1, list_type.clone(), false),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: initial_tasks,
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: copy(1, list_type.clone()),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::TaskJoin {
+                            mode: loom_mir::TaskJoinMode::All,
+                            arguments: vec![expr(
+                                ExprKind::Move(Place::local(LocalId(0))),
+                                list_type.clone(),
+                            )],
+                        },
+                        Type::Task(Box::new(Type::List(Box::new(Type::Unit)))),
+                    )),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: copy(1, list_type),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState && error.path.contains("cleanup")
+    }));
+}
+
 fn range_with_conditional_move(move_exits: bool) -> Function {
     let moving = Block {
         statements: vec![Statement {

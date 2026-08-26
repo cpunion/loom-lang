@@ -273,23 +273,32 @@ fn require_function(
 }
 
 fn scan_block(block: &Block, edges: &mut FunctionEdges) {
-    let _ = scan_block_with_flow(block, edges, &mut WitnessFlow::default());
+    let _ = scan_block_with_flow(block, edges, &mut WitnessFlow::default(), &mut Vec::new());
 }
 
 /// Scans the executable portion of a block and returns whether control can
 /// reach its normal successor. The checked-MIR source graph must agree with
 /// the control flow a backend can actually materialize; otherwise a callee
 /// mentioned only after divergence becomes an unreachable artifact member.
-fn scan_block_with_flow(block: &Block, edges: &mut FunctionEdges, flow: &mut WitnessFlow) -> bool {
+#[allow(clippy::too_many_lines)]
+fn scan_block_with_flow<'mir>(
+    block: &'mir Block,
+    edges: &mut FunctionEdges,
+    flow: &mut WitnessFlow,
+    active_cleanups: &mut Vec<&'mir Block>,
+) -> bool {
+    let cleanup_base = active_cleanups.len();
+    let mut continues = true;
     for statement in &block.statements {
-        let continues = match &statement.kind {
+        continues = match &statement.kind {
             StatementKind::Let { local, value } => {
                 let witnesses = expression_witnesses(value, flow);
-                if !scan_expr(value, edges, flow) {
-                    return false;
+                if scan_expr(value, edges, flow, active_cleanups) {
+                    flow.locals.insert(*local, witnesses);
+                    true
+                } else {
+                    false
                 }
-                flow.locals.insert(*local, witnesses);
-                true
             }
             StatementKind::LetTuple { locals, value } => {
                 let elements = match &value.kind {
@@ -301,34 +310,36 @@ fn scan_block_with_flow(block: &Block, edges: &mut FunctionEdges, flow: &mut Wit
                     ),
                     _ => None,
                 };
-                if !scan_expr(value, edges, flow) {
-                    return false;
+                if scan_expr(value, edges, flow, active_cleanups) {
+                    for (index, local) in locals.iter().enumerate() {
+                        flow.locals.insert(
+                            *local,
+                            elements
+                                .as_ref()
+                                .and_then(|elements| elements.get(index).cloned())
+                                .flatten(),
+                        );
+                    }
+                    true
+                } else {
+                    false
                 }
-                for (index, local) in locals.iter().enumerate() {
-                    flow.locals.insert(
-                        *local,
-                        elements
-                            .as_ref()
-                            .and_then(|elements| elements.get(index).cloned())
-                            .flatten(),
-                    );
-                }
-                true
             }
             StatementKind::Assign { place, value } => {
                 let witnesses = expression_witnesses(value, flow);
-                if !scan_expr(value, edges, flow) {
-                    return false;
-                }
-                if place.projection.is_empty() {
-                    flow.locals.insert(place.local, witnesses);
+                if scan_expr(value, edges, flow, active_cleanups) {
+                    if place.projection.is_empty() {
+                        flow.locals.insert(place.local, witnesses);
+                    } else {
+                        flow.locals.insert(place.local, None);
+                    }
+                    true
                 } else {
-                    flow.locals.insert(place.local, None);
+                    false
                 }
-                true
             }
             StatementKind::Assert { condition: value } | StatementKind::Evaluate(value) => {
-                scan_expr(value, edges, flow)
+                scan_expr(value, edges, flow, active_cleanups)
             }
             StatementKind::ForRange {
                 local,
@@ -336,73 +347,108 @@ fn scan_block_with_flow(block: &Block, edges: &mut FunctionEdges, flow: &mut Wit
                 end,
                 body,
             } => {
-                if !scan_expr(start, edges, flow) || !scan_expr(end, edges, flow) {
-                    return false;
-                }
-
-                // The range may execute zero times, so the post-loop flow
-                // always includes the state after evaluating both bounds. A
-                // small monotone fixed point also exposes witness values that
-                // can reach calls on later iterations.
-                let entry = flow.clone();
-                let mut loop_head = entry.clone();
-                loop {
-                    let mut body_flow = loop_head.clone();
-                    body_flow.locals.insert(*local, None);
-                    if !scan_block_with_flow(body, edges, &mut body_flow) {
-                        break;
+                if !scan_expr(start, edges, flow, active_cleanups)
+                    || !scan_expr(end, edges, flow, active_cleanups)
+                {
+                    false
+                } else {
+                    // The range may execute zero times, so the post-loop flow
+                    // always includes the state after evaluating both bounds.
+                    // A small monotone fixed point also exposes witness values
+                    // that can reach calls and cleanups on later iterations.
+                    let entry = flow.clone();
+                    let mut loop_head = entry.clone();
+                    loop {
+                        let mut body_flow = loop_head.clone();
+                        body_flow.locals.insert(*local, None);
+                        if !scan_block_with_flow(body, edges, &mut body_flow, active_cleanups) {
+                            break;
+                        }
+                        let next = merge_witness_flows([&entry, &body_flow]);
+                        if next == loop_head {
+                            break;
+                        }
+                        loop_head = next;
                     }
-                    let next = merge_witness_flows([&entry, &body_flow]);
-                    if next == loop_head {
-                        break;
-                    }
-                    loop_head = next;
+                    *flow = loop_head;
+                    true
                 }
-                *flow = loop_head;
-                true
             }
             StatementKind::Return(value) => {
-                if let Some(value) = value {
-                    let _ = scan_expr(value, edges, flow);
+                let value_continues = value
+                    .as_ref()
+                    .is_none_or(|value| scan_expr(value, edges, flow, active_cleanups));
+                if value_continues {
+                    let cleanups = active_cleanups.clone();
+                    let _ = scan_cleanup_sequence(&cleanups, 0, edges, flow);
                 }
                 false
             }
             StatementKind::Defer(cleanup) => {
+                // A failure after registration can run the cleanup before any
+                // particular normal exit state is reached. Scan that path
+                // conservatively with witness precision forgotten, then keep
+                // the cleanup active for exact normal/Return exit scans.
                 let mut cleanup_flow = flow.clone();
-                let _ = scan_block_with_flow(cleanup, edges, &mut cleanup_flow);
-                // Registration does not execute the cleanup on the normal
-                // path and therefore cannot change its witness state.
+                forget_witness_precision(&mut cleanup_flow);
+                let mut inherited = active_cleanups.clone();
+                let _ = scan_block_with_flow(cleanup, edges, &mut cleanup_flow, &mut inherited);
+                active_cleanups.push(cleanup);
                 true
             }
         };
         if !continues {
-            return false;
+            break;
         }
     }
-    if let Some(tail) = &block.tail {
-        scan_expr(tail, edges, flow)
-    } else {
-        true
+
+    if continues && let Some(tail) = &block.tail {
+        continues = scan_expr(tail, edges, flow, active_cleanups);
     }
+    if continues {
+        let cleanups = active_cleanups.clone();
+        continues = scan_cleanup_sequence(&cleanups, cleanup_base, edges, flow);
+    }
+    active_cleanups.truncate(cleanup_base);
+    continues
+}
+
+fn scan_cleanup_sequence(
+    cleanups: &[&Block],
+    first: usize,
+    edges: &mut FunctionEdges,
+    flow: &mut WitnessFlow,
+) -> bool {
+    let mut continues = true;
+    for index in (first..cleanups.len()).rev() {
+        let mut inherited = cleanups[..index].to_vec();
+        continues &= scan_block_with_flow(cleanups[index], edges, flow, &mut inherited);
+    }
+    continues
 }
 
 #[allow(clippy::too_many_lines)]
-fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlow) -> bool {
+fn scan_expr<'mir>(
+    expression: &'mir Expr,
+    edges: &mut FunctionEdges,
+    flow: &mut WitnessFlow,
+    active_cleanups: &mut Vec<&'mir Block>,
+) -> bool {
     match &expression.kind {
         ExprKind::Tuple(elements) | ExprKind::List(elements) => {
             for element in elements {
-                if !scan_expr(element, edges, flow) {
+                if !scan_expr(element, edges, flow, active_cleanups) {
                     return false;
                 }
             }
         }
         ExprKind::Unary(_, value) | ExprKind::Unrefine(value) | ExprKind::Refine { value, .. } => {
-            if !scan_expr(value, edges, flow) {
+            if !scan_expr(value, edges, flow, active_cleanups) {
                 return false;
             }
         }
         ExprKind::Binary(operator, left, right) => {
-            if !scan_expr(left, edges, flow) {
+            if !scan_expr(left, edges, flow, active_cleanups) {
                 return false;
             }
             if matches!(operator, BinaryOp::And | BinaryOp::Or) {
@@ -410,16 +456,16 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
                 // operand even when evaluating the right operand diverges.
                 let short_circuit_flow = flow.clone();
                 let mut right_flow = short_circuit_flow.clone();
-                if scan_expr(right, edges, &mut right_flow) {
+                if scan_expr(right, edges, &mut right_flow, active_cleanups) {
                     *flow = merge_witness_flows([&short_circuit_flow, &right_flow]);
                 }
-            } else if !scan_expr(right, edges, flow) {
+            } else if !scan_expr(right, edges, flow, active_cleanups) {
                 return false;
             }
         }
         ExprKind::Block(block) => {
             let mut block_flow = flow.clone();
-            if !scan_block_with_flow(block, edges, &mut block_flow) {
+            if !scan_block_with_flow(block, edges, &mut block_flow, active_cleanups) {
                 return false;
             }
             *flow = block_flow;
@@ -429,13 +475,15 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
             then_branch,
             else_branch,
         } => {
-            if !scan_expr(condition, edges, flow) {
+            if !scan_expr(condition, edges, flow, active_cleanups) {
                 return false;
             }
             let mut then_flow = flow.clone();
             let mut else_flow = flow.clone();
-            let then_continues = scan_block_with_flow(then_branch, edges, &mut then_flow);
-            let else_continues = scan_block_with_flow(else_branch, edges, &mut else_flow);
+            let then_continues =
+                scan_block_with_flow(then_branch, edges, &mut then_flow, active_cleanups);
+            let else_continues =
+                scan_block_with_flow(else_branch, edges, &mut else_flow, active_cleanups);
             match (then_continues, else_continues) {
                 (true, true) => *flow = merge_witness_flows([&then_flow, &else_flow]),
                 (true, false) => *flow = then_flow,
@@ -444,14 +492,14 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
             }
         }
         ExprKind::Match { scrutinee, arms } => {
-            if !scan_expr(scrutinee, edges, flow) {
+            if !scan_expr(scrutinee, edges, flow, active_cleanups) {
                 return false;
             }
             let entry = flow.clone();
             let mut continuing = Vec::new();
             for arm in arms {
                 let mut arm_flow = entry.clone();
-                if scan_expr(&arm.value, edges, &mut arm_flow) {
+                if scan_expr(&arm.value, edges, &mut arm_flow, active_cleanups) {
                     continuing.push(arm_flow);
                 }
             }
@@ -462,14 +510,14 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
         }
         ExprKind::Record { fields, .. } => {
             for field in fields {
-                if !scan_expr(field, edges, flow) {
+                if !scan_expr(field, edges, flow, active_cleanups) {
                     return false;
                 }
             }
         }
         ExprKind::Variant { payload, .. } => {
             for value in payload {
-                if !scan_expr(value, edges, flow) {
+                if !scan_expr(value, edges, flow, active_cleanups) {
                     return false;
                 }
             }
@@ -495,7 +543,7 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
             for argument in arguments {
                 match argument {
                     CallArgument::Value(value) => {
-                        if !scan_expr(value, edges, flow) {
+                        if !scan_expr(value, edges, flow, active_cleanups) {
                             return false;
                         }
                     }
@@ -538,30 +586,30 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
             }
         }
         ExprKind::MakeView { value, witness, .. } => {
-            if !scan_expr(value, edges, flow) {
+            if !scan_expr(value, edges, flow, active_cleanups) {
                 return false;
             }
             collect_witness(witness, &mut edges.witnesses);
         }
         ExprKind::Await { task, .. } => {
-            if !scan_expr(task, edges, flow) {
+            if !scan_expr(task, edges, flow, active_cleanups) {
                 return false;
             }
         }
         ExprKind::TaskJoin { arguments, .. } => {
             for argument in arguments {
-                if !scan_expr(argument, edges, flow) {
+                if !scan_expr(argument, edges, flow, active_cleanups) {
                     return false;
                 }
             }
         }
         ExprKind::Sleep { milliseconds } => {
-            if !scan_expr(milliseconds, edges, flow) {
+            if !scan_expr(milliseconds, edges, flow, active_cleanups) {
                 return false;
             }
         }
         ExprKind::WaitFd { descriptor, .. } => {
-            if !scan_expr(descriptor, edges, flow) {
+            if !scan_expr(descriptor, edges, flow, active_cleanups) {
                 return false;
             }
         }
@@ -571,6 +619,12 @@ fn scan_expr(expression: &Expr, edges: &mut FunctionEdges, flow: &mut WitnessFlo
         }
     }
     expression.ty != Type::Never
+}
+
+fn forget_witness_precision(flow: &mut WitnessFlow) {
+    for witnesses in flow.locals.values_mut() {
+        *witnesses = None;
+    }
 }
 
 fn expression_witnesses(expression: &Expr, flow: &WitnessFlow) -> Option<BTreeSet<WitnessId>> {
@@ -630,5 +684,196 @@ fn concrete_witness(reference: &WitnessRef) -> Option<WitnessId> {
     match reference {
         WitnessRef::Concrete(witness) | WitnessRef::Apply { witness, .. } => Some(*witness),
         WitnessRef::Parameter(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::default_trait_access)]
+
+    use super::*;
+    use loom_mir::{ConceptId, ExprId, Place};
+
+    const LOCAL: LocalId = LocalId(0);
+    const FIRST: WitnessId = WitnessId(0);
+    const SECOND: WitnessId = WitnessId(1);
+    const REQUIREMENT: RequirementId = RequirementId(0);
+
+    fn view_type() -> Type {
+        Type::View {
+            mutable: false,
+            concept: ConceptId(0),
+            bindings: BTreeMap::new(),
+        }
+    }
+
+    fn unit() -> Expr {
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Constant(loom_mir::Constant::Unit),
+            ty: Type::Unit,
+            span: Default::default(),
+        }
+    }
+
+    fn boolean(value: bool) -> Expr {
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Constant(loom_mir::Constant::Bool(value)),
+            ty: Type::Bool,
+            span: Default::default(),
+        }
+    }
+
+    fn make_view(witness: WitnessId) -> Expr {
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::MakeView {
+                value: Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(loom_mir::Constant::Int(1)),
+                    ty: Type::Int,
+                    span: Default::default(),
+                }),
+                writeback: None,
+                witness: WitnessRef::Concrete(witness),
+                mutable: false,
+                token: witness.0,
+            },
+            ty: view_type(),
+            span: Default::default(),
+        }
+    }
+
+    fn dynamic_call() -> Expr {
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Call {
+                target: CallTarget::Dynamic {
+                    requirement: REQUIREMENT,
+                },
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Copy(Place::local(LOCAL)),
+                    ty: view_type(),
+                    span: Default::default(),
+                })],
+                witnesses: Vec::new(),
+            },
+            ty: Type::Unit,
+            span: Default::default(),
+        }
+    }
+
+    fn statement(kind: StatementKind) -> loom_mir::Statement {
+        loom_mir::Statement {
+            kind,
+            span: Default::default(),
+        }
+    }
+
+    fn block(statements: Vec<loom_mir::Statement>) -> Block {
+        Block {
+            statements,
+            tail: Some(Box::new(unit())),
+            span: Default::default(),
+        }
+    }
+
+    fn scan(statements: Vec<loom_mir::Statement>) -> FunctionEdges {
+        let mut edges = FunctionEdges::default();
+        scan_block(&block(statements), &mut edges);
+        edges
+    }
+
+    fn initialize() -> loom_mir::Statement {
+        statement(StatementKind::Let {
+            local: LOCAL,
+            value: make_view(FIRST),
+        })
+    }
+
+    fn assign_second() -> loom_mir::Statement {
+        statement(StatementKind::Assign {
+            place: Place::local(LOCAL),
+            value: make_view(SECOND),
+        })
+    }
+
+    fn dynamic_cleanup() -> Block {
+        block(vec![statement(StatementKind::Evaluate(dynamic_call()))])
+    }
+
+    #[test]
+    fn deferred_dispatch_uses_the_normal_exit_witness() {
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::Defer(dynamic_cleanup())),
+            assign_second(),
+        ]);
+
+        assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
+    }
+
+    #[test]
+    fn deferred_cleanups_feed_newer_mutations_to_older_cleanups_lifo() {
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::Defer(dynamic_cleanup())),
+            statement(StatementKind::Defer(block(vec![assign_second()]))),
+        ]);
+
+        assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
+    }
+
+    #[test]
+    fn nested_normal_cleanup_updates_following_witness_flow() {
+        let nested = block(vec![statement(StatementKind::Defer(block(vec![
+            assign_second(),
+        ])))]);
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::Evaluate(Expr {
+                id: ExprId::UNASSIGNED,
+                kind: ExprKind::Block(nested),
+                ty: Type::Unit,
+                span: Default::default(),
+            })),
+            statement(StatementKind::Evaluate(dynamic_call())),
+        ]);
+
+        assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
+    }
+
+    #[test]
+    fn each_returning_branch_runs_active_cleanup_with_its_witness_flow() {
+        let returning = |assign: bool| Block {
+            statements: assign
+                .then(assign_second)
+                .into_iter()
+                .chain([statement(StatementKind::Return(Some(unit())))])
+                .collect(),
+            tail: None,
+            span: Default::default(),
+        };
+        let branch = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::If {
+                condition: Box::new(boolean(true)),
+                then_branch: returning(true),
+                else_branch: returning(false),
+            },
+            ty: Type::Never,
+            span: Default::default(),
+        };
+        let edges = scan(vec![
+            initialize(),
+            statement(StatementKind::Defer(dynamic_cleanup())),
+            statement(StatementKind::Evaluate(branch)),
+        ]);
+
+        assert!(edges.concrete_methods.contains(&(FIRST, REQUIREMENT)));
+        assert!(edges.concrete_methods.contains(&(SECOND, REQUIREMENT)));
     }
 }
