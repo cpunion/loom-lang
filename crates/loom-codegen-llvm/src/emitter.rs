@@ -24,7 +24,10 @@ use inkwell::values::{
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
 use loom_core::Span;
-use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_core::runtime_fault::{
+    ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
@@ -91,6 +94,7 @@ fn native_fault_message(code: &str) -> &str {
         "TaskAllocationFault" => "task allocation failed",
         "TaskJoinFault" => "task join failed",
         "ResourceCloseFault" => "resource close failed",
+        ARTIFACT_PROOF_REJECTED_FAULT_CODE => ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
         _ => "runtime operation failed",
     }
 }
@@ -6908,10 +6912,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             ExprKind::Record {
                 ty,
+                type_arguments,
                 fields,
                 construction,
-                ..
-            } => self.emit_record(*ty, fields, *construction, destination),
+            } => self.emit_record(
+                *ty,
+                type_arguments,
+                fields,
+                *construction,
+                expression.span,
+                destination,
+            ),
             ExprKind::Variant {
                 ty,
                 variant,
@@ -6922,7 +6933,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 ty,
                 value,
                 construction,
-            } => self.emit_refine(*ty, value, *construction, destination),
+            } => self.emit_refine(*ty, value, *construction, expression.span, destination),
             ExprKind::Unrefine(value) => {
                 let refined = self.alloc_value("refined");
                 if !self.emit_expr(value, refined)? {
@@ -8489,17 +8500,35 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_record(
         &self,
         ty: TypeId,
+        type_arguments: &[Type],
         fields: &[Expr],
         construction: ConstructionMode,
+        span: Span,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         if destination == self.output
             && let Some((layout, nodes)) = &self.native_record_output
             && layout.nominal() == ty
         {
-            return self.emit_record_with_nodes(ty, fields, construction, destination, Some(nodes));
+            return self.emit_record_with_nodes(
+                ty,
+                type_arguments,
+                fields,
+                construction,
+                span,
+                destination,
+                Some(nodes),
+            );
         }
-        self.emit_record_with_nodes(ty, fields, construction, destination, None)
+        self.emit_record_with_nodes(
+            ty,
+            type_arguments,
+            fields,
+            construction,
+            span,
+            destination,
+            None,
+        )
     }
 
     fn emit_stack_record_copy(
@@ -8609,10 +8638,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         match &expression.kind {
             ExprKind::Record {
                 ty,
+                type_arguments,
                 fields,
                 construction,
-                ..
-            } => self.emit_record_with_nodes(*ty, fields, *construction, destination, Some(nodes)),
+            } => self.emit_record_with_nodes(
+                *ty,
+                type_arguments,
+                fields,
+                *construction,
+                expression.span,
+                destination,
+                Some(nodes),
+            ),
             ExprKind::Block(block) => self.emit_block_with_record_nodes(block, destination, nodes),
             ExprKind::Call {
                 target: CallTarget::Direct(function) | CallTarget::Inherent(function),
@@ -8685,12 +8722,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_record_with_nodes(
         &self,
         ty: TypeId,
+        type_arguments: &[Type],
         fields: &[Expr],
         construction: ConstructionMode,
+        span: Span,
         destination: PointerValue<'ctx>,
         nodes: Option<&[PointerValue<'ctx>]>,
     ) -> Result<bool, CodegenError> {
-        let record = if construction == ConstructionMode::Runtime {
+        if construction == ConstructionMode::Recheck && nodes.is_some() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "record proof replay cannot use prepublished native result storage",
+            ));
+        }
+        let record = if matches!(
+            construction,
+            ConstructionMode::Recheck | ConstructionMode::Runtime
+        ) {
             self.alloc_value("record.candidate")
         } else {
             destination
@@ -8722,7 +8770,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_DATA,
             head,
         )?;
-        if construction != ConstructionMode::Runtime {
+        if matches!(
+            construction,
+            ConstructionMode::Plain | ConstructionMode::Proven
+        ) {
             return Ok(true);
         }
         let definition = self.backend.program.type_def(ty).ok_or_else(|| {
@@ -8738,13 +8789,19 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ));
         };
         let Some(invariant) = invariant else {
-            self.shallow_copy(destination, record)?;
-            return Ok(true);
+            if construction == ConstructionMode::Runtime {
+                self.shallow_copy(destination, record)?;
+                return Ok(true);
+            }
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "record proof recheck has no invariant",
+            ));
         };
         let context = ContractContext {
             receiver: Some(TypedPointer {
                 pointer: record,
-                ty: Type::Nominal(ty, Vec::new()),
+                ty: Type::Nominal(ty, type_arguments.to_vec()),
             }),
             result: None,
             arguments: Vec::new(),
@@ -8752,6 +8809,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_arguments: Vec::new(),
             bindings: Vec::new(),
         };
+        if construction == ConstructionMode::Recheck {
+            if !self.emit_rechecked_construction(invariant, &context, span)? {
+                return Ok(false);
+            }
+            self.shallow_copy(destination, record)?;
+            return Ok(true);
+        }
         self.emit_checked_construction(
             invariant,
             &context,
@@ -8818,6 +8882,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         ty: TypeId,
         expression: &Expr,
         construction: ConstructionMode,
+        span: Span,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let value = self.alloc_value("refine.value");
@@ -8836,7 +8901,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 format!("{} is not a refined type", definition.name),
             ));
         };
-        let refined = if construction == ConstructionMode::Runtime {
+        let refined = if matches!(
+            construction,
+            ConstructionMode::Recheck | ConstructionMode::Runtime
+        ) {
             self.alloc_value("refined.candidate")
         } else {
             destination
@@ -8862,7 +8930,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_DATA,
             inner,
         )?;
-        if construction != ConstructionMode::Runtime {
+        if matches!(
+            construction,
+            ConstructionMode::Plain | ConstructionMode::Proven
+        ) {
             return Ok(true);
         }
         let context = ContractContext {
@@ -8876,6 +8947,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_arguments: Vec::new(),
             bindings: Vec::new(),
         };
+        if construction == ConstructionMode::Recheck {
+            if !self.emit_rechecked_construction(predicate, &context, span)? {
+                return Ok(false);
+            }
+            self.shallow_copy(destination, refined)?;
+            return Ok(true);
+        }
         self.emit_checked_construction(
             predicate,
             &context,
@@ -8999,6 +9077,26 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_result(false, constraint_error, destination)?;
         self.backend.branch(merge)?;
         self.backend.builder.position_at_end(merge);
+        Ok(true)
+    }
+
+    fn emit_rechecked_construction(
+        &self,
+        contract: &Contract,
+        context: &ContractContext<'ctx>,
+        span: Span,
+    ) -> Result<bool, CodegenError> {
+        let condition = self.alloc_value("artifact.proof.recheck");
+        if !self.emit_contract_expr(&contract.expression, context, condition)? {
+            return Ok(false);
+        }
+        let accepted = self.bool_value(condition)?;
+        let rejected = self
+            .backend
+            .builder
+            .build_not(accepted, "artifact.proof.rejected")
+            .map_err(builder_error)?;
+        self.fail_if_at(rejected, ARTIFACT_PROOF_REJECTED_FAULT_CODE, span)?;
         Ok(true)
     }
 

@@ -498,7 +498,10 @@ impl<'mir> CfgBuilder<'mir> {
                 construction,
                 ..
             } => {
-                let construction = if *construction == ConstructionMode::Runtime {
+                let construction = if matches!(
+                    construction,
+                    ConstructionMode::Recheck | ConstructionMode::Runtime
+                ) {
                     self.fault_continuation(continuation, active_cleanup)
                 } else {
                     continuation
@@ -513,7 +516,10 @@ impl<'mir> CfgBuilder<'mir> {
                 construction,
                 ..
             } => {
-                let construction = if *construction == ConstructionMode::Runtime {
+                let construction = if matches!(
+                    construction,
+                    ConstructionMode::Recheck | ConstructionMode::Runtime
+                ) {
                     self.fault_continuation(continuation, active_cleanup)
                 } else {
                     continuation

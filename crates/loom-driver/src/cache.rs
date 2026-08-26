@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use loom_core::{FileId, Severity};
 use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
-use loom_sema::{Analysis, DefMapBuild, ImplIndex, ModuleGraph, TypedProgram};
+use loom_sema::{
+    Analysis, ConstructionCheck, DefMapBuild, ImplIndex, ModuleGraph, RuntimeCheck, TypedProgram,
+};
 use loom_syntax::{Parse, SYNTAX_NESTING_LIMIT_VERSION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -448,6 +450,7 @@ impl PersistentCache {
         };
         if envelope.schema_version != CACHE_SCHEMA_VERSION
             || !same_module_shapes(&envelope.keys, expected)
+            || typed_program_contains_process_local_proofs(&envelope.analysis.typed)
             || envelope
                 .analysis
                 .diagnostics
@@ -484,6 +487,13 @@ impl PersistentCache {
                 "typed module state cannot contain error diagnostics",
             ));
         }
+        if typed_program_contains_process_local_proofs(&analysis.typed) {
+            // A digest authenticates bytes against their reference, not the
+            // compiler conclusion inside those bytes. Proof-bearing bodies
+            // are deliberately rebuilt from source instead of publishing a
+            // semantic entry which a later process must reject.
+            return Ok(());
+        }
         let bytes = serde_json::to_vec(&TypedModuleStateEnvelope {
             schema_version: CACHE_SCHEMA_VERSION,
             keys: keys.clone(),
@@ -510,6 +520,9 @@ impl PersistentCache {
         let Ok(program) = decode_interpreted_artifact(envelope.mir.as_bytes()) else {
             return CacheLookup::Miss;
         };
+        if program.serialized_construction_proofs_were_distrusted() {
+            return CacheLookup::Miss;
+        }
         CacheLookup::Hit(CachedCompilation {
             program,
             diagnostics: envelope.diagnostics,
@@ -528,6 +541,13 @@ impl PersistentCache {
         program: &CheckedProgram,
         diagnostics: &[DiagnosticRecord],
     ) -> Result<(), CacheError> {
+        if program.requires_serialized_construction_replay() {
+            // The ordinary artifact codec correctly turns `Proven` into
+            // `Recheck`, but a compiler-cache hit must retain the same route
+            // and check elimination as a fresh source build. Rebuild this
+            // compilation from the exact keyed sources instead.
+            return Ok(());
+        }
         let mir = encode_interpreted_artifact(program)
             .map_err(|error| CacheError::io(&self.root, error))?;
         let mir = String::from_utf8(mir)
@@ -736,6 +756,19 @@ fn same_module_shapes(
                     && previous.shape_fingerprint == current.shape_fingerprint
             })
         })
+}
+
+fn typed_program_contains_process_local_proofs(program: &TypedProgram) -> bool {
+    program.bodies.iter().any(|(_, body)| {
+        body.construction_checks
+            .values()
+            .any(|check| *check == ConstructionCheck::Proven)
+            || body
+                .assertion_checks
+                .values()
+                .any(|check| *check == RuntimeCheck::Proven)
+            || body.contract_check == Some(RuntimeCheck::Proven)
+    })
 }
 
 struct Identity(Sha256);
