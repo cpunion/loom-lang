@@ -62,6 +62,7 @@ use crate::native_layout::{
 use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
 use crate::native_storage::{
     NativeIntListAppendLoop, NativeIntListGetMatch, NativeIntListPlan, NativeStackRecordPlan,
+    native_pod_value_argument_local,
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
 use crate::target::create_target_machine;
@@ -4612,6 +4613,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     pointer,
                     parameter_value(function, parameter_index)?,
                 )?,
+                (NativeLayout::PodRecord(layout), NativePassMode::Value) => {
+                    let aggregate = parameter_value(function, parameter_index)?;
+                    let nodes = Self::allocate_private_record_nodes(
+                        backend,
+                        &format!("native.parameter.{}.record", parameter.id.0),
+                        layout.fields().len(),
+                    )?;
+                    Self::initialize_private_record_header(backend, pointer, layout, &nodes)?;
+                    Self::unpack_native_record_value(backend, layout, aggregate, &nodes)?;
+                    stack_record_nodes.insert(parameter.id, nodes);
+                }
                 (NativeLayout::PodRecord(layout), NativePassMode::InOut) => {
                     let abi_pointer = parameter_pointer(function, parameter_index)?;
                     let aggregate = backend
@@ -8409,7 +8421,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             } => self.emit_record_with_nodes(*ty, fields, *construction, destination, Some(nodes)),
             ExprKind::Block(block) => self.emit_block_with_record_nodes(block, destination, nodes),
             ExprKind::Call {
-                target: CallTarget::Direct(function),
+                target: CallTarget::Direct(function) | CallTarget::Inherent(function),
                 arguments,
                 witnesses,
                 ..
@@ -9631,6 +9643,24 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         layout: layout.clone(),
                     });
                 }
+                (argument, NativeLayout::PodRecord(layout), NativePassMode::Value) => {
+                    let local = native_pod_value_argument_local(argument).ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "private native POD value argument is not a flat local copy",
+                        )
+                    })?;
+                    let nodes = self.stack_record_nodes.get(&local).ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "private native value call has no POD argument storage",
+                        )
+                    })?;
+                    native.push(
+                        self.pack_native_record_value(layout, nodes, "native.call.argument")?
+                            .into(),
+                    );
+                }
                 _ => {
                     return Err(CodegenError::new(
                         "LlvmAbiDefect",
@@ -9681,6 +9711,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ) => {
                         place.projection.is_empty()
                             && self.stack_record_nodes.contains_key(&place.local)
+                    }
+                    (argument, NativeLayout::PodRecord(_), NativePassMode::Value) => {
+                        native_pod_value_argument_local(argument)
+                            .is_some_and(|local| self.stack_record_nodes.contains_key(&local))
                     }
                     _ => false,
                 },

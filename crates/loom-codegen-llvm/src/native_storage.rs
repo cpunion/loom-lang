@@ -16,6 +16,21 @@ use crate::native_layout::{NativeLayout, NativePodRecord, NativeSignatureShape};
 const MAX_STACK_RECORD_FIELDS: usize = 16;
 const MAX_STACK_RECORD_NODES_PER_FUNCTION: usize = 64;
 
+/// Returns the private source local for the only POD value argument shape currently admitted by
+/// both requirement analysis and emission. Keeping this syntax decision shared prevents either
+/// phase from silently selecting a different calling convention.
+#[must_use]
+pub(crate) fn native_pod_value_argument_local(argument: &CallArgument) -> Option<LocalId> {
+    let CallArgument::Value(Expr {
+        kind: ExprKind::Copy(place),
+        ..
+    }) = argument
+    else {
+        return None;
+    };
+    place.projection.is_empty().then_some(place.local)
+}
+
 /// Compiler-private stack nodes for a bounded POD record local.
 ///
 /// Eligibility and initializer recognition live in this shared plan so the
@@ -142,7 +157,7 @@ fn is_stack_record_initializer(
             is_stack_record_initializer(tail, expected, native_pod_initializers)
         }),
         ExprKind::Call {
-            target: CallTarget::Direct(function),
+            target: CallTarget::Direct(function) | CallTarget::Inherent(function),
             type_arguments,
             witnesses,
             ..
@@ -1237,7 +1252,7 @@ fn expr_references_local(expression: &Expr, local: LocalId) -> bool {
 #[cfg(test)]
 #[allow(clippy::default_trait_access)]
 mod tests {
-    use super::{NativeIntListPlan, option_match};
+    use super::{NativeIntListPlan, native_pod_value_argument_local, option_match};
     use loom_mir::{
         Block, Builtin, CallArgument, CallPlan, CallTarget, Constant, Expr, ExprKind, Function,
         FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, PreludeIds, Program, Statement,
@@ -1420,6 +1435,32 @@ mod tests {
             )),
             span: Default::default(),
         }
+    }
+
+    #[test]
+    fn pod_value_argument_source_requires_a_flat_local_copy() {
+        let flat = CallArgument::Value(expression(
+            ExprKind::Copy(Place::local(VALUE)),
+            Type::Nominal(TypeId(8), Vec::new()),
+        ));
+        assert_eq!(native_pod_value_argument_local(&flat), Some(VALUE));
+
+        let projected = CallArgument::Value(expression(
+            ExprKind::Copy(Place {
+                local: VALUE,
+                projection: vec![0],
+            }),
+            Type::Int,
+        ));
+        assert_eq!(native_pod_value_argument_local(&projected), None);
+        assert_eq!(
+            native_pod_value_argument_local(&CallArgument::InOut(Place::local(VALUE))),
+            None
+        );
+        assert_eq!(
+            native_pod_value_argument_local(&CallArgument::Value(integer(1))),
+            None
+        );
     }
 
     fn range(local: LocalId, end: i64, body: Block) -> Statement {

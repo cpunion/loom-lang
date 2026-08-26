@@ -7,7 +7,9 @@ use loom_mir::{
 
 use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
 use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
-use crate::native_storage::{NativeIntListPlan, NativeStackRecordPlan};
+use crate::native_storage::{
+    NativeIntListPlan, NativeStackRecordPlan, native_pod_value_argument_local,
+};
 use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
@@ -528,13 +530,8 @@ impl RequirementScanner<'_> {
     }
 
     fn private_record_value_argument(&self, argument: &CallArgument) -> bool {
-        matches!(
-            argument,
-            CallArgument::Value(Expr {
-                kind: ExprKind::Copy(place),
-                ..
-            }) if place.projection.is_empty() && self.private_record_local(place.local)
-        )
+        native_pod_value_argument_local(argument)
+            .is_some_and(|local| self.private_record_local(local))
     }
 
     fn native_call_compatible(

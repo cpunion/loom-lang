@@ -1997,6 +1997,252 @@ pub fn faultMain() Unit {
     assert!(diagnostic.contains("AssertionFault"), "{output:?}");
 }
 
+const POD_VALUE_PARAMETERS_SOURCE: &str = r#"module pod_value_parameters
+
+record Pair {
+    left Int
+    right Int
+}
+
+fn sum(value Pair) Int {
+    value.left + value.right
+}
+
+fn duplicate(value Pair) Pair {
+    value
+}
+
+fn forward(value Pair) Pair {
+    duplicate(value)
+}
+
+impl Pair {
+    method total(self) Int {
+        self.left + self.right
+    }
+
+    method shifted(self, amount Int) Pair {
+        Pair {
+            left = self.left + amount,
+            right = self.right
+        }
+    }
+
+    method checkedCopy(self, accepted Bool) Pair {
+        assert accepted
+        self
+    }
+
+    method addToLeft(mut self, amount Int) Unit {
+        self.left = self.left + amount
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    let original = Pair { left = 3, right = 4 }
+    let summed = sum(original)
+    assert summed == 7
+    let total = original.total()
+    assert total == 7
+
+    var copied = forward(original)
+    copied.addToLeft(10)
+    let copiedLeft = copied.left
+    let copiedRight = copied.right
+    assert copiedLeft == 13
+    assert copiedRight == 4
+    assert original.left == 3
+    assert original.right == 4
+
+    let shifted = original.shifted(5)
+    assert shifted.left == 8
+    assert shifted.right == 4
+
+    var checked = original.checkedCopy(true)
+    checked.addToLeft(20)
+    let checkedLeft = checked.left
+    assert checkedLeft == 23
+    assert original.left == 3
+
+    let boundary = publicBoundary("")
+    assert boundary == 24
+    Unit
+}
+
+pub fn faultMain() Unit {
+    let original = Pair { left = 3, right = 4 }
+    let rejected = original.checkedCopy(false)
+    assert rejected.left == 3
+    Unit
+}
+
+pub fn overflowMain() Unit {
+    let overflowing = Pair { left = 9223372036854775807, right = 1 }
+    let impossible = sum(overflowing)
+    assert impossible == 0
+    Unit
+}
+
+pub fn publicBoundary(ignored Text) Int {
+    let value = Pair { left = 5, right = 7 }
+    let ordinary = sum(value)
+    let readonly = value.total()
+    let length = ignored.length()
+    ordinary + readonly + length
+}
+"#;
+
+#[test]
+fn private_pod_value_parameters_and_readonly_receivers_use_aggregate_values() {
+    let (project, _program, llvm) = emit_source_with_ir(POD_VALUE_PARAMETERS_SOURCE);
+
+    let sum = llvm_native_function(&llvm, "pod_value_parameters_sum");
+    assert!(
+        sum.lines().next().is_some_and(|line| {
+            line.contains("define internal i64") && line.contains("({ i64, i64 }")
+        }),
+        "{sum}"
+    );
+    let duplicate = llvm_native_function(&llvm, "pod_value_parameters_duplicate");
+    assert!(
+        duplicate.lines().next().is_some_and(|line| {
+            line.contains("define internal { i64, i64 }") && line.contains("({ i64, i64 }")
+        }),
+        "{duplicate}"
+    );
+    let readonly = llvm_native_function(&llvm, "pod_value_parameters_total");
+    assert!(
+        readonly.lines().next().is_some_and(|line| {
+            line.contains("define internal i64") && line.contains("({ i64, i64 }")
+        }),
+        "{readonly}"
+    );
+    assert!(
+        !readonly.lines().next().unwrap().contains("ptr %0"),
+        "{readonly}"
+    );
+
+    let main = llvm_native_function(&llvm, "pod_value_parameters_main");
+    for callee in [
+        "pod_value_parameters_sum",
+        "pod_value_parameters_total",
+        "pod_value_parameters_forward",
+        "shifted",
+        "checkedCopy",
+    ] {
+        assert!(
+            main.contains(callee),
+            "missing aggregate call `{callee}`: {main}"
+        );
+    }
+    let forward = llvm_native_function(&llvm, "pod_value_parameters_forward");
+    assert!(
+        forward.contains("call { i64, i64 } @loom.native.fn.")
+            && forward.contains("pod_value_parameters_duplicate"),
+        "{forward}"
+    );
+    let checked = llvm_native_function(&llvm, "checkedCopy");
+    assert!(
+        checked.lines().next().is_some_and(|line| {
+            line.contains("define internal { i32, { i64, i64 } }") && line.contains("({ i64, i64 }")
+        }),
+        "{checked}"
+    );
+
+    let boundary = llvm_function(&llvm, "pod_value_parameters_publicBoundary");
+    assert!(
+        boundary.contains("@loom.native.fn.")
+            && boundary.contains("pod_value_parameters_sum")
+            && boundary.contains("pod_value_parameters_total"),
+        "{boundary}"
+    );
+    assert!(
+        !boundary.lines().any(|line| {
+            line.contains("call i32 @loom.fn.")
+                && (line.contains("pod_value_parameters_sum")
+                    || line.contains("pod_value_parameters_total"))
+        }),
+        "{boundary}"
+    );
+
+    for suffix in [
+        "pod_value_parameters_sum",
+        "pod_value_parameters_duplicate",
+        "pod_value_parameters_forward",
+        "pod_value_parameters_total",
+        "shifted",
+        "checkedCopy",
+    ] {
+        let function = llvm_native_function(&llvm, suffix);
+        for forbidden in [
+            "@loom.fn.",
+            "@loom_gc_build_value_nodes_v1",
+            "@loom_gc_clone_value_v1",
+            "@loom_gc_root_",
+            "@loom_gc_safepoint_v1",
+        ] {
+            assert!(
+                !function.contains(forbidden),
+                "POD aggregate value path contains `{forbidden}`: {function}"
+            );
+        }
+    }
+
+    assert_emitted_main_succeeds(&project);
+}
+
+#[test]
+fn private_pod_value_parameter_propagates_checked_integer_faults() {
+    let (project, program, _llvm) = emit_source_with_ir(POD_VALUE_PARAMETERS_SOURCE);
+    let executable = project.path().join("fault-program");
+    let ir = project.path().join("fault-program.ll");
+    let mut options = EmitOptions::run("overflowMain");
+    options.emit_ir = Some(ir.clone());
+    emit_native(&program, &executable, &options).expect("emit faulting POD value executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read faulting POD value IR");
+    let sum = llvm_native_function(&llvm, "pod_value_parameters_sum");
+    assert!(
+        sum.lines().next().is_some_and(|line| {
+            line.contains("define internal { i32, i64 }") && line.contains("({ i64, i64 }")
+        }),
+        "{sum}"
+    );
+    assert!(!sum.contains("@loom.fn."), "{sum}");
+    assert!(sum.contains("llvm.sadd.with.overflow.i64"), "{sum}");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run faulting POD value executable");
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(diagnostic.contains("IntegerOverflow"), "{output:?}");
+}
+
+#[test]
+fn private_pod_readonly_result_propagates_assertion_faults() {
+    let (project, program, _llvm) = emit_source_with_ir(POD_VALUE_PARAMETERS_SOURCE);
+    let executable = project.path().join("readonly-fault-program");
+    emit_native(&program, &executable, &EmitOptions::run("faultMain"))
+        .expect("emit faulting readonly POD executable");
+
+    let output = Command::new(executable)
+        .output()
+        .expect("run faulting readonly POD executable");
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(diagnostic.contains("AssertionFault"), "{output:?}");
+}
+
 #[test]
 fn private_pod_inout_writes_back_before_fault_status_propagates() {
     let source = r"module pod_fault_writeback
