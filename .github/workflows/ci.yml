@@ -129,7 +129,7 @@ jobs:
         run: cargo +nightly-2025-06-26 fuzz run semantics -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
 
   macos-llvm19:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       CARGO_TERM_COLOR: always
     steps:

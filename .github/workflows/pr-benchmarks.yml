@@ -3,7 +3,6 @@ name: PR Benchmarks
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,16 +14,22 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
-  LOOM_CC: clang-19
-  LOOM_BENCH_CC: clang-19
-  LOOM_BENCH_CXX: clang++-19
 
 jobs:
   compare:
-    name: Compare base and candidate
+    name: Compare base and candidate (${{ matrix.platform }})
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            rust_host: x86_64-unknown-linux-gnu
+          - platform: macos-aarch64
+            runner: macos-15
+            rust_host: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - name: Check out base revision
@@ -41,10 +46,30 @@ jobs:
           path: candidate
           persist-credentials: false
 
-      - name: Install LLVM 19
+      - name: Install LLVM 19 on Linux
+        if: ${{ runner.os == 'Linux' }}
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
+          {
+            echo "LLVM_SYS_191_PREFIX=/usr/lib/llvm-19"
+            echo "LOOM_CC=clang-19"
+            echo "LOOM_BENCH_CC=clang-19"
+            echo "LOOM_BENCH_CXX=clang++-19"
+          } >> "$GITHUB_ENV"
+
+      - name: Install LLVM 19 on macOS
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          brew install llvm@19
+          llvm_prefix="$(brew --prefix llvm@19)"
+          {
+            echo "LLVM_SYS_191_PREFIX=$llvm_prefix"
+            echo "LOOM_CC=$llvm_prefix/bin/clang"
+            echo "LOOM_BENCH_CC=$llvm_prefix/bin/clang"
+            echo "LOOM_BENCH_CXX=$llvm_prefix/bin/clang++"
+          } >> "$GITHUB_ENV"
+          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
@@ -54,7 +79,7 @@ jobs:
       - name: Install Go 1.27.0
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.27.0
+          go-version: "1.27.0"
           cache: false
 
       - name: Restore Rust dependency cache
@@ -64,13 +89,16 @@ jobs:
             base -> target
             candidate -> target
           cache-targets: false
-          key: pr-benchmark-llvm-19
+          key: pr-benchmark-${{ matrix.platform }}-llvm-19
           env-vars: LLVM_SYS_191_PREFIX
 
       - name: Verify pinned toolchains
+        env:
+          EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
         shell: bash
         run: |
           test "$(rustc --version)" = "rustc 1.88.0 (6b00bc388 2025-06-23)"
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
           case "$("$LLVM_SYS_191_PREFIX/bin/llvm-config" --version)" in
             19.*) ;;
             *) exit 1 ;;
@@ -102,7 +130,7 @@ jobs:
       - name: Upload benchmark evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pr-benchmark-${{ github.run_id }}
+          name: pr-benchmark-${{ github.run_id }}-${{ matrix.platform }}
           path: |
             benchmark-base.json
             benchmark-candidate.json
