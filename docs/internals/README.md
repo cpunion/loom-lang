@@ -18,7 +18,7 @@ The workspace is split into narrow crates:
 | `loom-mir` | Typed executable IR, artifact encoding, liveness, and validation. |
 | `loom-lowering` | Total lowering from typed HIR to MIR. |
 | `loom-interpreter` | Deterministic execution of validated MIR. |
-| `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic scalar MIR-to-LCIR selection, typed-SSA builders, validation, artifact roots, and insertion-order dumps. |
+| `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic direct MIR-to-LCIR selection for primitives and closed POD records, typed-SSA builders, validation, artifact roots, and insertion-order dumps. |
 | `loom-runtime-abi` | Shared compiler-private native ABI constants and C-shaped records. |
 | `loom-runtime` | Moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
 | `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |
@@ -51,7 +51,7 @@ entries, terminal backend constructors, source reachability, native object
 identity/emission, and portable-library encoding retain or require
 `loom_mir::CheckedProgram`.
 
-`loom-codegen-ir` can construct a complete scalar `CheckedArtifact` through an
+`loom-codegen-ir` can construct a complete direct `CheckedArtifact` through an
 independently validated `CheckedProgram` and validated roots.
 `loom-codegen-llvm` automatically selects that typed route for a completely
 supported reachable artifact and otherwise prepares one whole checked-MIR

@@ -25,7 +25,9 @@ workspace does not silently fall back to another LLVM major version.
 
 ## LCIR foundation status
 
-The workspace contains a scalar typed-SSA foundation in `loom-codegen-ir`.
+The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
+primitive values and closed, invariant-free POD records. Records are recursive
+acyclic products of other direct values.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proofs, and exact fault effects have
 already crossed independent validation. It declares every source function
@@ -34,7 +36,7 @@ test harness, verifies before and after optimization, and writes a relocatable
 object.
 
 Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
-preparation creates one target machine and attempts the complete scalar
+preparation creates one target machine and attempts the complete direct
 lowering exactly once. `Complete` retains only the checked artifact and selects
 LCIR. Only `Unsupported` constructs and stores `SourceRoots` plus
 `ReachableSourceGraph` for a complete legacy object. Unsupported unreachable
@@ -45,7 +47,7 @@ and LCIR emitter failures never fall back.
 Source contracts are outside that routing slice. Hand-built LCIR can carry the
 generic `ContractFailed` fault code, but LCIR does not yet preserve the contract
 category, user code, contract span, and blame span required by production
-diagnostics. The scalar lowerer reports contracts as `Unsupported` until that
+diagnostics. The direct lowerer reports contracts as `Unsupported` until that
 metadata has a checked LCIR representation and differential tests.
 
 The implemented crate boundary is documented in
@@ -86,7 +88,7 @@ set, PIC relocation, and the target's LLVM data layout.
 
 The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete
-scalar LCIR object can therefore be emitted for a matching 32-bit LLVM target.
+direct LCIR object can therefore be emitted for a matching 32-bit LLVM target.
 The legacy universal representation's 64-bit restriction is applied only
 after that route is selected. Neither case establishes 32-bit runtime, linker,
 CI, or release support; LLVM target availability proves only object emission.
@@ -123,11 +125,29 @@ need to:
 - use the async executor.
 
 These flags are compiler-private lowering facts, not source effects. They
-allow a proven pure scalar native body to omit status and hidden runtime
+allow a proven pure direct native body to omit status and hidden runtime
 context, a synchronous managed root to create only a runtime, and an async root
 to attach an executor only when required.
 
-## Native specialization
+## Direct LCIR products
+
+LCIR `Product` values become literal LLVM structs whose fields recursively use
+their validated direct types. Construction and functional mutation use
+`insertvalue`; projection uses `extractvalue`. Parameters and ordinary results
+pass these structs by value, and block parameters become aggregate phi nodes.
+LCIR source functions do not allocate a universal value, private record box, or
+GC object for this representation.
+
+A mutable inherent receiver is represented as one functional inout value. An
+infallible call with source result `T` and ordered writebacks `W...` returns
+`{ T, W... }`. A fallible call returns `{ i32 status, T, W... }` and receives
+the usual fault-context pointer. Both normal and fault exits carry the current
+receiver value, so a mutation completed before a later fault remains visible
+to the caller. Only whole-local inout arguments are in this slice; projected
+inout, contracts, refined values, managed fields, and runtime construction
+select atomic whole-artifact fallback.
+
+## Legacy native specialization
 
 The universal value path remains the complete semantic implementation. Current
 closed-world fast paths include primitive scalar calls, eligible flat
@@ -155,7 +175,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v1` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v2` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -191,15 +211,18 @@ origin must therefore provide that generated file explicitly when requesting
 debug information.
 
 The signature deliberately describes the exact compiler ABI rather than a
-logical wrapper that does not exist. A fallible callable returns the
-target-laid-out `LoomFallible<T> { status LoomStatus, value T }` aggregate and
-receives an artificial trailing `LoomFaultContext*` parameter. These names are
-debugger descriptions of compiler implementation types, not Loom source types
-or a stable native ABI. In particular, a debugger's step-out result is the
-complete physical aggregate; it must not interpret the status register as the
-logical `T` result. `loomc debug` uses the same atomic automatic route as build,
-run, and test. Development optimization alone is not a debugger contract and
-does not disable LCIR.
+logical wrapper that does not exist. Direct products use stable compiler-private
+`LoomProduct<tN>` names because LCIR does not retain source record names; their
+members, size, alignment, and offsets come from LLVM target data. An infallible
+inout callable returns `{ value, writebacks... }`, while a fallible callable
+returns `{ status, value, writebacks... }` and receives an artificial trailing
+`LoomFaultContext*` parameter. Status and writeback members are artificial.
+These names describe compiler implementation types, not Loom source types or a
+stable native ABI. In particular, a debugger's step-out result is the complete
+physical aggregate; it must not interpret the status field as the logical
+result. `loomc debug` uses the same atomic automatic route as build, run, and
+test. Development optimization alone is not a debugger contract and does not
+disable LCIR.
 
 There is no stable native library, debugger pretty-printer, plugin, or FFI ABI
 in the current implementation.

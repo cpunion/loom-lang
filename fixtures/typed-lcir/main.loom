@@ -1,4 +1,4 @@
-module scalar_lcir
+module typed_lcir
 
 fn double(value Int) Int {
     value * 2

@@ -6,10 +6,10 @@ inspect tags, pointers, allocation addresses, witness descriptors, or calling
 conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
-entire reachable artifact. A completely supported scalar artifact uses typed
-LCIR directly. Any reachable feature outside current LCIR coverage selects the
-complete legacy layout below; the two callable ABIs are never mixed in one
-object.
+entire reachable artifact. A completely supported direct artifact uses typed
+LCIR for primitive values and closed POD records. Any reachable feature outside
+current LCIR coverage selects the complete legacy layout below; the two
+callable ABIs are never mixed in one object.
 
 ## Universal value envelope
 
@@ -27,20 +27,22 @@ The current runtime ABI identity is versioned as a whole in
 linking. It is not backward-compatible with earlier identities and is not a
 public ABI.
 
-## Primitive and aggregate representation
+## Legacy primitive and aggregate specialization
 
-`Unit`, `Bool`, `Int`, and `Float` can use direct private LLVM values in
-eligible internal calls. Monomorphic records with no invariant and only direct
-primitive fields can use first-class LLVM aggregates:
+Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use
+direct private LLVM values in eligible internal calls. Monomorphic records with
+no invariant and only direct primitive fields can use a separate closed-world
+specialization:
 
 - ordinary by-value parameters and readonly receivers are aggregate values;
 - a mutable receiver uses a call-scoped in/out pointer;
 - results are returned directly when the closed-world fault requirements allow
   it, or with an internal status when they do not.
 
-Unsupported boundaries materialize the independent universal representation.
-This preserves value-copy semantics and prevents a private stack address from
-escaping.
+Unsupported specialization boundaries materialize the independent universal
+representation. This preserves value-copy semantics and prevents a private
+stack address from escaping. These layouts are legacy emitter decisions and
+are not reused by typed LCIR.
 
 Records, enums, refined values, tuples, and generic lists on the universal path
 use GC-managed nodes. Logical copy is independent: mutating one value cannot
@@ -50,18 +52,33 @@ internally.
 ## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, and `Float` as `F64`. Its checked-artifact LLVM API
-emits those representations directly: pure functions return the typed value,
-and faulting functions return `{ i32 status, T value }` with one hidden fault
-context pointer. Source symbols are internal, so this is a compiler-private
-object ABI rather than a native library ABI.
+as `I1`, `Int` as `I64`, `Float` as `F64`, and each supported closed record as
+an immutable `Product` of canonical field value types. Products may contain
+other products as long as the representation graph is acyclic. An explicit
+registration table chooses the canonical value representation for a semantic
+type; other representation alternatives do not compete merely because they
+have the same semantic type.
 
-The whole-artifact scalar lowerer constructs programs using the same catalog,
-and the production automatic route emits that typed ABI for eligible build,
-run, and test artifacts. Unsupported aggregates, managed values, concepts,
-contracts, cleanup, and async operations still select the complete universal
-route. Typed LCIR does not change the legacy runtime ABI or make either object
-ABI public.
+The checked-artifact LLVM API maps a product to a literal LLVM struct and emits
+construction, projection, and functional field replacement as `insertvalue`
+and `extractvalue`. Product parameters, returns, block phis, and loop-carried
+values remain direct SSA. Ordinary product copy or move copies the SSA value;
+mutation reconstructs the changed path and therefore cannot write through an
+earlier copy. No LCIR product requires a `ValueSlot`, record allocation, GC
+trace metadata, executor, or source-function `alloca`.
+
+An infallible function with no inout parameters returns its source result `T`
+directly. With ordered functional writebacks `W...`, it returns `{ T, W... }`.
+A faulting function returns `{ i32 status, T, W... }` and receives one hidden
+fault-context pointer. Normal and fault exits both return the latest inout
+values; the source result is zero-filled on a fault. This is a
+compiler-private object ABI, not a native library ABI.
+
+The production automatic route uses this typed ABI for eligible build, run,
+and test artifacts. Generic records, invariants, refined or managed fields,
+runtime-checked construction, projected inout arguments, concepts, contracts,
+cleanup, and async operations still select the complete universal route. Typed
+LCIR does not change the legacy runtime ABI or make either object ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted

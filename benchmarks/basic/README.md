@@ -24,6 +24,15 @@ writes, and bounds-safe reads together. Text concatenation and dynamic dispatch
 are intentionally absent because equivalent allocation and devirtualization
 semantics have not yet been specified across all five implementations.
 
+The current Loom benchmark executable is intentionally one runtime-selected
+program: its root parses `List[Text]`, matches the requested case, and keeps all
+workloads reachable. Automatic native routing is whole-artifact atomic, so the
+remaining Text/List/parse/match coverage selects the legacy native route for
+this executable, including `record_method`. Do not cite this suite as direct
+LCIR record performance yet. Separate source/interpreter/LLVM differential
+tests build and run a closed record-method workload through direct LCIR; moving
+the parameter-driven benchmark itself requires a future per-case build protocol.
+
 ## Run the suite
 
 Build the Loom compiler and benchmark runner first:
