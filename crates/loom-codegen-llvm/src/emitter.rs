@@ -8719,6 +8719,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(continues)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "record construction keeps the checked MIR operands and destination explicit"
+    )]
     fn emit_record_with_nodes(
         &self,
         ty: TypeId,
