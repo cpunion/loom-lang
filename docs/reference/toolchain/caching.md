@@ -37,8 +37,10 @@ Current namespaces include:
 
 Native final executables are deliberately not cached. Linking depends on
 non-hermetic SDK, sysroot, CRT, system-library, linker-child, and debug
-companion inputs. The target object is cacheable because its key includes the
-exact LLVM/codegen, target, optimization, root, reachability, and MIR identity.
+companion inputs. A prepared target object is cacheable because its key includes
+the exact route, LLVM/codegen, target machine, optimization, roots, reachable
+content, runtime ABI, and debug-source identity. A requested LLVM-IR side
+artifact bypasses the object cache so the requested file is always written.
 
 Cache writes and materialization are best-effort during compilation. A failure
 falls back to fresh work. Explicit `cache stat` and `cache prune` operations
@@ -77,10 +79,15 @@ That split permits unchanged module bodies to be reused when a body-only edit
 leaves the declaration graph compatible. Any incompatible shape falls back to
 fresh semantic analysis.
 
-LLVM object keys additionally include the exact linked LLVM identity, target
-triple and data layout, CPU policy and features, optimization pipeline,
-selected roots, reachable functions/witness slots, debug sources, and runtime
-ABI-relevant code-generation identity.
+LLVM object keys use separate LCIR and legacy identity domains. Both include
+the exact linked LLVM identity, target triple and data layout, CPU policy and
+features, implicit-versus-explicit target selection, optimization pipeline,
+PIC relocation, debug sources, and native runtime ABI. The LCIR identity
+streams the complete checked-artifact identity. The legacy identity includes
+the run/test harness kind, selected roots, source reachability, reachable
+functions and witness slots, and the semantic tables consumed by legacy
+lowering. Fingerprint errors disable neither validation nor correctness; they
+are reported instead of being converted into a cache miss.
 
 ## Registry cache
 

@@ -53,11 +53,12 @@ identity/emission, and portable-library encoding retain or require
 
 `loom-codegen-ir` can construct a complete scalar `CheckedArtifact` through an
 independently validated `CheckedProgram` and validated roots.
-`loom-codegen-llvm` can emit that artifact directly to an object, and focused
-tests exercise that boundary. Production native compilation still uses the
-checked-MIR source graph and legacy emitter; the driver route and LCIR cache
-fingerprint are not connected. The accepted integration design is tracked in
-the [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
+`loom-codegen-llvm` automatically selects that typed route for a completely
+supported reachable artifact and otherwise prepares one whole checked-MIR
+legacy route. The exact prepared target and route-specific fingerprint are
+reused by the production cache and emitter. Broader LCIR representation and
+semantic coverage remain tracked by the
+[typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 Implementation status and platform support are maintained separately in
 [Implementation status](../project/implementation-status.md). Future design

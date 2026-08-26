@@ -14,17 +14,21 @@ LCIR is compiler-private. Its Rust API, textual dump, physical ABI, and object
 symbols may change with the compiler build. It is not a source IR, a stable
 artifact format, an ownership system, or a public FFI ABI.
 
-The standalone scalar foundation is described in the current
-[Code generation IR internals](../internals/codegen-ir.md). The production
-pipeline described by this record is not complete yet.
+The scalar foundation and its first production route are described in the
+current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
+native build, run, and test preparation now selects complete supported scalar
+artifacts into typed LCIR and falls back atomically for reachable unsupported
+features. The broader representation migration and legacy deletion gates in
+this record are not complete.
 
 ## Motivation
 
-The production LLVM backend currently lowers checked MIR through a universal
-value implementation and several closed-world native specializations. Scalar,
-record, integer-range, and private-list paths repeat representation, proof,
-call-compatibility, and runtime-requirement decisions inside the target
-emitter. Some functions may acquire universal, checked-native, and
+The production LLVM backend still lowers artifacts outside current scalar LCIR
+coverage through a universal value implementation and several closed-world
+native specializations. Record, managed, concept, contract, cleanup, async,
+and private-list paths still repeat representation, proof, call-compatibility,
+and runtime-requirement decisions inside the legacy target emitter. Some
+legacy functions may acquire universal, checked-native, and
 assumption-specialized bodies.
 
 That structure makes a correct fast path depend on exact MIR shapes and makes

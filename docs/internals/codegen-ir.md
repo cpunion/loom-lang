@@ -7,13 +7,13 @@ provides target-aware scalar representations, whole-artifact checked-MIR
 lowering, typed SSA data structures, builders, independent program and
 artifact-root validators, and a textual dump for tests and review.
 
-`loom-codegen-llvm::emit_lcir_native_object` consumes the resulting
-`CheckedArtifact` directly and emits its scalar functions and run/test harness
-without the universal value ABI or an executor. The whole-artifact lowerer and
-object emitter are both implemented boundaries, but the production driver
-still sends reachable checked MIR to the legacy LLVM implementation. The
-production router and LCIR cache fingerprint remain unconnected. The accepted
-LCIR integration and migration design is in the
+`loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
+its scalar functions and run/test harness without the universal value ABI or
+an executor. Its production prepared router attempts that whole-artifact
+lowering once. `Complete` selects only typed LCIR; only `Unsupported` stores a
+source reachability graph and selects the complete legacy emitter. Both routes
+have independent object identities. The remaining LCIR coverage and deletion
+gates are in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 LCIR is compiler-private and target-specific. It is not a source IR, a public
@@ -24,8 +24,8 @@ artifact format, or a stable native ABI.
 `SourceRoots` contains MIR `FunctionId` values selected for one command.
 `analyze_source_reachability` closes direct calls, constructed witnesses,
 dynamic requirement slots, and builtins into a deterministic
-`ReachableSourceGraph`. These names deliberately include “source”: future
-lowered artifact roots use LCIR `InstanceId` values and are a different graph.
+`ReachableSourceGraph`. These names deliberately include “source”: lowered
+artifact roots use LCIR `InstanceId` values and are a different graph.
 Root selection and graph analysis require `loom_mir::CheckedProgram`; this
 module has no public raw-MIR compatibility entry point.
 
@@ -82,10 +82,9 @@ flow, operations, and complete function, instruction, and terminator origins.
 The dump uses explicit enum spellings and string escaping rather than Rust
 `Debug`. Dense numeric IDs are content, but the process-local generative
 `ProgramBrand` is deliberately excluded, so independently built artifacts with
-the same deterministic numbering and content have the same identity. A future
-LLVM object route can hash this value together with its backend, target-machine,
-optimization, and runtime identities; the production fingerprint does not
-consume it yet.
+the same deterministic numbering and content have the same identity. The
+production LCIR fingerprint streams this identity together with backend,
+target-machine, optimization, runtime ABI, and debug-source identities.
 
 `lower_scalar_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -118,13 +117,12 @@ same environment and inspect only the body's continuing mutation set. This
 keeps lowering proportional to emitted control flow and changed locals instead
 of multiplying every branch or loop by the number of live locals.
 
-The range induction increment currently uses `checked_int.add`. The preceding
-`current < end` comparison proves that this particular operation cannot fault,
-but LCIR has no general validated no-overflow operation yet, so its structural
-effect still makes the function `may_fault`. This is a blocker for switching
-production scalar loops to LCIR, not a final performance path. The fix must be
-a reusable proof-carrying operation and validator rule; the lowerer and emitter
-must not recognize a for-loop, Fibonacci, or other exact MIR shape.
+Range induction uses the reusable `IntSuccessorBelow` instruction. Its operands
+carry the exact `current < end` comparison result and upper bound. Independent
+validation requires the comparison's true edge to dominate the instruction,
+which proves `current + 1` is representable for any signed `Int` upper bound.
+LLVM then emits `add nsw` without an overflow edge. The validator and emitter
+do not recognize a for-loop, Fibonacci, or another exact MIR shape.
 
 The source root boundary and LCIR artifact boundary intentionally differ. A
 run root has no value, type, witness, or receiver inputs and returns `Unit`. A
@@ -157,6 +155,7 @@ The current instruction set is deliberately small:
 - floating-point negation;
 - floating-point add, subtract, multiply, and divide;
 - signed integer comparisons;
+- a proof-carrying signed successor below an `Int` upper bound;
 - explicitly ordered or unordered floating-point comparisons;
 - direct calls to infallible scalar functions.
 
@@ -216,9 +215,9 @@ physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
 distinct-target branches remain direct.
 
 These checks apply both to explicit clients and to the whole-artifact scalar
-lowerer. The independent LLVM object API consumes only the resulting checked
-artifact; the production driver does not select that route yet. Source
-contracts remain `Unsupported`: the generic
+lowerer. The production automatic route consumes only the resulting checked
+artifact when the complete reachable graph is supported. Source contracts
+remain `Unsupported`: the generic
 `ContractFailed` code does not yet carry category, user code, contract span, or
 blame span, so it cannot replace production contract diagnostics.
 
@@ -247,10 +246,11 @@ origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
 dumps for structurally different recursive and iterative Fibonacci programs.
 Structural regressions cover thousands of live locals and identity branches,
 bounded persistent-map allocation, and sparse-map reference differentials.
-LLVM-side tests additionally cover typed
-ABIs, block insertion order independent of dominance order, same-target edge
-normalization, exact scalar predicates, checked arithmetic, first-primary fault
-suppression, fatal runtime setup failures, ordered tests, linking, execution,
-and verifier/optimization gates on Linux and macOS. The platform-independent
+LLVM-side tests additionally cover typed ABIs, block insertion order independent
+of dominance order, same-target edge normalization, exact scalar predicates,
+checked arithmetic, proved successors, first-primary fault suppression, fatal
+runtime setup failures, ordered tests, atomic automatic/legacy route selection,
+route-separated identity, object-cache behavior, linking, execution, and
+verifier/optimization gates on Linux and macOS. The platform-independent
 Windows CI job checks, lints, tests, and builds `loom-codegen-ir` without
 claiming a Windows LLVM backend.

@@ -13,7 +13,7 @@ long-term compatibility guarantee.
 | macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
 | Windows x86-64 (Windows 2025) | yes, limited job | selected platform-independent crates only | no | not a CI claim | no |
 | Other LLVM 64-bit triples | no general CI claim | host-dependent | only with a matching validated runtime bundle and linker | possible when LLVM provides the target | no |
-| 32-bit triples | no | not a native claim | unsupported by current native value ABI | rejected | no |
+| 32-bit triples | no | not a native claim | no runtime/executable support | complete scalar LCIR object only when LLVM provides the target; legacy route rejects | no |
 
 The Windows job checks, lints, tests, and builds `loom-core`, `loom-syntax`,
 `loom-hir`, `loom-sema`, `loom-mir`, `loom-codegen-ir`, `loom-lowering`,
@@ -49,14 +49,14 @@ input tests.
 | Capability | Status and evidence boundary |
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
-| Code generation IR foundation | Checked-MIR roots/reachability are production-used from `loom-codegen-ir` and require `loom_mir::CheckedProgram`. Scalar LCIR builders, validation, checked artifact roots, whole-artifact MIR classification/lowering, and direct checked-artifact-to-object LLVM emission are implemented. Source-to-LCIR-to-native differential tests cover the scalar slice. The production router, LCIR cache fingerprint, broader value representations, and structured contract-fault metadata remain unconnected. |
+| Code generation IR foundation | Production native preparation attempts one atomic whole-artifact scalar MIR-to-LCIR lowering. Complete artifacts use independently checked LCIR, its typed LLVM emitter, and a route-specific cache identity; only reachable `Unsupported` input selects the complete legacy source graph. Source-to-LCIR-to-native differential and CLI route tests cover the scalar slice. Broader value representations and structured contract-fault metadata remain incomplete. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
-| Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/object/portable artifacts; native final link intentionally uncached. |
-| Debug source info | Linux DWARF checked in CI; macOS dSYM generation covered by workspace tests/build and native implementation. |
+| Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; native final link intentionally uncached. |
+| Debug source info | Linux DWARF checked in CI; macOS dSYM generation covered by workspace tests/build and native implementation. `debug` currently forces the legacy route until LCIR has function-level source metadata. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |
