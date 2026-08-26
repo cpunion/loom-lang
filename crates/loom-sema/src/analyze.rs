@@ -2188,7 +2188,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             Expr::Await(value) => self.check_await(expression, value, await_allowed),
             Expr::Sleep(arguments) => self.check_sleep(expression, &arguments),
-            Expr::WaitFd { arguments, .. } => self.check_wait_fd(expression, &arguments),
             Expr::TaskJoin { mode, arguments } => {
                 self.check_task_join(expression, mode, &arguments)
             }
@@ -2311,13 +2310,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
         }
         self.finish_call_arguments(arguments);
-        let unit = self.types().builtin(BuiltinType::Unit);
-        self.types().intern(TyData::Task(unit))
-    }
-
-    fn check_wait_fd(&mut self, expression: ExprId, arguments: &[ExprId]) -> TyId {
-        let int = self.types().builtin(BuiltinType::Int);
-        self.check_fixed_arguments(expression, arguments, &[int]);
         let unit = self.types().builtin(BuiltinType::Unit);
         self.types().intern(TyData::Task(unit))
     }
@@ -4766,7 +4758,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::Assign { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
@@ -5030,7 +5021,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
@@ -8675,7 +8665,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_) => false,

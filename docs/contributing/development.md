@@ -39,9 +39,10 @@ export PATH="$LLVM_SYS_191_PREFIX/bin:$PATH"
 
 The reported LLVM version must begin with `19.`.
 
-Windows currently has CI for selected platform-independent compiler layers. A
-contributor can work on those crates there, but the repository does not claim
-that `loomc`, LLVM codegen, the native runtime, or LSP complete a Windows build.
+A complete Windows native job is configured for the workspace, `loomc`, LLVM
+codegen, the runtime, and native fixture closures. Until that job produces a
+real Windows runner result, this is configuration rather than verified platform
+or release evidence.
 
 ## First build
 

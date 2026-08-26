@@ -975,7 +975,7 @@ impl<'program> Interpreter<'program> {
         self.socket_reactor
             .as_mut()
             .ok_or_else(|| std::io::Error::other("interpreter socket reactor allocation failed"))?
-            .register_fd(socket, interests)
+            .register_source(socket, interests)
     }
 
     fn cancel_socket_io(&mut self, task_id: u64) {
@@ -2546,38 +2546,6 @@ impl<'program> Interpreter<'program> {
                 self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
                 self.gc_stats.live = self.tasks.len() as u64;
                 Ok(Value::Task { id: task_id })
-            }
-            ExprKind::WaitFd {
-                descriptor,
-                writable,
-            } => {
-                let descriptor = self.eval_expr(frame, descriptor)?;
-                let Value::Int { value: descriptor } = descriptor else {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "descriptor wait did not produce Int",
-                        expression.span,
-                    )));
-                };
-                if !(0..=i64::from(i32::MAX)).contains(&descriptor) {
-                    return Err(EvalAbort::from(self.runtime_fault(
-                        "InvalidFileDescriptor",
-                        "descriptor must fit the platform fd ABI",
-                        expression.span,
-                    )));
-                }
-                let interests = if *writable {
-                    loom_runtime::WAIT_WRITABLE
-                } else {
-                    loom_runtime::WAIT_READABLE
-                };
-                let span = expression.span;
-                self.spawn_host_io_task(span, move || {
-                    loom_runtime::wait_fd_once(descriptor, interests)
-                        .map(|_| HostIoValue::Value(Value::Unit))
-                        .map_err(|error| io_failure("IoWaitFault", &error, span))
-                })
-                .map_err(EvalAbort::from)
             }
             ExprKind::TaskJoin { mode, arguments } => {
                 let values = arguments
@@ -6136,10 +6104,13 @@ mod socket_readiness_tests {
             TaskPoll::Pending
         ));
 
+        let io_fixture = tempfile::tempdir().expect("create portable I/O fixture");
+        let empty_file = io_fixture.path().join("empty");
+        std::fs::write(&empty_file, []).expect("write portable I/O fixture");
         let span = Span::default();
         let Value::Task { id: file_task } = interpreter
             .spawn_host_io_task(span, move || {
-                std::fs::read("/dev/null")
+                std::fs::read(empty_file)
                     .map(|bytes| {
                         HostIoValue::Value(Value::Int {
                             value: i64::try_from(bytes.len()).expect("fixture length fits Int"),

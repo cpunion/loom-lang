@@ -857,18 +857,6 @@ impl<'a> BodyLower<'a> {
         {
             return Expr::Sleep(arguments);
         }
-        if type_arguments.is_empty()
-            && let syntax::ExprKind::Member { receiver, name } = &callee.kind
-            && matches!(name.text.as_str(), "waitReadable" | "waitWritable")
-            && let syntax::ExprKind::Name(path) = &receiver.kind
-            && path.segments.len() == 1
-            && path.segments[0].text == "Task"
-        {
-            return Expr::WaitFd {
-                writable: name.text == "waitWritable",
-                arguments,
-            };
-        }
         match &callee.kind {
             syntax::ExprKind::Member { receiver, name } => Expr::MethodCall {
                 receiver: self.lower_expr(receiver),

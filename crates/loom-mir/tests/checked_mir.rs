@@ -461,13 +461,6 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
             Type::Task(Box::new(Type::Unit)),
         ),
         expr(
-            ExprKind::WaitFd {
-                descriptor: Box::new(constant(Constant::Int(1), Type::Int)),
-                writable: false,
-            },
-            Type::Task(Box::new(Type::Unit)),
-        ),
-        expr(
             ExprKind::TaskJoin {
                 mode: loom_mir::TaskJoinMode::All,
                 arguments: vec![
@@ -501,7 +494,7 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
             .exprs_preorder()
             .map(|expression| expression.id.0)
             .collect::<Vec<_>>(),
-        (0..50).collect::<Vec<_>>()
+        (0..48).collect::<Vec<_>>()
     );
 }
 
@@ -1859,7 +1852,25 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 }
 
 #[test]
-fn artifact_version_seventeen_requires_explicit_witness_segmentation() {
+fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 18);
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(17);
+    value["program"] = serde_json::json!("version 17 could encode raw-handle wait expressions");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 17 must fail at the header boundary");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected: 18,
+            found: 17
+        }
+    ));
+}
+
+#[test]
+fn artifact_version_eighteen_requires_explicit_witness_segmentation() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["program"]["functions"]
@@ -1869,7 +1880,7 @@ fn artifact_version_seventeen_requires_explicit_witness_segmentation() {
         .and_then(|function| function.remove("witness_prefix_count"))
         .expect("encoded function witness segmentation field");
     let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 17 function segmentation is required");
+        .expect_err("version 18 function segmentation is required");
     assert!(matches!(
         error,
         ArtifactError::Malformed(message) if message.contains("witness_prefix_count")

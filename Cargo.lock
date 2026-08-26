@@ -362,6 +362,7 @@ dependencies = [
  "loom-mir",
  "loom-runtime",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

@@ -250,7 +250,7 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
     );
 
     let mut manifest = serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
-    manifest["link_args"] = serde_json::json!(["-o"]);
+    manifest["link_args"] = serde_json::json!(["-lnot-the-target-runtime"]);
     fs::write(
         &manifest_path,
         serde_json::to_vec(&manifest).expect("encode unsafe link argument"),
@@ -258,7 +258,7 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
     .expect("write unsafe link argument");
     assert_eq!(
         RuntimeBundle::load(&output, &target)
-            .expect_err("unsafe link argument")
+            .expect_err("compiler-incompatible link closure")
             .code(),
         "RuntimeBundleInvalid"
     );

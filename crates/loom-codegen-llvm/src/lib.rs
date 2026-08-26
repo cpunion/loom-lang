@@ -9,7 +9,9 @@ mod codegen;
 mod emitter;
 mod error;
 mod lcir_emitter;
+mod native_artifact;
 mod native_layout;
+mod native_link;
 mod native_range;
 mod native_storage;
 mod prepared;
@@ -23,6 +25,10 @@ pub use codegen::{
     native_object_fingerprint, validate_native_link_target,
 };
 pub use error::CodegenError;
+pub use native_artifact::{
+    NativeArtifactKind, native_artifact_extension, native_artifact_path,
+    native_runtime_archive_name, target_uses_msvc_artifacts, target_uses_windows_artifacts,
+};
 pub use prepared::{
     NativePreparationError, NativePreparationErrorKind, NativeRouteKind, NativeRoutePolicy,
     PreparedNativeObject, emit_prepared_native_object, prepare_native_object,

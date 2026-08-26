@@ -2,9 +2,7 @@ use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::mem::ManuallyDrop;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -17,6 +15,10 @@ use loom_runtime_abi::{
 use crate::gc::{
     NodeStream, RuntimeRootScope, active_runtime_pointer, enter_executor, leave_executor, poll,
 };
+use crate::platform::{
+    INVALID_HANDLE, OwnedResource, close_untracked, duplicate_file, duplicate_socket,
+    socket_handle_bits,
+};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
@@ -25,7 +27,7 @@ use crate::witness::{WitnessArena, clone_witnesses};
 use crate::{
     COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
     TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
-    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
+    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER,
     WAIT_UNSUPPORTED,
 };
 
@@ -43,6 +45,26 @@ const TASK_FAULT_CODE: &str = "TaskFault";
 const TASK_FAULT_MESSAGE: &str = "task execution failed";
 const FILE_TYPE: u64 = 9;
 const SOCKET_TYPE: u64 = 10;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IoResourceKind {
+    File,
+    Socket,
+}
+
+impl IoResourceKind {
+    const fn from_nominal(nominal: u64) -> Option<Self> {
+        match nominal {
+            FILE_TYPE => Some(Self::File),
+            SOCKET_TYPE => Some(Self::Socket),
+            _ => None,
+        }
+    }
+
+    const fn is_file(self) -> bool {
+        matches!(self, Self::File)
+    }
+}
 const RESULT_TYPE: u64 = 1;
 const IO_ERROR_TYPE: u64 = 18;
 const IO_ERROR_KIND_TYPE: u64 = 19;
@@ -159,10 +181,10 @@ enum IoOperation {
         create: bool,
     },
     FileRead {
-        descriptor: OwnedFd,
+        file: File,
     },
     FileWrite {
-        descriptor: OwnedFd,
+        file: File,
         bytes: Vec<u8>,
     },
     SocketConnect {
@@ -170,11 +192,11 @@ enum IoOperation {
         port: u16,
     },
     SocketRead {
-        descriptor: OwnedFd,
+        socket: TcpStream,
         bytes: Vec<u8>,
     },
     SocketWrite {
-        descriptor: OwnedFd,
+        socket: TcpStream,
         bytes: Vec<u8>,
         offset: usize,
     },
@@ -183,7 +205,7 @@ enum IoOperation {
 pub(crate) enum BlockingResult {
     Resource {
         nominal: u64,
-        descriptor: OwnedFd,
+        resource: OwnedResource,
     },
     Text {
         bytes: Vec<u8>,
@@ -234,12 +256,6 @@ fn blocking_pool() -> &'static mpsc::SyncSender<BlockingJob> {
     })
 }
 
-fn duplicate_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
-    // SAFETY: the scoped File/Socket value owns this live descriptor while its
-    // method task is created. The worker receives an independent duplicate.
-    unsafe { BorrowedFd::borrow_raw(descriptor) }.try_clone_to_owned()
-}
-
 pub struct LoomTask {
     descriptor: LoomCoroutineDescriptor,
     pub(crate) slots: Box<[ValueSlot]>,
@@ -264,7 +280,7 @@ pub struct LoomTask {
     io_operation: Option<IoOperation>,
     blocking_result: Option<BlockingResult>,
     io_fallible: bool,
-    owned_result_resources: Vec<OwnedFd>,
+    owned_result_resources: Vec<OwnedResource>,
     primary_fault_recorded: bool,
     fault_code: String,
     fault_message: String,
@@ -780,25 +796,23 @@ unsafe extern "C" fn resume_io(task: *mut LoomTask, executor: *mut LoomExecutor)
         IoOperation::FileOpen { path, create } => unsafe {
             suspend_blocking(task, executor, move || blocking_file_open(path, create))
         },
-        IoOperation::FileRead { descriptor } => unsafe {
-            suspend_blocking(task, executor, move || blocking_file_read(descriptor))
+        IoOperation::FileRead { file } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_read(file))
         },
-        IoOperation::FileWrite { descriptor, bytes } => unsafe {
-            suspend_blocking(task, executor, move || {
-                blocking_file_write(descriptor, &bytes)
-            })
+        IoOperation::FileWrite { file, bytes } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_write(file, &bytes))
         },
         IoOperation::SocketConnect { host, port } => unsafe {
             suspend_blocking(task, executor, move || blocking_socket_connect(&host, port))
         },
-        IoOperation::SocketRead { descriptor, bytes } => unsafe {
-            resume_socket_read(task, executor, descriptor, bytes)
+        IoOperation::SocketRead { socket, bytes } => unsafe {
+            resume_socket_read(task, executor, socket, bytes)
         },
         IoOperation::SocketWrite {
-            descriptor,
+            socket,
             bytes,
             offset,
-        } => unsafe { resume_socket_write(task, executor, descriptor, bytes, offset) },
+        } => unsafe { resume_socket_write(task, executor, socket, bytes, offset) },
     }
 }
 
@@ -871,7 +885,7 @@ fn blocking_file_open(path: String, create: bool) -> BlockingResult {
     match opened {
         Ok(file) => BlockingResult::Resource {
             nominal: FILE_TYPE,
-            descriptor: file.into(),
+            resource: file.into(),
         },
         Err(error) => BlockingResult::Fault {
             code: if create {
@@ -885,8 +899,7 @@ fn blocking_file_open(path: String, create: bool) -> BlockingResult {
     }
 }
 
-fn blocking_file_read(descriptor: OwnedFd) -> BlockingResult {
-    let mut file = File::from(descriptor);
+fn blocking_file_read(mut file: File) -> BlockingResult {
     let mut bytes = Vec::new();
     match file.read_to_end(&mut bytes) {
         Ok(_) => BlockingResult::Text {
@@ -901,8 +914,7 @@ fn blocking_file_read(descriptor: OwnedFd) -> BlockingResult {
     }
 }
 
-fn blocking_file_write(descriptor: OwnedFd, bytes: &[u8]) -> BlockingResult {
-    let mut file = File::from(descriptor);
+fn blocking_file_write(mut file: File, bytes: &[u8]) -> BlockingResult {
     match file.write_all(bytes) {
         Ok(()) => BlockingResult::Unit,
         Err(error) => BlockingResult::Fault {
@@ -943,7 +955,7 @@ fn blocking_socket_connect(host: &str, port: u16) -> BlockingResult {
             }
             BlockingResult::Resource {
                 nominal: SOCKET_TYPE,
-                descriptor: socket.into(),
+                resource: socket.into(),
             }
         }
         Err(error) => BlockingResult::Fault {
@@ -960,10 +972,9 @@ unsafe fn finish_blocking_result(
     result: BlockingResult,
 ) -> i32 {
     match result {
-        BlockingResult::Resource {
-            nominal,
-            descriptor,
-        } => unsafe { store_resource_result(task, nominal, descriptor) },
+        BlockingResult::Resource { nominal, resource } => unsafe {
+            store_resource_result(task, nominal, resource)
+        },
         BlockingResult::Text { bytes, code } => unsafe {
             store_text_result(task, executor, &bytes, code)
         },
@@ -979,12 +990,10 @@ unsafe fn finish_blocking_result(
 unsafe fn resume_socket_read(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
-    descriptor: OwnedFd,
+    mut socket: TcpStream,
     mut bytes: Vec<u8>,
 ) -> i32 {
-    let raw_descriptor = descriptor.as_raw_fd();
-    // SAFETY: the Socket value owns the descriptor; this temporary only borrows it.
-    let mut socket = ManuallyDrop::new(unsafe { TcpStream::from_raw_fd(raw_descriptor) });
+    let handle = socket_handle_bits(&socket);
     let mut chunk = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         match socket.read(&mut chunk) {
@@ -996,8 +1005,8 @@ unsafe fn resume_socket_read(
                 return suspend_io(
                     task,
                     executor,
-                    IoOperation::SocketRead { descriptor, bytes },
-                    raw_descriptor,
+                    IoOperation::SocketRead { socket, bytes },
+                    handle,
                     crate::WAIT_READABLE,
                 );
             },
@@ -1010,16 +1019,14 @@ unsafe fn resume_socket_read(
 unsafe fn resume_socket_write(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
-    descriptor: OwnedFd,
+    mut socket: TcpStream,
     bytes: Vec<u8>,
     mut offset: usize,
 ) -> i32 {
     if offset == bytes.len() {
         return unsafe { store_unit_result(task) };
     }
-    let raw_descriptor = descriptor.as_raw_fd();
-    // SAFETY: the Socket value owns the descriptor; this temporary only borrows it.
-    let mut socket = ManuallyDrop::new(unsafe { TcpStream::from_raw_fd(raw_descriptor) });
+    let handle = socket_handle_bits(&socket);
     loop {
         if offset == bytes.len() {
             return unsafe { store_unit_result(task) };
@@ -1044,11 +1051,11 @@ unsafe fn resume_socket_write(
                     task,
                     executor,
                     IoOperation::SocketWrite {
-                        descriptor,
+                        socket,
                         bytes,
                         offset,
                     },
-                    raw_descriptor,
+                    handle,
                     crate::WAIT_WRITABLE,
                 );
             },
@@ -1097,14 +1104,15 @@ fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> Option<Val
     build_runtime_aggregate(value, payload)
 }
 
-unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, descriptor: OwnedFd) -> i32 {
+unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, resource: OwnedResource) -> i32 {
+    debug_assert_eq!(resource.is_file(), nominal == FILE_TYPE);
     let mut raw = ValueSlot::default();
     raw.words[0] = 2;
-    raw.words[3] = i64::from(descriptor.as_raw_fd()).cast_unsigned();
+    raw.words[3] = resource.handle_bits().cast_unsigned();
     let Some(result) = record_value(nominal, vec![raw]) else {
         return unsafe { fail_message(task, "OutOfMemory", "resource result allocation failed") };
     };
-    unsafe { (*task).owned_result_resources.push(descriptor) };
+    unsafe { (*task).owned_result_resources.push(resource) };
     unsafe { store_io_success(task, result) }
 }
 
@@ -1145,13 +1153,13 @@ unsafe fn suspend_io(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
     operation: IoOperation,
-    descriptor: i32,
+    handle: i64,
     interests: u32,
 ) -> i32 {
     let source = LoomWaitSource {
         abi_version: WAIT_ABI_VERSION,
-        kind: WAIT_SOURCE_FD,
-        handle: i64::from(descriptor),
+        kind: WAIT_SOURCE_IO,
+        handle,
         interests,
         reserved: 0,
         deadline_ns: 0,
@@ -1160,13 +1168,7 @@ unsafe fn suspend_io(
     if unsafe { task_suspend_wait(executor, task, &raw const source) } == WAIT_OK {
         TASK_PENDING
     } else {
-        unsafe {
-            fail_message(
-                task,
-                "IoWaitFault",
-                "could not register descriptor readiness",
-            )
-        }
+        unsafe { fail_message(task, "IoWaitFault", "could not register I/O readiness") }
     }
 }
 
@@ -1477,8 +1479,8 @@ unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
-fn checked_fd(descriptor: i64) -> Option<i32> {
-    i32::try_from(descriptor).ok().filter(|value| *value >= 0)
+fn checked_resource_handle(handle: i64) -> Option<i64> {
+    (handle != INVALID_HANDLE).then_some(handle)
 }
 
 #[unsafe(export_name = "loom_file_open_read")]
@@ -1560,11 +1562,8 @@ pub unsafe extern "C" fn file_try_create(
 }
 
 #[unsafe(export_name = "loom_file_read_text")]
-pub unsafe extern "C" fn file_read_text(
-    executor: *mut LoomExecutor,
-    descriptor: i64,
-) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+pub unsafe extern "C" fn file_read_text(executor: *mut LoomExecutor, handle: i64) -> *mut LoomTask {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_failure_task(
                 executor,
@@ -1575,8 +1574,8 @@ pub unsafe extern "C" fn file_read_text(
             )
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let file = match duplicate_file(handle) {
+        Ok(file) => file,
         Err(error) => unsafe {
             return spawn_io_failure_task(
                 executor,
@@ -1587,21 +1586,21 @@ pub unsafe extern "C" fn file_read_text(
             );
         },
     };
-    unsafe { spawn_io_task(executor, IoOperation::FileRead { descriptor }) }
+    unsafe { spawn_io_task(executor, IoOperation::FileRead { file }) }
 }
 
 #[unsafe(export_name = "loom_file_try_read_text")]
 pub unsafe extern "C" fn file_try_read_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
 ) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "FileReadFault", "file resource is closed")
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let file = match duplicate_file(handle) {
+        Ok(file) => file,
         Err(error) => unsafe {
             return spawn_io_error_task(
                 executor,
@@ -1611,23 +1610,23 @@ pub unsafe extern "C" fn file_try_read_text(
             );
         },
     };
-    unsafe { spawn_try_io_task(executor, IoOperation::FileRead { descriptor }) }
+    unsafe { spawn_try_io_task(executor, IoOperation::FileRead { file }) }
 }
 
 #[unsafe(export_name = "loom_file_write_text")]
 pub unsafe extern "C" fn file_write_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let (Some(descriptor), Some(text)) =
-        (checked_fd(descriptor), unsafe { copy_text(data, length) })
-    else {
+    let (Some(handle), Some(text)) = (checked_resource_handle(handle), unsafe {
+        copy_text(data, length)
+    }) else {
         return ptr::null_mut();
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let file = match duplicate_file(handle) {
+        Ok(file) => file,
         Err(error) => unsafe {
             return spawn_io_failure_task(
                 executor,
@@ -1642,7 +1641,7 @@ pub unsafe extern "C" fn file_write_text(
         spawn_io_task(
             executor,
             IoOperation::FileWrite {
-                descriptor,
+                file,
                 bytes: text.into_bytes(),
             },
         )
@@ -1652,11 +1651,11 @@ pub unsafe extern "C" fn file_write_text(
 #[unsafe(export_name = "loom_file_try_write_text")]
 pub unsafe extern "C" fn file_try_write_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "FileWriteFault", "file resource is closed")
         };
@@ -1671,8 +1670,8 @@ pub unsafe extern "C" fn file_try_write_text(
             )
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let file = match duplicate_file(handle) {
+        Ok(file) => file,
         Err(error) => unsafe {
             return spawn_io_error_task(
                 executor,
@@ -1686,7 +1685,7 @@ pub unsafe extern "C" fn file_try_write_text(
         spawn_try_io_task(
             executor,
             IoOperation::FileWrite {
-                descriptor,
+                file,
                 bytes: text.into_bytes(),
             },
         )
@@ -1740,9 +1739,9 @@ pub unsafe extern "C" fn socket_try_connect(
 #[unsafe(export_name = "loom_socket_read_text")]
 pub unsafe extern "C" fn socket_read_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
 ) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_failure_task(
                 executor,
@@ -1753,8 +1752,8 @@ pub unsafe extern "C" fn socket_read_text(
             )
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let socket = match duplicate_socket(handle) {
+        Ok(socket) => socket,
         Err(error) => unsafe {
             return spawn_io_failure_task(
                 executor,
@@ -1769,7 +1768,7 @@ pub unsafe extern "C" fn socket_read_text(
         spawn_io_task(
             executor,
             IoOperation::SocketRead {
-                descriptor,
+                socket,
                 bytes: Vec::new(),
             },
         )
@@ -1779,15 +1778,15 @@ pub unsafe extern "C" fn socket_read_text(
 #[unsafe(export_name = "loom_socket_try_read_text")]
 pub unsafe extern "C" fn socket_try_read_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
 ) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "SocketReadFault", "socket resource is closed")
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let socket = match duplicate_socket(handle) {
+        Ok(socket) => socket,
         Err(error) => unsafe {
             return spawn_io_error_task(
                 executor,
@@ -1801,7 +1800,7 @@ pub unsafe extern "C" fn socket_try_read_text(
         spawn_try_io_task(
             executor,
             IoOperation::SocketRead {
-                descriptor,
+                socket,
                 bytes: Vec::new(),
             },
         )
@@ -1811,17 +1810,17 @@ pub unsafe extern "C" fn socket_try_read_text(
 #[unsafe(export_name = "loom_socket_write_text")]
 pub unsafe extern "C" fn socket_write_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let (Some(descriptor), Some(text)) =
-        (checked_fd(descriptor), unsafe { copy_text(data, length) })
-    else {
+    let (Some(handle), Some(text)) = (checked_resource_handle(handle), unsafe {
+        copy_text(data, length)
+    }) else {
         return ptr::null_mut();
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let socket = match duplicate_socket(handle) {
+        Ok(socket) => socket,
         Err(error) => unsafe {
             return spawn_io_failure_task(
                 executor,
@@ -1836,7 +1835,7 @@ pub unsafe extern "C" fn socket_write_text(
         spawn_io_task(
             executor,
             IoOperation::SocketWrite {
-                descriptor,
+                socket,
                 bytes: text.into_bytes(),
                 offset: 0,
             },
@@ -1847,11 +1846,11 @@ pub unsafe extern "C" fn socket_write_text(
 #[unsafe(export_name = "loom_socket_try_write_text")]
 pub unsafe extern "C" fn socket_try_write_text(
     executor: *mut LoomExecutor,
-    descriptor: i64,
+    handle: i64,
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let Some(descriptor) = checked_fd(descriptor) else {
+    let Some(handle) = checked_resource_handle(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "SocketWriteFault", "socket resource is closed")
         };
@@ -1866,8 +1865,8 @@ pub unsafe extern "C" fn socket_try_write_text(
             )
         };
     };
-    let descriptor = match duplicate_descriptor(descriptor) {
-        Ok(descriptor) => descriptor,
+    let socket = match duplicate_socket(handle) {
+        Ok(socket) => socket,
         Err(error) => unsafe {
             return spawn_io_error_task(
                 executor,
@@ -1881,7 +1880,7 @@ pub unsafe extern "C" fn socket_try_write_text(
         spawn_try_io_task(
             executor,
             IoOperation::SocketWrite {
-                descriptor,
+                socket,
                 bytes: text.into_bytes(),
                 offset: 0,
             },
@@ -1895,30 +1894,28 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     if executor.is_null()
         || value.is_null()
         || unsafe { (*value).words[0] } != VALUE_TAG_RECORD
-        || !matches!(unsafe { (*value).words[1] }, FILE_TYPE | SOCKET_TYPE)
         || unsafe { (*value).words[2] } != 1
     {
         return WAIT_INVALID_ARGUMENT;
     }
+    let nominal = unsafe { (*value).words[1] };
+    let Some(kind) = IoResourceKind::from_nominal(nominal) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
     let node = unsafe { (*value).words[4] as *mut ValueNode };
     if node.is_null() || unsafe { (*node).value.words[0] } != 2 {
         return WAIT_INVALID_ARGUMENT;
     }
-    let descriptor = unsafe { (*node).value.words[3].cast_signed() };
-    if descriptor < 0 {
+    let handle = unsafe { (*node).value.words[3].cast_signed() };
+    if handle == INVALID_HANDLE {
         return WAIT_OK;
     }
-    let Some(descriptor) = checked_fd(descriptor) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
     let executor = unsafe { &mut *executor };
     let mut owned = None;
     for task in &mut executor.tasks {
-        if let Some(index) = task
-            .owned_result_resources
-            .iter()
-            .position(|candidate| candidate.as_raw_fd() == descriptor)
-        {
+        if let Some(index) = task.owned_result_resources.iter().position(|candidate| {
+            candidate.handle_bits() == handle && candidate.is_file() == kind.is_file()
+        }) {
             owned = Some(task.owned_result_resources.swap_remove(index));
             break;
         }
@@ -1927,10 +1924,12 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
         drop(owned);
     } else {
         // SAFETY: a well-formed externally transferred File/Socket value owns
-        // its raw descriptor when it is no longer tracked by a runtime task.
-        drop(unsafe { OwnedFd::from_raw_fd(descriptor) });
+        // its raw handle when it is no longer tracked by a runtime task.
+        if unsafe { close_untracked(handle, kind.is_file()) }.is_err() {
+            return WAIT_INVALID_ARGUMENT;
+        }
     }
-    unsafe { (*node).value.words[3] = (-1_i64).cast_unsigned() };
+    unsafe { (*node).value.words[3] = INVALID_HANDLE.cast_unsigned() };
     WAIT_OK
 }
 
@@ -1945,7 +1944,7 @@ pub unsafe extern "C" fn task_from_wait_source(
     // SAFETY: source is borrowed for this call only.
     let copied = unsafe { *source };
     if copied.abi_version != WAIT_ABI_VERSION
-        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_FD)
+        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_IO)
     {
         return ptr::null_mut();
     }
@@ -3071,8 +3070,7 @@ pub unsafe extern "C" fn executor_tasks_reclaimed(executor: *const LoomExecutor)
 #[cfg(test)]
 mod resource_ownership_tests {
     use std::io::{self, Read};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
+    use std::net::{TcpListener, TcpStream};
 
     use super::*;
     use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
@@ -3085,15 +3083,90 @@ mod resource_ownership_tests {
         TASK_COMPLETED
     }
 
-    fn assert_peer_still_connected(peer: &mut UnixStream) {
+    #[test]
+    fn io_close_accepts_only_file_and_socket_nominals() {
+        assert_eq!(
+            IoResourceKind::from_nominal(FILE_TYPE),
+            Some(IoResourceKind::File)
+        );
+        assert_eq!(
+            IoResourceKind::from_nominal(SOCKET_TYPE),
+            Some(IoResourceKind::Socket)
+        );
+        assert_eq!(IoResourceKind::from_nominal(0), None);
+        assert_eq!(IoResourceKind::from_nominal(u64::MAX), None);
+    }
+
+    #[test]
+    fn io_close_rejects_a_hostile_nominal_before_resource_dispatch() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let mut payload = ValueNode {
+            value: ValueSlot {
+                words: [2, 0, 0, INVALID_HANDLE.cast_unsigned(), 0, 0],
+            },
+            next: ptr::null_mut(),
+        };
+        let mut value = ValueSlot {
+            words: [
+                VALUE_TAG_RECORD,
+                u64::MAX,
+                1,
+                0,
+                (&raw mut payload) as u64,
+                0,
+            ],
+        };
+
+        unsafe {
+            assert_eq!(
+                io_close(executor, (&raw mut value).cast()),
+                WAIT_INVALID_ARGUMENT
+            );
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address)?;
+        let (server, _) = listener.accept()?;
+        Ok((client, server))
+    }
+
+    fn assert_peer_still_connected(peer: &mut TcpStream) {
         let mut byte = [0_u8; 1];
         let result = peer.read(&mut byte);
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
     }
 
-    fn assert_peer_closed(peer: &mut UnixStream) {
+    fn assert_peer_closed(peer: &mut TcpStream) {
         let mut byte = [0_u8; 1];
-        assert!(matches!(peer.read(&mut byte), Ok(0)));
+        for _ in 0..100 {
+            match peer.read(&mut byte) {
+                Ok(0) => return,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::BrokenPipe
+                            | io::ErrorKind::NotConnected
+                    ) =>
+                {
+                    return;
+                }
+                result => panic!("expected closed socket peer, got {result:?}"),
+            }
+        }
+        panic!("socket peer did not observe closure before the test deadline");
     }
 
     #[test]
@@ -3102,14 +3175,14 @@ mod resource_ownership_tests {
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
-        let (socket, mut peer) = UnixStream::pair().expect("create socket pair");
+        let (socket, mut peer) = socket_pair().expect("create socket pair");
         peer.set_nonblocking(true).expect("make peer nonblocking");
         let text = b"not written";
 
         unsafe {
             let task = socket_write_text(
                 executor,
-                i64::from(socket.as_raw_fd()),
+                crate::platform::socket_handle_bits(&socket),
                 text.as_ptr(),
                 text.len() as u64,
             );
@@ -3131,8 +3204,8 @@ mod resource_ownership_tests {
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
-        let (winner_socket, mut winner_peer) = UnixStream::pair().expect("create winner pair");
-        let (loser_socket, mut loser_peer) = UnixStream::pair().expect("create loser pair");
+        let (winner_socket, mut winner_peer) = socket_pair().expect("create winner pair");
+        let (loser_socket, mut loser_peer) = socket_pair().expect("create loser pair");
         winner_peer
             .set_nonblocking(true)
             .expect("make winner peer nonblocking");
@@ -3192,8 +3265,8 @@ mod resource_ownership_tests {
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
-        let (left_socket, mut left_peer) = UnixStream::pair().expect("create left pair");
-        let (right_socket, mut right_peer) = UnixStream::pair().expect("create right pair");
+        let (left_socket, mut left_peer) = socket_pair().expect("create left pair");
+        let (right_socket, mut right_peer) = socket_pair().expect("create right pair");
         left_peer
             .set_nonblocking(true)
             .expect("make left peer nonblocking");

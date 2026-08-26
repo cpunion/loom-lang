@@ -1,6 +1,8 @@
 //! Native LLVM target-machine policy shared by emission and cache identity.
 
 use inkwell::OptimizationLevel;
+use inkwell::context::Context;
+use inkwell::module::{FlagBehavior, Module};
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
@@ -21,6 +23,33 @@ pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
 pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
 pub const NATIVE_RUNTIME_ABI: &str = loom_runtime_abi::NATIVE_RUNTIME_ABI_IDENTITY;
+
+/// Adds the target object format's debug metadata module flags.
+///
+/// LLVM's common `DI*` metadata is encoded as `CodeView` for an MSVC target only
+/// when the `CodeView` module flag is present. Other supported native targets
+/// use DWARF metadata.
+pub(crate) fn configure_debug_module_flags<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    target_triple: &str,
+) {
+    module.add_basic_value_flag(
+        "Debug Info Version",
+        FlagBehavior::Warning,
+        context.i32_type().const_int(3, false),
+    );
+    let (format, version) = if crate::target_uses_msvc_artifacts(Some(target_triple)) {
+        ("CodeView", 1)
+    } else {
+        ("Dwarf Version", 4)
+    };
+    module.add_basic_value_flag(
+        format,
+        FlagBehavior::Warning,
+        context.i32_type().const_int(version, false),
+    );
+}
 
 /// User-selected LLVM optimization policy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -164,7 +193,10 @@ pub fn native_runtime_identity() -> String {
 
 /// Links Mach-O object debug sections into a standard dSYM bundle.
 ///
-/// Linux ELF executables already carry their DWARF and this is a no-op there.
+/// Linux ELF executables already carry their DWARF. An MSVC link writes the
+/// object-level `CodeView` records into a sibling PDB, so this function validates
+/// that companion instead of invoking a second post-link tool. The presence of
+/// a PDB alone does not imply function-level source metadata.
 ///
 /// # Errors
 ///
@@ -218,7 +250,18 @@ pub fn emit_native_debug_companion(executable: &Path) -> Result<(), CodegenError
             )
         })?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_env = "msvc")]
+    {
+        let pdb =
+            crate::native_artifact_path(executable, None, crate::NativeArtifactKind::DebugDatabase);
+        if !pdb.is_file() {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                format!("linker did not produce {}", pdb.display()),
+            ));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_env = "msvc")))]
     let _ = executable;
     Ok(())
 }
@@ -296,4 +339,32 @@ pub fn is_native_target(requested: Option<&str>) -> bool {
     let requested = TargetMachine::normalize_triple(&TargetTriple::create(requested));
     let native = TargetMachine::normalize_triple(&TargetMachine::get_default_triple());
     requested == native
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn debug_flag_ir(target: &str) -> String {
+        let context = Context::create();
+        let module = context.create_module("debug.flags");
+        configure_debug_module_flags(&context, &module, target);
+        module.print_to_string().to_string()
+    }
+
+    #[test]
+    fn msvc_debug_metadata_selects_codeview_without_dwarf() {
+        let ir = debug_flag_ir("x86_64-pc-windows-msvc");
+        assert!(ir.contains("CodeView"), "{ir}");
+        assert!(!ir.contains("Dwarf Version"), "{ir}");
+        assert!(ir.contains("Debug Info Version"), "{ir}");
+    }
+
+    #[test]
+    fn non_msvc_debug_metadata_selects_dwarf_without_codeview() {
+        let ir = debug_flag_ir("x86_64-unknown-linux-gnu");
+        assert!(ir.contains("Dwarf Version"), "{ir}");
+        assert!(!ir.contains("CodeView"), "{ir}");
+        assert!(ir.contains("Debug Info Version"), "{ir}");
+    }
 }

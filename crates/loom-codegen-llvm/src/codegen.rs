@@ -28,7 +28,8 @@ pub struct EmitOptions {
     pub kind: EmitKind,
     /// Optional LLVM IR side artifact, useful for diagnostics and golden tests.
     pub emit_ir: Option<PathBuf>,
-    /// Stable relative source paths and byte line starts used for DWARF.
+    /// Stable relative source paths and byte line starts used for native debug
+    /// metadata (DWARF or `CodeView` according to the target).
     pub debug_sources: Vec<DebugSource>,
     /// Explicit normalized LLVM target triple, or the host target when absent.
     pub target_triple: Option<String>,
@@ -382,9 +383,15 @@ pub fn emit_native(
     options: &EmitOptions,
 ) -> Result<NativeArtifact, CodegenError> {
     validate_native_link_target(options)?;
+    let object_extension = crate::native_artifact_extension(
+        options.target_triple.as_deref(),
+        crate::NativeArtifactKind::Object,
+    )
+    .unwrap_or("o");
+    let object_suffix = format!(".{object_extension}");
     let object = tempfile::Builder::new()
         .prefix("loom-")
-        .suffix(".o")
+        .suffix(&object_suffix)
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
     let emitted = emit_native_object(program, object.path(), options)?;

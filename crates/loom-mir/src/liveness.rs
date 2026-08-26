@@ -564,10 +564,6 @@ impl<'mir> CfgBuilder<'mir> {
                 let sleep = self.fault_continuation(continuation, active_cleanup);
                 self.build_expr(milliseconds, sleep, active_cleanup)
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                let wait = self.fault_continuation(continuation, active_cleanup);
-                self.build_expr(descriptor, wait, active_cleanup)
-            }
             ExprKind::TaskJoin { arguments, .. } => {
                 let join = self.fault_continuation(continuation, active_cleanup);
                 self.build_exprs(arguments, join, active_cleanup)
@@ -1022,13 +1018,6 @@ mod tests {
             expression(
                 ExprKind::Sleep {
                     milliseconds: Box::new(int()),
-                },
-                Type::Task(Box::new(Type::Unit)),
-            ),
-            expression(
-                ExprKind::WaitFd {
-                    descriptor: Box::new(int()),
-                    writable: false,
                 },
                 Type::Task(Box::new(Type::Unit)),
             ),

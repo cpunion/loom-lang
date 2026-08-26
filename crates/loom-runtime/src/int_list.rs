@@ -151,7 +151,9 @@ pub unsafe extern "C" fn int_list_drop(storage: *mut LoomIntListStorage) -> i32 
 #[cfg(test)]
 mod tests {
     use std::mem::{align_of, size_of};
+    #[cfg(unix)]
     use std::os::raw::c_int;
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::ptr::NonNull;
@@ -162,6 +164,7 @@ mod tests {
 
     const ABORT_CHILD_ENV: &str = "LOOM_RUNTIME_INT_LIST_ABORT_TEST_CHILD";
 
+    #[cfg(unix)]
     unsafe extern "C" {
         fn close(descriptor: c_int) -> c_int;
     }
@@ -311,6 +314,7 @@ mod tests {
         // probe cannot keep an unrelated socket alive when tests run in
         // parallel. `close` is async-signal-safe and invalid descriptors are
         // harmless here.
+        #[cfg(unix)]
         unsafe {
             child.pre_exec(|| {
                 for descriptor in 3..4096 {

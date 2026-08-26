@@ -3877,23 +3877,6 @@ impl<'program> Validator<'program> {
                 }
                 Some(Type::Task(Box::new(Type::Unit)))
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                let actual = self.validate_expr(
-                    function,
-                    descriptor,
-                    &format!("{path}.descriptor"),
-                    depth + 1,
-                );
-                if !types_compatible(&Type::Int, &actual) {
-                    self.type_mismatch(
-                        &Type::Int,
-                        &actual,
-                        descriptor.span,
-                        &format!("{path}.descriptor"),
-                    );
-                }
-                Some(Type::Task(Box::new(Type::Unit)))
-            }
             ExprKind::TaskJoin { mode, arguments } => {
                 let argument_types = arguments
                     .iter()
@@ -7882,13 +7865,6 @@ impl<'program> Validator<'program> {
                 &format!("{path}.milliseconds"),
                 depth + 1,
             ),
-            ExprKind::WaitFd { descriptor, .. } => self.validate_borrowed_view_expr(
-                function,
-                descriptor,
-                other,
-                &format!("{path}.descriptor"),
-                depth + 1,
-            ),
             ExprKind::TaskJoin { arguments, .. } => {
                 for (index, argument) in arguments.iter().enumerate() {
                     self.validate_borrowed_view_expr(
@@ -8721,19 +8697,6 @@ impl<'program> Validator<'program> {
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                let flow = self.dataflow_expr(
-                    function,
-                    descriptor,
-                    state,
-                    &format!("{path}.descriptor"),
-                    depth + 1,
-                );
-                if !flow.diverges {
-                    self.validate_active_cleanups_at_fault_point(function, state);
-                }
-                no_value(flow.diverges || expression.ty == Type::Never)
-            }
             ExprKind::TaskJoin { arguments, .. } => {
                 for (index, argument) in arguments.iter().enumerate() {
                     let flow = self.dataflow_expr(
@@ -9184,9 +9147,6 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         | ExprKind::MakeView { value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
         } => {
             expr_contains_await(value, depth + 1)
         }
@@ -9243,9 +9203,6 @@ fn expr_definitely_diverges(expression: &Expr, depth: u16) -> bool {
         | ExprKind::Await { task: value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
         } => {
             expr_definitely_diverges(value, depth + 1)
         }

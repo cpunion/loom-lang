@@ -165,7 +165,7 @@ a `Socket`. `try_read_text` and `try_write_text` return tasks carrying
 `File` and `Socket` operations have a narrow compiler/runtime rule: an I/O task
 takes a snapshot of the required host handle when the method is called. That
 task can then be structurally awaited after the original resource block exits,
-without capturing the Loom scoped value or allowing descriptor reuse to retarget
+without capturing the Loom scoped value or allowing handle reuse to retarget
 the operation. This rule is specific to the built-in I/O boundary and does not
 enable arbitrary scoped-resource capture.
 

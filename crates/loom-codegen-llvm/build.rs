@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 
 #[path = "../../build-support/fingerprint.rs"]
 mod fingerprint;
+#[allow(dead_code)]
+#[path = "src/native_artifact.rs"]
+mod native_artifact;
 
 use fingerprint::{BuildFingerprint, assert_no_local_feature_table, emit_rerun_inputs};
 
@@ -49,6 +52,7 @@ fn main() {
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("CARGO_ENCODED_RUSTFLAGS", "-Ctarget-cpu=generic")
         .arg("build")
+        .arg("--locked")
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--package")
@@ -63,25 +67,9 @@ fn main() {
     let status = command.status().expect("run Cargo for Loom native runtime");
     assert!(status.success(), "failed to build Loom native runtime");
 
-    let candidates = target_dir.join(&target).join(&profile).join("deps");
-    let archive = fs::read_dir(&candidates)
-        .expect("read Loom runtime artifacts")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension() == Some(OsStr::new("a"))
-                && path
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.starts_with("libloom_runtime-"))
-        })
-        .max_by_key(|path| {
-            fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        })
-        .expect("find Loom runtime static library");
-    fs::copy(archive, output.join("libloom_runtime.a")).expect("copy Loom runtime static library");
+    let profile_root = target_dir.join(&target).join(&profile);
+    let archive = profile_root.join(native_artifact::native_runtime_archive_name(Some(&target)));
+    fs::copy(archive, output.join("loom-runtime.bin")).expect("copy Loom runtime static library");
 }
 
 fn emit_object_build_fingerprint() {

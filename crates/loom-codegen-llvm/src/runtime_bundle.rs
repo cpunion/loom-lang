@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::emitter::native_runtime_bytes;
+use crate::native_artifact::native_runtime_archive_name;
+use crate::native_link::{linker_version_arguments, native_link_command, native_runtime_link_args};
 use crate::{CodegenError, NATIVE_RUNTIME_ABI, NativeTargetIdentity, native_target_identity};
 
 pub const RUNTIME_BUNDLE_SCHEMA_VERSION: u32 = 2;
@@ -17,14 +19,11 @@ pub const RUNTIME_BUNDLE_MANIFEST: &str = "loom-runtime-bundle.json";
 pub const RUNTIME_CPU: &str = "generic";
 pub const RUNTIME_CPU_FEATURES: &str = "";
 
-const RUNTIME_ARCHIVE_NAME: &str = "libloom_runtime.a";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_LINKER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_LINK_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_BUNDLE_ENTRIES: usize = 32;
-const MAX_LINK_ARGS: usize = 128;
-const MAX_LINK_ARG_BYTES: usize = 512;
 const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -222,6 +221,7 @@ pub fn export_native_runtime_bundle(
         .tempdir_in(parent)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let target = native_target_identity()?;
+    let archive_name = native_runtime_archive_name(Some(&target.triple)).to_owned();
     let archive_sha256 = digest(native_runtime_bytes());
     let manifest = RuntimeBundleManifest {
         schema_version: RUNTIME_BUNDLE_SCHEMA_VERSION,
@@ -230,15 +230,12 @@ pub fn export_native_runtime_bundle(
         runtime_cpu: RUNTIME_CPU.to_owned(),
         runtime_cpu_features: RUNTIME_CPU_FEATURES.to_owned(),
         runtime_abi: NATIVE_RUNTIME_ABI.to_owned(),
-        archive: RUNTIME_ARCHIVE_NAME.to_owned(),
+        archive: archive_name.clone(),
         archive_sha256: archive_sha256.clone(),
-        link_args: native_runtime_link_args(),
+        link_args: native_runtime_link_args(&target.triple),
     };
-    fs::write(
-        staging.path().join(RUNTIME_ARCHIVE_NAME),
-        native_runtime_bytes(),
-    )
-    .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    fs::write(staging.path().join(&archive_name), native_runtime_bytes())
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     manifest_bytes.push(b'\n');
@@ -269,7 +266,7 @@ pub fn export_native_runtime_bundle(
     Ok(RuntimeBundleExport {
         root: output.to_path_buf(),
         manifest: output.join(RUNTIME_BUNDLE_MANIFEST),
-        archive: output.join(RUNTIME_ARCHIVE_NAME),
+        archive: output.join(archive_name),
         target_triple: target.triple,
         data_layout: target.data_layout,
         runtime_cpu: RUNTIME_CPU.to_owned(),
@@ -284,6 +281,22 @@ pub fn export_native_runtime_bundle(
 pub struct RuntimeLinker {
     program: PathBuf,
     program_sha256: String,
+}
+
+struct RemoveFileOnDrop(Option<PathBuf>);
+
+impl RemoveFileOnDrop {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self(path)
+    }
+}
+
+impl Drop for RemoveFileOnDrop {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 impl RuntimeLinker {
@@ -301,7 +314,7 @@ impl RuntimeLinker {
                     CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned())
                 })?;
         let output = Command::new(&program)
-            .arg("--version")
+            .args(linker_version_arguments(&program))
             .output()
             .map_err(|error| {
                 CodegenError::new(
@@ -312,7 +325,7 @@ impl RuntimeLinker {
         if !output.status.success() {
             return Err(CodegenError::new(
                 "RuntimeLinkerUnavailable",
-                "explicit linker did not accept --version",
+                "explicit linker did not accept its version/help probe",
             ));
         }
         if output.stdout.len().saturating_add(output.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
@@ -346,9 +359,9 @@ impl RuntimeLinker {
 
 /// Links an emitted target object using exactly one validated runtime bundle.
 ///
-/// Arguments are always ordered as target object, runtime archive, declared
-/// manifest arguments, then `-o STAGED_OUTPUT`. The staged output is published
-/// atomically only after all inputs and the linked file are revalidated.
+/// Arguments are ordered by the detected linker driver convention. The staged
+/// executable (and an MSVC PDB) are validated before publication. Publishing
+/// the two final paths is intentionally not described as filesystem-atomic.
 ///
 /// # Errors
 ///
@@ -400,12 +413,17 @@ pub fn link_object_with_runtime_bundle(
             )
         })?
         .into_temp_path();
+    let link = native_link_command(
+        linker.program(),
+        bundle.target_triple(),
+        object,
+        &[bundle.archive()],
+        bundle.link_args(),
+        &staged,
+    );
+    let _staged_pdb_cleanup = RemoveFileOnDrop::new(link.pdb.clone());
     let result = Command::new(linker.program())
-        .arg(object)
-        .arg(bundle.archive())
-        .args(bundle.link_args())
-        .arg("-o")
-        .arg(&staged)
+        .args(&link.arguments)
         .output()
         .map_err(|error| {
             CodegenError::new(
@@ -434,6 +452,7 @@ pub fn link_object_with_runtime_bundle(
     verify_link_inputs(bundle, linker)?;
     validate_regular_file(&staged, MAX_LINK_OUTPUT_BYTES, "linked executable")
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.message().to_owned()))?;
+    validate_staged_pdb(link.pdb.as_deref())?;
     File::options()
         .read(true)
         .write(true)
@@ -450,7 +469,61 @@ pub fn link_object_with_runtime_bundle(
             "ArtifactWriteFailed",
             format!("{}: {}", output.display(), error.error),
         )
-    })
+    })?;
+    publish_staged_pdb(link.pdb.as_deref(), output, Some(bundle.target_triple()))?;
+    Ok(())
+}
+
+fn validate_staged_pdb(pdb: Option<&Path>) -> Result<(), CodegenError> {
+    if let Some(pdb) = pdb {
+        validate_regular_file(pdb, MAX_LINK_OUTPUT_BYTES, "linked PDB").map_err(|error| {
+            CodegenError::new("DebugInfoWriteFailed", error.message().to_owned())
+        })?;
+    }
+    Ok(())
+}
+
+fn publish_staged_pdb(
+    pdb: Option<&Path>,
+    output: &Path,
+    target_triple: Option<&str>,
+) -> Result<(), CodegenError> {
+    let Some(pdb) = pdb else {
+        return Ok(());
+    };
+    let destination = crate::native_artifact_path(
+        output,
+        target_triple,
+        crate::NativeArtifactKind::DebugDatabase,
+    );
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                "PDB output must be a regular path and cannot be a symbolic link",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                format!("{}: {error}", destination.display()),
+            ));
+        }
+    }
+    fs::copy(pdb, &destination).map_err(|error| {
+        CodegenError::new(
+            "DebugInfoWriteFailed",
+            format!("{}: {error}", destination.display()),
+        )
+    })?;
+    File::options()
+        .read(true)
+        .write(true)
+        .open(&destination)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.to_string()))
 }
 
 fn verify_link_inputs(bundle: &RuntimeBundle, linker: &RuntimeLinker) -> Result<(), CodegenError> {
@@ -517,37 +590,10 @@ fn validate_manifest(
             "runtime bundle manifest has an invalid identity field",
         ));
     }
-    validate_link_args(&manifest.link_args)
-}
-
-fn validate_link_args(arguments: &[String]) -> Result<(), CodegenError> {
-    if arguments.len() > MAX_LINK_ARGS {
+    if manifest.link_args != native_runtime_link_args(&expected.triple) {
         return Err(bundle_error(
-            "runtime bundle declares too many linker arguments",
+            "runtime bundle linker arguments do not match the compiler-derived target closure",
         ));
-    }
-    for argument in arguments {
-        let valid = !argument.is_empty()
-            && argument.len() <= MAX_LINK_ARG_BYTES
-            && argument.starts_with('-')
-            && !argument.contains('@')
-            && !argument.contains(['/', '\\'])
-            && argument.bytes().all(|byte| byte.is_ascii_graphic())
-            && !matches!(argument.as_str(), "-o" | "--output")
-            && !argument.starts_with("-o=")
-            && !argument.starts_with("--output=")
-            && !argument.starts_with("-L")
-            && !argument.starts_with("-F")
-            && !argument.starts_with("-B")
-            && !argument.starts_with("--sysroot")
-            && !argument.starts_with("-isysroot")
-            && !argument.contains(",-o,")
-            && !argument.contains(",--output,");
-        if !valid {
-            return Err(bundle_error(
-                "runtime bundle contains an unsafe linker argument",
-            ));
-        }
     }
     Ok(())
 }
@@ -647,12 +693,12 @@ fn portable_path_component(component: &str) -> bool {
 
 fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
     let candidates = if program.components().count() > 1 || program.is_absolute() {
-        vec![program.to_path_buf()]
+        program_path_candidates(program.to_path_buf())
     } else {
         std::env::var_os("PATH")
             .map(|path| {
                 std::env::split_paths(&path)
-                    .map(|directory| directory.join(program))
+                    .flat_map(|directory| program_path_candidates(directory.join(program)))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -687,6 +733,16 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
         }
     }
     Ok(resolved)
+}
+
+fn program_path_candidates(program: PathBuf) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        if program.extension().is_none() {
+            return vec![program.clone(), program.with_extension("exe")];
+        }
+    }
+    vec![program]
 }
 
 fn read_bounded_regular_file(
@@ -731,18 +787,6 @@ fn validate_regular_file(path: &Path, maximum: u64, label: &str) -> Result<(), C
     Ok(())
 }
 
-fn native_runtime_link_args() -> Vec<String> {
-    #[cfg(target_os = "linux")]
-    {
-        ["-ldl", "-lpthread", "-lm", "-lrt", "-lutil"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    }
-    #[cfg(not(target_os = "linux"))]
-    Vec::new()
-}
-
 fn bundle_error(message: impl Into<String>) -> CodegenError {
     CodegenError::new("RuntimeBundleInvalid", message)
 }
@@ -756,4 +800,70 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_msvc_pdb_is_published_to_the_final_companion_path() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staged = directory.path().join(".loom-link-staged.pdb");
+        let output = directory.path().join("program.exe");
+        fs::write(&staged, b"validated PDB bytes").expect("write staged PDB");
+
+        publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+            .expect("publish PDB");
+
+        assert_eq!(
+            fs::read(directory.path().join("program.pdb")).expect("read published PDB"),
+            b"validated PDB bytes"
+        );
+    }
+
+    #[test]
+    fn staged_msvc_pdb_never_overwrites_an_executable_named_like_a_pdb() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for output_name in ["program.pdb", "program.PDB"] {
+            let staged = directory.path().join(format!(".{output_name}.staged"));
+            let output = directory.path().join(output_name);
+            let companion = directory.path().join(format!("{output_name}.pdb"));
+            fs::write(&staged, b"validated PDB bytes").expect("write staged PDB");
+            fs::write(&output, b"preserved executable bytes").expect("write executable");
+
+            publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+                .expect("publish independent PDB companion");
+
+            assert_eq!(
+                fs::read(&output).expect("read preserved executable"),
+                b"preserved executable bytes"
+            );
+            assert_eq!(
+                fs::read(companion).expect("read independent PDB companion"),
+                b"validated PDB bytes"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_msvc_pdb_rejects_a_symlink_destination() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staged = directory.path().join(".loom-link-staged.pdb");
+        let outside = directory.path().join("outside");
+        let output = directory.path().join("program.exe");
+        let destination = directory.path().join("program.pdb");
+        fs::write(&staged, b"new PDB bytes").expect("write staged PDB");
+        fs::write(&outside, b"preserved").expect("write outside file");
+        symlink(&outside, &destination).expect("create destination symlink");
+
+        let error = publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+            .expect_err("reject symlink PDB destination");
+
+        assert_eq!(error.code(), "DebugInfoWriteFailed");
+        assert_eq!(fs::read(outside).expect("read outside file"), b"preserved");
+    }
 }

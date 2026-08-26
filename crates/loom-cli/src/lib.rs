@@ -28,14 +28,14 @@ const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--relea
     cache <stat|prune> [PATH] inspect or explicitly prune the versioned project cache";
 
 const DEFAULT_NATIVE_ARTIFACT: &str = "target/loom/program";
-const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
+const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v7";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const DEFAULT_DEBUGGER: &str = "lldb";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const DEFAULT_DEBUGGER: &str = "gdb";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -752,7 +752,16 @@ fn run_build(
     };
     // An explicit artifact path follows ordinary CLI rules and is resolved
     // from the caller's working directory, independently of the source root.
-    let output = output.to_path_buf();
+    let output = if matches!(target, BuildTarget::Binary(_)) && options.backend == Backend::Llvm {
+        let kind = if emit == BuildEmit::Object {
+            loom_codegen_llvm::NativeArtifactKind::Object
+        } else {
+            loom_codegen_llvm::NativeArtifactKind::Executable
+        };
+        loom_codegen_llvm::native_artifact_path(output, options.target_triple.as_deref(), kind)
+    } else {
+        output.to_path_buf()
+    };
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -1007,7 +1016,11 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             }
         };
         let directory = tempfile::tempdir()?;
-        let executable = directory.path().join("loom-tests");
+        let executable = loom_codegen_llvm::native_artifact_path(
+            directory.path().join("loom-tests"),
+            None,
+            loom_codegen_llvm::NativeArtifactKind::Executable,
+        );
         let emit_options =
             configured_emit_options(options, loom_codegen_llvm::EmitOptions::tests());
         let artifact_key = final_artifact_key(&compilation, options.backend, "tests", None);
@@ -1112,7 +1125,11 @@ fn run_program(
     match options.backend {
         Backend::Llvm => {
             let directory = tempfile::tempdir()?;
-            let executable = directory.path().join("loom-program");
+            let executable = loom_codegen_llvm::native_artifact_path(
+                directory.path().join("loom-program"),
+                None,
+                loom_codegen_llvm::NativeArtifactKind::Executable,
+            );
             let emit_options =
                 configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
             let artifact_key =
@@ -1204,7 +1221,11 @@ fn run_debug(
     }
 
     let directory = tempfile::tempdir()?;
-    let executable = directory.path().join("loom-debug-program");
+    let executable = loom_codegen_llvm::native_artifact_path(
+        directory.path().join("loom-debug-program"),
+        None,
+        loom_codegen_llvm::NativeArtifactKind::Executable,
+    );
     let emit_options =
         configured_emit_options(options, loom_codegen_llvm::EmitOptions::run(&entry));
     let artifact_key = final_artifact_key(&compilation, options.backend, "debug", Some(&entry));
@@ -1858,7 +1879,9 @@ fn final_artifact_key(
     if backend == Backend::Llvm {
         // Native linking is intentionally outside persistent caching until a
         // hermetic link bundle identifies every linker child, SDK/sysroot,
-        // CRT/system library and debug companion as one atomic unit.
+        // CRT/system library and debug companion through one validated link
+        // plan. Publishing a multi-file debug companion is not filesystem-
+        // atomic across every platform.
         return None;
     }
     let parent = compilation.key()?.clone();
@@ -1967,7 +1990,15 @@ fn emit_native_with_cache(
         Err(error) => return Ok(Err(NativePipelineError::Configuration(error))),
     };
     let directory = tempfile::tempdir()?;
-    let object = directory.path().join("loom-target.o");
+    let object = loom_codegen_llvm::native_artifact_path(
+        directory.path().join("loom-target"),
+        Some(
+            loom_codegen_llvm::prepared_native_target_identity(&prepared)
+                .triple
+                .as_str(),
+        ),
+        loom_codegen_llvm::NativeArtifactKind::Object,
+    );
     if let Err(error) = emit_prepared_object_with_cache(
         compilation,
         &prepared,
@@ -2748,6 +2779,19 @@ mod tests {
     #[test]
     fn llvm_object_cache_domain_is_pinned() {
         assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v7");
+    }
+
+    #[test]
+    fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 18);
+        let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
+        assert!(
+            context
+                .frontend_identity
+                .ends_with("/loom.interpreted-mir-18"),
+            "{}",
+            context.frontend_identity
+        );
     }
 
     #[test]

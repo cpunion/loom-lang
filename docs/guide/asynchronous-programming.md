@@ -134,27 +134,29 @@ fault. Process-level failures such as OOM do not become `TaskOutcome` values.
 An empty list is valid for `all` and `settled`. `any` and `race` require a
 non-empty input.
 
-## Timers and readiness
+## Timers and I/O suspension
 
-The compiler-known wait constructors return storable `Task[Unit]` values:
+The compiler-known timer constructor returns a storable `Task[Unit]` value:
 
 ```loom
 Task.sleep(10).await
-Task.waitReadable(fd).await
-Task.waitWritable(fd).await
 ```
 
 `Task.sleep` accepts a non-negative millisecond `Int` or a `Duration`.
-Readiness waits borrow a platform descriptor for one registration; they do not
-own or close it. Higher-level file and socket APIs are safer for ordinary code.
+Loom source has no raw-handle readiness constructor. File and socket operations
+expose typed tasks and preserve the scoped resource that owns the platform
+handle.
 
-The native runtime uses a generation-checked, one-shot wait-registration ABI,
-`kqueue` on macOS, and `epoll` on Linux. Notifications enqueue a ready task;
-they never re-enter a coroutine directly on a callback stack. Pending tasks are
-registered with a real wait source rather than busy-polled.
-
-Native asynchronous I/O is currently supported only on the tested Linux and
-macOS configurations. Windows native scheduling and I/O are not yet supported.
+The runtime implementation uses a generation-checked, one-shot
+wait-registration ABI,
+kqueue on macOS, epoll on Linux, and the `polling` crate's IOCP/AFD backend on
+Windows. Notifications enqueue a ready task; they never re-enter a coroutine
+directly on a callback stack. Pending tasks are registered with a real wait
+source rather than busy-polled. Windows compilation is covered by target checks;
+native Windows scheduling and I/O execution are gated by the configured Windows
+CI job and are not claimed from a Unix cross-check. The raw ABI is an unsafe
+runtime boundary, not a Loom language API; see the runtime internals for its
+live-handle contract.
 
 ## Cleanup and cancellation
 

@@ -12,5 +12,8 @@ loom-mir.workspace = true
 loom-runtime.workspace = true
 serde.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

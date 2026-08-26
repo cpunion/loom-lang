@@ -122,6 +122,7 @@ replace focused tests and is not a general benchmark.
 
 Linux runs the full workspace and all principal fixture gates. macOS runs the
 full workspace, standard-library differential tests, and the C3 dual-backend
-loop. Windows runs only selected platform-independent crates. See
-[Implementation status](../project/implementation-status.md) before adding a
-platform claim.
+loop. A complete Windows native job is configured, but it is not verified
+platform or release evidence until a real Windows runner result is recorded.
+See [Implementation status](../project/implementation-status.md) before adding
+a platform claim.

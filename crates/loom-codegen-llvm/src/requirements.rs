@@ -824,10 +824,6 @@ impl RequirementScanner<'_> {
                 output.requirements.include(RuntimeRequirements::ASYNC);
                 self.scan_expr(milliseconds, output)?;
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                output.requirements.include(RuntimeRequirements::ASYNC);
-                self.scan_expr(descriptor, output)?;
-            }
             ExprKind::TaskJoin { arguments, .. } => {
                 output.requirements.include(RuntimeRequirements::ASYNC);
                 for argument in arguments {

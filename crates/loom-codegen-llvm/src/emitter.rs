@@ -12,7 +12,7 @@ use inkwell::debug_info::{
     AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DWARFEmissionKind,
     DWARFSourceLanguage, DebugInfoBuilder,
 };
-use inkwell::module::{FlagBehavior, Linkage, Module};
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::FileType;
 use inkwell::types::{
@@ -49,10 +49,9 @@ use crate::abi::{
     VALUE_NODE_FIELD_VALUE, VALUE_TAG_BOOL, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN,
     VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST, VALUE_TAG_RECORD,
     VALUE_TAG_REFINED, VALUE_TAG_TASK, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE,
-    VALUE_TAG_UNIT, WAIT_ABI_VERSION, WAIT_INTEREST_READABLE, WAIT_INTEREST_WRITABLE,
-    WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE, WAIT_SOURCE_FIELD_HANDLE,
-    WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND, WAIT_SOURCE_FIELD_RESERVED,
-    WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_FD, WAIT_SOURCE_KIND_TIMER,
+    VALUE_TAG_UNIT, WAIT_ABI_VERSION, WAIT_SOURCE_FIELD_ABI_VERSION, WAIT_SOURCE_FIELD_DEADLINE,
+    WAIT_SOURCE_FIELD_HANDLE, WAIT_SOURCE_FIELD_INTERESTS, WAIT_SOURCE_FIELD_KIND,
+    WAIT_SOURCE_FIELD_RESERVED, WAIT_SOURCE_KIND_COMPLETION, WAIT_SOURCE_KIND_TIMER,
     WITNESS_DESCRIPTOR_FIELD_METHODS, WITNESS_INSTANCE_FIELD_DESCRIPTOR,
     WITNESS_INSTANCE_FIELD_PREREQUISITES,
 };
@@ -67,7 +66,7 @@ use crate::native_storage::{
     native_pod_value_argument_local,
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
-use crate::target::{NativeTargetMachine, create_target_machine};
+use crate::target::{NativeTargetMachine, configure_debug_module_flags, create_target_machine};
 
 pub(crate) struct Emitter;
 
@@ -88,7 +87,6 @@ fn native_fault_message(code: &str) -> &str {
         "InvalidSleepDuration" => "sleep duration must not be negative",
         "SleepDurationOverflow" => "sleep duration overflowed",
         "InvalidPort" => "socket port must fit UInt16",
-        "InvalidFileDescriptor" => "resource descriptor is invalid",
         "TaskAllocationFault" => "task allocation failed",
         "TaskJoinFault" => "task join failed",
         "ResourceCloseFault" => "resource close failed",
@@ -139,9 +137,6 @@ fn expression_contains_await(expression: &Expr) -> bool {
         | ExprKind::MakeView { value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
         } => expression_contains_await(value),
         ExprKind::Binary(_, left, right) => {
             expression_contains_await(left) || expression_contains_await(right)
@@ -213,6 +208,7 @@ impl Emitter {
             .collect::<BTreeMap<_, _>>();
         let requirements =
             RuntimeRequirementGraph::analyze(program, reachable, &int_ranges, &stack_record_plans)?;
+        let target_triple = target.triple.as_str().to_string_lossy();
         let mut backend = Backend::new(
             &context,
             program,
@@ -222,6 +218,7 @@ impl Emitter {
             requirements,
             int_ranges,
             stack_record_plans,
+            &target_triple,
         );
         backend.module.set_triple(&target.triple);
         backend
@@ -293,9 +290,13 @@ impl Emitter {
 }
 
 fn materialize_rust_runtime() -> Result<tempfile::NamedTempFile, CodegenError> {
+    let extension =
+        crate::native_artifact_extension(None, crate::NativeArtifactKind::StaticLibrary)
+            .expect("native runtime archives always have a platform extension");
+    let suffix = format!(".{extension}");
     let archive = tempfile::Builder::new()
         .prefix("loom-runtime-")
-        .suffix(".a")
+        .suffix(&suffix)
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
     std::fs::write(archive.path(), native_runtime_bytes())
@@ -304,32 +305,46 @@ fn materialize_rust_runtime() -> Result<tempfile::NamedTempFile, CodegenError> {
 }
 
 pub(crate) fn native_runtime_bytes() -> &'static [u8] {
-    include_bytes!(concat!(env!("OUT_DIR"), "/libloom_runtime.a"))
+    include_bytes!(concat!(env!("OUT_DIR"), "/loom-runtime.bin"))
 }
 
 fn link_objects(object: &Path, runtimes: &[&Path], output: &Path) -> Result<(), CodegenError> {
     let linker = native_linker_program();
+    let target = crate::native_target_identity()?;
+    let link_args = crate::native_link::native_runtime_link_args(&target.triple);
+    let link = crate::native_link::native_link_command(
+        Path::new(&linker),
+        &target.triple,
+        object,
+        runtimes,
+        &link_args,
+        output,
+    );
     let mut command = Command::new(&linker);
-    command.arg(object);
-    for runtime in runtimes {
-        command.arg(runtime);
-    }
-    #[cfg(target_os = "linux")]
-    command.args(["-ldl", "-lpthread", "-lm", "-lrt", "-lutil"]);
-    let result = command.arg("-o").arg(output).output().map_err(|error| {
+    let result = command.args(&link.arguments).output().map_err(|error| {
         CodegenError::new(
             "NativeLinkerUnavailable",
             format!("{}: {error}", Path::new(&linker).display()),
         )
     })?;
-    if result.status.success() {
-        Ok(())
-    } else {
-        Err(CodegenError::new(
+    if !result.status.success() {
+        if let Some(pdb) = &link.pdb {
+            let _ = std::fs::remove_file(pdb);
+        }
+        return Err(CodegenError::new(
             "NativeLinkFailed",
             String::from_utf8_lossy(&result.stderr).trim().to_owned(),
-        ))
+        ));
     }
+    if let Some(pdb) = link.pdb
+        && !pdb.is_file()
+    {
+        return Err(CodegenError::new(
+            "DebugInfoWriteFailed",
+            format!("linker did not produce {}", pdb.display()),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn native_linker_program() -> std::ffi::OsString {
@@ -415,21 +430,17 @@ struct DebugState<'ctx> {
 }
 
 impl<'ctx> DebugState<'ctx> {
-    fn new(context: &'ctx Context, module: &Module<'ctx>, sources: &[DebugSource]) -> Self {
+    fn new(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        sources: &[DebugSource],
+        target_triple: &str,
+    ) -> Self {
         let primary = sources
             .first()
             .map_or("<loom-generated>.loom", |source| source.path.as_str());
         module.set_source_file_name(primary);
-        module.add_basic_value_flag(
-            "Debug Info Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(3, false),
-        );
-        module.add_basic_value_flag(
-            "Dwarf Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(4, false),
-        );
+        configure_debug_module_flags(context, module, target_triple);
         let (builder, unit) = module.create_debug_info_builder(
             true,
             DWARFSourceLanguage::C,
@@ -555,6 +566,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         requirements: RuntimeRequirementGraph,
         int_ranges: NativeIntRangePlan,
         stack_record_plans: BTreeMap<FunctionId, NativeStackRecordPlan>,
+        target_triple: &str,
     ) -> Self {
         let module = context.create_module("loom.program");
         let builder = context.create_builder();
@@ -691,7 +703,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let task_resume_type = context
             .i32_type()
             .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-        let debug = DebugState::new(context, &module, &options.debug_sources);
+        let debug = DebugState::new(context, &module, &options.debug_sources, target_triple);
         Self {
             context,
             program,
@@ -6833,10 +6845,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             ExprKind::Sleep { milliseconds } => self.emit_wait_task(milliseconds, destination),
-            ExprKind::WaitFd {
-                descriptor,
-                writable,
-            } => self.emit_fd_wait_task(descriptor, *writable, destination),
             ExprKind::TaskJoin { mode, arguments } => {
                 self.emit_task_join(*mode, arguments, &expression.ty, destination)
             }
@@ -6993,73 +7001,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .backend
             .builder
             .build_is_null(task, "sleep.task.missing")
-            .map_err(builder_error)?;
-        self.fail_if(missing, "TaskAllocationFault")?;
-        self.initialize(destination, VALUE_TAG_TASK)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_AUX,
-            self.backend.tag(TASK_VALUE_DIRECT),
-        )?;
-        self.backend.store_pointer_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_DATA,
-            task,
-        )?;
-        Ok(true)
-    }
-
-    fn emit_fd_wait_task(
-        &self,
-        descriptor: &Expr,
-        writable: bool,
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let descriptor_value = self.alloc_value("fd.task.descriptor");
-        if !self.emit_expr(descriptor, descriptor_value)? {
-            return Ok(false);
-        }
-        let descriptor = self.int_scalar(descriptor_value)?;
-        let negative = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::SLT,
-                descriptor,
-                self.backend.i64_type.const_zero(),
-                "fd.task.descriptor.negative",
-            )
-            .map_err(builder_error)?;
-        self.fail_if(negative, "InvalidFileDescriptor")?;
-        let too_large = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::SGT,
-                descriptor,
-                self.backend.i64_type.const_int(i32::MAX as u64, false),
-                "fd.task.descriptor.too_large",
-            )
-            .map_err(builder_error)?;
-        self.fail_if(too_large, "InvalidFileDescriptor")?;
-        let interests = if writable {
-            WAIT_INTEREST_WRITABLE
-        } else {
-            WAIT_INTEREST_READABLE
-        };
-        let source = self.alloc_fd_wait_source(descriptor, interests)?;
-        let task = call_pointer(
-            &self.backend.builder,
-            self.backend.native_task_from_wait_source(),
-            &[self.runtime_context.into(), source.into()],
-            "fd.task",
-        )?;
-        let missing = self
-            .backend
-            .builder
-            .build_is_null(task, "fd.task.missing")
             .map_err(builder_error)?;
         self.fail_if(missing, "TaskAllocationFault")?;
         self.initialize(destination, VALUE_TAG_TASK)?;
@@ -7641,61 +7582,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             source,
             WAIT_SOURCE_FIELD_DEADLINE,
             deadline,
-        )?;
-        Ok(source)
-    }
-
-    fn alloc_fd_wait_source(
-        &self,
-        descriptor: IntValue<'ctx>,
-        interests: u64,
-    ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let source = self.alloc_temporary(self.backend.wait_source_type, "wait.source.fd")?;
-        self.backend
-            .builder
-            .build_store(source, self.backend.wait_source_type.const_zero())
-            .map_err(builder_error)?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_ABI_VERSION,
-            self.backend
-                .context
-                .i32_type()
-                .const_int(WAIT_ABI_VERSION, false),
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_KIND,
-            self.backend
-                .context
-                .i32_type()
-                .const_int(WAIT_SOURCE_KIND_FD, false),
-        )?;
-        self.backend.store_i64_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_HANDLE,
-            descriptor,
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_INTERESTS,
-            self.backend.context.i32_type().const_int(interests, false),
-        )?;
-        self.backend.store_i32_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_RESERVED,
-            self.backend.context.i32_type().const_zero(),
-        )?;
-        self.backend.store_i64_field(
-            self.backend.wait_source_type,
-            source,
-            WAIT_SOURCE_FIELD_DEADLINE,
-            self.backend.i64_type.const_zero(),
         )?;
         Ok(source)
     }

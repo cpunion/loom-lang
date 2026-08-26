@@ -1309,7 +1309,7 @@ async fn two() Int {
 }
 
 test async fn stored_and_dynamic_joins() {
-    Task.waitWritable(1).await
+    Task.sleep(1).await
     let first = one()
     let second = two()
     let values = Task.all([first, second]).await

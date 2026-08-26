@@ -3880,7 +3880,7 @@ async fn two() Int {
 }
 
 pub async fn main() Unit {
-    Task.waitWritable(1).await
+    Task.sleep(1).await
     let first = one()
     let second = two()
     let values = Task.all([first, second]).await
