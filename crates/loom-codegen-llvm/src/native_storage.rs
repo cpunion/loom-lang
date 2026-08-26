@@ -571,6 +571,7 @@ impl NativeIntListPlan {
 pub(crate) struct NativeIntListAppendLoop<'a> {
     pub(crate) local: LocalId,
     pub(crate) value: &'a Expr,
+    pub(crate) value_observes_receiver: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -762,7 +763,11 @@ fn exact_single_append_body(body: &Block) -> Option<NativeIntListAppendLoop<'_>>
         && receiver.projection.is_empty()
         && !expr_mutates_list(value, local)
         && block_has_unit_tail(body))
-    .then_some(NativeIntListAppendLoop { local, value })
+    .then_some(NativeIntListAppendLoop {
+        local,
+        value,
+        value_observes_receiver: expr_references_local(value, local),
+    })
 }
 
 /// Recognizes a direct exhaustive `Option[Int]` consumer for the induction
@@ -1545,10 +1550,49 @@ mod tests {
             .direct_append_loop(body)
             .expect("canonical direct append loop");
         assert_eq!(append.local, LIST);
+        assert!(!append.value_observes_receiver);
         assert!(matches!(
             append.value.kind,
             ExprKind::Copy(ref place) if place.local == BUILD_RANGE
         ));
+    }
+
+    #[test]
+    fn append_loop_marks_receiver_observation() {
+        let list = expression(
+            ExprKind::Copy(Place::local(LIST)),
+            Type::List(Box::new(Type::Int)),
+        );
+        let length = expression(
+            ExprKind::Call {
+                target: CallTarget::Builtin(Builtin::ListLength),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(list)],
+                witnesses: Vec::new(),
+            },
+            Type::Int,
+        );
+        let nested_length = expression(
+            ExprKind::Block(Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(length)),
+                span: Default::default(),
+            }),
+            Type::Int,
+        );
+        let function = function(vec![
+            initialize(),
+            range(BUILD_RANGE, 4, block(vec![append(nested_length)])),
+        ]);
+        let plan = NativeIntListPlan::analyze(&program(), &function);
+        assert!(plan.contains(LIST));
+        let StatementKind::ForRange { body, .. } = &function.body.statements[1].kind else {
+            panic!("build statement is not a range")
+        };
+        let append = plan
+            .direct_append_loop(body)
+            .expect("receiver-observing append remains a specialized loop");
+        assert!(append.value_observes_receiver);
     }
 
     #[test]

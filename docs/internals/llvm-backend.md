@@ -80,6 +80,14 @@ shapes, escapes, suspension, unsupported expressions, or an incomplete proof
 fall back to universal lowering. These optimizations are not language ABI
 promises and should not be copied into user reference material.
 
+An exact single-append range over private `List[Int]` storage keeps its length
+in SSA when the appended expression cannot reference the receiver. Generated
+code publishes that length before allocation growth and on normal loop exit,
+instead of writing the header on every iteration. Receiver-observing element
+expressions retain eager commits. A fault may clean up a header whose length is
+a safe lower bound: this is valid only for private contiguous `i64` elements,
+which have no destructor or source-visible partially built value.
+
 Optimization work requires both semantic differential tests and IR structure
 tests. A benchmark improvement alone is insufficient evidence that a fast path
 is correct.

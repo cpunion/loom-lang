@@ -6276,6 +6276,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "proved native Int list append has no private storage",
                 )
             })?;
+        let defer_length_commit = !append.value_observes_receiver;
 
         // Bounds have already been evaluated. Capture the authoritative
         // header only now, so effects in either bound cannot make the cached
@@ -6396,6 +6397,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "int.list.add.minimum",
                 )
                 .map_err(builder_error)?;
+            if defer_length_commit {
+                // The reserve helper reconstructs a Vec from the private
+                // header, so publish the SSA length at this runtime boundary.
+                self.backend.store_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_LENGTH,
+                    length,
+                )?;
+            }
             let status = call_int(
                 &self.backend.builder,
                 self.backend.native_int_list_reserve(),
@@ -6469,15 +6480,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     "int.list.add.next.length",
                 )
                 .map_err(builder_error)?;
-            // Commit immediately after the infallible Int slot store. Every
-            // later fault/return/drop edge can therefore trust the memory
-            // header even though the hot path carries its values in SSA.
-            self.backend.store_i64_field(
-                self.backend.int_list_type,
-                storage,
-                INT_LIST_FIELD_LENGTH,
-                next_length,
-            )?;
+            if !defer_length_commit {
+                // An element expression which observes the receiver must see
+                // every previously completed append in the memory header.
+                self.backend.store_i64_field(
+                    self.backend.int_list_type,
+                    storage,
+                    INT_LIST_FIELD_LENGTH,
+                    next_length,
+                )?;
+            }
 
             let next = self
                 .backend
@@ -6518,6 +6530,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
 
         self.backend.builder.position_at_end(exit);
+        if defer_length_commit {
+            // Publish the final SSA length before any later source operation
+            // can observe the private list. Fault exits may retain a smaller
+            // valid length because Int elements have no destruction effects.
+            self.backend.store_i64_field(
+                self.backend.int_list_type,
+                storage,
+                INT_LIST_FIELD_LENGTH,
+                length,
+            )?;
+        }
         Ok(true)
     }
 
