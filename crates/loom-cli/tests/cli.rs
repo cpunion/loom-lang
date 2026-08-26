@@ -71,6 +71,7 @@ fn loomc_without_test_runtime() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
 }
 
+#[cfg(unix)]
 fn test_runtime_archive() -> PathBuf {
     let target = loom_codegen_llvm::native_target_identity().expect("load host target identity");
     loom_codegen_llvm::RuntimeBundle::load(test_runtime_bundle_root(), &target)
