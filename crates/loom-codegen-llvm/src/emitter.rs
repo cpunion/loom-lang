@@ -9227,6 +9227,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let CallTarget::Builtin(builtin) = target {
             return self.emit_builtin(*builtin, arguments, destination);
         }
+        let native_record_destination = if destination == self.output {
+            self.native_record_output
+                .as_ref()
+                .map(|(_, nodes)| nodes.as_slice())
+        } else {
+            None
+        };
         if let CallTarget::Direct(function) = target
             && self.backend.int_ranges.uses_assumed_call(
                 self.body_mode,
@@ -9237,7 +9244,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             && self.native_call_is_private_compatible(
                 *function,
                 arguments,
-                None,
+                native_record_destination,
                 NativeBodyMode::Assumed,
             )
         {
@@ -9246,7 +9253,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 arguments,
                 witnesses,
                 destination,
-                None,
+                native_record_destination,
                 NativeBodyMode::Assumed,
             );
         }
@@ -9254,7 +9261,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             && self.native_call_is_private_compatible(
                 *function,
                 arguments,
-                None,
+                native_record_destination,
                 NativeBodyMode::Checked,
             )
         {
@@ -9263,7 +9270,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 arguments,
                 witnesses,
                 destination,
-                None,
+                native_record_destination,
                 NativeBodyMode::Checked,
             );
         }
@@ -13101,15 +13108,6 @@ fn call_native_status<'ctx>(
     let value = builder
         .build_extract_value(aggregate, 1, &format!("{name}.value"))
         .map_err(builder_error)?;
-    let value = match signature.shape().result() {
-        NativeLayout::Scalar(_) => value,
-        NativeLayout::PodRecord(_) => {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "native status call used a storage-only result layout",
-            ));
-        }
-    };
     Ok((status, value))
 }
 

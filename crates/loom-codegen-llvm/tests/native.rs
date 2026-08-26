@@ -1882,6 +1882,122 @@ pub fn main() Unit {
 }
 
 #[test]
+fn private_pod_results_flow_through_status_tail_return_and_branch_calls() {
+    let source = r"module pod_result_flow
+
+record Pair { value Int }
+
+fn make(value Int) Pair {
+    Pair { value = value }
+}
+
+fn checkedMake(value Int, accepted Bool) Pair {
+    assert accepted
+    Pair { value = value }
+}
+
+fn forward(value Int) Pair {
+    make(value)
+}
+
+fn explicit(value Int) Pair {
+    return make(value)
+}
+
+fn choose(value Int, left Bool) Pair {
+    if left {
+        make(value)
+    } else {
+        make(value + 1)
+    }
+}
+
+pub fn main() Unit {
+    let checked = checkedMake(7, true)
+    assert checked.value == 7
+    let forwarded = forward(42)
+    assert forwarded.value == 42
+    let returned = explicit(43)
+    assert returned.value == 43
+    let selected = choose(44, true)
+    assert selected.value == 44
+    Unit
+}
+
+pub fn faultMain() Unit {
+    let rejected = checkedMake(9, false)
+    assert rejected.value == 9
+    Unit
+}
+";
+    let (project, program, llvm) = emit_source_with_ir(source);
+
+    let checked = llvm_native_function(&llvm, "pod_result_flow_checkedMake");
+    assert!(
+        checked
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("define internal { i32, { i64 } }")),
+        "{checked}"
+    );
+    let main = llvm_native_function(&llvm, "pod_result_flow_main");
+    assert!(
+        main.contains("call { i32, { i64 } } @loom.native.fn.")
+            && main.contains("pod_result_flow_checkedMake"),
+        "{main}"
+    );
+    assert!(main.contains("native.call.value"), "{main}");
+
+    for suffix in [
+        "pod_result_flow_checkedMake",
+        "pod_result_flow_forward",
+        "pod_result_flow_explicit",
+        "pod_result_flow_choose",
+    ] {
+        let function = llvm_native_function(&llvm, suffix);
+        assert!(
+            !function.contains("@loom.fn."),
+            "private POD flow fell back to the universal ABI: {function}"
+        );
+        assert!(
+            !function.contains("@loom_gc_build_value_nodes_v1"),
+            "{function}"
+        );
+        assert!(!function.contains("@loom_gc_clone_value_v1"), "{function}");
+    }
+
+    for suffix in ["pod_result_flow_forward", "pod_result_flow_explicit"] {
+        let function = llvm_native_function(&llvm, suffix);
+        assert!(
+            function.contains("call { i64 } @loom.native.fn.")
+                && function.contains("pod_result_flow_make"),
+            "{function}"
+        );
+    }
+    let choose = llvm_native_function(&llvm, "pod_result_flow_choose");
+    assert!(
+        choose.matches("pod_result_flow_make").count() >= 2,
+        "{choose}"
+    );
+
+    assert_emitted_main_succeeds(&project);
+
+    let fault_executable = project.path().join("fault-program");
+    emit_native(&program, &fault_executable, &EmitOptions::run("faultMain"))
+        .expect("emit faulting private POD executable");
+    let output = Command::new(fault_executable)
+        .output()
+        .expect("run faulting private POD executable");
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(diagnostic.contains("AssertionFault"), "{output:?}");
+}
+
+#[test]
 fn private_pod_inout_writes_back_before_fault_status_propagates() {
     let source = r"module pod_fault_writeback
 
