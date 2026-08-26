@@ -6,10 +6,12 @@ reachable from the selected command roots.
 
 The implementation lives in the `source_graph` module of `loom-codegen-ir`,
 before LLVM emission. `SourceRoots` and `ReachableSourceGraph` contain
-checked-MIR identities; they are intentionally distinct from future LCIR
-instance roots. The LLVM boundary maps structured `GraphError` values into
-native-backend diagnostics. Root selection and closure accept only
-`loom_mir::CheckedProgram`; raw MIR cannot enter this production pass.
+checked-MIR identities; they are intentionally distinct from the LCIR
+`InstanceId` roots stored in an independently validated `CheckedArtifact`. The
+production LLVM boundary maps structured `GraphError` values into native-backend
+diagnostics. Source root selection and closure accept only
+`loom_mir::CheckedProgram`; raw MIR cannot enter this production pass, and the
+driver does not yet lower this graph into LCIR.
 
 ## Roots
 

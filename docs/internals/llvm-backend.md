@@ -24,13 +24,28 @@ workspace does not silently fall back to another LLVM major version.
 
 ## LCIR foundation status
 
-The workspace contains a scalar typed-SSA foundation in `loom-codegen-ir`. The
-LLVM backend depends on that crate for `SourceRoots` and
-`ReachableSourceGraph`, but it does not consume the crate's LCIR
-`loom_codegen_ir::CheckedProgram`. This does not weaken the production MIR
-boundary: source graph and native entry points require
-`loom_mir::CheckedProgram`. There is no MIR-to-LCIR lowering, and no production
-artifact is selected, lowered, emitted, or cached through typed LCIR.
+The workspace contains a scalar typed-SSA foundation in `loom-codegen-ir`.
+`emit_lcir_native_object` accepts only a closed `CheckedArtifact`: its roots,
+callable closure, representations, CFG, types, and exact fault effects have
+already crossed independent validation. The emitter declares every source
+function with its typed LCIR ABI, keeps source symbols internal, emits a run or
+ordered-test harness, verifies before and after optimization, and writes a
+relocatable object. Its tests emit, link, and run pure and faulting artifacts on
+the LLVM CI hosts.
+
+This object boundary is not the production compiler route. The driver still
+passes `loom_mir::CheckedProgram` through checked-MIR `SourceRoots` and
+`ReachableSourceGraph` into the legacy emitter. MIR-to-LCIR lowering, atomic
+whole-artifact route selection, and an LCIR object-cache fingerprint are not
+connected yet. Valid MIR outside the supported scalar slice must eventually
+produce one whole-artifact `Unsupported` result; it must never mix the two
+source-function ABIs in one object.
+
+Source contracts are outside that routing slice. Hand-built LCIR can carry the
+generic `ContractFailed` fault code, but LCIR does not yet preserve the contract
+category, user code, contract span, and blame span required by production
+diagnostics. A future lowerer must report contracts as `Unsupported` until that
+metadata has a checked LCIR representation and differential tests.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
@@ -44,10 +59,12 @@ the actual host CPU name/features. For any explicit `--target-triple`,
 including one equal to the host triple, it uses `generic` CPU, an empty feature
 set, PIC relocation, and the target's LLVM data layout.
 
-The current universal native representation requires 64-bit pointers. A
-32-bit data layout fails before object emission. An LLVM target being available
-only establishes that an object can be emitted; it does not establish runtime,
-linker, CI, or release support.
+The production universal native representation requires 64-bit pointers. Its
+32-bit data-layout request fails before object emission. The scalar LCIR emitter
+instead requires the checked artifact's pointer width to equal the selected
+LLVM target data, without treating that match as runtime, linker, CI, or release
+support. An LLVM target being available establishes only that a compatible
+object can be emitted.
 
 ## Verification and optimization
 
@@ -131,10 +148,14 @@ the link environment is not yet hermetic.
 
 ## Debug information
 
-The backend emits source line information from stable project-relative paths.
-Linux executables retain DWARF in the ELF output. On macOS, `dsymutil --verify`
-produces a sibling `.dSYM` bundle. `loomc debug` keeps temporary executable and
-debug data alive for the debugger session and launches in the project root.
+The production checked-MIR backend emits source line information from stable
+project-relative paths. Linux executables retain DWARF in the ELF output. On
+macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loomc debug`
+keeps temporary executable and debug data alive for the debugger session and
+launches in the project root. The independent LCIR emitter currently publishes
+only compile-unit and file metadata; it withholds `DISubprogram` metadata until
+the source-level debug signature for fallible status returns and the hidden
+fault context is specified.
 
 There is no stable native library, debugger pretty-printer, plugin, or FFI ABI
 in the current implementation.

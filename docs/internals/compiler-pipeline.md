@@ -19,12 +19,14 @@ project input
 ```
 
 This diagram is the current production pipeline. `loom-codegen-ir` owns the
-checked-MIR root and reachability graph used by that pipeline. The same crate
-can build, validate, and dump hand-built scalar LCIR, but no MIR lowering or
-production target emitter consumes its LCIR `CheckedProgram` yet. See
-[Code generation IR](codegen-ir.md) for the implemented foundation and the
-[typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
-migration design.
+checked-MIR root and reachability graph used by that pipeline. Separately, it
+can build, validate, root, and dump scalar LCIR, and `loom-codegen-llvm` can
+emit a complete `CheckedArtifact` directly to a verified native object. That
+independent boundary is exercised with hand-built LCIR; MIR-to-LCIR lowering,
+production route selection, and an LCIR object-cache fingerprint are not
+connected yet. See [Code generation IR](codegen-ir.md) for the implemented
+boundary and the [typed code generation IR RFC](../rfcs/typed-codegen-ir.md)
+for the accepted migration design.
 
 ## Project and source discovery
 
@@ -109,12 +111,13 @@ universal-value implementation and private native specializations, verifies
 LLVM IR, optimizes it, verifies again, and emits a relocatable object. Linking
 is a separate step.
 
-`loom-codegen-ir::CheckedProgram` is currently an independent LCIR library
-boundary, not part of either terminal backend. It is distinct from the
-production `loom_mir::CheckedProgram` consumed by the crate's source graph and
-both terminal backends. Whole-artifact LCIR selection and an LCIR-to-LLVM
-emitter remain implementation work tracked by the
-[accepted RFC](../rfcs/typed-codegen-ir.md).
+`loom-codegen-ir::CheckedProgram` and `CheckedArtifact` form an independent
+LCIR library boundary. The LLVM crate can translate a checked scalar artifact
+mechanically to an object, but the production driver does not select that
+route. It continues to pass `loom_mir::CheckedProgram` through the checked-MIR
+source graph and legacy LLVM emitter. Whole-artifact MIR-to-LCIR lowering, an
+atomic production router, and the route's cache fingerprint remain migration
+work tracked by the [accepted RFC](../rfcs/typed-codegen-ir.md).
 
 Source diagnostics exit before either backend executes. Errors discovered
 after checked MIR—missing MIR references, LLVM verifier failures, or malformed

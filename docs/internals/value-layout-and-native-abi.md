@@ -46,10 +46,16 @@ internally.
 
 ## Standalone LCIR representations
 
-The unconnected `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, and `Float` as `F64`. Those definitions are exercised
-only by hand-built LCIR tests. They do not currently change generated LLVM,
-the universal value envelope, or the runtime ABI.
+The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
+as `I1`, `Int` as `I64`, and `Float` as `F64`. Its checked-artifact LLVM API
+emits those representations directly: pure functions return the typed value,
+and faulting functions return `{ i32 status, T value }` with one hidden fault
+context pointer. Source symbols are internal, so this is a compiler-private
+object ABI rather than a native library ABI.
+
+These definitions are currently exercised by hand-built LCIR object tests.
+They do not change the production universal value envelope or runtime ABI
+because MIR-to-LCIR lowering and route selection are not connected yet.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
