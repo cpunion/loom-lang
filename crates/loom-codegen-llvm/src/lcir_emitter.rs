@@ -15,8 +15,8 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
-    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation,
-    DIType, DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
+    AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation, DIType,
+    DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::{FlagBehavior, Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
@@ -131,7 +131,6 @@ fn create_parent_directory(path: &Path) -> Result<(), CodegenError> {
 
 struct DebugState<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
-    unit: DICompileUnit<'ctx>,
     files: BTreeMap<u32, DIFile<'ctx>>,
     sources: BTreeMap<u32, DebugSource>,
     unit_type: DIType<'ctx>,
@@ -147,6 +146,10 @@ struct DebugState<'ctx> {
 }
 
 impl<'ctx> DebugState<'ctx> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one constructor must publish the mutually referential compile unit, exact target ABI types, and source-id tables before any function metadata"
+    )]
     fn new(
         context: &'ctx Context,
         module: &Module<'ctx>,
@@ -190,6 +193,12 @@ impl<'ctx> DebugState<'ctx> {
         let mut files = BTreeMap::new();
         let mut source_map = BTreeMap::new();
         for (index, source) in sources.iter().enumerate() {
+            if files.contains_key(&source.file) {
+                return Err(CodegenError::new(
+                    "LlvmDebugInfoFailed",
+                    format!("duplicate debug source file id #{}", source.file),
+                ));
+            }
             let file = if index == 0 {
                 unit.get_file()
             } else {
@@ -298,7 +307,6 @@ impl<'ctx> DebugState<'ctx> {
         )?;
         Ok(Self {
             builder,
-            unit,
             files,
             sources: source_map,
             unit_type,
@@ -314,26 +322,31 @@ impl<'ctx> DebugState<'ctx> {
         })
     }
 
-    fn file(&self, id: u32) -> DIFile<'ctx> {
-        self.files
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| self.unit.get_file())
+    fn file(&self, id: u32) -> Result<DIFile<'ctx>, CodegenError> {
+        self.files.get(&id).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("debug source table does not contain file id #{id}"),
+            )
+        })
     }
 
-    fn line_column(&self, file: u32, offset: u32) -> (u32, u32) {
-        let Some(source) = self.sources.get(&file) else {
-            return (1, 1);
-        };
+    fn line_column(&self, file: u32, offset: u32) -> Result<(u32, u32), CodegenError> {
+        let source = self.sources.get(&file).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("debug source table does not contain file id #{file}"),
+            )
+        })?;
         let line = source
             .line_starts
             .partition_point(|start| *start <= offset)
             .saturating_sub(1);
         let start = source.line_starts.get(line).copied().unwrap_or(0);
-        (
+        Ok((
             u32::try_from(line).unwrap_or(u32::MAX).saturating_add(1),
             offset.saturating_sub(start).saturating_add(1),
-        )
+        ))
     }
 
     fn value_type(
@@ -392,8 +405,8 @@ impl<'ctx> DebugState<'ctx> {
     ) -> Result<(), CodegenError> {
         let origin = source.origin();
         let file_id = origin.span.file.0;
-        let file = self.file(file_id);
-        let (line, _) = self.line_column(file_id, origin.span.range.start);
+        let file = self.file(file_id)?;
+        let (line, _) = self.line_column(file_id, origin.span.range.start)?;
         let result = if source.effects().contains(Effects::MAY_FAULT) {
             self.fallible_type(artifact, source.signature().result())?
         } else {
@@ -457,8 +470,8 @@ impl<'ctx> DebugState<'ctx> {
         })?;
         let origin = source.origin();
         let file_id = origin.span.file.0;
-        let file = self.file(file_id);
-        let (line, column) = self.line_column(file_id, origin.span.range.start);
+        let file = self.file(file_id)?;
+        let (line, column) = self.line_column(file_id, origin.span.range.start)?;
         let location = self.builder.create_debug_location(
             context,
             line,
@@ -525,12 +538,16 @@ impl<'ctx> DebugState<'ctx> {
         ir_builder: &Builder<'ctx>,
         function: FunctionValue<'ctx>,
         origin: Origin,
-    ) {
-        let Some(scope) = function.get_subprogram() else {
-            return;
-        };
+    ) -> Result<(), CodegenError> {
+        let scope = function.get_subprogram().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmDebugInfoFailed",
+                "LLVM function has no debug subprogram",
+            )
+        })?;
         let file = origin.span.file.0;
-        let (line, column) = self.line_column(file, origin.span.range.start);
+        self.file(file)?;
+        let (line, column) = self.line_column(file, origin.span.range.start)?;
         let location = self.builder.create_debug_location(
             context,
             line,
@@ -539,9 +556,14 @@ impl<'ctx> DebugState<'ctx> {
             None,
         );
         ir_builder.set_current_debug_location(location);
+        Ok(())
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all LLVM and DI type handles are explicit so target layout cannot be inferred or taken from ambient state"
+)]
 fn create_fallible_debug_type<'ctx>(
     context: &'ctx Context,
     builder: &DebugInfoBuilder<'ctx>,
@@ -952,7 +974,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         format!("missing LCIR instruction {instruction_id}"),
                     )
                 })?;
-                self.set_debug_location(instruction.origin());
+                self.set_debug_location(instruction.origin())?;
                 self.emit_instruction(instruction)?;
             }
             let terminator = block.terminator().ok_or_else(|| {
@@ -961,7 +983,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("LCIR block {} is unterminated", block.id()),
                 )
             })?;
-            self.set_debug_location(terminator.origin());
+            self.set_debug_location(terminator.origin())?;
             self.emit_terminator(terminator)?;
         }
         if let Some(debug) = &self.backend.debug {
@@ -983,15 +1005,16 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn set_debug_location(&self, origin: Origin) {
+    fn set_debug_location(&self, origin: Origin) -> Result<(), CodegenError> {
         if let Some(debug) = &self.backend.debug {
             debug.set_location(
                 self.backend.context,
                 &self.backend.builder,
                 self.function,
                 origin,
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// Returns a deterministic CFG preorder rooted at the function entry.

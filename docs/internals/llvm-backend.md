@@ -184,6 +184,11 @@ launches in the project root. LCIR publishes compile-unit, file,
 `DISubprogram`, physical callable-signature, formal-parameter, parameter-value,
 and instruction-location metadata. LCIR does not retain source parameter names,
 so visible parameters have stable debugger names `arg0`, `arg1`, and so on.
+Debug-source file IDs must be unique and must cover every emitted `Origin`;
+missing or duplicate identities are compiler errors rather than mappings to the
+primary file at an invented `(1, 1)` location. Hand-built LCIR using a synthetic
+origin must therefore provide that generated file explicitly when requesting
+debug information.
 
 The signature deliberately describes the exact compiler ABI rather than a
 logical wrapper that does not exist. A fallible callable returns the

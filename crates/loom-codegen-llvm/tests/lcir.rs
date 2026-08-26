@@ -1616,3 +1616,40 @@ fn debug_sources_emit_function_abi_and_expression_locations() {
     assert!(ir.contains("!DISubroutineType"), "{ir}");
     assert!(ir.contains("!DILocation"), "{ir}");
 }
+
+#[test]
+fn debug_sources_fail_closed_on_duplicate_and_missing_file_ids() {
+    let artifact = unit_run(64);
+    let directory = tempfile::tempdir().expect("temp directory");
+    for (name, sources, expected) in [
+        (
+            "duplicate",
+            vec![
+                DebugSource::new(0, "src/main.loom", "fn main() Unit { Unit }\n"),
+                DebugSource::new(0, "src/alias.loom", "fn alias() Unit { Unit }\n"),
+            ],
+            "duplicate debug source file id #0",
+        ),
+        (
+            "missing",
+            vec![DebugSource::new(
+                7,
+                "src/unrelated.loom",
+                "fn unrelated() Unit { Unit }\n",
+            )],
+            "debug source table does not contain file id #0",
+        ),
+    ] {
+        let error = emit_lcir_native_object(
+            &artifact,
+            &directory.path().join(format!("{name}.o")),
+            &NativeObjectOptions {
+                debug_sources: sources,
+                ..NativeObjectOptions::default()
+            },
+        )
+        .expect_err("invalid debug source identities must fail closed");
+        assert_eq!(error.code(), "LlvmDebugInfoFailed");
+        assert_eq!(error.message(), expected);
+    }
+}

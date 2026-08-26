@@ -68,9 +68,9 @@ input tests.
 
 Linux CI runs formatting, workspace check, Clippy with warnings denied, all
 workspace tests and builds, dual-backend fixture loops, standard-library
-differential tests, runtime-bundle tests, Linux DWARF inspection, macOS dSYM and
-LLDB inspection, the controlled `loom-quality` runner, and three short fuzz
-targets.
+differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
+`loom-quality` runner, and three short fuzz targets. The separate macOS job
+verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow
