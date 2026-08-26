@@ -21,8 +21,7 @@ mod target;
 
 pub use codegen::{
     DebugSource, EmitKind, EmitOptions, NativeArtifact, NativeObjectArtifact, NativeObjectOptions,
-    emit_lcir_native_object, emit_native, emit_native_object, link_native_object,
-    native_object_fingerprint, validate_native_link_target,
+    emit_lcir_native_object, emit_native, emit_native_object, native_object_fingerprint,
 };
 pub use error::CodegenError;
 pub use native_artifact::{
@@ -35,15 +34,14 @@ pub use prepared::{
     prepared_native_object_fingerprint, prepared_native_target_identity,
 };
 pub use runtime_bundle::{
-    RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU, RUNTIME_CPU_FEATURES,
-    RuntimeBundle, RuntimeBundleExport, RuntimeLinker, export_native_runtime_bundle,
-    link_object_with_runtime_bundle,
+    PackedRuntimeBundle, RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU,
+    RUNTIME_CPU_FEATURES, RuntimeBundle, RuntimeLinker, link_object_with_runtime_bundle,
+    pack_native_runtime_bundle,
 };
 pub use target::{
     DEVELOPMENT_OPTIMIZATION_PIPELINE, NATIVE_RUNTIME_ABI, NativeTargetIdentity,
     OptimizationProfile, RELEASE_OPTIMIZATION_PIPELINE, RELOCATION_MODE,
-    emit_native_debug_companion, is_native_target, native_runtime_identity, native_target_identity,
-    target_identity,
+    emit_native_debug_companion, is_native_target, native_target_identity, target_identity,
 };
 
 /// LLVM backend version recorded in diagnostics and future cache keys.

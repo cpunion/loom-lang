@@ -10,9 +10,11 @@ use loom_codegen_ir::{
 };
 use loom_codegen_llvm::{
     DebugSource, NativeObjectOptions, OptimizationProfile, emit_lcir_native_object,
-    link_native_object,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type};
+
+mod support;
+use support::link_native_object;
 
 fn origin(function: u32) -> Origin {
     Origin::synthetic(MirFunctionId(function))

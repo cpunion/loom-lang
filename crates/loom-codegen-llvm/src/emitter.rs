@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 
 use inkwell::AddressSpace;
 use inkwell::attributes::{Attribute, AttributeLoc};
@@ -272,85 +271,6 @@ impl Emitter {
             witnesses: reachable.witnesses.len(),
         })
     }
-
-    pub(crate) fn link_object(object: &Path, output: &Path) -> Result<(), CodegenError> {
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                CodegenError::new(
-                    "ArtifactWriteFailed",
-                    format!("{}: {error}", parent.display()),
-                )
-            })?;
-        }
-        let runtime_objects = [materialize_rust_runtime()?];
-        let runtime_paths = runtime_objects
-            .iter()
-            .map(tempfile::NamedTempFile::path)
-            .collect::<Vec<_>>();
-        link_objects(object, &runtime_paths, output)
-    }
-}
-
-fn materialize_rust_runtime() -> Result<tempfile::NamedTempFile, CodegenError> {
-    let extension =
-        crate::native_artifact_extension(None, crate::NativeArtifactKind::StaticLibrary)
-            .expect("native runtime archives always have a platform extension");
-    let suffix = format!(".{extension}");
-    let archive = tempfile::Builder::new()
-        .prefix("loom-runtime-")
-        .suffix(&suffix)
-        .tempfile()
-        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
-    std::fs::write(archive.path(), native_runtime_bytes())
-        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
-    Ok(archive)
-}
-
-pub(crate) fn native_runtime_bytes() -> &'static [u8] {
-    include_bytes!(concat!(env!("OUT_DIR"), "/loom-runtime.bin"))
-}
-
-fn link_objects(object: &Path, runtimes: &[&Path], output: &Path) -> Result<(), CodegenError> {
-    let linker = native_linker_program();
-    let target = crate::native_target_identity()?;
-    let link_args = crate::native_link::native_runtime_link_args(&target.triple);
-    let link = crate::native_link::native_link_command(
-        Path::new(&linker),
-        &target.triple,
-        object,
-        runtimes,
-        &link_args,
-        output,
-    );
-    let mut command = Command::new(&linker);
-    let result = command.args(&link.arguments).output().map_err(|error| {
-        CodegenError::new(
-            "NativeLinkerUnavailable",
-            format!("{}: {error}", Path::new(&linker).display()),
-        )
-    })?;
-    if !result.status.success() {
-        if let Some(pdb) = &link.pdb {
-            let _ = std::fs::remove_file(pdb);
-        }
-        return Err(CodegenError::new(
-            "NativeLinkFailed",
-            String::from_utf8_lossy(&result.stderr).trim().to_owned(),
-        ));
-    }
-    if let Some(pdb) = link.pdb
-        && !pdb.is_file()
-    {
-        return Err(CodegenError::new(
-            "DebugInfoWriteFailed",
-            format!("linker did not produce {}", pdb.display()),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn native_linker_program() -> std::ffi::OsString {
-    std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

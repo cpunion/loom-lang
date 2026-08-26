@@ -1,7 +1,10 @@
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
+
+mod support;
+use support::emit_native;
 
 fn loom_text_literal(value: &str) -> String {
     value

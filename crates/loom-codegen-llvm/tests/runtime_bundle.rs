@@ -2,17 +2,26 @@ use std::fs;
 
 use loom_codegen_llvm::{
     NATIVE_RUNTIME_ABI, RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU,
-    RUNTIME_CPU_FEATURES, RuntimeBundle, export_native_runtime_bundle, native_target_identity,
-    target_identity,
+    RUNTIME_CPU_FEATURES, RuntimeBundle, native_runtime_archive_name, native_target_identity,
+    pack_native_runtime_bundle, target_identity,
 };
 
+fn pack_test_bundle(
+    temporary: &tempfile::TempDir,
+    output: &std::path::Path,
+) -> loom_codegen_llvm::PackedRuntimeBundle {
+    let archive = temporary.path().join("input-runtime.a");
+    fs::write(&archive, b"bounded test runtime archive").expect("write source runtime archive");
+    pack_native_runtime_bundle(archive, output).expect("pack host runtime")
+}
+
 #[test]
-fn exported_host_runtime_bundle_round_trips_with_exact_identity() {
+fn packed_host_runtime_bundle_round_trips_with_exact_identity() {
     let temporary = tempfile::tempdir().expect("runtime bundle test directory");
     let output = temporary.path().join("runtime");
-    let exported = export_native_runtime_bundle(&output).expect("export host runtime");
+    let packed = pack_test_bundle(&temporary, &output);
     let target = native_target_identity().expect("host target");
-    let loaded = RuntimeBundle::load(&output, &target).expect("load exported runtime");
+    let loaded = RuntimeBundle::load(&output, &target).expect("load packed runtime");
 
     assert_eq!(loaded.target_triple(), target.triple);
     assert_eq!(loaded.data_layout(), target.data_layout);
@@ -20,13 +29,17 @@ fn exported_host_runtime_bundle_round_trips_with_exact_identity() {
     assert_eq!(loaded.runtime_cpu_features(), RUNTIME_CPU_FEATURES);
     assert_eq!(
         loaded.archive(),
-        fs::canonicalize(&exported.archive).expect("canonical exported archive")
+        fs::canonicalize(&packed.archive).expect("canonical packed archive")
     );
-    assert_eq!(loaded.archive_sha256(), exported.archive_sha256);
+    assert_eq!(loaded.archive_sha256(), packed.archive_sha256);
     assert!(loaded.identity().contains(loaded.archive_sha256()));
-    assert_eq!(exported.runtime_abi, NATIVE_RUNTIME_ABI);
-    assert_eq!(exported.runtime_cpu, RUNTIME_CPU);
-    assert_eq!(exported.runtime_cpu_features, RUNTIME_CPU_FEATURES);
+    assert_eq!(packed.runtime_abi, NATIVE_RUNTIME_ABI);
+    assert_eq!(packed.runtime_cpu, RUNTIME_CPU);
+    assert_eq!(packed.runtime_cpu_features, RUNTIME_CPU_FEATURES);
+    assert_eq!(
+        packed.archive.file_name().and_then(std::ffi::OsStr::to_str),
+        Some(native_runtime_archive_name(None))
+    );
     let portable_target = target_identity(
         Some(&target.triple),
         loom_codegen_llvm::OptimizationProfile::Development,
@@ -35,15 +48,63 @@ fn exported_host_runtime_bundle_round_trips_with_exact_identity() {
     RuntimeBundle::load(&output, &portable_target)
         .expect("generic runtime also links with a portable host object");
     assert_eq!(
-        fs::read(&exported.manifest).expect("runtime manifest"),
+        fs::read(&packed.manifest).expect("runtime manifest"),
         fs::read(output.join(RUNTIME_BUNDLE_MANIFEST)).expect("fixed manifest path")
     );
     assert_eq!(
-        export_native_runtime_bundle(&output)
-            .expect_err("export never overwrites an existing bundle")
+        pack_native_runtime_bundle(temporary.path().join("input-runtime.a"), &output)
+            .expect_err("packing never overwrites an existing bundle")
             .code(),
         "RuntimeBundleWriteFailed"
     );
+}
+
+#[test]
+fn runtime_pack_rejects_unbounded_or_non_regular_archive_inputs() {
+    let temporary = tempfile::tempdir().expect("runtime pack security directory");
+    let directory_input = temporary.path().join("archive-directory");
+    fs::create_dir(&directory_input).expect("create directory input");
+    let directory_output = temporary.path().join("directory-output");
+    assert_eq!(
+        pack_native_runtime_bundle(&directory_input, &directory_output)
+            .expect_err("reject directory archive")
+            .code(),
+        "RuntimeBundleInvalid"
+    );
+    assert!(!directory_output.exists());
+
+    let oversized_input = temporary.path().join("oversized-runtime.a");
+    let oversized = fs::File::create(&oversized_input).expect("create sparse archive");
+    oversized
+        .set_len(256 * 1024 * 1024 + 1)
+        .expect("size sparse archive above the bound");
+    drop(oversized);
+    let oversized_output = temporary.path().join("oversized-output");
+    assert_eq!(
+        pack_native_runtime_bundle(&oversized_input, &oversized_output)
+            .expect_err("reject oversized archive")
+            .code(),
+        "RuntimeBundleInvalid"
+    );
+    assert!(!oversized_output.exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let real = temporary.path().join("real-runtime.a");
+        let linked = temporary.path().join("linked-runtime.a");
+        fs::write(&real, b"runtime").expect("write symlink target");
+        symlink(&real, &linked).expect("link runtime input");
+        let linked_output = temporary.path().join("linked-output");
+        assert_eq!(
+            pack_native_runtime_bundle(&linked, &linked_output)
+                .expect_err("reject symlink archive")
+                .code(),
+            "RuntimeBundleInvalid"
+        );
+        assert!(!linked_output.exists());
+    }
 }
 
 #[cfg(unix)]
@@ -81,7 +142,7 @@ fn failed_or_invalid_link_preserves_output_and_cleans_adjacent_staging() {
 
     let temporary = tempfile::tempdir().expect("runtime link test directory");
     let bundle_path = temporary.path().join("runtime");
-    export_native_runtime_bundle(&bundle_path).expect("export host runtime");
+    pack_test_bundle(&temporary, &bundle_path);
     let target = native_target_identity().expect("host target");
     let bundle = RuntimeBundle::load(&bundle_path, &target).expect("load host runtime");
     let object = temporary.path().join("input.o");
@@ -152,7 +213,7 @@ fn failed_or_invalid_link_preserves_output_and_cleans_adjacent_staging() {
 fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
     let temporary = tempfile::tempdir().expect("runtime bundle test directory");
     let output = temporary.path().join("runtime");
-    export_native_runtime_bundle(&output).expect("export host runtime");
+    pack_test_bundle(&temporary, &output);
     let target = native_target_identity().expect("host target");
     let manifest_path = output.join(RUNTIME_BUNDLE_MANIFEST);
     let original = fs::read(&manifest_path).expect("runtime manifest");
@@ -277,11 +338,11 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
 fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
     let temporary = tempfile::tempdir().expect("runtime bundle test directory");
     let output = temporary.path().join("runtime");
-    let exported = export_native_runtime_bundle(&output).expect("export host runtime");
+    let packed = pack_test_bundle(&temporary, &output);
     let target = native_target_identity().expect("host target");
     let manifest_path = output.join(RUNTIME_BUNDLE_MANIFEST);
     let original_manifest = fs::read(&manifest_path).expect("runtime manifest");
-    let original_archive = fs::read(&exported.archive).expect("runtime archive");
+    let original_archive = fs::read(&packed.archive).expect("runtime archive");
 
     for unsafe_path in [
         "../outside.a",
@@ -309,7 +370,7 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
     }
 
     fs::write(&manifest_path, &original_manifest).expect("restore manifest");
-    fs::write(&exported.archive, b"tampered archive").expect("tamper archive");
+    fs::write(&packed.archive, b"tampered archive").expect("tamper archive");
     assert_eq!(
         RuntimeBundle::load(&output, &target)
             .expect_err("archive checksum")
@@ -317,7 +378,7 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
         "RuntimeBundleChecksumMismatch"
     );
 
-    fs::write(&exported.archive, &original_archive).expect("restore archive");
+    fs::write(&packed.archive, &original_archive).expect("restore archive");
     fs::write(output.join("unexpected"), b"extra").expect("write extra file");
     assert_eq!(
         RuntimeBundle::load(&output, &target)
@@ -330,7 +391,7 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
     let oversized = fs::OpenOptions::new()
         .write(true)
         .truncate(true)
-        .open(&exported.archive)
+        .open(&packed.archive)
         .expect("open archive for sparse oversize test");
     oversized
         .set_len(256 * 1024 * 1024 + 1)
@@ -342,7 +403,7 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
             .code(),
         "RuntimeBundleInvalid"
     );
-    fs::write(&exported.archive, &original_archive).expect("restore archive after size test");
+    fs::write(&packed.archive, &original_archive).expect("restore archive after size test");
 
     #[cfg(unix)]
     {
@@ -350,8 +411,8 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
 
         let outside = temporary.path().join("outside.a");
         fs::write(&outside, &original_archive).expect("outside archive");
-        fs::remove_file(&exported.archive).expect("remove real archive");
-        symlink(&outside, &exported.archive).expect("link archive");
+        fs::remove_file(&packed.archive).expect("remove real archive");
+        symlink(&outside, &packed.archive).expect("link archive");
         assert_eq!(
             RuntimeBundle::load(&output, &target)
                 .expect_err("symlink archive")
@@ -359,8 +420,8 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
             "RuntimeBundleInvalid"
         );
 
-        fs::remove_file(&exported.archive).expect("remove archive symlink");
-        fs::write(&exported.archive, &original_archive).expect("restore archive for root symlink");
+        fs::remove_file(&packed.archive).expect("remove archive symlink");
+        fs::write(&packed.archive, &original_archive).expect("restore archive for root symlink");
         let root_link = temporary.path().join("runtime-link");
         symlink(&output, &root_link).expect("link runtime root");
         assert_eq!(

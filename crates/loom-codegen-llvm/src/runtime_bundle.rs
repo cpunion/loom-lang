@@ -2,14 +2,13 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::emitter::native_runtime_bytes;
 use crate::native_artifact::native_runtime_archive_name;
 use crate::native_link::{linker_version_arguments, native_link_command, native_runtime_link_args};
 use crate::{CodegenError, NATIVE_RUNTIME_ABI, NativeTargetIdentity, native_target_identity};
@@ -164,9 +163,9 @@ impl RuntimeBundle {
     }
 }
 
-/// The result of exporting the embedded host runtime as a portable directory.
+/// The result of packing one explicit host runtime archive as a portable directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RuntimeBundleExport {
+pub struct PackedRuntimeBundle {
     pub root: PathBuf,
     pub manifest: PathBuf,
     pub archive: PathBuf,
@@ -178,18 +177,22 @@ pub struct RuntimeBundleExport {
     pub archive_sha256: String,
 }
 
-/// Exports the embedded host runtime archive and an exact target manifest.
+/// Packs one explicit host runtime archive with an exact target manifest.
 ///
-/// The destination must not exist. The complete bundle is validated in a
-/// staging directory and atomically renamed into place.
+/// The archive must be one bounded regular file and cannot be a symbolic link.
+/// Its bytes are copied to the canonical target archive name. The destination
+/// must not exist; the complete bundle is loaded and validated in a staging
+/// directory, atomically renamed into place, and loaded again at its final path.
 ///
 /// # Errors
 ///
 /// Returns a stable error when target discovery, staging, validation, or the
 /// final atomic rename fails.
-pub fn export_native_runtime_bundle(
+pub fn pack_native_runtime_bundle(
+    archive: impl AsRef<Path>,
     output: impl AsRef<Path>,
-) -> Result<RuntimeBundleExport, CodegenError> {
+) -> Result<PackedRuntimeBundle, CodegenError> {
+    let archive = archive.as_ref();
     let output = output.as_ref();
     match fs::symlink_metadata(output) {
         Ok(_) => {
@@ -222,7 +225,13 @@ pub fn export_native_runtime_bundle(
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let target = native_target_identity()?;
     let archive_name = native_runtime_archive_name(Some(&target.triple)).to_owned();
-    let archive_sha256 = digest(native_runtime_bytes());
+    let staged_archive = staging.path().join(&archive_name);
+    let archive_sha256 = copy_bounded_regular_file(
+        archive,
+        &staged_archive,
+        MAX_ARCHIVE_BYTES,
+        "runtime archive",
+    )?;
     let manifest = RuntimeBundleManifest {
         schema_version: RUNTIME_BUNDLE_SCHEMA_VERSION,
         target_triple: target.triple.clone(),
@@ -234,8 +243,6 @@ pub fn export_native_runtime_bundle(
         archive_sha256: archive_sha256.clone(),
         link_args: native_runtime_link_args(&target.triple),
     };
-    fs::write(staging.path().join(&archive_name), native_runtime_bytes())
-        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
     manifest_bytes.push(b'\n');
@@ -247,7 +254,7 @@ pub fn export_native_runtime_bundle(
         Ok(_) => {
             return Err(CodegenError::new(
                 "RuntimeBundleWriteFailed",
-                format!("destination appeared during export: {}", output.display()),
+                format!("destination appeared during packing: {}", output.display()),
             ));
         }
         Err(error) => {
@@ -263,16 +270,17 @@ pub fn export_native_runtime_bundle(
             format!("{}: {error}", output.display()),
         )
     })?;
-    Ok(RuntimeBundleExport {
-        root: output.to_path_buf(),
-        manifest: output.join(RUNTIME_BUNDLE_MANIFEST),
-        archive: output.join(archive_name),
-        target_triple: target.triple,
-        data_layout: target.data_layout,
-        runtime_cpu: RUNTIME_CPU.to_owned(),
-        runtime_cpu_features: RUNTIME_CPU_FEATURES.to_owned(),
+    let packed = RuntimeBundle::load(output, &target)?;
+    Ok(PackedRuntimeBundle {
+        root: packed.root().to_path_buf(),
+        manifest: packed.root().join(RUNTIME_BUNDLE_MANIFEST),
+        archive: packed.archive().to_path_buf(),
+        target_triple: packed.target_triple().to_owned(),
+        data_layout: packed.data_layout().to_owned(),
+        runtime_cpu: packed.runtime_cpu().to_owned(),
+        runtime_cpu_features: packed.runtime_cpu_features().to_owned(),
         runtime_abi: NATIVE_RUNTIME_ABI.to_owned(),
-        archive_sha256,
+        archive_sha256: packed.archive_sha256().to_owned(),
     })
 }
 
@@ -743,6 +751,57 @@ fn program_path_candidates(program: PathBuf) -> Vec<PathBuf> {
         }
     }
     vec![program]
+}
+
+fn copy_bounded_regular_file(
+    source: &Path,
+    destination: &Path,
+    maximum: u64,
+    label: &str,
+) -> Result<String, CodegenError> {
+    validate_regular_file(source, maximum, label)?;
+    let mut source_file = File::open(source)
+        .map_err(|error| bundle_error(format!("cannot open {label}: {error}")))?;
+    let opened_metadata = source_file
+        .metadata()
+        .map_err(|error| bundle_error(format!("cannot inspect opened {label}: {error}")))?;
+    if !opened_metadata.is_file() || opened_metadata.len() > maximum {
+        return Err(bundle_error(format!(
+            "{label} must be one bounded regular file"
+        )));
+    }
+    let mut destination_file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut chunk = vec![0_u8; 64 * 1024];
+    loop {
+        let count = source_file
+            .read(&mut chunk)
+            .map_err(|error| bundle_error(format!("cannot read {label}: {error}")))?;
+        if count == 0 {
+            break;
+        }
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        total = total.saturating_add(count);
+        if total > maximum {
+            return Err(bundle_error(format!(
+                "{label} must be one bounded regular file"
+            )));
+        }
+        let count = usize::try_from(count).expect("read chunk count fits usize");
+        hasher.update(&chunk[..count]);
+        destination_file
+            .write_all(&chunk[..count])
+            .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    }
+    destination_file
+        .sync_all()
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn read_bounded_regular_file(

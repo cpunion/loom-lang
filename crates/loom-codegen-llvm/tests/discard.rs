@@ -1,8 +1,11 @@
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
+
+mod support;
+use support::emit_native;
 
 #[test]
 #[allow(clippy::too_many_lines)]

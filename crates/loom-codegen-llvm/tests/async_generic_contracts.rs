@@ -1,8 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
+
+mod support;
+use support::emit_native;
 
 #[test]
 fn generic_async_contracts_witnesses_and_cancellation_execute_natively() {

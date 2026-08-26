@@ -345,44 +345,26 @@ pub fn emit_lcir_native_object(
     LcirEmitter::emit_object(artifact, output, options)
 }
 
-/// Links a previously emitted Loom target object with the Rust runtime.
-///
-/// # Errors
-///
-/// Returns a stable backend error if the embedded runtime cannot be
-/// materialized or the platform linker fails.
-pub fn link_native_object(object: &Path, output: &Path) -> Result<(), CodegenError> {
-    Emitter::link_object(object, output)
-}
-
-/// Rejects linking an object for a non-host triple with the embedded host runtime.
-///
-/// # Errors
-///
-/// Returns `CrossLinkUnavailable` when the selected target is not the host.
-pub fn validate_native_link_target(options: &EmitOptions) -> Result<(), CodegenError> {
-    if crate::target::is_native_target(options.target_triple.as_deref()) {
-        Ok(())
-    } else {
-        Err(CodegenError::new(
-            "CrossLinkUnavailable",
-            "cross-target executable linking requires a matching Loom runtime and linker; emit an object instead",
-        ))
-    }
-}
-
 /// Emits and links a native executable from checked MIR.
 ///
 /// # Errors
 ///
-/// Returns a stable backend error if root selection, LLVM verification,
-/// object emission, or the platform linker fails.
+/// Returns a stable backend error if root selection, LLVM verification, object
+/// emission, runtime-bundle validation, or the platform linker fails.
 pub fn emit_native(
     program: &CheckedProgram,
     output: &Path,
     options: &EmitOptions,
+    runtime: &crate::RuntimeBundle,
+    linker: &crate::RuntimeLinker,
 ) -> Result<NativeArtifact, CodegenError> {
-    validate_native_link_target(options)?;
+    let expected = crate::target_identity(options.target_triple.as_deref(), options.optimization)?;
+    if runtime.target_triple() != expected.triple || runtime.data_layout() != expected.data_layout {
+        return Err(CodegenError::new(
+            "RuntimeBundleTargetMismatch",
+            "runtime bundle target triple/data layout does not match the emitted object",
+        ));
+    }
     let object_extension = crate::native_artifact_extension(
         options.target_triple.as_deref(),
         crate::NativeArtifactKind::Object,
@@ -395,7 +377,7 @@ pub fn emit_native(
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
     let emitted = emit_native_object(program, object.path(), options)?;
-    link_native_object(object.path(), output)?;
+    crate::link_object_with_runtime_bundle(object.path(), output, runtime, linker)?;
     if !options.debug_sources.is_empty() {
         crate::emit_native_debug_companion(output)?;
     }

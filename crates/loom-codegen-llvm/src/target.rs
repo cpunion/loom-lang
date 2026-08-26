@@ -7,13 +7,11 @@ use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::emitter::native_runtime_bytes;
 
 // An implicit host target is tuned for the current machine. Supplying any target triple is the
 // explicit opt-in to a portable object, including when that triple happens to name the host.
@@ -179,16 +177,6 @@ pub fn target_identity(
 ) -> Result<NativeTargetIdentity, CodegenError> {
     let target = create_target_machine(triple, optimization)?;
     Ok(target.identity())
-}
-
-/// Returns the exact embedded Rust runtime archive identity used by linking.
-#[must_use]
-pub fn native_runtime_identity() -> String {
-    format!(
-        "{};sha256={:x}",
-        NATIVE_RUNTIME_ABI,
-        Sha256::digest(native_runtime_bytes())
-    )
 }
 
 /// Links Mach-O object debug sections into a standard dSYM bundle.
