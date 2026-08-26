@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::c_void;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
@@ -9,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use polling::{Event, Events, Poller};
 
+use crate::platform::{OwnedWaitHandle, raw_poll_source, wait_handle_bits};
 use crate::runtime::LoomRuntime;
 use crate::scheduler::{LoomJoinSpec, LoomTask, WorkerCompletion};
 use crate::{
@@ -57,24 +57,6 @@ impl Default for LoomReadyNotification {
 }
 
 #[derive(Clone, Copy)]
-struct RawSource(RawFd);
-
-impl AsRawFd for RawSource {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
-}
-
-impl AsFd for RawSource {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        // SAFETY: every RawSource is used only while its registration entry is
-        // alive. The ABI contract requires the caller to keep the descriptor
-        // open until readiness, cancellation, or executor destruction.
-        unsafe { BorrowedFd::borrow_raw(self.0) }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct Entry {
     source: LoomWaitSource,
     registration: LoomRegistration,
@@ -116,16 +98,50 @@ pub struct LoomExecutor {
 
 /// Safe, cancellable owner for platform readiness registrations.
 ///
-/// File descriptors are duplicated when registered, so closing or reusing the
-/// caller's descriptor cannot invalidate a live registration.
+/// Sources are duplicated when registered, so closing or reusing the caller's
+/// handle cannot invalidate a live registration.
 pub struct WaitSet {
     id: u64,
     // Field order is intentional: the executor detaches before its runtime is
     // dropped. WaitSet owns both objects; LoomExecutor itself owns neither.
     executor: Box<LoomExecutor>,
     _runtime: Box<LoomRuntime>,
-    descriptors: BTreeMap<u64, OwnedFd>,
+    handles: BTreeMap<u64, OwnedWaitHandle>,
 }
+
+mod waitable {
+    use std::io;
+
+    use crate::platform::OwnedWaitHandle;
+
+    pub trait Sealed {
+        fn clone_wait_handle(&self) -> io::Result<OwnedWaitHandle>;
+    }
+
+    #[cfg(unix)]
+    impl<T: std::os::fd::AsFd> Sealed for T {
+        fn clone_wait_handle(&self) -> io::Result<OwnedWaitHandle> {
+            crate::platform::clone_wait_handle(self)
+        }
+    }
+
+    #[cfg(windows)]
+    impl<T: std::os::windows::io::AsSocket> Sealed for T {
+        fn clone_wait_handle(&self) -> io::Result<OwnedWaitHandle> {
+            crate::platform::clone_wait_handle(self)
+        }
+    }
+}
+
+/// A host I/O source which can be duplicated for one-shot readiness polling.
+///
+/// Unix implementations accept descriptor-owning types; Windows
+/// implementations accept socket-owning types and use the IOCP-backed
+/// `polling` implementation. The platform ownership traits do not cross the
+/// Loom wait ABI.
+pub trait WaitableSource: waitable::Sealed {}
+
+impl<T: waitable::Sealed> WaitableSource for T {}
 
 /// Opaque identity of one live [`WaitSet`] registration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,22 +280,26 @@ impl WaitSet {
             id,
             executor,
             _runtime: runtime,
-            descriptors: BTreeMap::new(),
+            handles: BTreeMap::new(),
         })
     }
 
-    /// Registers one descriptor interest as a cancellable one-shot.
+    /// Registers one I/O interest as a cancellable one-shot.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if descriptor duplication or poll registration
+    /// Returns an I/O error if handle duplication or poll registration
     /// fails, or if `interests` is not a supported descriptor interest.
-    pub fn register_fd(&mut self, source: &impl AsFd, interests: u32) -> io::Result<WaitToken> {
-        let descriptor = source.as_fd().try_clone_to_owned()?;
+    pub fn register_source(
+        &mut self,
+        source: &impl WaitableSource,
+        interests: u32,
+    ) -> io::Result<WaitToken> {
+        let handle = waitable::Sealed::clone_wait_handle(source)?;
         let wait_source = LoomWaitSource {
             abi_version: WAIT_ABI_VERSION,
             kind: WAIT_SOURCE_FD,
-            handle: i64::from(descriptor.as_raw_fd()),
+            handle: wait_handle_bits(&handle),
             interests,
             reserved: 0,
             deadline_ns: 0,
@@ -287,7 +307,7 @@ impl WaitSet {
         let mut registration = LoomRegistration::default();
         let frame = NonNull::<u8>::dangling().as_ptr().cast::<c_void>();
         // SAFETY: the boxed executor has a stable address; wait_source and the
-        // out pointer live for this call. The duplicated descriptor remains
+        // out pointer live for this call. The duplicated handle remains
         // owned below until readiness or cancellation. frame is opaque.
         let status = unsafe {
             executor_register(
@@ -298,7 +318,7 @@ impl WaitSet {
             )
         };
         if status == WAIT_OK {
-            self.descriptors.insert(registration.key, descriptor);
+            self.handles.insert(registration.key, handle);
             Ok(WaitToken {
                 set_id: self.id,
                 registration,
@@ -326,10 +346,9 @@ impl WaitSet {
         }
         let capacity = usize::try_from(ready_count)
             .unwrap_or(usize::MAX)
-            .min(self.descriptors.len());
+            .min(self.handles.len());
         let mut events = Vec::with_capacity(capacity);
-        let ready_limit =
-            ready_count.min(u32::try_from(self.descriptors.len()).unwrap_or(u32::MAX));
+        let ready_limit = ready_count.min(u32::try_from(self.handles.len()).unwrap_or(u32::MAX));
         for _ in 0..ready_limit {
             let mut notification = LoomReadyNotification::default();
             // SAFETY: the executor and unique out pointer are live for this call.
@@ -341,7 +360,7 @@ impl WaitSet {
             if popped < 0 {
                 return Err(self.status_error("pop ready", -popped));
             }
-            self.descriptors.remove(&notification.registration.key);
+            self.handles.remove(&notification.registration.key);
             events.push(WaitEvent {
                 token: WaitToken {
                     set_id: self.id,
@@ -370,7 +389,7 @@ impl WaitSet {
         let status =
             unsafe { executor_cancel(&raw mut *self.executor, &raw const token.registration) };
         if status == WAIT_OK {
-            self.descriptors.remove(&token.registration.key);
+            self.handles.remove(&token.registration.key);
             Ok(())
         } else {
             Err(self.status_error("cancel", status))
@@ -408,9 +427,9 @@ impl Drop for Reactor {
     fn drop(&mut self) {
         for entry in self.entries.values() {
             if entry.source.kind == WAIT_SOURCE_FD
-                && let Ok(descriptor) = RawFd::try_from(entry.source.handle)
+                && let Some(source) = raw_poll_source(entry.source.handle)
             {
-                let _ = self.poller.delete(RawSource(descriptor));
+                let _ = self.poller.delete(source);
             }
         }
     }
@@ -436,8 +455,7 @@ fn valid_source(source: &LoomWaitSource) -> bool {
     match source.kind {
         WAIT_SOURCE_TIMER | WAIT_SOURCE_COMPLETION => source.interests == 0,
         WAIT_SOURCE_FD => {
-            source.handle >= 0
-                && source.handle <= i64::from(i32::MAX)
+            raw_poll_source(source.handle).is_some()
                 && source.interests != 0
                 && source.interests & !(WAIT_READABLE | WAIT_WRITABLE) == 0
         }
@@ -455,8 +473,8 @@ fn registration_exists(reactor: &Reactor, registration: LoomRegistration) -> boo
 fn remove_entry(reactor: &mut Reactor, key: u64) -> Option<Entry> {
     let entry = reactor.entries.remove(&key)?;
     if entry.source.kind == WAIT_SOURCE_FD
-        && let Ok(descriptor) = RawFd::try_from(entry.source.handle)
-        && let Err(error) = reactor.poller.delete(RawSource(descriptor))
+        && let Some(source) = raw_poll_source(entry.source.handle)
+        && let Err(error) = reactor.poller.delete(source)
     {
         remember_error(reactor, &error);
     }
@@ -568,15 +586,15 @@ pub unsafe extern "C" fn executor_register(
     reactor.next_key = key.wrapping_add(1);
     let registration = LoomRegistration { key, generation: 1 };
     if source.kind == WAIT_SOURCE_FD {
-        let Ok(descriptor) = RawFd::try_from(source.handle) else {
+        let Some(platform_source) = raw_poll_source(source.handle) else {
             return WAIT_INVALID_ARGUMENT;
         };
         let mut event = Event::none(event_key);
         event.readable = source.interests & WAIT_READABLE != 0;
         event.writable = source.interests & WAIT_WRITABLE != 0;
-        // SAFETY: the registration entry below retains the raw descriptor and
+        // SAFETY: the registration entry below retains the raw handle and
         // the ABI requires it to remain open until this one-shot is removed.
-        if let Err(error) = unsafe { reactor.poller.add(&RawSource(descriptor), event) } {
+        if let Err(error) = unsafe { reactor.poller.add(&platform_source, event) } {
             remember_error(reactor, &error);
             return WAIT_SYSTEM_ERROR;
         }
@@ -763,38 +781,33 @@ pub(crate) fn has_registrations(executor: &LoomExecutor) -> bool {
         .is_some_and(|reactor| !reactor.entries.is_empty())
 }
 
-/// Blocks for one readiness event on a borrowed process descriptor.
+/// Blocks for one readiness event on a borrowed process I/O handle.
 ///
 /// This is the interpreter-side oracle for the same `polling` reactor used by
-/// native executors. The descriptor is never closed or otherwise owned here.
+/// native executors. The handle is never closed or otherwise owned here.
 ///
 /// # Errors
 ///
-/// Returns an invalid-input error for malformed descriptors/interests and
+/// Returns an invalid-input error for malformed handles/interests and
 /// forwards errors from the operating-system poller.
-pub fn wait_fd_once(handle: i64, interests: u32) -> io::Result<u32> {
-    if handle < 0
-        || handle > i64::from(i32::MAX)
-        || interests == 0
-        || interests & !(WAIT_READABLE | WAIT_WRITABLE) != 0
-    {
+pub fn wait_source_once(handle: i64, interests: u32) -> io::Result<u32> {
+    if interests == 0 || interests & !(WAIT_READABLE | WAIT_WRITABLE) != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "invalid Loom fd wait source",
+            "invalid Loom I/O wait source",
         ));
     }
-    let descriptor = RawFd::try_from(handle).map_err(|_| {
+    let source = raw_poll_source(handle).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Loom fd does not fit the platform descriptor type",
+            "Loom wait handle does not fit the platform source type",
         )
     })?;
-    let source = RawSource(descriptor);
     let poller = Poller::new()?;
     let mut event = Event::none(0);
     event.readable = interests & WAIT_READABLE != 0;
     event.writable = interests & WAIT_WRITABLE != 0;
-    // SAFETY: RawSource does not own or close the descriptor and remains live
+    // SAFETY: RawPollSource does not own or close the handle and remains live
     // until the one-shot registration is deleted below.
     unsafe { poller.add(&source, event)? };
     let mut events = Events::new();
@@ -817,9 +830,17 @@ pub fn wait_fd_once(handle: i64, interests: u32) -> io::Result<u32> {
 #[cfg(test)]
 mod wait_set_tests {
     use std::ffi::c_void;
-    use std::os::unix::net::UnixStream;
+    use std::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address)?;
+        let (server, _) = listener.accept()?;
+        Ok((client, server))
+    }
 
     #[test]
     fn synchronous_heap_use_does_not_initialize_async_resources() {
@@ -882,14 +903,14 @@ mod wait_set_tests {
 
     #[test]
     fn token_from_another_wait_set_cannot_cancel_a_colliding_registration() {
-        let (source, _peer) = UnixStream::pair().expect("create wait-set fixture");
+        let (source, _peer) = socket_pair().expect("create wait-set fixture");
         let mut left = WaitSet::new().expect("create left wait set");
         let mut right = WaitSet::new().expect("create right wait set");
         let left_token = left
-            .register_fd(&source, WAIT_READABLE)
+            .register_source(&source, WAIT_READABLE)
             .expect("register left source");
         let right_token = right
-            .register_fd(&source, WAIT_READABLE)
+            .register_source(&source, WAIT_READABLE)
             .expect("register right source");
         assert_eq!(
             left_token.registration.key, right_token.registration.key,

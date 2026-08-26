@@ -20,6 +20,7 @@ mod float;
 mod gc;
 mod int;
 mod int_list;
+mod platform;
 mod process;
 mod reactor;
 mod runtime;
@@ -38,9 +39,9 @@ pub use value::value_summary;
 
 pub use reactor::{
     LoomReadyNotification, LoomRegistration, LoomWaitSource, WaitEvent, WaitSet, WaitToken,
-    executor_cancel, executor_create_for_runtime_v1, executor_destroy, executor_last_os_error,
-    executor_notify_completion, executor_pop_ready, executor_register, executor_wait, wait_fd_once,
-    wait_now_ns,
+    WaitableSource, executor_cancel, executor_create_for_runtime_v1, executor_destroy,
+    executor_last_os_error, executor_notify_completion, executor_pop_ready, executor_register,
+    executor_wait, wait_now_ns, wait_source_once,
 };
 pub use runtime::{LoomRuntime, runtime_create_v1, runtime_destroy_v1};
 pub use scheduler::{
@@ -85,8 +86,7 @@ mod tests {
     use std::ffi::c_void;
     use std::io::Write;
     use std::mem::{align_of, offset_of, size_of};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
@@ -104,6 +104,14 @@ mod tests {
     static VALUE_RELOCATED: AtomicBool = AtomicBool::new(false);
     static DESCRIPTOR_CANCELLED: AtomicBool = AtomicBool::new(false);
     const TASK_BATCH_SIZE: usize = 512;
+
+    fn socket_pair() -> std::io::Result<(TcpStream, TcpStream)> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let client = TcpStream::connect(address)?;
+        let (server, _) = listener.accept()?;
+        Ok((client, server))
+    }
 
     #[test]
     #[cfg(target_pointer_width = "64")]
@@ -324,10 +332,10 @@ mod tests {
             assert_eq!(executor_pop_ready(executor, &raw mut ready), 1);
             assert_ne!(ready.events & READY_TIMER, 0);
 
-            let (left, mut right) = UnixStream::pair().expect("create socket pair");
+            let (left, mut right) = socket_pair().expect("create socket pair");
             left.set_nonblocking(true).expect("make socket nonblocking");
             let mut readable = source(WAIT_SOURCE_FD);
-            readable.handle = i64::from(left.as_raw_fd());
+            readable.handle = crate::platform::socket_handle_bits(&left);
             readable.interests = WAIT_READABLE;
             assert_eq!(
                 executor_register(

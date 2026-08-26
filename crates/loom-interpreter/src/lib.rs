@@ -975,7 +975,7 @@ impl<'program> Interpreter<'program> {
         self.socket_reactor
             .as_mut()
             .ok_or_else(|| std::io::Error::other("interpreter socket reactor allocation failed"))?
-            .register_fd(socket, interests)
+            .register_source(socket, interests)
     }
 
     fn cancel_socket_io(&mut self, task_id: u64) {
@@ -2559,10 +2559,10 @@ impl<'program> Interpreter<'program> {
                         expression.span,
                     )));
                 };
-                if !(0..=i64::from(i32::MAX)).contains(&descriptor) {
+                if descriptor == -1 {
                     return Err(EvalAbort::from(self.runtime_fault(
-                        "InvalidFileDescriptor",
-                        "descriptor must fit the platform fd ABI",
+                        "InvalidWaitHandle",
+                        "wait source must contain a live platform I/O handle",
                         expression.span,
                     )));
                 }
@@ -2573,7 +2573,7 @@ impl<'program> Interpreter<'program> {
                 };
                 let span = expression.span;
                 self.spawn_host_io_task(span, move || {
-                    loom_runtime::wait_fd_once(descriptor, interests)
+                    loom_runtime::wait_source_once(descriptor, interests)
                         .map(|_| HostIoValue::Value(Value::Unit))
                         .map_err(|error| io_failure("IoWaitFault", &error, span))
                 })
