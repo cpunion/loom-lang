@@ -1671,6 +1671,44 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
     );
     assert!(stdout.contains("Unit"), "{stdout}");
     let debug_image = fs::read(debug_copy).expect("debug wrapper copied executable");
+    assert!(!contains_bytes(&debug_image, b"loom.fn."));
+    assert!(contains_bytes(&debug_image, b"loom.lcir.fn"));
+    assert!(contains_bytes(&debug_image, b"main.loom"));
+}
+
+#[cfg(unix)]
+#[test]
+fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
+    let project = TestProject::new(
+        "module debug_legacy\n\npub fn main() Unit {\n    discard \"legacy\"\n    Unit\n}\n",
+    );
+    project.write(
+        "debug-wrapper",
+        "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 93\n\"$executable\" \"$@\"\n",
+    );
+    project.make_executable("debug-wrapper");
+    let debug_copy = project.0.join("legacy-debug-program-copy");
+    let output = loomc()
+        .env("LOOM_DEBUG_COPY", &debug_copy)
+        .args(["debug", "--debugger"])
+        .arg(project.0.join("debug-wrapper"))
+        .arg(&project.0)
+        .args(["--"])
+        .output()
+        .expect("launch debugger wrapper for reachable Text");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Unit"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let debug_image = fs::read(debug_copy).expect("debug wrapper copied legacy executable");
     assert!(contains_bytes(&debug_image, b"loom.fn."));
     assert!(!contains_bytes(&debug_image, b"loom.lcir.fn"));
     assert!(contains_bytes(&debug_image, b"main.loom"));

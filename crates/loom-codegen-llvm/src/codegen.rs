@@ -43,10 +43,10 @@ pub struct EmitOptions {
 pub struct NativeObjectOptions {
     /// Optional LLVM IR side artifact, useful for diagnostics and golden tests.
     pub emit_ir: Option<PathBuf>,
-    /// Stable source inputs recorded in LCIR compile-unit/file metadata.
-    ///
-    /// Function-level LCIR DWARF is deliberately withheld until the source
-    /// type contract covers the fallible status aggregate and hidden context.
+    /// Stable source inputs used for LCIR compile-unit, function, and location
+    /// metadata. LCIR signatures describe the physical compiler ABI: fallible
+    /// results use `LoomFallible<T>`, and the hidden fault-context parameter is
+    /// present but marked artificial.
     pub debug_sources: Vec<DebugSource>,
     /// Explicit normalized LLVM target triple, or the host target when absent.
     pub target_triple: Option<String>,

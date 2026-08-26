@@ -95,6 +95,19 @@ jobs:
         run: |
           llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
           llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/scalar-lcir
+          target/ci-lcir-debug
+          llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_producer.*loomc lcir'
+          llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_linkage_name.*loom.lcir.fn'
+          llvm-dwarfdump-19 --debug-line target/ci-lcir-debug | grep 'main.loom'
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-fallible-debug fixtures/lcir-debug-fallible
+          target/ci-lcir-fallible-debug
+          llvm-dwarfdump-19 --debug-info target/ci-lcir-fallible-debug > target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_type.*LoomFallible<Int>' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_TAG_formal_parameter' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_name.*arg0' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_name.*__loom_fault_context' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_artificial.*true' target/ci-lcir-fallible-debug.dwarf
       - name: C3 controlled correctness and performance gates
         run: cargo run --locked --release -p loom-quality | tee target/c3-evidence.json
       - name: Upload C3 evidence
@@ -162,6 +175,34 @@ jobs:
           cargo test --locked -p loom-codegen-llvm --test standard_values
           cargo test --locked -p loom-codegen-llvm --test structured_standard_values
           cargo test --locked -p loom-codegen-llvm --test runtime_bundle
+      - name: Verify typed LCIR dSYM
+        run: |
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/scalar-lcir
+          target/ci-lcir-debug
+          debug_image=target/ci-lcir-debug.dSYM/Contents/Resources/DWARF/ci-lcir-debug
+          llvm-dwarfdump --debug-info "$debug_image" | grep 'DW_AT_producer.*loomc lcir'
+          llvm-dwarfdump --debug-info "$debug_image" | grep 'DW_AT_linkage_name.*loom.lcir.fn'
+          llvm-dwarfdump --debug-line "$debug_image" | grep 'main.loom'
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-fallible-debug fixtures/lcir-debug-fallible
+          target/ci-lcir-fallible-debug
+          fallible_debug_image=target/ci-lcir-fallible-debug.dSYM/Contents/Resources/DWARF/ci-lcir-fallible-debug
+          llvm-dwarfdump --debug-info "$fallible_debug_image" > target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_type.*LoomFallible<Int>' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_TAG_formal_parameter' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_name.*arg0' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_name.*__loom_fault_context' target/ci-lcir-fallible-debug.dwarf
+          grep 'DW_AT_artificial.*true' target/ci-lcir-fallible-debug.dwarf
+          lldb -b \
+            -o 'breakpoint set --file main.loom --line 4' \
+            -o run \
+            -o 'frame variable arg0' \
+            -o 'thread step-out' \
+            -o quit \
+            target/ci-lcir-fallible-debug | tee target/ci-lcir-fallible-debug.lldb
+          grep 'arg0 = 41' target/ci-lcir-fallible-debug.lldb
+          grep 'Return value: (LoomFallible<Int>)' target/ci-lcir-fallible-debug.lldb
+          grep 'status = 0, value = 42' target/ci-lcir-fallible-debug.lldb
+          ! grep 'Return value: (long).* = 0' target/ci-lcir-fallible-debug.lldb
       - name: C3 repository check/build/test/run on both backends
         run: |
           cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
