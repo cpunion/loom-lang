@@ -9,3 +9,11 @@ pub const INTEGER_OVERFLOW_FAULT_CODE: &str = "IntegerOverflow";
 
 /// Stable user-facing message for checked signed-integer arithmetic overflow.
 pub const INTEGER_OVERFLOW_FAULT_MESSAGE: &str = "integer arithmetic overflowed";
+
+/// Stable runtime-fault code emitted when a serialized construction proof
+/// fails independent replay at an artifact trust boundary.
+pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";
+
+/// Stable user-facing message for a rejected serialized construction proof.
+pub const ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE: &str =
+    "serialized construction proof did not satisfy its predicate or invariant";
