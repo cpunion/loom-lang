@@ -12,7 +12,11 @@ use loom_codegen_llvm::{
 };
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
-use loom_mir::CheckedProgram;
+use loom_mir::{
+    CheckedProgram, ContractExprKind, ExprKind, Function, INTEGER_OVERFLOW_FAULT_CODE,
+    INTEGER_OVERFLOW_FAULT_MESSAGE, StatementKind, UnaryOp,
+};
+use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 struct NativeRun {
     ir: String,
@@ -55,10 +59,28 @@ fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
     emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())
 }
 
+fn emit_and_run_lcir_machine_fault(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
+    emit_and_run_lcir_with_options_and_fault_format(
+        artifact,
+        stem,
+        NativeObjectOptions::default(),
+        true,
+    )
+}
+
 fn emit_and_run_lcir_with_options(
     artifact: &CheckedArtifact,
     stem: &str,
+    options: NativeObjectOptions,
+) -> NativeRun {
+    emit_and_run_lcir_with_options_and_fault_format(artifact, stem, options, false)
+}
+
+fn emit_and_run_lcir_with_options_and_fault_format(
+    artifact: &CheckedArtifact,
+    stem: &str,
     mut options: NativeObjectOptions,
+    machine_faults: bool,
 ) -> NativeRun {
     let directory = tempfile::tempdir().expect("create LCIR output directory");
     let object = directory.path().join(format!("{stem}.o"));
@@ -67,7 +89,11 @@ fn emit_and_run_lcir_with_options(
     options.emit_ir = Some(ir.clone());
     emit_lcir_native_object(artifact, &object, &options).expect("emit source-lowered LCIR object");
     link_native_object(&object, &executable).expect("link source-lowered LCIR executable");
-    let output = Command::new(executable)
+    let mut command = Command::new(executable);
+    if machine_faults {
+        command.env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON);
+    }
+    let output = command
         .output()
         .expect("run source-lowered LCIR executable");
     NativeRun {
@@ -77,13 +103,49 @@ fn emit_and_run_lcir_with_options(
 }
 
 fn emit_and_run_legacy(program: &CheckedProgram, entry: &str, stem: &str) -> Output {
+    emit_and_run_legacy_with_fault_format(program, entry, stem, false)
+}
+
+fn emit_and_run_legacy_machine_fault(program: &CheckedProgram, entry: &str, stem: &str) -> Output {
+    emit_and_run_legacy_with_fault_format(program, entry, stem, true)
+}
+
+fn emit_and_run_legacy_machine_fault_with_ir(
+    program: &CheckedProgram,
+    entry: &str,
+    stem: &str,
+) -> NativeRun {
+    let directory = tempfile::tempdir().expect("create legacy output directory");
+    let executable = directory.path().join(stem);
+    let ir_path = directory.path().join(format!("{stem}.ll"));
+    let mut options = EmitOptions::run(entry);
+    options.emit_ir = Some(ir_path.clone());
+    emit_native(program, &executable, &options).expect("emit legacy comparison executable");
+    let output = Command::new(executable)
+        .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
+        .output()
+        .expect("run legacy comparison executable");
+    NativeRun {
+        ir: std::fs::read_to_string(ir_path).expect("read legacy LLVM IR"),
+        output,
+    }
+}
+
+fn emit_and_run_legacy_with_fault_format(
+    program: &CheckedProgram,
+    entry: &str,
+    stem: &str,
+    machine_faults: bool,
+) -> Output {
     let directory = tempfile::tempdir().expect("create legacy output directory");
     let executable = directory.path().join(stem);
     emit_native(program, &executable, &EmitOptions::run(entry))
         .expect("emit legacy comparison executable");
-    Command::new(executable)
-        .output()
-        .expect("run legacy comparison executable")
+    let mut command = Command::new(executable);
+    if machine_faults {
+        command.env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON);
+    }
+    command.output().expect("run legacy comparison executable")
 }
 
 #[test]
@@ -303,6 +365,39 @@ fn diagnostic_text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn machine_fault(output: &Output) -> serde_json::Value {
+    let stderr = String::from_utf8(output.stderr.clone()).expect("machine fault is UTF-8");
+    let faults = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix(FAULT_JSON_PREFIX))
+        .map(|json| serde_json::from_str(json).expect("machine fault is valid JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(faults.len(), 1, "expected one machine fault: {output:?}");
+    faults.into_iter().next().expect("one machine fault")
+}
+
+fn integer_overflow_fault(span: &impl serde::Serialize) -> serde_json::Value {
+    serde_json::json!({
+        "channel": "runtime",
+        "fault": {
+            "code": INTEGER_OVERFLOW_FAULT_CODE,
+            "message": INTEGER_OVERFLOW_FAULT_MESSAGE,
+            "span": span,
+        },
+    })
+}
+
+fn source_function<'program>(
+    program: &'program CheckedProgram,
+    suffix: &str,
+) -> &'program Function {
+    program
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with(suffix))
+        .unwrap_or_else(|| panic!("source function ending in `{suffix}`"))
 }
 
 fn assert_no_legacy_surface(ir: &str) {
@@ -587,6 +682,129 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
 }
 
 #[test]
+fn integer_overflow_json_matches_at_each_direct_operation_span() {
+    let source = r"module lcir_integer_overflow_diagnostics
+
+fn negate(value Int) Int { -value }
+fn add(left Int, right Int) Int { left + right }
+fn subtract(left Int, right Int) Int { left - right }
+fn multiply(left Int, right Int) Int { left * right }
+
+pub fn negateMain() Unit {
+    discard negate(-9223372036854775808)
+    Unit
+}
+
+pub fn addMain() Unit {
+    discard add(9223372036854775807, 1)
+    Unit
+}
+
+pub fn subtractMain() Unit {
+    discard subtract(-9223372036854775808, 1)
+    Unit
+}
+
+pub fn multiplyMain() Unit {
+    discard multiply(9223372036854775807, 2)
+    Unit
+}
+";
+    let program = compile_source(source);
+
+    for (entry, operation_name) in [
+        ("negateMain", "negate"),
+        ("addMain", "add"),
+        ("subtractMain", "subtract"),
+        ("multiplyMain", "multiply"),
+    ] {
+        let operation = source_function(&program, operation_name);
+        let expression = operation.body.tail.as_deref().expect("operation tail");
+        assert!(
+            matches!(
+                expression.kind,
+                ExprKind::Unary(UnaryOp::Negate, _)
+                    | ExprKind::Binary(
+                        loom_mir::BinaryOp::Add
+                            | loom_mir::BinaryOp::Subtract
+                            | loom_mir::BinaryOp::Multiply,
+                        _,
+                        _,
+                    )
+            ),
+            "{operation_name}: {expression:?}"
+        );
+        assert_ne!(
+            expression.span, operation.span,
+            "the operation fixture must distinguish expression and function spans"
+        );
+        let expected = integer_overflow_fault(&expression.span);
+        let interpreted = serde_json::to_value(
+            interpret_run(&program, entry).expect_err("interpreter integer overflow"),
+        )
+        .expect("serialize interpreter failure");
+        assert_eq!(interpreted, expected, "interpreter {entry}");
+
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let lcir =
+            emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-integer-overflow-{entry}"));
+        let legacy = emit_and_run_legacy_machine_fault(
+            &program,
+            entry,
+            &format!("legacy-integer-overflow-{entry}"),
+        );
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
+        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
+        assert_fallible_surface(&lcir.ir);
+    }
+}
+
+#[test]
+fn provable_integer_arithmetic_remains_fault_free() {
+    let source = r"module lcir_provable_integer_arithmetic
+
+pub fn main() Unit {
+    let value = (20 + 22) * 1 - 0
+    assert value == 42
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-provable-integer-arithmetic");
+    let legacy = emit_and_run_legacy_machine_fault_with_ir(
+        &program,
+        "main",
+        "legacy-provable-integer-arithmetic",
+    );
+
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.output.status.success(), "{:?}", legacy.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(legacy.output.stdout, lcir.output.stdout);
+    assert!(!diagnostic_text(&lcir.output).contains(FAULT_JSON_PREFIX));
+    assert!(!diagnostic_text(&legacy.output).contains(FAULT_JSON_PREFIX));
+    assert!(
+        !legacy.ir.contains("with.overflow"),
+        "provable legacy arithmetic retained a runtime overflow check:\n{}",
+        legacy.ir
+    );
+}
+
+#[test]
 fn contract_int_negation_overflow_matches_interpreter_and_legacy() {
     let source = r"module contract_int_negation
 
@@ -619,35 +837,66 @@ pub fn assertMain() Unit {
 ";
     let program = compile_source(source);
 
-    for entry in ["requiresMain", "ensuresMain", "assertMain"] {
-        let failure = interpret_run(&program, entry).expect_err("interpreter overflow");
+    let guarded = source_function(&program, "guarded");
+    let requires_negation = match &guarded.call_plan.requires[0].expression.kind {
+        ContractExprKind::Binary(_, left, _) => left.as_ref(),
+        other => panic!("unexpected requires expression: {other:?}"),
+    };
+    let return_minimum = source_function(&program, "returnMinimum");
+    let ensures_negation = match &return_minimum.call_plan.ensures[0].expression.kind {
+        ContractExprKind::Binary(_, left, _) => left.as_ref(),
+        other => panic!("unexpected ensures expression: {other:?}"),
+    };
+    let assert_main = source_function(&program, "assertMain");
+    let assert_condition = assert_main
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            StatementKind::Assert { condition } => Some(condition),
+            _ => None,
+        })
+        .expect("assert condition");
+    let assertion_negation = match &assert_condition.kind {
+        ExprKind::Binary(_, left, _) => left.as_ref(),
+        other => panic!("unexpected assertion expression: {other:?}"),
+    };
+
+    for expression in [requires_negation, ensures_negation] {
         assert!(
-            matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerOverflow"),
-            "{entry}: {failure:?}"
+            matches!(expression.kind, ContractExprKind::Unary(UnaryOp::Negate, _)),
+            "{expression:?}"
+        );
+    }
+    assert!(
+        matches!(assertion_negation.kind, ExprKind::Unary(UnaryOp::Negate, _)),
+        "{assertion_negation:?}"
+    );
+
+    for (entry, operation_span, function_span) in [
+        ("requiresMain", requires_negation.span, guarded.span),
+        ("ensuresMain", ensures_negation.span, return_minimum.span),
+        ("assertMain", assertion_negation.span, assert_main.span),
+    ] {
+        assert_ne!(
+            operation_span, function_span,
+            "the contract fixture must distinguish expression and function spans"
+        );
+        let expected = integer_overflow_fault(&operation_span);
+        let failure = interpret_run(&program, entry).expect_err("interpreter overflow");
+        assert_eq!(
+            serde_json::to_value(failure).expect("serialize interpreter overflow"),
+            expected,
+            "interpreter {entry}"
         );
 
-        let legacy = emit_and_run_legacy(
+        let legacy = emit_and_run_legacy_machine_fault(
             &program,
             entry,
             &format!("legacy-contract-int-negation-{entry}"),
         );
-        let diagnostic = diagnostic_text(&legacy);
         assert!(!legacy.status.success(), "{entry}: {legacy:?}");
-        assert!(
-            diagnostic.contains("IntegerOverflow"),
-            "{entry}: {legacy:?}"
-        );
-        for contract_fault in [
-            "PreconditionFault",
-            "PostconditionFault",
-            "InvariantFault",
-            "AssertionFault",
-        ] {
-            assert!(
-                !diagnostic.contains(contract_fault),
-                "{entry}: overflow was misreported as {contract_fault}: {legacy:?}"
-            );
-        }
+        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
     }
 }
 
