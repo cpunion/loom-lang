@@ -15,17 +15,19 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
-    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DIType, DWARFEmissionKind,
-    DWARFSourceLanguage, DebugInfoBuilder,
+    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation,
+    DIType, DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::{FlagBehavior, Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::FileType;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
+use inkwell::targets::{FileType, TargetData};
+use inkwell::types::{AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PhiValue, PointerValue,
+    AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PhiValue,
+    PointerValue,
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
+use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant, Effects,
     FaultCode, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId,
@@ -69,11 +71,7 @@ impl LcirEmitter {
         }
 
         let context = Context::create();
-        let backend = Backend::new(&context, artifact, options)?;
-        backend.module.set_triple(&target.triple);
-        backend
-            .module
-            .set_data_layout(&target.machine.get_target_data().get_data_layout());
+        let backend = Backend::new(&context, artifact, options, target)?;
         backend.compile()?;
         backend.finalize_debug();
         verify(&backend.module)?;
@@ -140,6 +138,11 @@ struct DebugState<'ctx> {
     bool_type: DIType<'ctx>,
     int_type: DIType<'ctx>,
     float_type: DIType<'ctx>,
+    fault_context_pointer_type: DIType<'ctx>,
+    fallible_unit_type: DIType<'ctx>,
+    fallible_bool_type: DIType<'ctx>,
+    fallible_int_type: DIType<'ctx>,
+    fallible_float_type: DIType<'ctx>,
     optimized: bool,
 }
 
@@ -149,6 +152,9 @@ impl<'ctx> DebugState<'ctx> {
         module: &Module<'ctx>,
         sources: &[DebugSource],
         optimized: bool,
+        target_data: &TargetData,
+        ptr_type: inkwell::types::PointerType<'ctx>,
+        fault_context_type: StructType<'ctx>,
     ) -> Result<Self, CodegenError> {
         let primary = sources
             .first()
@@ -221,6 +227,75 @@ impl<'ctx> DebugState<'ctx> {
             .create_basic_type("Float", 64, 0x04, DIFlags::PUBLIC)
             .map_err(|error| debug_info_error(&error))?
             .as_type();
+        let status_type = builder
+            .create_basic_type("LoomStatus", 32, 0x05, DIFlags::ARTIFICIAL)
+            .map_err(|error| debug_info_error(&error))?
+            .as_type();
+        let fault_context = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "LoomFaultContext",
+                file,
+                0,
+                target_data.get_bit_size(&fault_context_type),
+                abi_alignment_bits(target_data, &fault_context_type)?,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.LoomFaultContext",
+            )
+            .as_type();
+        let fault_context_pointer_type = builder
+            .create_pointer_type(
+                "LoomFaultContext*",
+                fault_context,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
+        let fallible_unit_type = create_fallible_debug_type(
+            context,
+            &builder,
+            file,
+            target_data,
+            "Unit",
+            unit_type,
+            context.struct_type(&[], false).into(),
+            status_type,
+        )?;
+        let fallible_bool_type = create_fallible_debug_type(
+            context,
+            &builder,
+            file,
+            target_data,
+            "Bool",
+            bool_type,
+            context.bool_type().into(),
+            status_type,
+        )?;
+        let fallible_int_type = create_fallible_debug_type(
+            context,
+            &builder,
+            file,
+            target_data,
+            "Int",
+            int_type,
+            context.i64_type().into(),
+            status_type,
+        )?;
+        let fallible_float_type = create_fallible_debug_type(
+            context,
+            &builder,
+            file,
+            target_data,
+            "Float",
+            float_type,
+            context.f64_type().into(),
+            status_type,
+        )?;
         Ok(Self {
             builder,
             unit,
@@ -230,6 +305,11 @@ impl<'ctx> DebugState<'ctx> {
             bool_type,
             int_type,
             float_type,
+            fault_context_pointer_type,
+            fallible_unit_type,
+            fallible_bool_type,
+            fallible_int_type,
+            fallible_float_type,
             optimized,
         })
     }
@@ -280,6 +360,30 @@ impl<'ctx> DebugState<'ctx> {
         }
     }
 
+    fn fallible_type(
+        &self,
+        artifact: &CheckedArtifact,
+        ty: ValueTypeId,
+    ) -> Result<DIType<'ctx>, CodegenError> {
+        let value_type = artifact.representations().value_type(ty).ok_or_else(|| {
+            CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+        })?;
+        match artifact.representations().repr(value_type.repr()).copied() {
+            Some(Repr::Zst) => Ok(self.fallible_unit_type),
+            Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.fallible_bool_type),
+            Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.fallible_int_type),
+            Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.fallible_float_type),
+            Some(Repr::Uninhabited) => Err(CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("uninhabited LCIR type {ty} reached a fallible debug signature"),
+            )),
+            None => Err(CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("missing representation for LCIR type {ty}"),
+            )),
+        }
+    }
+
     fn attach_function(
         &self,
         artifact: &CheckedArtifact,
@@ -290,17 +394,24 @@ impl<'ctx> DebugState<'ctx> {
         let file_id = origin.span.file.0;
         let file = self.file(file_id);
         let (line, _) = self.line_column(file_id, origin.span.range.start);
-        let result = self.value_type(artifact, source.signature().result())?;
-        let parameters = source
+        let result = if source.effects().contains(Effects::MAY_FAULT) {
+            self.fallible_type(artifact, source.signature().result())?
+        } else {
+            self.value_type(artifact, source.signature().result())?
+        };
+        let mut parameters = source
             .signature()
             .params()
             .iter()
             .copied()
             .map(|ty| self.value_type(artifact, ty))
             .collect::<Result<Vec<_>, _>>()?;
-        // DWARF describes the Loom source signature. The fallible status
-        // aggregate and fault-context pointer are compiler ABI details, just
-        // like an sret pointer, and therefore do not appear as source values.
+        if source.effects().contains(Effects::MAY_FAULT) {
+            parameters.push(self.fault_context_pointer_type);
+        }
+        // This describes the exact callable ABI. Fallible functions return a
+        // compiler-generated LoomFallible<T> aggregate and receive one hidden
+        // artificial fault-context parameter; neither is a source value.
         let signature =
             self.builder
                 .create_subroutine_type(file, Some(result), &parameters, DIFlags::PUBLIC);
@@ -319,6 +430,92 @@ impl<'ctx> DebugState<'ctx> {
             self.optimized,
         );
         function.set_subprogram(subprogram);
+        Ok(())
+    }
+
+    fn attach_parameter_values(
+        &self,
+        context: &'ctx Context,
+        artifact: &CheckedArtifact,
+        source: &Function,
+        function: FunctionValue<'ctx>,
+        entry: BasicBlock<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let scope = function.get_subprogram().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("{} has no debug subprogram", source.id()),
+            )
+        })?;
+        // A checked LCIR entry always has a terminator, so even an entry with
+        // no ordinary instructions has a stable LLVM insertion point.
+        let first = entry.get_first_instruction().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("{} has an empty LLVM entry block", source.id()),
+            )
+        })?;
+        let origin = source.origin();
+        let file_id = origin.span.file.0;
+        let file = self.file(file_id);
+        let (line, column) = self.line_column(file_id, origin.span.range.start);
+        let location = self.builder.create_debug_location(
+            context,
+            line,
+            column,
+            scope.as_debug_info_scope(),
+            None,
+        );
+
+        for (index, ty) in source.signature().params().iter().copied().enumerate() {
+            let llvm_index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let argument_number = llvm_index
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let value = function.get_nth_param(llvm_index).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is missing LLVM parameter {llvm_index}", source.id()),
+                )
+            })?;
+            let variable = self.builder.create_parameter_variable(
+                scope.as_debug_info_scope(),
+                &format!("arg{index}"),
+                argument_number,
+                file,
+                line,
+                self.value_type(artifact, ty)?,
+                true,
+                DIFlags::ZERO,
+            );
+            insert_dbg_value_before(&self.builder, value, variable, location, first);
+        }
+
+        if source.effects().contains(Effects::MAY_FAULT) {
+            let llvm_index = u32::try_from(source.signature().params().len())
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let argument_number = llvm_index
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let value = function.get_nth_param(llvm_index).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is missing its fault-context pointer", source.id()),
+                )
+            })?;
+            let variable = self.builder.create_parameter_variable(
+                scope.as_debug_info_scope(),
+                "__loom_fault_context",
+                argument_number,
+                file,
+                line,
+                self.fault_context_pointer_type,
+                true,
+                DIFlags::ARTIFICIAL,
+            );
+            insert_dbg_value_before(&self.builder, value, variable, location, first);
+        }
         Ok(())
     }
 
@@ -345,6 +542,110 @@ impl<'ctx> DebugState<'ctx> {
     }
 }
 
+fn create_fallible_debug_type<'ctx>(
+    context: &'ctx Context,
+    builder: &DebugInfoBuilder<'ctx>,
+    file: DIFile<'ctx>,
+    target_data: &TargetData,
+    result_name: &str,
+    result_debug_type: DIType<'ctx>,
+    result_llvm_type: BasicTypeEnum<'ctx>,
+    status_debug_type: DIType<'ctx>,
+) -> Result<DIType<'ctx>, CodegenError> {
+    let status_llvm_type = context.i32_type();
+    let physical_type = context.struct_type(&[status_llvm_type.into(), result_llvm_type], false);
+    let status_offset = target_data
+        .offset_of_element(&physical_type, 0)
+        .ok_or_else(|| CodegenError::new("LlvmDebugInfoFailed", "missing fallible status field"))?;
+    let value_offset = target_data
+        .offset_of_element(&physical_type, 1)
+        .ok_or_else(|| CodegenError::new("LlvmDebugInfoFailed", "missing fallible value field"))?;
+    let status_member = builder
+        .create_member_type(
+            file.as_debug_info_scope(),
+            "status",
+            file,
+            0,
+            target_data.get_bit_size(&status_llvm_type),
+            abi_alignment_bits(target_data, &status_llvm_type)?,
+            byte_offset_bits(status_offset)?,
+            DIFlags::ZERO,
+            status_debug_type,
+        )
+        .as_type();
+    let value_member = builder
+        .create_member_type(
+            file.as_debug_info_scope(),
+            "value",
+            file,
+            0,
+            target_data.get_bit_size(&result_llvm_type),
+            abi_alignment_bits(target_data, &result_llvm_type)?,
+            byte_offset_bits(value_offset)?,
+            DIFlags::ZERO,
+            result_debug_type,
+        )
+        .as_type();
+    let name = format!("LoomFallible<{result_name}>");
+    Ok(builder
+        .create_struct_type(
+            file.as_debug_info_scope(),
+            &name,
+            file,
+            0,
+            target_data.get_bit_size(&physical_type),
+            abi_alignment_bits(target_data, &physical_type)?,
+            DIFlags::ARTIFICIAL | DIFlags::TYPE_PASS_BY_VALUE,
+            None,
+            &[status_member, value_member],
+            0,
+            None,
+            &format!("loom.compiler.LoomFallible.{result_name}"),
+        )
+        .as_type())
+}
+
+fn abi_alignment_bits(target_data: &TargetData, ty: &dyn AnyType) -> Result<u32, CodegenError> {
+    target_data
+        .get_abi_alignment(ty)
+        .checked_mul(8)
+        .ok_or_else(|| CodegenError::new("LlvmDebugInfoFailed", "debug alignment exceeds u32"))
+}
+
+fn byte_offset_bits(offset: u64) -> Result<u64, CodegenError> {
+    offset
+        .checked_mul(8)
+        .ok_or_else(|| CodegenError::new("LlvmDebugInfoFailed", "debug field offset exceeds u64"))
+}
+
+#[expect(
+    unsafe_code,
+    reason = "Inkwell 0.10 wraps LLVM 19 DbgRecord pointers as InstructionValue and panics in debug builds; this calls the same typed LLVM C API and discards its opaque record"
+)]
+fn insert_dbg_value_before<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    value: BasicValueEnum<'ctx>,
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    instruction: inkwell::values::InstructionValue<'ctx>,
+) {
+    let expression = builder.create_expression(Vec::new());
+    // SAFETY: every handle belongs to the same live LLVM context and DIBuilder.
+    // `instruction` is in the emitted function's entry block, `value` is one
+    // of that function's physical parameters, and LLVM owns the returned
+    // DbgRecord.
+    unsafe {
+        LLVMDIBuilderInsertDbgValueRecordBefore(
+            builder.as_mut_ptr(),
+            value.as_value_ref(),
+            variable.as_mut_ptr(),
+            expression.as_mut_ptr(),
+            location.as_mut_ptr(),
+            instruction.as_value_ref(),
+        );
+    }
+}
+
 fn debug_info_error(error: &inkwell::error::Error) -> CodegenError {
     CodegenError::new("LlvmDebugInfoFailed", error.to_string())
 }
@@ -367,8 +668,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         context: &'ctx Context,
         artifact: &'artifact CheckedArtifact,
         options: &'artifact NativeObjectOptions,
+        target: &NativeTargetMachine,
     ) -> Result<Self, CodegenError> {
         let module = context.create_module("loom.lcir.program");
+        let target_data = target.machine.get_target_data();
+        module.set_triple(&target.triple);
+        module.set_data_layout(&target_data.get_data_layout());
         let builder = context.create_builder();
         let ptr_type = context.ptr_type(AddressSpace::default());
         let unit_type = context.struct_type(&[], false);
@@ -381,6 +686,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     &module,
                     &options.debug_sources,
                     options.optimization == crate::OptimizationProfile::Release,
+                    &target_data,
+                    ptr_type,
+                    fault_context_type,
                 )
             })
             .transpose()?;
@@ -567,8 +875,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 format!("{} has a missing entry block", self.source.id()),
             )
         })?;
-        for (index, value_id) in entry_block.params().iter().copied().enumerate() {
-            let index = u32::try_from(index)
+        for (parameter_index, value_id) in entry_block.params().iter().copied().enumerate() {
+            let index = u32::try_from(parameter_index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
             let value = self.function.get_nth_param(index).ok_or_else(|| {
                 CodegenError::new(
@@ -576,22 +884,24 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("{} is missing LLVM parameter {index}", self.source.id()),
                 )
             })?;
+            if self.backend.debug.is_some() {
+                value.set_name(&format!("arg{parameter_index}"));
+            }
             self.values[value_id.index()] = Some(value);
         }
         if self.source.effects().contains(Effects::MAY_FAULT) {
             let index = u32::try_from(self.source.signature().params().len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
-            self.fault_context = Some(
-                self.function
-                    .get_nth_param(index)
-                    .map(BasicValueEnum::into_pointer_value)
-                    .ok_or_else(|| {
-                        CodegenError::new(
-                            "LlvmAbiDefect",
-                            format!("{} is missing its fault-context pointer", self.source.id()),
-                        )
-                    })?,
-            );
+            let value = self.function.get_nth_param(index).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is missing its fault-context pointer", self.source.id()),
+                )
+            })?;
+            if self.backend.debug.is_some() {
+                value.set_name("__loom_fault_context");
+            }
+            self.fault_context = Some(value.into_pointer_value());
         }
 
         for block in self.source.blocks() {
@@ -653,6 +963,21 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             })?;
             self.set_debug_location(terminator.origin());
             self.emit_terminator(terminator)?;
+        }
+        if let Some(debug) = &self.backend.debug {
+            let entry = self.source.entry().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} has no entry block", self.source.id()),
+                )
+            })?;
+            debug.attach_parameter_values(
+                self.backend.context,
+                self.backend.artifact,
+                self.source,
+                self.function,
+                self.blocks[entry.index()],
+            )?;
         }
         self.backend.builder.unset_current_debug_location();
         Ok(())
