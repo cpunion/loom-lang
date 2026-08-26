@@ -50,9 +50,11 @@ mod tests {
 
     #[test]
     fn source_graph_errors_cross_the_backend_boundary_losslessly() {
-        let graph_error =
-            analyze_source_reachability(&Program::default(), &SourceRoots::one(FunctionId(9)))
-                .expect_err("missing source root must fail");
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let graph_error = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(9)))
+            .expect_err("missing source root must fail");
 
         let error = CodegenError::from(graph_error);
 

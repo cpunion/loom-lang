@@ -21,7 +21,7 @@ project input
 This diagram is the current production pipeline. `loom-codegen-ir` owns the
 checked-MIR root and reachability graph used by that pipeline. The same crate
 can build, validate, and dump hand-built scalar LCIR, but no MIR lowering or
-production target emitter consumes its `CheckedProgram` yet. See
+production target emitter consumes its LCIR `CheckedProgram` yet. See
 [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
 migration design.
@@ -70,14 +70,18 @@ executable MIR program. The CLI and LSP use this shared driver model.
 
 `loom-lowering` converts typed HIR into explicit executable operations:
 construction modes, contracts, calls, witness dispatch, cleanup, Task
-suspension, and builtins. Lowering is total: it either produces a complete MIR
-program or reports an unavailable stage. There is no partially executable
-fallback.
+suspension, and builtins. Lowering is total: it either produces a complete
+`loom_mir::CheckedProgram` or reports an unavailable stage. There is no
+partially executable fallback and no raw `Program` result from the lowering
+API.
 
 Expression identities are canonicalized per function. The independent MIR
 validator then checks indices, types, dataflow, contracts, witnesses, task
-liveness, and operation shapes. Only `CheckedProgram` crosses a trusted
-artifact boundary.
+liveness, and operation shapes. The driver snapshot and persistent checked-MIR
+cache retain that wrapper. The interpreter, portable-library encoder,
+interpreted-artifact encoder, source-reachability analysis, native-object
+fingerprint, and LLVM emission entry points accept only
+`loom_mir::CheckedProgram`.
 
 ## Command roots
 
@@ -105,10 +109,11 @@ universal-value implementation and private native specializations, verifies
 LLVM IR, optimizes it, verifies again, and emits a relocatable object. Linking
 is a separate step.
 
-`loom-codegen-ir::CheckedProgram` is currently an independent library boundary,
-not part of either terminal backend. This is distinct from the crate's
-production-used checked-MIR source graph. Whole-artifact LCIR selection and an
-LCIR-to-LLVM emitter remain implementation work tracked by the
+`loom-codegen-ir::CheckedProgram` is currently an independent LCIR library
+boundary, not part of either terminal backend. It is distinct from the
+production `loom_mir::CheckedProgram` consumed by the crate's source graph and
+both terminal backends. Whole-artifact LCIR selection and an LCIR-to-LLVM
+emitter remain implementation work tracked by the
 [accepted RFC](../rfcs/typed-codegen-ir.md).
 
 Source diagnostics exit before either backend executes. Errors discovered

@@ -10,7 +10,8 @@ use loom_codegen_llvm::{
 };
 use loom_driver::AnalysisHost;
 use loom_mir::{
-    Block, CallArgument, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Type,
+    Block, CallArgument, CallPlan, CheckedProgram, Constant, Expr, ExprKind, Function, FunctionId,
+    Program, Type,
 };
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -913,7 +914,8 @@ pub fn main() Int {
     let mut program = snapshot
         .executable()
         .expect("lower universal call MIR")
-        .clone();
+        .clone()
+        .into_program();
 
     let move_call = program
         .functions
@@ -931,6 +933,9 @@ pub fn main() Int {
         panic!("moveCall argument is not a copy: {argument:?}");
     };
     argument.kind = ExprKind::Move(place.clone());
+    let program = program
+        .into_checked()
+        .expect("mutated universal call MIR remains valid");
 
     let executable = project.path().join("program");
     let ir = project.path().join("program.ll");
@@ -3264,7 +3269,7 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
     &ir[start..start + marker.len() + end]
 }
 
-fn emit_source_with_ir(source: &str) -> (tempfile::TempDir, Program, String) {
+fn emit_source_with_ir(source: &str) -> (tempfile::TempDir, CheckedProgram, String) {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
     let snapshot = AnalysisHost::new(project.path())
@@ -3729,7 +3734,7 @@ fn llvm_resume_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
     &ir[start..start + marker.len() + end]
 }
 
-fn unit_program() -> Program {
+fn unit_program() -> CheckedProgram {
     let mut program = Program::default();
     program.functions.push(Function {
         id: FunctionId(0),
@@ -3760,6 +3765,8 @@ fn unit_program() -> Program {
         .renumber_expr_ids()
         .expect("renumber unit-program expressions");
     program
+        .into_checked()
+        .expect("valid checked unit-program fixture")
 }
 
 #[test]

@@ -92,7 +92,7 @@ pub fn main() Unit {
 }
 "#;
 
-pub fn compile(source: &str) -> Result<loom_mir::Program, String> {
+pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     let parsed = parse_with_file(FileId(0), source);
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
@@ -108,10 +108,6 @@ pub fn compile(source: &str) -> Result<loom_mir::Program, String> {
     if !analysis.diagnostics.is_empty() {
         return Err(format!("semantic diagnostics: {:#?}", analysis.diagnostics));
     }
-    let program = lower_to_mir(&lowered.program, &analysis)
-        .map_err(|failure| format!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))?;
-    program
-        .validate()
-        .map_err(|errors| format!("MIR validation diagnostics: {errors:#?}"))?;
-    Ok(program)
+    lower_to_mir(&lowered.program, &analysis)
+        .map_err(|failure| format!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }

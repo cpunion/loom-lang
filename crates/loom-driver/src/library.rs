@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use loom_core::{LOOM_LANGUAGE_VERSION, PackageId};
-use loom_mir::{CheckedProgram, Program, decode_interpreted_artifact, encode_interpreted_artifact};
+use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_syntax::parse_with_file;
 use serde::{Deserialize, Serialize};
 
@@ -155,7 +155,7 @@ impl std::error::Error for LibraryArtifactError {}
 pub fn encode_library_artifact(
     project: &ProjectGraph,
     sources: &SourceMap,
-    program: &Program,
+    program: &CheckedProgram,
 ) -> Result<Vec<u8>, LibraryArtifactError> {
     let root_package = project
         .root_package()

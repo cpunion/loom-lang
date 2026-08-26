@@ -8,7 +8,8 @@ The implementation lives in the `source_graph` module of `loom-codegen-ir`,
 before LLVM emission. `SourceRoots` and `ReachableSourceGraph` contain
 checked-MIR identities; they are intentionally distinct from future LCIR
 instance roots. The LLVM boundary maps structured `GraphError` values into
-native-backend diagnostics.
+native-backend diagnostics. Root selection and closure accept only
+`loom_mir::CheckedProgram`; raw MIR cannot enter this production pass.
 
 ## Roots
 

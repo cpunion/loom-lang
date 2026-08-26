@@ -46,12 +46,16 @@ The production interpreter and LLVM backend receive only checked MIR. They do
 not resolve names, infer conformances, reinterpret contracts, or repair
 malformed IR. A MIR validation failure after successful source analysis is a
 compiler defect; malformed artifact or cache input is rejected at the
-boundary.
+boundary. This is type-enforced: lowering, driver snapshots, checked-MIR cache
+entries, terminal backend constructors, source reachability, native object
+identity/emission, and portable-library encoding retain or require
+`loom_mir::CheckedProgram`.
 
 `loom-codegen-ir` also exposes an independently validated `CheckedProgram` for
 its scalar LCIR foundation. Production native compilation uses the crate's
-checked-MIR source graph, but no production emitter consumes `CheckedProgram`
-yet. Its accepted integration design is tracked in the
+checked-MIR source graph, but no production emitter consumes the LCIR
+`loom_codegen_ir::CheckedProgram` yet. Its accepted integration design is
+tracked in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 Implementation status and platform support are maintained separately in

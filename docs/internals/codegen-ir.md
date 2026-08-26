@@ -23,12 +23,15 @@ artifact format, or a stable native ABI.
 dynamic requirement slots, and builtins into a deterministic
 `ReachableSourceGraph`. These names deliberately include “source”: future
 lowered artifact roots use LCIR `InstanceId` values and are a different graph.
+Root selection and graph analysis require `loom_mir::CheckedProgram`; this
+module has no public raw-MIR compatibility entry point.
 
 The graph records only ordered maps and sets and retains its existing Serde
 field order because it participates in native-object fingerprints. Invalid
-MIR references produce a structured `GraphError`; the LLVM boundary maps that
-error into its backend diagnostic without making source-graph analysis depend
-on LLVM.
+MIR references discovered while closing caller-supplied roots produce a
+structured `GraphError`; the LLVM boundary maps that error into its backend
+diagnostic without making source-graph analysis depend on LLVM. References
+inside the program have already crossed the independent MIR validator.
 
 ## Current scalar representation catalog
 

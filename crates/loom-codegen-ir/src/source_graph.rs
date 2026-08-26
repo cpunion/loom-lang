@@ -5,8 +5,8 @@ use std::{
 };
 
 use loom_mir::{
-    Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, FunctionId, LocalId, Program,
-    RequirementId, StatementKind, WitnessId, WitnessRef,
+    Block, Builtin, CallArgument, CallTarget, CheckedProgram, Expr, ExprKind, FunctionId, LocalId,
+    Program, RequirementId, StatementKind, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +18,12 @@ pub struct SourceRoots {
 
 impl SourceRoots {
     #[must_use]
-    pub fn for_entry(program: &Program, entry: &str) -> Option<Self> {
+    pub fn for_entry(program: &CheckedProgram, entry: &str) -> Option<Self> {
         program.exports.get(entry).copied().map(Self::one)
     }
 
     #[must_use]
-    pub fn for_tests(program: &Program) -> Self {
+    pub fn for_tests(program: &CheckedProgram) -> Self {
         Self {
             functions: program.tests.iter().copied().collect(),
         }
@@ -142,9 +142,10 @@ struct WitnessFlow {
 /// Returns an error if checked MIR contains a missing function, witness, or
 /// witness method reference. Such an error is a compiler-boundary defect.
 pub fn analyze_source_reachability(
-    program: &Program,
+    program: &CheckedProgram,
     roots: &SourceRoots,
 ) -> Result<ReachableSourceGraph, GraphError> {
+    let program = program.as_program();
     if roots.functions.is_empty() {
         // An empty test suite is a successful, empty native harness. Entry
         // builds cannot reach this case because root selection reports an

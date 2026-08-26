@@ -156,7 +156,7 @@ enum CompilationData {
 struct CachedCompilationData {
     project: ProjectGraph,
     sources: SourceMap,
-    program: loom_mir::Program,
+    program: loom_mir::CheckedProgram,
     diagnostics: Vec<DiagnosticRecord>,
 }
 
@@ -205,7 +205,7 @@ impl Compilation {
         }
     }
 
-    fn executable(&self) -> Result<&loom_mir::Program, StageUnavailable> {
+    fn executable(&self) -> Result<&loom_mir::CheckedProgram, StageUnavailable> {
         match &self.data {
             CompilationData::Fresh(snapshot) => snapshot.executable(),
             CompilationData::Cached(cached) => Ok(&cached.program),
@@ -240,7 +240,7 @@ impl TargetSelectionError {
 }
 
 fn validate_entry_point(
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     entry: &str,
 ) -> Result<(), TargetSelectionError> {
     let function = program
@@ -862,7 +862,7 @@ fn run_build(
 
 fn build_library(
     compilation: &Compilation,
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     target: &str,
     output: &Path,
     options: &Options,
@@ -1332,7 +1332,7 @@ fn run_artifact(
         }
     };
     invoke_program(
-        program.as_program(),
+        &program,
         &entry,
         &options.program_arguments,
         json_output,
@@ -1439,7 +1439,7 @@ fn extract_native_failure(stderr: &[u8]) -> (Option<Value>, String) {
 }
 
 fn invoke_program(
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     entry: &str,
     arguments: &[String],
     json_output: bool,
@@ -1869,7 +1869,7 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
 
 fn target_object_key(
     compilation: &Compilation,
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     emit_options: &loom_codegen_llvm::EmitOptions,
 ) -> Option<CacheKey> {
     compilation.key()?;
@@ -1927,7 +1927,7 @@ fn emit_options_with_debug(
 
 fn emit_native_with_cache(
     compilation: &Compilation,
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     output: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
     native_link: Option<&NativeLinkPlan>,
@@ -1962,7 +1962,7 @@ fn emit_native_with_cache(
 
 fn emit_object_with_cache(
     compilation: &Compilation,
-    program: &loom_mir::Program,
+    program: &loom_mir::CheckedProgram,
     object: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
     options: &Options,

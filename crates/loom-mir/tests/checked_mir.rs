@@ -1700,7 +1700,7 @@ fn resource_close_requires_an_inout_place() {
     validate_program(&program).expect("resource close through inout place");
 }
 
-fn float_program(bits: u64) -> Program {
+fn float_program(bits: u64) -> CheckedProgram {
     Program {
         functions: vec![function(
             0,
@@ -1731,6 +1731,8 @@ fn float_program(bits: u64) -> Program {
         exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
         ..Program::default()
     }
+    .into_checked()
+    .expect("valid floating-point artifact fixture")
 }
 
 #[test]
@@ -1755,7 +1757,7 @@ fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
     };
     assert_eq!(nan.to_bits(), 0x7ff8_0000_0000_0000);
     assert_eq!(
-        encode_interpreted_artifact(decoded.as_program()).expect("re-encode"),
+        encode_interpreted_artifact(&decoded).expect("re-encode"),
         first
     );
 }
@@ -2493,7 +2495,11 @@ fn conditional_witness_apply_is_checked_as_a_recursive_proof_tree() {
     let program = conditional_concept_program();
     validate_program(&program).expect("valid conditional conformance proof");
 
-    let bytes = encode_interpreted_artifact(&program).expect("encode concept metadata");
+    let checked = program
+        .clone()
+        .into_checked()
+        .expect("valid checked concept metadata");
+    let bytes = encode_interpreted_artifact(&checked).expect("encode concept metadata");
     let decoded = decode_interpreted_artifact(&bytes).expect("decode concept metadata");
     assert_eq!(decoded.concepts.len(), 1);
     assert_eq!(decoded.requirements.len(), 1);
@@ -2798,7 +2804,9 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
         functions: vec![read_price, checked, diverging_if],
         ..Program::default()
     };
-    validate_program(&program).expect("explicit unrefine, bindings, and Never join are valid");
+    let program = program
+        .into_checked()
+        .expect("explicit unrefine, bindings, and Never join are valid");
     let bytes = encode_interpreted_artifact(&program).expect("encode new Core 0.1 nodes");
     decode_interpreted_artifact(&bytes).expect("round trip new Core 0.1 nodes");
 }
@@ -3559,12 +3567,6 @@ fn recursive_witness_proof_child() {
     *witness = proof;
     let errors = validate_program(&program).expect_err("deep proof must be rejected");
     assert!(errors.contains(MirValidationCode::NestingLimit));
-    let artifact = encode_interpreted_artifact(&program).expect_err("artifact must fail closed");
-    assert!(matches!(
-        artifact,
-        ArtifactError::InvalidProgram(ref errors)
-            if errors.contains(MirValidationCode::NestingLimit)
-    ));
     println!("deep-proof-failed-closed");
     // Recursive drop of hostile unchecked input is outside the checked
     // artifact boundary and can itself consume the native stack.

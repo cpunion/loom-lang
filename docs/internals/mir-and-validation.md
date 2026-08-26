@@ -29,7 +29,12 @@ They are not source AST identities.
 
 `Program::into_checked` consumes unchecked MIR and returns `CheckedProgram`
 only after all validators succeed. The interpreter, LLVM pipeline, checked-MIR
-cache, `.loomi` loader, and `.loomlib` loader use this boundary.
+cache, `.loomi` loader, and `.loomlib` loader use this boundary. Typed-HIR
+lowering returns the wrapper directly; driver snapshots and cache hits retain
+it; source reachability, both execution backends, native-object identity and
+emission, interpreted-artifact encoding, and portable-library encoding require
+it in their public APIs. Decoding remains an untrusted boundary and validates
+the embedded raw program before returning the wrapper.
 
 Validation covers:
 

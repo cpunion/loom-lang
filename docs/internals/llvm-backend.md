@@ -1,9 +1,10 @@
 # LLVM backend
 
-`loom-codegen-llvm` is the default native backend. It consumes validated MIR
-and the closed-world source graph computed by `loom-codegen-ir`, emits LLVM IR,
-verifies and optimizes it, and writes a relocatable object. Linking is a
-separate driver operation.
+`loom-codegen-llvm` is the default native backend. Its object fingerprint,
+object emission, and executable emission APIs require
+`loom_mir::CheckedProgram`. It computes the closed-world source graph through
+`loom-codegen-ir`, emits LLVM IR, verifies and optimizes it, and writes a
+relocatable object. Linking is a separate driver operation.
 
 ## LLVM integration
 
@@ -25,9 +26,11 @@ workspace does not silently fall back to another LLVM major version.
 
 The workspace contains a scalar typed-SSA foundation in `loom-codegen-ir`. The
 LLVM backend depends on that crate for `SourceRoots` and
-`ReachableSourceGraph`, but it does not consume the crate's `CheckedProgram`.
-There is no MIR-to-LCIR lowering, and no production artifact is selected,
-lowered, emitted, or cached through typed LCIR.
+`ReachableSourceGraph`, but it does not consume the crate's LCIR
+`loom_codegen_ir::CheckedProgram`. This does not weaken the production MIR
+boundary: source graph and native entry points require
+`loom_mir::CheckedProgram`. There is no MIR-to-LCIR lowering, and no production
+artifact is selected, lowered, emitted, or cached through typed LCIR.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
