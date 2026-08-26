@@ -974,6 +974,182 @@ fn checked_mir_move_reassignment_and_readonly_inherent_scalar_call_are_supported
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn conditional_moves_preserve_only_values_available_on_continuing_paths() {
+    use loom_mir::{
+        Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place,
+        Program, Statement, StatementKind, Type,
+    };
+
+    let span = loom_core::Span::default();
+    let copy = |local, ty| Expr::new(ExprKind::Copy(Place::local(local)), ty, span);
+    let moved = |local| Expr::new(ExprKind::Move(Place::local(local)), Type::Int, span);
+    let unit = || Expr::new(ExprKind::Constant(Constant::Unit), Type::Unit, span);
+    let empty_unit_block = || Block {
+        statements: Vec::new(),
+        tail: Some(Box::new(unit())),
+        span,
+    };
+    let flag = LocalId(0);
+    let preserved = LocalId(1);
+    let intersected = LocalId(2);
+
+    let move_then_return = Block {
+        statements: vec![
+            Statement {
+                kind: StatementKind::Evaluate(moved(preserved)),
+                span,
+            },
+            Statement {
+                kind: StatementKind::Return(Some(unit())),
+                span,
+            },
+        ],
+        tail: None,
+        span,
+    };
+    let move_then_continue = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(moved(intersected)),
+            span,
+        }],
+        tail: Some(Box::new(copy(flag, Type::Bool))),
+        span,
+    };
+    let continue_without_move = Block {
+        statements: Vec::new(),
+        tail: Some(Box::new(copy(flag, Type::Bool))),
+        span,
+    };
+    let mut main = Function {
+        id: FunctionId(0),
+        name: "manual.main".into(),
+        span,
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: vec![
+            LocalDecl {
+                id: flag,
+                name: "flag".into(),
+                ty: Type::Bool,
+                mutable: false,
+                span,
+            },
+            LocalDecl {
+                id: preserved,
+                name: "preserved".into(),
+                ty: Type::Int,
+                mutable: false,
+                span,
+            },
+            LocalDecl {
+                id: intersected,
+                name: "intersected".into(),
+                ty: Type::Int,
+                mutable: false,
+                span,
+            },
+        ],
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: flag,
+                        value: Expr::new(
+                            ExprKind::Constant(Constant::Bool(true)),
+                            Type::Bool,
+                            span,
+                        ),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: preserved,
+                        value: Expr::new(ExprKind::Constant(Constant::Int(11)), Type::Int, span),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: intersected,
+                        value: Expr::new(ExprKind::Constant(Constant::Int(22)), Type::Int, span),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(Expr::new(
+                        ExprKind::If {
+                            condition: Box::new(copy(flag, Type::Bool)),
+                            then_branch: move_then_return,
+                            else_branch: empty_unit_block(),
+                        },
+                        Type::Unit,
+                        span,
+                    )),
+                    span,
+                },
+                // The move occurred only on the terminated arm, so the sole
+                // continuing environment must still contain this local.
+                Statement {
+                    kind: StatementKind::Evaluate(copy(preserved, Type::Int)),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(Expr::new(
+                        ExprKind::If {
+                            condition: Box::new(copy(flag, Type::Bool)),
+                            then_branch: move_then_continue,
+                            else_branch: continue_without_move,
+                        },
+                        Type::Bool,
+                        span,
+                    )),
+                    span,
+                },
+            ],
+            tail: Some(Box::new(unit())),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids().expect("number conditional moves");
+    let mir = Program {
+        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
+        functions: vec![main],
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("conditional moves satisfy checked-MIR continuation rules");
+
+    let LoweringOutcome::Complete(artifact) = lower_scalar_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower conditional moves") else {
+        panic!("conditional scalar moves should be supported")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("branch ").count(), 2, "{dump}");
+    let jumps = dump
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("jump "))
+        .collect::<Vec<_>>();
+    assert_eq!(jumps.len(), 2, "{dump}");
+    assert!(jumps.iter().all(|jump| jump.ends_with("()")), "{dump}");
+}
+
+#[test]
 fn source_nested_blocks_and_if_arms_preserve_function_local_values() {
     let dump = complete_dump(
         r"module local_flow

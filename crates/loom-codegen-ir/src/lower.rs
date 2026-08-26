@@ -2942,6 +2942,47 @@ mod tests {
     }
 
     #[test]
+    fn persistent_environment_preserves_high_bit_local_identities() {
+        let brand = ProgramBrand::fresh();
+        let owner = InstanceId::from_index(brand, 0).expect("test instance");
+        let value = |raw| ValueId::from_index(owner, raw).expect("test value");
+        let high = LocalId(1_u32 << 31);
+        let maximum = LocalId(u32::MAX);
+        let mut environments = EnvironmentArena::new();
+        let mut base = EMPTY_ENVIRONMENT;
+        base = environments
+            .set(base, LocalId(0), value(0))
+            .expect("set low local");
+        base = environments
+            .set(base, high, value(1))
+            .expect("set high-bit local");
+        base = environments
+            .set(base, maximum, value(2))
+            .expect("set maximum local");
+
+        assert_eq!(environments.get(base, LocalId(0)), Some(value(0)));
+        assert_eq!(environments.get(base, high), Some(value(1)));
+        assert_eq!(environments.get(base, maximum), Some(value(2)));
+
+        let changed = environments
+            .set(base, maximum, value(3))
+            .expect("change maximum local");
+        assert_eq!(
+            environments.changed_locals(base, &[base, changed]),
+            [maximum]
+        );
+        let removed = environments
+            .remove(changed, high)
+            .expect("remove high-bit local");
+        assert_eq!(environments.get(removed, high), None);
+        assert_eq!(environments.get(removed, maximum), Some(value(3)));
+        assert_eq!(
+            environments.changed_locals(base, &[removed]),
+            [high, maximum]
+        );
+    }
+
+    #[test]
     fn direct_never_call_stops_effect_scanning_before_a_dead_callee() {
         let span = Span::default();
         let call = |callee, ty| {
