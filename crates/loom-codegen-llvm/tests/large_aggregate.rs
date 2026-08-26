@@ -1,8 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
+
+mod support;
+use support::emit_native;
 
 const CHILD_PROJECT_ENV: &str = "LOOM_LARGE_AGGREGATE_INTERPRETER_CHILD";
 const ELEMENT_COUNT: usize = 50_001;

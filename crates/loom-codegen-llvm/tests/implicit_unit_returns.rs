@@ -1,8 +1,11 @@
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
+
+mod support;
+use support::emit_native;
 
 #[test]
 fn omitted_unit_entries_run_and_test_on_both_backends() {

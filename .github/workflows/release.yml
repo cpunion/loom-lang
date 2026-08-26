@@ -77,8 +77,19 @@ jobs:
         with:
           toolchain: 1.88.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Build portable release runtime archive
+        run: CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked --release -p loom-runtime
       - name: Build release tools
         run: cargo build --locked --release -p loom-cli -p loom-lsp
+      - name: Pack release runtime sidecar
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          runtime_bundle="$RUNNER_TEMP/loom-runtime-$RELEASE_PLATFORM-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/runtime"
+          target/release/loomc runtime pack \
+            --archive target/release/libloom_runtime.a \
+            --output "$runtime_bundle"
+          echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
       - name: C3 dual-backend release gate
         run: |
           cargo run --locked --release -p loom-cli -- --no-cache check --target app examples/c3/application
@@ -101,18 +112,13 @@ jobs:
         run: |
           target/release/loomc --help
           target/release/loom-lsp --help || test "$?" -eq 2
-      - name: Export and verify host runtime bundle
-        run: |
-          target/release/loomc runtime export --output target/release-runtime
-          target/release/loomc --runtime-bundle target/release-runtime --linker "$LOOM_CC" build --output target/release-bundle-smoke examples/core01
-          target/release-bundle-smoke
       - name: Archive and checksum
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_NAME: ${{ steps.release.outputs.name }}
         run: |
           archive="loom-lang-${RELEASE_NAME}-${RELEASE_PLATFORM}.tar.gz"
-          staging="target/release-package"
+          staging="$RUNNER_TEMP/loom-release-$RELEASE_PLATFORM-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$staging"
           cp target/release/loomc target/release/loom-lsp "$staging/"
           cp \
@@ -120,7 +126,10 @@ jobs:
             CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md GOVERNANCE.md SUPPORT.md \
             "$staging/"
           cp -R docs "$staging/docs"
-          cp -R target/release-runtime "$staging/runtime"
+          cp -R "$LOOM_RUNTIME_BUNDLE" "$staging/runtime"
+          env -u LOOM_RUNTIME_BUNDLE \
+            "$staging/loomc" --no-cache build --output target/release-bundle-smoke examples/core01
+          target/release-bundle-smoke
           tar -czf "$archive" -C "$staging" .
           shasum -a 256 "$archive" > "$archive.sha256"
       - name: Upload release archive

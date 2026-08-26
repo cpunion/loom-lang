@@ -7,18 +7,17 @@ use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
 use crate::CodegenError;
-use crate::emitter::native_runtime_bytes;
 
 // An implicit host target is tuned for the current machine. Supplying any target triple is the
 // explicit opt-in to a portable object, including when that triple happens to name the host.
 const PORTABLE_CPU: &str = "generic";
 const PORTABLE_CPU_FEATURES: &str = "";
+const COMPILER_TARGET: &str = env!("LOOM_COMPILER_TARGET");
 pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
 pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
@@ -181,16 +180,6 @@ pub fn target_identity(
     Ok(target.identity())
 }
 
-/// Returns the exact embedded Rust runtime archive identity used by linking.
-#[must_use]
-pub fn native_runtime_identity() -> String {
-    format!(
-        "{};sha256={:x}",
-        NATIVE_RUNTIME_ABI,
-        Sha256::digest(native_runtime_bytes())
-    )
-}
-
 /// Links Mach-O object debug sections into a standard dSYM bundle.
 ///
 /// Linux ELF executables already carry their DWARF. An MSVC link writes the
@@ -292,9 +281,9 @@ pub(crate) fn create_llvm_target_machine(
 ) -> Result<NativeTargetMachine, CodegenError> {
     Target::initialize_all(&InitializationConfig::default());
     let host_native = requested.is_none();
-    let triple = requested.map_or_else(TargetMachine::get_default_triple, |triple| {
-        TargetMachine::normalize_triple(&TargetTriple::create(triple))
-    });
+    let triple = TargetMachine::normalize_triple(&TargetTriple::create(
+        requested.unwrap_or(COMPILER_TARGET),
+    ));
     let (cpu, features) = if host_native {
         (
             TargetMachine::get_host_cpu_name().to_string(),
@@ -337,7 +326,7 @@ pub fn is_native_target(requested: Option<&str>) -> bool {
         return true;
     };
     let requested = TargetMachine::normalize_triple(&TargetTriple::create(requested));
-    let native = TargetMachine::normalize_triple(&TargetMachine::get_default_triple());
+    let native = TargetMachine::normalize_triple(&TargetTriple::create(COMPILER_TARGET));
     requested == native
 }
 
@@ -350,6 +339,14 @@ mod tests {
         let module = context.create_module("debug.flags");
         configure_debug_module_flags(&context, &module, target);
         module.print_to_string().to_string()
+    }
+
+    #[test]
+    fn implicit_host_identity_uses_the_compiler_target_without_os_version_drift() {
+        let expected = TargetMachine::normalize_triple(&TargetTriple::create(COMPILER_TARGET));
+        let identity = native_target_identity().expect("native target identity");
+
+        assert_eq!(identity.triple, expected.as_str().to_string_lossy());
     }
 
     #[test]

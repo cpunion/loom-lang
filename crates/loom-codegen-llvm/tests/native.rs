@@ -4,16 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use inkwell::targets::TargetMachine;
-use loom_codegen_llvm::{
-    EmitOptions, OptimizationProfile, emit_native, emit_native_object, target_identity,
-    validate_native_link_target,
-};
+use loom_codegen_llvm::{EmitOptions, OptimizationProfile, emit_native_object, target_identity};
 use loom_driver::AnalysisHost;
 use loom_interpreter::Interpreter;
 use loom_mir::{
     Block, CallArgument, CallPlan, CheckedProgram, Constant, Expr, ExprKind, Function, FunctionId,
     Program, Type,
 };
+
+mod support;
+use support::emit_native;
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -180,8 +180,6 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
             .expect("read cross object")
             .starts_with(b"\x7fELF")
     );
-    let error = validate_native_link_target(&options).expect_err("cross link is unavailable");
-    assert_eq!(error.code(), "CrossLinkUnavailable");
 }
 
 #[test]

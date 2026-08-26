@@ -48,7 +48,12 @@ or release evidence.
 
 ```sh
 cargo +1.88.0 check --locked --workspace --all-targets
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked -p loom-runtime
 cargo +1.88.0 build --locked -p loom-cli -p loom-lsp
+target/debug/loomc runtime pack \
+  --archive target/debug/libloom_runtime.a \
+  --output target/debug/runtime
 cargo +1.88.0 run --locked -p loom-cli -- --help
 ```
 
@@ -98,9 +103,22 @@ round-trip, cache identity, and tests agree.
 cargo +1.88.0 fmt --all -- --check
 cargo +1.88.0 check --locked --workspace --all-targets
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked -p loom-runtime
+cargo +1.88.0 build --locked -p loom-cli
+runtime_bundle_root="$(mktemp -d)/runtime"
+target/debug/loomc runtime pack \
+  --archive target/debug/libloom_runtime.a \
+  --output "$runtime_bundle_root"
+export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
 cargo +1.88.0 build --locked --workspace --all-targets
 ```
+
+The separate runtime build is intentional: compiling `loom-codegen-llvm` never
+starts Cargo recursively and never embeds a machine-local runtime archive.
+Native integration tests require the explicit host archive above; syntax,
+type-checking, object emission, and interpreter tests do not.
 
 The fuzz workspace is separate and uses a pinned nightly; see
 [Fuzzing](fuzzing.md). Performance work has a separate controlled runner; see

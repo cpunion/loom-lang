@@ -26,15 +26,17 @@ aggregate `SHA256SUMS`.
 For each archive platform, the workflow:
 
 1. installs Rust 1.88.0 and LLVM 19;
-2. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
-3. runs the C3 check/build/test/run loop on LLVM and interpreter backends;
-4. verifies portable library artifact creation;
-5. runs standard-library and runtime-bundle differential tests;
-6. runs `loom-quality`;
-7. verifies both release tools expose their command boundary;
-8. exports the host runtime bundle;
-9. links and executes a smoke program using that exported bundle;
-10. archives and hashes the exact staged files.
+2. separately builds `loom-runtime` with the generic CPU policy;
+3. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
+4. packs the explicit runtime archive into `runtime/` beside `loomc`;
+5. runs the C3 check/build/test/run loop on LLVM and interpreter backends;
+6. verifies portable library artifact creation;
+7. runs standard-library and runtime-bundle differential tests;
+8. runs `loom-quality`;
+9. verifies both release tools expose their command boundary;
+10. stages the tools and runtime as siblings, then links and executes a smoke
+    program through adjacent-bundle discovery;
+11. archives and hashes the exact staged files.
 
 A manually dispatched workflow uploads Actions artifacts named with its run ID,
 independent of the source branch spelling. A pushed tag that exactly matches
@@ -71,7 +73,7 @@ repository's maintainer policy. After the workflow succeeds:
 2. verify each SHA-256 independently;
 3. inspect the archive file list;
 4. run `loomc --version` and `loomc --help`;
-5. export or use the included runtime bundle in a native smoke build;
+5. use the included adjacent runtime bundle in a native smoke build;
 6. confirm the release page lists only the two produced platforms.
 
 Do not manually add an untested binary to an existing release. Add a platform

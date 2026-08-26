@@ -1,7 +1,10 @@
 use std::process::Command;
 
-use loom_codegen_llvm::{EmitOptions, emit_native};
+use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
+
+mod support;
+use support::emit_native;
 
 #[test]
 fn process_arguments_declaration_matches_the_runtime_abi() {

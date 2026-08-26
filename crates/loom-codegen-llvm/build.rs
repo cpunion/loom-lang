@@ -9,10 +9,6 @@ use sha2::{Digest, Sha256};
 
 #[path = "../../build-support/fingerprint.rs"]
 mod fingerprint;
-#[allow(dead_code)]
-#[path = "src/native_artifact.rs"]
-mod native_artifact;
-
 use fingerprint::{BuildFingerprint, assert_no_local_feature_table, emit_rerun_inputs};
 
 const OBJECT_CRATES: &[&str] = &[
@@ -24,52 +20,9 @@ const OBJECT_CRATES: &[&str] = &[
 ];
 
 fn main() {
+    let compiler_target = env::var("TARGET").expect("Cargo target triple");
+    println!("cargo:rustc-env=LOOM_COMPILER_TARGET={compiler_target}");
     emit_object_build_fingerprint();
-    for input in [
-        "../../Cargo.toml",
-        "../../Cargo.lock",
-        "../loom-runtime-abi/Cargo.toml",
-        "../loom-runtime-abi/src",
-        "../loom-runtime/Cargo.toml",
-        "../loom-runtime/src",
-    ] {
-        emit_rerun_inputs(Path::new(input))
-            .unwrap_or_else(|error| panic!("watch runtime input {input}: {error}"));
-    }
-
-    let manifest = Path::new(&env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
-        .join("../loom-runtime/Cargo.toml");
-    let output = PathBuf::from(env::var_os("OUT_DIR").expect("build output directory"));
-    let target_dir = output.join("runtime-target");
-    let target = env::var("TARGET").expect("target triple");
-    let profile = env::var("PROFILE").expect("cargo profile");
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        // The embedded runtime is exported and reused across machines which share a target
-        // triple. Do not let the compiler build's local tuning leak into that portable archive.
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env("CARGO_ENCODED_RUSTFLAGS", "-Ctarget-cpu=generic")
-        .arg("build")
-        .arg("--locked")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .arg("--package")
-        .arg("loom-runtime")
-        .arg("--target-dir")
-        .arg(&target_dir)
-        .arg("--target")
-        .arg(&target);
-    if profile == "release" {
-        command.arg("--release");
-    }
-    let status = command.status().expect("run Cargo for Loom native runtime");
-    assert!(status.success(), "failed to build Loom native runtime");
-
-    let profile_root = target_dir.join(&target).join(&profile);
-    let archive = profile_root.join(native_artifact::native_runtime_archive_name(Some(&target)));
-    fs::copy(archive, output.join("loom-runtime.bin")).expect("copy Loom runtime static library");
 }
 
 fn emit_object_build_fingerprint() {

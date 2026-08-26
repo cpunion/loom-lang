@@ -12,11 +12,22 @@ With LLVM 19 configured:
 cargo +1.88.0 fmt --all -- --check
 cargo +1.88.0 check --locked --workspace --all-targets
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked -p loom-runtime
+cargo +1.88.0 build --locked -p loom-cli
+runtime_bundle_root="$(mktemp -d)/runtime"
+target/debug/loomc runtime pack \
+  --archive target/debug/libloom_runtime.a \
+  --output "$runtime_bundle_root"
+export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
 cargo +1.88.0 build --locked --workspace --all-targets
 ```
 
 Use `--locked` so dependency resolution matches CI.
+The runtime preparation is needed only by native link/run tests. A fresh
+`cargo check` or `cargo build -p loom-codegen-llvm` has no runtime sidecar and
+must not create a nested `runtime-target`.
 
 ## Focused commands
 
@@ -32,7 +43,12 @@ cargo +1.88.0 test --locked -p loom-codegen-llvm --test runtime_bundle
 cargo +1.88.0 test --locked -p loom-cli --test cli
 ```
 
-Run a single Rust test by adding its name and `--exact` when appropriate.
+The `loom-codegen-llvm` and `loom-cli` integration tests that link native
+executables require the explicit `LOOM_TEST_RUNTIME_BUNDLE` or
+`LOOM_RUNTIME_BUNDLE` prepared by the full-workspace recipe above. They never
+search profile directories for an archive, because such a file can be stale or
+belong to another Cargo invocation. Run a single Rust test by adding its name
+and `--exact` when appropriate.
 
 ## End-to-end source loop
 

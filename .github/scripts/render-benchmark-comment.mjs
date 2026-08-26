@@ -462,7 +462,7 @@ export function renderComment(comparisons, sha) {
   ];
   if (!byPlatform.has("windows/x86_64")) {
     lines.push(
-      "Windows CI currently covers selected platform-independent compiler layers only, so its native runtime cells are unavailable until the Windows backend, runtime, and I/O reactor are complete.",
+      "Windows native CI is configured, but this workflow has no controlled Windows benchmark report; its cells remain unavailable until equivalent runner evidence is added.",
       "",
     );
   }

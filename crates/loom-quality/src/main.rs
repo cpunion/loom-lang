@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use loom_codegen_llvm::{EmitOptions, OptimizationProfile, emit_native, target_identity};
+use loom_codegen_llvm::{
+    EmitOptions, NativeTargetIdentity, OptimizationProfile, RuntimeBundle, RuntimeLinker,
+    emit_native, target_identity,
+};
 use loom_core::{FileId, Span};
 use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -54,6 +57,11 @@ struct TaskSpec {
     path: &'static str,
     source: &'static str,
     sha256: &'static str,
+}
+
+struct NativeRuntime {
+    bundle: RuntimeBundle,
+    linker: RuntimeLinker,
 }
 
 #[derive(Serialize)]
@@ -132,6 +140,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let runtime = match load_native_runtime(&target) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("loom-quality: cannot load native runtime bundle: {error}");
+            std::process::exit(2);
+        }
+    };
     let mut report = EvidenceReport {
         schema_version: 1,
         evidence_level: "C3 real multi-package repository",
@@ -148,21 +163,21 @@ fn main() {
     };
 
     for task in TASKS {
-        match run_task(&workspace, task, &mut report.gates) {
+        match run_task(&workspace, task, &runtime, &mut report.gates) {
             Ok(evidence) => report.tasks.push(evidence),
             Err(error) => report.failures.push(format!("{}: {error}", task.name)),
         }
     }
-    match run_c3_repository(&workspace, &mut report.gates) {
+    match run_c3_repository(&workspace, &runtime, &mut report.gates) {
         Ok(evidence) => report.repository = Some(evidence),
         Err(error) => report.failures.push(format!("c3-repository: {error}")),
     }
-    if let Err(error) = async_generic_contract_gate(&workspace, &mut report.gates) {
+    if let Err(error) = async_generic_contract_gate(&workspace, &runtime, &mut report.gates) {
         report
             .failures
             .push(format!("async-generic-contracts: {error}"));
     }
-    if let Err(error) = standard_library_gate(&workspace, &mut report.gates) {
+    if let Err(error) = standard_library_gate(&workspace, &runtime, &mut report.gates) {
         report.failures.push(format!("standard-library: {error}"));
     }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
@@ -191,7 +206,30 @@ fn main() {
     }
 }
 
-fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Result<(), String> {
+fn load_native_runtime(target: &NativeTargetIdentity) -> Result<NativeRuntime, String> {
+    let root = if let Some(configured) = std::env::var_os("LOOM_RUNTIME_BUNDLE") {
+        PathBuf::from(configured)
+    } else {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("locate quality executable: {error}"))?;
+        let executable = std::fs::canonicalize(&executable)
+            .map_err(|error| format!("resolve {}: {error}", executable.display()))?;
+        executable
+            .parent()
+            .ok_or_else(|| "resolved quality executable has no parent".to_owned())?
+            .join("runtime")
+    };
+    let bundle = RuntimeBundle::load(root, target).map_err(|error| error.to_string())?;
+    let linker = RuntimeLinker::load(std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into()))
+        .map_err(|error| error.to_string())?;
+    Ok(NativeRuntime { bundle, linker })
+}
+
+fn standard_library_gate(
+    workspace: &Path,
+    runtime: &NativeRuntime,
+    gates: &mut Vec<GateEvidence>,
+) -> Result<(), String> {
     let project = tempfile::tempdir().map_err(|error| error.to_string())?;
     let (round_trip, empty_write_listener, snapshot_listener) =
         prepare_standard_library_fixture(workspace, project.path())?;
@@ -239,6 +277,8 @@ fn standard_library_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Res
         program,
         &executable,
         &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -371,6 +411,7 @@ fn loom_text_literal(path: &Path) -> String {
 
 fn async_generic_contract_gate(
     workspace: &Path,
+    runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
 ) -> Result<(), String> {
     let snapshot = AnalysisHost::new(workspace.join(ASYNC_GENERIC_FIXTURE))
@@ -407,6 +448,8 @@ fn async_generic_contract_gate(
         program,
         &executable,
         &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -444,6 +487,7 @@ fn async_generic_contract_gate(
 #[allow(clippy::too_many_lines)]
 fn run_c3_repository(
     workspace: &Path,
+    runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
 ) -> Result<RepositoryEvidence, String> {
     let analysis_started = Instant::now();
@@ -512,6 +556,8 @@ fn run_c3_repository(
         program,
         &executable,
         &EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
@@ -519,6 +565,8 @@ fn run_c3_repository(
         program,
         &test_executable,
         &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();
@@ -611,6 +659,7 @@ fn run_c3_repository(
 fn run_task(
     workspace: &Path,
     task: &'static TaskSpec,
+    runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
 ) -> Result<TaskEvidence, String> {
     let source = std::fs::read_to_string(workspace.join(task.source))
@@ -682,6 +731,8 @@ fn run_task(
         program,
         &executable,
         &EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
@@ -689,6 +740,8 @@ fn run_task(
         program,
         &test_executable,
         &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        &runtime.bundle,
+        &runtime.linker,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();

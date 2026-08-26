@@ -2,8 +2,11 @@ use std::path::Path;
 use std::process::Command;
 use std::{io::Read as _, net::TcpListener};
 
-use loom_codegen_llvm::{EmitOptions, NATIVE_RUNTIME_ABI, emit_native, native_runtime_identity};
+use loom_codegen_llvm::{EmitOptions, NATIVE_RUNTIME_ABI};
 use loom_driver::AnalysisHost;
+
+mod support;
+use support::{emit_native, runtime_bundle_identity};
 
 const CHILD_PROJECT_ENV: &str = "LOOM_STDLIB_INTERPRETER_CHILD_PROJECT";
 const EXPECTED_LOGS: &str = concat!(
@@ -42,7 +45,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     );
     assert!(NATIVE_RUNTIME_ABI.contains("/gc-v7/"));
     assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v4"));
-    assert!(native_runtime_identity().starts_with(NATIVE_RUNTIME_ABI));
+    assert!(runtime_bundle_identity().starts_with("runtime-bundle-v2;"));
     let project = tempfile::tempdir().expect("create standard-library project");
     let round_trip = project.path().join("round-trip.txt");
     let reuse = project.path().join("reuse.txt");

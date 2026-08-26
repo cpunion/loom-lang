@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+static TEST_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -60,7 +61,43 @@ impl Drop for TestProject {
 }
 
 fn loomc() -> Command {
+    let runtime = test_runtime_bundle_root();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_loomc"));
+    command.env("LOOM_RUNTIME_BUNDLE", runtime);
+    command
+}
+
+fn loomc_without_test_runtime() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
+}
+
+fn test_runtime_archive() -> PathBuf {
+    let target = loom_codegen_llvm::native_target_identity().expect("load host target identity");
+    loom_codegen_llvm::RuntimeBundle::load(test_runtime_bundle_root(), &target)
+        .expect("load explicit CLI test runtime bundle")
+        .archive()
+        .to_path_buf()
+}
+
+fn test_runtime_bundle_root() -> &'static PathBuf {
+    TEST_RUNTIME.get_or_init(|| {
+        let root = std::env::var_os("LOOM_TEST_RUNTIME_BUNDLE")
+            .or_else(|| std::env::var_os("LOOM_RUNTIME_BUNDLE"))
+            .map_or_else(
+                || {
+                    panic!(
+                        "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
+                     LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
+                    )
+                },
+                PathBuf::from,
+            );
+        let target =
+            loom_codegen_llvm::native_target_identity().expect("load host target identity");
+        loom_codegen_llvm::RuntimeBundle::load(&root, &target)
+            .expect("validate explicit CLI test runtime bundle");
+        root
+    })
 }
 
 fn native_executable(path: impl AsRef<std::path::Path>) -> PathBuf {
@@ -119,9 +156,11 @@ if [ "${{1-}}" = "--version" ]; then
 fi
 log=${{LOOM_FAKE_LINK_LOG:?}}
 object_copy=${{LOOM_FAKE_OBJECT_COPY:?}}
+runtime_copy=${{LOOM_FAKE_RUNTIME_COPY:?}}
 payload=${{LOOM_FAKE_LINK_PAYLOAD:?}}
 : > "$log"
 cp "$1" "$object_copy"
+cp "$2" "$runtime_copy"
 output=
 while [ "$#" -gt 0 ]; do
     argument=$1
@@ -1876,25 +1915,69 @@ fn native_target_preparation_errors_are_usage_errors() {
     assert!(error.contains("LlvmTargetUnavailable"), "{error}");
 }
 
+#[test]
+fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
+    let project = TestProject::new(
+        "module no_runtime\n\ntest fn passes() Unit { Unit }\n\npub fn main() Unit { Unit }\n",
+    );
+    let unavailable = project.0.join("unavailable-runtime-bundle");
+
+    let checked = loomc_without_test_runtime()
+        .args(["--json", "check"])
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("check without a native runtime bundle");
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+
+    let object = project.0.join("program-object");
+    let built_object = loomc_without_test_runtime()
+        .args(["--json", "build", "--emit", "object", "--output"])
+        .arg(&object)
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("emit an object without a native runtime bundle");
+    assert_eq!(built_object.status.code(), Some(0), "{built_object:?}");
+    assert!(
+        loom_codegen_llvm::native_artifact_path(
+            &object,
+            None,
+            loom_codegen_llvm::NativeArtifactKind::Object,
+        )
+        .is_file()
+    );
+
+    let interpreted = loomc_without_test_runtime()
+        .args(["--json", "--backend", "interpreter", "test"])
+        .arg(&project.0)
+        .env("LOOM_RUNTIME_BUNDLE", &unavailable)
+        .output()
+        .expect("run interpreter tests without a native runtime bundle");
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+}
+
 #[cfg(unix)]
 #[test]
-fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
+fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
     let bundle = project.0.join("host-runtime");
-    let exported = loomc()
-        .args(["--json", "runtime", "export", "--output"])
+    let packed = loomc()
+        .args(["--json", "runtime", "pack", "--archive"])
+        .arg(test_runtime_archive())
+        .arg("--output")
         .arg(&bundle)
         .output()
-        .expect("export host runtime bundle");
+        .expect("pack host runtime bundle");
     assert_eq!(
-        exported.status.code(),
+        packed.status.code(),
         Some(0),
         "stdout={} stderr={}",
-        String::from_utf8_lossy(&exported.stdout),
-        String::from_utf8_lossy(&exported.stderr)
+        String::from_utf8_lossy(&packed.stdout),
+        String::from_utf8_lossy(&packed.stderr)
     );
     let export_record =
-        json_record(&exported.stdout, "runtime_bundle_export").expect("runtime export record");
+        json_record(&packed.stdout, "runtime_bundle_pack").expect("runtime pack record");
     assert_eq!(
         export_record
             .get("archive_sha256")
@@ -1955,22 +2038,90 @@ fn exported_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     assert_eq!(mismatch.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&mismatch.stdout).contains("RuntimeBundleTargetMismatch"));
 
-    let unpaired = loomc()
-        .arg("--runtime-bundle")
-        .arg(&bundle)
-        .arg("build")
-        .arg(&project.0)
-        .output()
-        .expect("reject an unpaired runtime bundle");
-    assert_eq!(unpaired.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&unpaired.stderr).contains("must be provided together"));
-
     let missing_output = loomc()
-        .args(["runtime", "export"])
+        .args(["runtime", "pack", "--archive"])
+        .arg(test_runtime_archive())
         .output()
-        .expect("reject runtime export without an output");
+        .expect("reject runtime pack without an output");
     assert_eq!(missing_output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing_output.stderr).contains("requires --output DIR"));
+
+    let removed_export = loomc()
+        .args(["runtime", "export"])
+        .output()
+        .expect("reject removed runtime export command");
+    assert_eq!(removed_export.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&removed_export.stderr).contains("unknown runtime operation"));
+}
+
+#[test]
+fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
+    let project = TestProject::new("module no_fallback\n\npub fn main() Unit { Unit }\n");
+    let invalid_explicit_bundle = project.0.join("invalid-explicit-runtime");
+    fs::write(&invalid_explicit_bundle, b"not a runtime directory")
+        .expect("write invalid explicit bundle");
+
+    let no_fallback = loomc()
+        .args(["--json", "--runtime-bundle"])
+        .arg(&invalid_explicit_bundle)
+        .args(["build", "--output"])
+        .arg(project.0.join("must-not-link"))
+        .arg(&project.0)
+        .output()
+        .expect("invalid explicit bundle must not fall back to the valid environment bundle");
+
+    assert_eq!(no_fallback.status.code(), Some(2), "{no_fallback:?}");
+    assert!(String::from_utf8_lossy(&no_fallback.stdout).contains("RuntimeBundleInvalid"));
+}
+
+#[cfg(unix)]
+#[test]
+fn host_linker_resolution_uses_environment_and_prefers_explicit_cli() {
+    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    project.write(
+        "passthrough-linker",
+        r#"#!/bin/sh
+set -eu
+if [ "${1-}" = "--version" ]; then
+    printf 'loom passthrough linker v1\n'
+    exit 0
+fi
+printf '%s\n' "$@" > "${LOOM_FAKE_LINK_LOG:?}"
+exec "${LOOM_REAL_LINKER:?}" "$@"
+"#,
+    );
+    project.make_executable("passthrough-linker");
+    let linker = project.0.join("passthrough-linker");
+    let link_log = project.0.join("link-arguments");
+    let real_linker = std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into());
+
+    let environment_output = project.0.join("environment-linker");
+    let environment = loomc()
+        .args(["--json", "build", "--output"])
+        .arg(&environment_output)
+        .arg(&project.0)
+        .env("LOOM_CC", &linker)
+        .env("LOOM_FAKE_LINK_LOG", &link_log)
+        .env("LOOM_REAL_LINKER", &real_linker)
+        .output()
+        .expect("link with LOOM_CC");
+    assert_eq!(environment.status.code(), Some(0), "{environment:?}");
+    assert!(environment_output.is_file());
+
+    let explicit_output = project.0.join("explicit-linker");
+    let explicit = loomc()
+        .arg("--linker")
+        .arg(&linker)
+        .args(["--json", "build", "--output"])
+        .arg(&explicit_output)
+        .arg(&project.0)
+        .env("LOOM_CC", project.0.join("unusable-environment-linker"))
+        .env("LOOM_FAKE_LINK_LOG", &link_log)
+        .env("LOOM_REAL_LINKER", &real_linker)
+        .output()
+        .expect("link with explicit --linker");
+    assert_eq!(explicit.status.code(), Some(0), "{explicit:?}");
+    assert!(explicit_output.is_file());
 }
 
 #[cfg(unix)]
@@ -1984,6 +2135,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     let linker = project.0.join("fake-linker");
     let link_log = project.0.join("link-arguments");
     let object_copy = project.0.join("linked-target-object");
+    let runtime_copy = project.0.join("linked-runtime-archive");
     let link_payload = project.0.join("link-payload");
     fs::write(&link_payload, b"payload one\n").expect("first linker payload");
 
@@ -2003,6 +2155,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
             .arg(&project.0)
             .env("LOOM_FAKE_LINK_LOG", &link_log)
             .env("LOOM_FAKE_OBJECT_COPY", &object_copy)
+            .env("LOOM_FAKE_RUNTIME_COPY", &runtime_copy)
             .env("LOOM_FAKE_LINK_PAYLOAD", &link_payload)
             .output()
             .expect("cross link with fake linker")
@@ -2030,11 +2183,22 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     let arguments = arguments.lines().collect::<Vec<_>>();
     assert_eq!(arguments.len(), 9, "{arguments:#?}");
     assert!(arguments[0].ends_with("loom-target.o"), "{arguments:#?}");
+    let staged_runtime = std::path::Path::new(arguments[1]);
+    assert_eq!(staged_runtime.parent(), first_output.parent());
+    assert!(
+        staged_runtime
+            .file_stem()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".loom-runtime-link-")),
+        "{arguments:#?}"
+    );
     assert_eq!(
-        arguments[1],
-        fs::canonicalize(bundle_one.join("runtime.a"))
-            .expect("canonical runtime archive")
-            .to_string_lossy()
+        staged_runtime.extension().and_then(|value| value.to_str()),
+        Some("a")
+    );
+    assert!(!staged_runtime.exists(), "runtime snapshot must be removed");
+    assert_eq!(
+        fs::read(&runtime_copy).expect("copied runtime snapshot"),
+        b"foreign runtime archive one"
     );
     assert_eq!(
         &arguments[2..8],

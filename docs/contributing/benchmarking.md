@@ -125,8 +125,8 @@ Linux uses orange candidate bars, and a gray line marks that platform's base
 revision at 100. The panels use the same numeric scale, but every index is
 normalized only against its same-platform base. Lower values are faster and
 higher values are slower. The table remains the exact and accessible source of
-truth. Windows remains explicitly unavailable until its native backend,
-runtime, and I/O reactor are implemented.
+truth. Windows benchmark evidence remains unavailable; its complete native CI
+job must first establish compiler, runtime, and I/O execution on a real runner.
 
 The comment is informational. Each shared runner passes
 `--allow-busy-host`, so it is useful for spotting large changes, not for
