@@ -181,12 +181,20 @@ project-relative paths. Linux executables retain DWARF in the ELF output. On
 macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loomc debug`
 keeps temporary executable and debug data alive for the debugger session and
 launches in the project root. LCIR publishes compile-unit, file,
-`DISubprogram`, source-signature, and instruction-location metadata. Its DWARF
-signature describes Loom parameters and results; the fallible status aggregate
-and hidden fault-context pointer are compiler ABI details, analogous to an
-`sret` pointer, and are not exposed as source parameters. `loomc debug` uses
-the same atomic automatic route as build, run, and test. Development
-optimization alone is not a debugger contract and does not disable LCIR.
+`DISubprogram`, physical callable-signature, formal-parameter, parameter-value,
+and instruction-location metadata. LCIR does not retain source parameter names,
+so visible parameters have stable debugger names `arg0`, `arg1`, and so on.
+
+The signature deliberately describes the exact compiler ABI rather than a
+logical wrapper that does not exist. A fallible callable returns the
+target-laid-out `LoomFallible<T> { status LoomStatus, value T }` aggregate and
+receives an artificial trailing `LoomFaultContext*` parameter. These names are
+debugger descriptions of compiler implementation types, not Loom source types
+or a stable native ABI. In particular, a debugger's step-out result is the
+complete physical aggregate; it must not interpret the status register as the
+logical `T` result. `loomc debug` uses the same atomic automatic route as build,
+run, and test. Development optimization alone is not a debugger contract and
+does not disable LCIR.
 
 There is no stable native library, debugger pretty-printer, plugin, or FFI ABI
 in the current implementation.
