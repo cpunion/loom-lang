@@ -12,6 +12,7 @@ mod lcir_emitter;
 mod native_layout;
 mod native_range;
 mod native_storage;
+mod prepared;
 mod requirements;
 mod runtime_bundle;
 mod target;
@@ -22,6 +23,11 @@ pub use codegen::{
     native_object_fingerprint, validate_native_link_target,
 };
 pub use error::CodegenError;
+pub use prepared::{
+    NativePreparationError, NativePreparationErrorKind, NativeRouteKind, NativeRoutePolicy,
+    PreparedNativeObject, emit_prepared_native_object, prepare_native_object,
+    prepared_native_object_fingerprint, prepared_native_target_identity,
+};
 pub use runtime_bundle::{
     RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU, RUNTIME_CPU_FEATURES,
     RuntimeBundle, RuntimeBundleExport, RuntimeLinker, export_native_runtime_bundle,

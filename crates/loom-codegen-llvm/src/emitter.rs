@@ -67,7 +67,7 @@ use crate::native_storage::{
     native_pod_value_argument_local,
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
-use crate::target::create_target_machine;
+use crate::target::{NativeTargetMachine, create_target_machine};
 
 pub(crate) struct Emitter;
 
@@ -187,6 +187,18 @@ impl Emitter {
         options: &EmitOptions,
     ) -> Result<NativeObjectArtifact, CodegenError> {
         let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
+        Self::emit_object_with_target(program, reachable, roots, output, options, &target)
+    }
+
+    pub(crate) fn emit_object_with_target(
+        program: &Program,
+        reachable: &ReachableSourceGraph,
+        roots: &SourceRoots,
+        output: &Path,
+        options: &EmitOptions,
+        target: &NativeTargetMachine,
+    ) -> Result<NativeObjectArtifact, CodegenError> {
+        target.validate_legacy_value_abi()?;
 
         let context = Context::create();
         let int_ranges = NativeIntRangePlan::analyze(program, reachable, roots);
@@ -224,7 +236,7 @@ impl Emitter {
         backend
             .module
             .run_passes(
-                options.optimization.pipeline(),
+                target.optimization().pipeline(),
                 &target.machine,
                 PassBuilderOptions::create(),
             )

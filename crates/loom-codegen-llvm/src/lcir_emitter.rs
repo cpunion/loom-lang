@@ -31,7 +31,7 @@ use loom_codegen_ir::{
 
 use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
-use crate::target::create_llvm_target_machine;
+use crate::target::{NativeTargetMachine, create_llvm_target_machine};
 
 pub(crate) struct LcirEmitter;
 
@@ -43,11 +43,16 @@ impl LcirEmitter {
     ) -> Result<NativeObjectArtifact, CodegenError> {
         let target =
             create_llvm_target_machine(options.target_triple.as_deref(), options.optimization)?;
-        let llvm_pointer_bits = target
-            .machine
-            .get_target_data()
-            .get_pointer_byte_size(None)
-            .saturating_mul(8);
+        Self::emit_object_with_target(artifact, output, options, &target)
+    }
+
+    pub(crate) fn emit_object_with_target(
+        artifact: &CheckedArtifact,
+        output: &Path,
+        options: &NativeObjectOptions,
+        target: &NativeTargetMachine,
+    ) -> Result<NativeObjectArtifact, CodegenError> {
+        let llvm_pointer_bits = target.pointer_bits()?;
         let lcir_pointer_bits = u32::from(artifact.representations().target().pointer_bits());
         if llvm_pointer_bits != lcir_pointer_bits {
             return Err(CodegenError::new(
@@ -71,7 +76,7 @@ impl LcirEmitter {
         backend
             .module
             .run_passes(
-                options.optimization.pipeline(),
+                target.optimization().pipeline(),
                 &target.machine,
                 PassBuilderOptions::create(),
             )
