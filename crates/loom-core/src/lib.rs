@@ -1,5 +1,7 @@
 //! Stable source identities and diagnostics shared by every compiler phase.
 
+pub mod runtime_fault;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

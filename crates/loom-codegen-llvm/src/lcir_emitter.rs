@@ -34,7 +34,7 @@ use loom_codegen_ir::{
     Instruction, InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget,
     ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueId, ValueTypeId,
 };
-use loom_mir::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 
 use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};

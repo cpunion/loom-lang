@@ -24,12 +24,13 @@ use inkwell::values::{
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
+use loom_core::Span;
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, LocalId, MatchArm,
-    Pattern, Place, Program, RequirementId, Statement, StatementKind, TaskJoinMode, Type,
-    TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, Statement,
+    StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
 use loom_runtime_abi::{
     SHADOW_STACK_ABI_VERSION, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
@@ -8059,7 +8060,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                                 "negate.overflow",
                             )
                             .map_err(builder_error)?;
-                        self.fail_if_at(overflow, INTEGER_OVERFLOW_FAULT_CODE, &operation.span)?;
+                        self.fail_if_at(overflow, INTEGER_OVERFLOW_FAULT_CODE, operation.span)?;
                         self.backend
                             .builder
                             .build_int_sub(self.backend.i64_type.const_zero(), scalar, "negate")
@@ -8139,7 +8140,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         let result = if proven {
                             self.emit_proven_integer(operator, left, right)?
                         } else {
-                            self.emit_checked_integer(operator, left, right, &operation.span)?
+                            self.emit_checked_integer(operator, left, right, operation.span)?
                         };
                         self.initialize(destination, VALUE_TAG_INT)?;
                         self.backend.store_i64_field(
@@ -8299,7 +8300,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         operator: BinaryOp,
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
-        overflow_span: &(impl serde::Serialize + ?Sized),
+        overflow_span: Span,
     ) -> Result<IntValue<'ctx>, CodegenError> {
         if operator == BinaryOp::Divide {
             let zero = self
@@ -8402,14 +8403,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn fail_if(&self, condition: IntValue<'ctx>, code: &str) -> Result<(), CodegenError> {
-        self.fail_if_at(condition, code, &self.source.span)
+        self.fail_if_at(condition, code, self.source.span)
     }
 
     fn fail_if_at(
         &self,
         condition: IntValue<'ctx>,
         code: &str,
-        span: &(impl serde::Serialize + ?Sized),
+        span: Span,
     ) -> Result<(), CodegenError> {
         let fail = self.append_block("operation.fail");
         let pass = self.append_block("operation.pass");
@@ -8434,7 +8435,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         code: &str,
         message: &str,
         synchronous_display: &str,
-        span: &(impl serde::Serialize + ?Sized),
+        span: Span,
     ) -> Result<(), CodegenError> {
         let detail = serde_json::to_string(&serde_json::json!({
             "channel": "runtime",
@@ -12444,7 +12445,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                                 self.fail_if_at(
                                     overflow,
                                     INTEGER_OVERFLOW_FAULT_CODE,
-                                    &expression.span,
+                                    expression.span,
                                 )?;
                                 let value = self
                                     .backend
@@ -12607,7 +12608,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         let left = self.int_scalar(left_value)?;
                         let right = self.int_scalar(right_value)?;
                         let value =
-                            self.emit_checked_integer(operator, left, right, &operation.span)?;
+                            self.emit_checked_integer(operator, left, right, operation.span)?;
                         self.initialize(destination, VALUE_TAG_INT)?;
                         self.backend.store_i64_field(
                             self.backend.value_type,

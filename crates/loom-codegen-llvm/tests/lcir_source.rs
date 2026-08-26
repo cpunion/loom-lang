@@ -10,12 +10,10 @@ use loom_codegen_llvm::{
     OptimizationProfile, emit_lcir_native_object, emit_native, link_native_object,
     prepare_native_object,
 };
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
-use loom_mir::{
-    CheckedProgram, ContractExprKind, ExprKind, Function, INTEGER_OVERFLOW_FAULT_CODE,
-    INTEGER_OVERFLOW_FAULT_MESSAGE, StatementKind, UnaryOp,
-};
+use loom_mir::{CheckedProgram, ContractExprKind, ExprKind, Function, StatementKind, UnaryOp};
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 struct NativeRun {

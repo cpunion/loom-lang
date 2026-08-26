@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use loom_core::Span;
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, LocalId, MatchArm,
-    Pattern, Place, Program, Receiver, RequirementId, Statement, StatementKind, TaskJoinMode,
-    TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement,
+    StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 

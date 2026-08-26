@@ -11,7 +11,7 @@ The workspace is split into narrow crates:
 
 | Crate | Responsibility |
 | --- | --- |
-| `loom-core` | Shared identities, spans, diagnostics, and language version. |
+| `loom-core` | Shared identities, spans, diagnostic vocabulary, and language version. |
 | `loom-syntax` | Lossless lexing, parsing, recovery, AST, and formatting support. |
 | `loom-hir` | Source-independent declaration/body identities. |
 | `loom-sema` | Names, types, places, contracts, concepts, and witness proofs. |

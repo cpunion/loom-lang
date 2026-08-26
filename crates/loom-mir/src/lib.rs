@@ -1041,12 +1041,6 @@ pub enum UnaryOp {
     Not,
 }
 
-/// Stable runtime-fault code for checked signed-integer arithmetic overflow.
-pub const INTEGER_OVERFLOW_FAULT_CODE: &str = "IntegerOverflow";
-
-/// Stable user-facing message for checked signed-integer arithmetic overflow.
-pub const INTEGER_OVERFLOW_FAULT_MESSAGE: &str = "integer arithmetic overflowed";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinaryOp {
