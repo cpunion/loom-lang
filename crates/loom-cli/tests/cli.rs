@@ -2165,12 +2165,12 @@ fn core_examples_close_check_build_test_and_run() {
 }
 
 #[test]
-fn run_rejects_an_incompatible_artifact_version() {
+fn run_rejects_pre_raw_wait_removal_artifact_version() {
     let project = TestProject::new("module demo\n");
     let artifact = project.0.join("old.loomi");
     fs::write(
         &artifact,
-        br#"{"format":"loom.interpreted-mir","version":999,"program":{},"floatBits":[]}"#,
+        br#"{"format":"loom.interpreted-mir","version":17,"program":{},"floatBits":[]}"#,
     )
     .expect("write incompatible artifact");
     let output = loomc()

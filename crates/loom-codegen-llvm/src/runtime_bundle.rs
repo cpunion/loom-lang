@@ -822,6 +822,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn staged_msvc_pdb_never_overwrites_an_executable_named_like_a_pdb() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for output_name in ["program.pdb", "program.PDB"] {
+            let staged = directory.path().join(format!(".{output_name}.staged"));
+            let output = directory.path().join(output_name);
+            let companion = directory.path().join(format!("{output_name}.pdb"));
+            fs::write(&staged, b"validated PDB bytes").expect("write staged PDB");
+            fs::write(&output, b"preserved executable bytes").expect("write executable");
+
+            publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+                .expect("publish independent PDB companion");
+
+            assert_eq!(
+                fs::read(&output).expect("read preserved executable"),
+                b"preserved executable bytes"
+            );
+            assert_eq!(
+                fs::read(companion).expect("read independent PDB companion"),
+                b"validated PDB bytes"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn staged_msvc_pdb_rejects_a_symlink_destination() {

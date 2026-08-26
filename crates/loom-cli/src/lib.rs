@@ -2782,6 +2782,19 @@ mod tests {
     }
 
     #[test]
+    fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 18);
+        let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
+        assert!(
+            context
+                .frontend_identity
+                .ends_with("/loom.interpreted-mir-18"),
+            "{}",
+            context.frontend_identity
+        );
+    }
+
+    #[test]
     fn frontend_and_object_build_identities_are_independent_sha256_values() {
         let frontend = env!("LOOM_FRONTEND_BUILD_FINGERPRINT");
         let object = loom_codegen_llvm::LLVM_OBJECT_BUILD_FINGERPRINT;

@@ -136,6 +136,14 @@ mod tests {
             native_artifact_path("program.bin", target, NativeArtifactKind::DebugDatabase),
             Path::new("program.bin.pdb")
         );
+        assert_eq!(
+            native_artifact_path("program.pdb", target, NativeArtifactKind::DebugDatabase),
+            Path::new("program.pdb.pdb")
+        );
+        assert_eq!(
+            native_artifact_path("program.PDB", target, NativeArtifactKind::DebugDatabase),
+            Path::new("program.PDB.pdb")
+        );
     }
 
     #[test]
