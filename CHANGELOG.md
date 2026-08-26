@@ -26,8 +26,6 @@ artifact, or runtime compatibility.
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.
 
-### Changed
-
 - Interpreted MIR version 19 now treats source construction proofs as
   process-local: `.loomi` and nested `.loomlib` payloads replay their embedded
   predicate or invariant, while proof-bearing persistent compiler-cache layers
