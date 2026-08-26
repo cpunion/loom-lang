@@ -1593,7 +1593,7 @@ fn release_pipeline_emits_a_verified_optimized_object() {
 }
 
 #[test]
-fn debug_sources_emit_function_signatures_and_expression_locations() {
+fn debug_sources_emit_function_abi_and_expression_locations() {
     let artifact = unit_run(64);
     let directory = tempfile::tempdir().expect("temp directory");
     let object = directory.path().join("debug.o");

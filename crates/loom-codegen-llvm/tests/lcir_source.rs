@@ -6,7 +6,8 @@ use loom_codegen_ir::{
     CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, lower_scalar_artifact,
 };
 use loom_codegen_llvm::{
-    EmitOptions, NativeObjectOptions, emit_lcir_native_object, emit_native, link_native_object,
+    DebugSource, EmitOptions, NativeObjectOptions, emit_lcir_native_object, emit_native,
+    link_native_object,
 };
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
@@ -77,6 +78,50 @@ fn emit_and_run_legacy(program: &CheckedProgram, entry: &str, stem: &str) -> Out
     Command::new(executable)
         .output()
         .expect("run legacy comparison executable")
+}
+
+#[test]
+fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
+    let source = include_str!("../../../fixtures/lcir-debug-fallible/main.loom");
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create debug output directory");
+    let object = directory.path().join("fallible-debug.o");
+    let ir_path = directory.path().join("fallible-debug.ll");
+    let options = NativeObjectOptions {
+        emit_ir: Some(ir_path.clone()),
+        debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+        ..NativeObjectOptions::default()
+    };
+    emit_lcir_native_object(&artifact, &object, &options).expect("emit fallible debug object");
+    let ir = std::fs::read_to_string(ir_path).expect("read fallible debug IR");
+
+    assert!(
+        ir.contains(
+            "define internal { i32, i64 } @loom.lcir.fn.0(i64 %arg0, ptr %__loom_fault_context)"
+        ),
+        "{ir}"
+    );
+    assert!(ir.contains("name: \"LoomFallible<Int>\""), "{ir}");
+    assert!(ir.contains("name: \"status\""), "{ir}");
+    assert!(ir.contains("name: \"value\""), "{ir}");
+    assert!(ir.contains("name: \"arg0\", arg: 1"), "{ir}");
+    assert!(
+        ir.contains("name: \"__loom_fault_context\", arg: 2"),
+        "{ir}"
+    );
+    assert!(ir.contains("flags: DIFlagArtificial"), "{ir}");
+    assert_eq!(
+        ir.matches("#dbg_value(i64 %arg0").count(),
+        2,
+        "fallible and return-only parameter records must both survive:\n{ir}"
+    );
+    assert!(ir.contains("#dbg_value(ptr %__loom_fault_context"), "{ir}");
 }
 
 fn interpret_run(program: &CheckedProgram, entry: &str) -> Result<Value, ExecutionFailure> {
