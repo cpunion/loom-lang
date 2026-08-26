@@ -18,10 +18,10 @@ The workspace is split into narrow crates:
 | `loom-mir` | Typed executable IR, artifact encoding, liveness, and validation. |
 | `loom-lowering` | Total lowering from typed HIR to MIR. |
 | `loom-interpreter` | Deterministic execution of validated MIR. |
-| `loom-codegen-ir` | Checked-MIR source roots/reachability plus target-aware scalar typed-SSA builders, validation, and insertion-order dumps; typed SSA is not yet connected to production lowering. |
+| `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic scalar MIR-to-LCIR selection, typed-SSA builders, validation, artifact roots, and insertion-order dumps. |
 | `loom-runtime-abi` | Shared compiler-private native ABI constants and C-shaped records. |
 | `loom-runtime` | Moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
-| `loom-codegen-llvm` | Native layouts, checked-MIR-to-LLVM emission, objects, linking, and runtime bundles. |
+| `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |
 | `loom-driver` | Projects, resolution, source snapshots, diagnostics, and persistent cache. |
 | `loom-cli` | `loomc` host boundary and process execution. |
 | `loom-lsp` | Language-server integration over driver snapshots. |
@@ -51,13 +51,13 @@ entries, terminal backend constructors, source reachability, native object
 identity/emission, and portable-library encoding retain or require
 `loom_mir::CheckedProgram`.
 
-`loom-codegen-ir` also exposes an independently validated `CheckedProgram` for
-its scalar LCIR foundation and a `CheckedArtifact` with validated roots. The
-LLVM crate can emit that artifact directly to an object in focused tests.
-Production native compilation still uses the crate's checked-MIR source graph;
-MIR-to-LCIR lowering, production route selection, and the LCIR cache fingerprint
-are not connected. The accepted integration design is tracked in the [typed
-code generation IR RFC](../rfcs/typed-codegen-ir.md).
+`loom-codegen-ir` can construct a complete scalar `CheckedArtifact` through an
+independently validated `CheckedProgram` and validated roots.
+`loom-codegen-llvm` can emit that artifact directly to an object, and focused
+tests exercise that boundary. Production native compilation still uses the
+checked-MIR source graph and legacy emitter; the driver route and LCIR cache
+fingerprint are not connected. The accepted integration design is tracked in
+the [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 Implementation status and platform support are maintained separately in
 [Implementation status](../project/implementation-status.md). Future design

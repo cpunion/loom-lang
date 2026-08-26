@@ -3,18 +3,17 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar representations, typed SSA data structures,
-builders, independent program and artifact-root validators, and a textual dump
-for tests and review.
+provides target-aware scalar representations, whole-artifact checked-MIR
+lowering, typed SSA data structures, builders, independent program and
+artifact-root validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm::emit_lcir_native_object` consumes the resulting
 `CheckedArtifact` directly and emits its scalar functions and run/test harness
-without the universal value ABI or an executor. This is an independent object
-boundary exercised by hand-built LCIR tests, not the production route.
-Production native compilation still sends reachable checked MIR directly to
-the legacy LLVM implementation. MIR-to-LCIR lowering, atomic route selection,
-and the LCIR cache fingerprint remain unconnected. The accepted integration
-and migration design is in the
+without the universal value ABI or an executor. The whole-artifact lowerer and
+object emitter are both implemented boundaries, but the production driver
+still sends reachable checked MIR to the legacy LLVM implementation. The
+production router and LCIR cache fingerprint remain unconnected. The accepted
+LCIR integration and migration design is in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 LCIR is compiler-private and target-specific. It is not a source IR, a public
@@ -87,6 +86,53 @@ the same deterministic numbering and content have the same identity. A future
 LLVM object route can hash this value together with its backend, target-machine,
 optimization, and runtime identities; the production fingerprint does not
 consume it yet.
+
+`lower_scalar_artifact` accepts a checked MIR program, a source run/test
+request, and a target layout. It first selects `SourceRoots`, closes them with
+`analyze_source_reachability`, and classifies every reachable function before
+allocating LCIR. It returns either one complete independently checked
+`CheckedArtifact` or one deterministic `SupportReport` for the whole artifact.
+Invalid roots, resource limits, source-graph defects, and invalid generated
+LCIR are structured `LoweringError` values and never select fallback.
+
+The initial lowering coverage is monomorphic synchronous scalar signatures,
+constants, scalar locals and assignment, blocks and conditionals,
+short-circuit Boolean operations, integer ranges, pure scalar operations,
+checked integer arithmetic, and direct/readonly-inherent scalar calls including
+recursion. A dense reverse-call worklist computes the least fault-effect fixed
+point in linear time and chooses direct calls versus fallible invokes. Cleanup
+registration and assertions are conservatively unsupported together until
+their complete normal/return/fault ladders can be emitted.
+
+Lowering constructs canonical SSA directly: a single continuing branch does
+not gain a join, values already dominating every predecessor do not gain
+identity block parameters, short-circuit skip edges reuse the evaluated left
+operand, and a range header carries only locals written or moved on a
+continuing body path. These are generic control-flow/dataflow rules rather than
+cleanup left for a later LLVM optimizer.
+
+Per-function SSA environments are persistent sparse radix roots. Branches
+share their entry root, local writes copy one bounded path, and joins compare
+only subtries that differ from the shared entry. Range headers start from the
+same environment and inspect only the body's continuing mutation set. This
+keeps lowering proportional to emitted control flow and changed locals instead
+of multiplying every branch or loop by the number of live locals.
+
+The range induction increment currently uses `checked_int.add`. The preceding
+`current < end` comparison proves that this particular operation cannot fault,
+but LCIR has no general validated no-overflow operation yet, so its structural
+effect still makes the function `may_fault`. This is a blocker for switching
+production scalar loops to LCIR, not a final performance path. The fix must be
+a reusable proof-carrying operation and validator rule; the lowerer and emitter
+must not recognize a for-loop, Fibonacci, or other exact MIR shape.
+
+The source root boundary and LCIR artifact boundary intentionally differ. A
+run root has no value, type, witness, or receiver inputs and returns `Unit`. A
+source test root has no inputs and returns `Unit` or `Result[Unit, E]`; the
+current scalar catalog cannot represent the latter, so it selects
+whole-artifact `Unsupported(SignatureType)`. A completed LCIR
+`CheckedArtifact` therefore retains the narrower zero-parameter `Unit` root
+signature required by its independent validator.
 
 A function contains:
 
@@ -169,9 +215,10 @@ one unconditional edge. When their arguments differ, the emitter creates two
 physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
 distinct-target branches remain direct.
 
-These checks currently apply when clients construct LCIR explicitly. No
-production compiler stage lowers checked MIR into this program yet. In
-particular, source contracts must remain `Unsupported`: the generic
+These checks apply both to explicit clients and to the whole-artifact scalar
+lowerer. The independent LLVM object API consumes only the resulting checked
+artifact; the production driver does not select that route yet. Source
+contracts remain `Unsupported`: the generic
 `ContractFailed` code does not yet carry category, user code, contract span, or
 blame span, so it cannot replace production contract diagnostics.
 
@@ -196,7 +243,11 @@ representation catalog, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
-origins, and malformed SSA programs. LLVM-side tests additionally cover typed
+origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
+dumps for structurally different recursive and iterative Fibonacci programs.
+Structural regressions cover thousands of live locals and identity branches,
+bounded persistent-map allocation, and sparse-map reference differentials.
+LLVM-side tests additionally cover typed
 ABIs, block insertion order independent of dominance order, same-target edge
 normalization, exact scalar predicates, checked arithmetic, first-primary fault
 suppression, fatal runtime setup failures, ordered tests, linking, execution,

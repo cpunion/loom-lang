@@ -47,6 +47,13 @@ continuing witness states, and a range retains its zero-iteration path. A call
 mentioned only in unreachable MIR therefore cannot enlarge the artifact
 closure.
 
+Witness facts use function-local persistent sparse radix roots. Forking a
+control-flow path copies one root, updates copy only the changed local's bounded
+radix path, and joins skip pointer-identical subtries. Missing facts have the
+single conservative meaning “unknown” and are not stored. Consequently, a
+sequence of identity branches does not repeatedly clone or scan every live
+local; work follows executable syntax plus witness facts that actually change.
+
 The traversal repeats until neither functions nor witnesses grow, because a
 newly retained witness method can itself make more calls and witnesses live.
 Missing references in checked MIR are backend defects.
@@ -88,6 +95,8 @@ Reachability changes need tests for:
 - static and dynamic concept dispatch;
 - a declared but never constructed conformance remaining absent;
 - witness flow narrowing and conservative fallback;
+- persistent witness-flow joins against a reference model and large identity
+  branch sequences;
 - unused requirement slots remaining absent;
 - both development and release objects;
 - object-cache identity after dead and live edits.

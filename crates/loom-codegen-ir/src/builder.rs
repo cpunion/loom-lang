@@ -172,6 +172,10 @@ pub struct FunctionBuilder<'a> {
 }
 
 impl FunctionBuilder<'_> {
+    pub(crate) const fn representations(&self) -> &RepresentationPlan {
+        self.representations
+    }
+
     /// Appends a block. Blocks and values use independent dense identity
     /// domains within this function.
     ///

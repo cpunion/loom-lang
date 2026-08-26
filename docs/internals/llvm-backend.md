@@ -31,20 +31,21 @@ already crossed independent validation. The emitter declares every source
 function with its typed LCIR ABI, keeps source symbols internal, emits a run or
 ordered-test harness, verifies before and after optimization, and writes a
 relocatable object. Its tests emit, link, and run pure and faulting artifacts on
-the LLVM CI hosts.
+the LLVM CI hosts. The whole-artifact scalar lowerer can construct that wrapper
+from checked MIR.
 
 This object boundary is not the production compiler route. The driver still
 passes `loom_mir::CheckedProgram` through checked-MIR `SourceRoots` and
-`ReachableSourceGraph` into the legacy emitter. MIR-to-LCIR lowering, atomic
-whole-artifact route selection, and an LCIR object-cache fingerprint are not
-connected yet. Valid MIR outside the supported scalar slice must eventually
-produce one whole-artifact `Unsupported` result; it must never mix the two
+`ReachableSourceGraph` into the legacy emitter. Atomic whole-artifact route
+selection and an LCIR object-cache fingerprint are not connected yet. Valid
+MIR outside the supported scalar slice produces one whole-artifact
+`Unsupported` result; a production router must never mix the two
 source-function ABIs in one object.
 
 Source contracts are outside that routing slice. Hand-built LCIR can carry the
 generic `ContractFailed` fault code, but LCIR does not yet preserve the contract
 category, user code, contract span, and blame span required by production
-diagnostics. A future lowerer must report contracts as `Unsupported` until that
+diagnostics. The scalar lowerer reports contracts as `Unsupported` until that
 metadata has a checked LCIR representation and differential tests.
 
 The implemented crate boundary is documented in

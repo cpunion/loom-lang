@@ -291,7 +291,11 @@ name = "loom-codegen-ir"
 version = "0.1.0"
 dependencies = [
  "loom-core",
+ "loom-hir",
+ "loom-lowering",
  "loom-mir",
+ "loom-sema",
+ "loom-syntax",
  "serde",
  "serde_json",
 ]
