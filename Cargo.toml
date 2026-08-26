@@ -6,6 +6,7 @@ members = [
     "crates/loom-hir",
     "crates/loom-sema",
     "crates/loom-mir",
+    "crates/loom-codegen-ir",
     "crates/loom-lowering",
     "crates/loom-interpreter",
     "crates/loom-runtime-abi",
@@ -31,6 +32,7 @@ loom-syntax = { path = "crates/loom-syntax" }
 loom-hir = { path = "crates/loom-hir" }
 loom-sema = { path = "crates/loom-sema" }
 loom-mir = { path = "crates/loom-mir" }
+loom-codegen-ir = { path = "crates/loom-codegen-ir" }
 loom-lowering = { path = "crates/loom-lowering" }
 loom-interpreter = { path = "crates/loom-interpreter" }
 loom-runtime-abi = { path = "crates/loom-runtime-abi" }

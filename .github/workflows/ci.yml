@@ -175,8 +175,8 @@ jobs:
           cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
           cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
 
-  windows-frontend:
-    name: Windows x86-64 frontend
+  platform-independent-compiler-layers:
+    name: Platform-independent compiler layers (Windows x86-64)
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -194,7 +194,7 @@ jobs:
         run: |
           package_args=()
           for package in \
-            loom-core loom-syntax loom-hir loom-sema loom-mir loom-lowering \
+            loom-core loom-syntax loom-hir loom-sema loom-mir loom-codegen-ir loom-lowering \
             loom-runtime-abi loom-benchmark; do
             package_args+=(-p "$package")
           done

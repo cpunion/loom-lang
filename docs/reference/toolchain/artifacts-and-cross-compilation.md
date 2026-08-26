@@ -92,6 +92,6 @@ Windows is not currently a release-artifact platform. LLVM recognizing a
 Windows triple must not be represented as a tested Windows runtime or
 executable toolchain.
 
-For the complete distinction between CI, frontend, native runtime, cross
+For the complete distinction between compiler-layer CI, native runtime, cross
 target, and release support, see
 [Implementation status](../../project/implementation-status.md).

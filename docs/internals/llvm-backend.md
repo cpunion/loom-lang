@@ -20,6 +20,18 @@ unsafe operations required by the compiler-private C ABI.
 Contributors need LLVM 19 development files and a matching `llvm-config`. The
 workspace does not silently fall back to another LLVM major version.
 
+## Standalone LCIR foundation
+
+The workspace contains `loom-codegen-ir`, a standalone scalar typed-SSA
+foundation. It currently has no MIR lowering and `loom-codegen-llvm` does not
+depend on or consume its `CheckedProgram`. No production artifact is selected,
+lowered, emitted, or cached through LCIR.
+
+The implemented crate boundary is documented in
+[Code generation IR](codegen-ir.md). The accepted pipeline design,
+whole-artifact migration rule, typed ABI, and deletion gates are in the
+[typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
+
 ## Target-machine policy
 
 For an implicit host target, the backend uses LLVM's normalized host triple and
@@ -103,6 +115,9 @@ The native object fingerprint is format `loom-native-object-v4` and includes:
 - complete type, concept, requirement, and prelude metadata;
 - reachable function and live witness-slot data;
 - stable debug source metadata.
+
+The compiler build fingerprint includes the `loom-codegen-ir` crate sources.
+There is no LCIR-specific object format or route-selection cache key yet.
 
 Host linking uses the Rust runtime archive embedded in the compiler build.
 Cross-target linking accepts only a validated matching runtime bundle and an

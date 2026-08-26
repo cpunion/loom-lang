@@ -40,7 +40,7 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Compiler cache | Project-local content-addressed reuse for compiler layers and selected artifacts. |
 | Runtime bundle | Versioned target runtime archive plus manifest used for explicit linking. |
 
-Avoid “supported” without a qualifier. Prefer “CI-tested frontend,”
+Avoid “supported” without a qualifier. Prefer “CI-tested compiler layers,”
 “CI-tested native runtime,” “LLVM object target,” or “published release
 archive.”
 

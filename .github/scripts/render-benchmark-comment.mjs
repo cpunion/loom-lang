@@ -27,7 +27,11 @@ const PLATFORM_COLUMNS = [
     chartColor: "#eb670f",
     chartLegend: "orange candidate bars",
   },
-  { key: "windows/x86_64", label: "Windows", unavailable: "— (frontend only)" },
+  {
+    key: "windows/x86_64",
+    label: "Windows",
+    unavailable: "— (native unavailable)",
+  },
 ];
 const RUNTIME_CHART_PLATFORMS = PLATFORM_COLUMNS.filter((platform) => platform.chartColor);
 const BASE_CHART_COLOR = "#59636e";
@@ -458,7 +462,7 @@ export function renderComment(comparisons, sha) {
   ];
   if (!byPlatform.has("windows/x86_64")) {
     lines.push(
-      "Windows remains a frontend-only CI target, so its native runtime cells are unavailable until the Windows backend, runtime, and I/O reactor are complete.",
+      "Windows CI currently covers selected platform-independent compiler layers only, so its native runtime cells are unavailable until the Windows backend, runtime, and I/O reactor are complete.",
       "",
     );
   }

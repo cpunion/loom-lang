@@ -18,7 +18,16 @@ record must never be used as evidence that a feature is available.
 - **Superseded**: replaced by another record.
 - **Archived**: retained as research history and outside the active roadmap.
 
-The current repository contains only [archived research](archived/README.md).
+## Active records
+
+- [Typed code generation IR](typed-codegen-ir.md) — **Accepted;
+  implementation in progress**
+
+## Archived records
+
+Earlier investigations that are not on the active roadmap are preserved as
+[archived research](archived/README.md).
+
 New proposals should begin with a tracking issue and state their user problem,
 scope, alternatives, observable semantics, diagnostics, migration impact, test
 plan, and acceptance criteria.
