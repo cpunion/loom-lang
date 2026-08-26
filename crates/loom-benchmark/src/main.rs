@@ -485,7 +485,7 @@ fn language_specs(workspace: &Path) -> Result<Vec<LanguageSpec>, String> {
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("create {}: {error}", output_dir.display()))?;
     let loomc = std::env::var_os("LOOM_BENCH_LOOMC").map_or_else(
-        || workspace.join("target/release/loomc").into_os_string(),
+        || executable_path(&workspace.join("target/release"), "loomc").into_os_string(),
         |path| path,
     );
     let go = ToolCommand::from_env("LOOM_BENCH_GO", "go");
@@ -502,11 +502,16 @@ fn language_specs(workspace: &Path) -> Result<Vec<LanguageSpec>, String> {
     ])
 }
 
+fn executable_path(directory: &Path, stem: &str) -> PathBuf {
+    directory.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX))
+}
+
 fn loom_spec(source_dir: &Path, output_dir: &Path, program: OsString) -> LanguageSpec {
+    let executable = executable_path(output_dir, "loom-basic");
     LanguageSpec {
         language: "loom",
         source: source_dir.join("main.loom"),
-        executable: output_dir.join("loom-basic"),
+        executable: executable.clone(),
         compiler: ToolCommand {
             program,
             prefix_args: Vec::new(),
@@ -517,7 +522,7 @@ fn loom_spec(source_dir: &Path, output_dir: &Path, program: OsString) -> Languag
             OsString::from("--no-cache"),
             OsString::from("build"),
             OsString::from("--output"),
-            output_dir.join("loom-basic").into_os_string(),
+            executable.into_os_string(),
             source_dir.as_os_str().to_owned(),
         ],
         runtime_environment: Vec::new(),
@@ -525,10 +530,11 @@ fn loom_spec(source_dir: &Path, output_dir: &Path, program: OsString) -> Languag
 }
 
 fn go_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> LanguageSpec {
+    let executable = executable_path(output_dir, "go-basic");
     LanguageSpec {
         language: "go",
         source: source_dir.join("main.go"),
-        executable: output_dir.join("go-basic"),
+        executable: executable.clone(),
         compiler,
         version_args: vec![OsString::from("version")],
         compile_args: vec![
@@ -536,7 +542,7 @@ fn go_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Langu
             OsString::from("-trimpath"),
             OsString::from("-ldflags=-s -w"),
             OsString::from("-o"),
-            output_dir.join("go-basic").into_os_string(),
+            executable.into_os_string(),
             source_dir.join("main.go").into_os_string(),
         ],
         runtime_environment: vec![("GOMAXPROCS", "1")],
@@ -544,10 +550,11 @@ fn go_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Langu
 }
 
 fn rust_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> LanguageSpec {
+    let executable = executable_path(output_dir, "rust-basic");
     LanguageSpec {
         language: "rust",
         source: source_dir.join("main.rs"),
-        executable: output_dir.join("rust-basic"),
+        executable: executable.clone(),
         compiler,
         version_args: vec![OsString::from("--version")],
         compile_args: vec![
@@ -563,7 +570,7 @@ fn rust_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Lan
             OsString::from("-D"),
             OsString::from("warnings"),
             OsString::from("-o"),
-            output_dir.join("rust-basic").into_os_string(),
+            executable.into_os_string(),
             source_dir.join("main.rs").into_os_string(),
         ],
         runtime_environment: Vec::new(),
@@ -571,10 +578,11 @@ fn rust_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Lan
 }
 
 fn c_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> LanguageSpec {
+    let executable = executable_path(output_dir, "c-basic");
     LanguageSpec {
         language: "c",
         source: source_dir.join("main.c"),
-        executable: output_dir.join("c-basic"),
+        executable: executable.clone(),
         compiler,
         version_args: vec![OsString::from("--version")],
         compile_args: vec![
@@ -585,7 +593,7 @@ fn c_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Langua
             OsString::from("-Wextra"),
             OsString::from("-Werror"),
             OsString::from("-o"),
-            output_dir.join("c-basic").into_os_string(),
+            executable.into_os_string(),
             source_dir.join("main.c").into_os_string(),
         ],
         runtime_environment: Vec::new(),
@@ -593,10 +601,11 @@ fn c_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Langua
 }
 
 fn cpp_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> LanguageSpec {
+    let executable = executable_path(output_dir, "cpp-basic");
     LanguageSpec {
         language: "cpp",
         source: source_dir.join("main.cpp"),
-        executable: output_dir.join("cpp-basic"),
+        executable: executable.clone(),
         compiler,
         version_args: vec![OsString::from("--version")],
         compile_args: vec![
@@ -607,7 +616,7 @@ fn cpp_spec(source_dir: &Path, output_dir: &Path, compiler: ToolCommand) -> Lang
             OsString::from("-Wextra"),
             OsString::from("-Werror"),
             OsString::from("-o"),
-            output_dir.join("cpp-basic").into_os_string(),
+            executable.into_os_string(),
             source_dir.join("main.cpp").into_os_string(),
         ],
         runtime_environment: Vec::new(),
@@ -764,11 +773,11 @@ fn run_fixture(
     let output = output_with_timeout(&mut command, timeout, &action)?;
     let elapsed = started.elapsed();
     require_success(output, &action).and_then(|stdout| {
-        if stdout == "Unit\n" {
+        if matches!(stdout.as_bytes(), b"Unit\n" | b"Unit\r\n") {
             Ok(elapsed)
         } else {
             Err(format!(
-                "execute {} {case}: expected stdout `Unit\\n`, got {stdout:?}",
+                "execute {} {case}: expected one platform line `Unit`, got {stdout:?}",
                 language.language
             ))
         }
@@ -1056,9 +1065,18 @@ mod tests {
 
     use super::{
         BenchmarkProfile, CASES, CaseReport, ConfigReport, HostReport, REPORT_KIND, REPORT_WARNING,
-        Report, RuntimeReport, fib_checksum, lcg_final_checksum, list_checksum, nearest_rank,
-        output_with_timeout, parse_config, parse_first_number, reject_busy_measured_run, summarize,
+        Report, RuntimeReport, executable_path, fib_checksum, lcg_final_checksum, list_checksum,
+        nearest_rank, output_with_timeout, parse_config, parse_first_number,
+        reject_busy_measured_run, summarize,
     };
+
+    #[test]
+    fn executable_paths_use_the_host_suffix() {
+        assert_eq!(
+            executable_path(std::path::Path::new("bin"), "fixture"),
+            std::path::Path::new("bin").join(format!("fixture{}", std::env::consts::EXE_SUFFIX))
+        );
+    }
 
     #[test]
     fn standard_checksums_are_stable() {

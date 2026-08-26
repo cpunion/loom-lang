@@ -1,0 +1,9 @@
+* text=auto
+*.c text eol=lf
+*.cpp text eol=lf
+*.json text eol=lf
+*.loom text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf

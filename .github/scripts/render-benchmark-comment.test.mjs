@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { renderComment } from "./render-benchmark-comment.mjs";
+import { readReport, renderComment } from "./render-benchmark-comment.mjs";
 
 function report(median, compileMs = 10) {
   return {
@@ -40,4 +43,12 @@ test("rejects a spoofed head identity", () => {
     () => renderComment(report(10), report(9), "@maintainer"),
     /head SHA is malformed/,
   );
+});
+
+test("rejects an unvalidated report identity", (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "loom-benchmark-report-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const filename = path.join(directory, "report.json");
+  fs.writeFileSync(filename, JSON.stringify({ schemaVersion: 1, kind: "spoofed" }));
+  assert.throws(() => readReport(filename, "candidate"), /unsupported identity/);
 });
