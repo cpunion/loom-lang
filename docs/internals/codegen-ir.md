@@ -111,6 +111,13 @@ operand, and a range header carries only locals written or moved on a
 continuing body path. These are generic control-flow/dataflow rules rather than
 cleanup left for a later LLVM optimizer.
 
+Per-function SSA environments are persistent sparse radix roots. Branches
+share their entry root, local writes copy one bounded path, and joins compare
+only subtries that differ from the shared entry. Range headers start from the
+same environment and inspect only the body's continuing mutation set. This
+keeps lowering proportional to emitted control flow and changed locals instead
+of multiplying every branch or loop by the number of live locals.
+
 The range induction increment currently uses `checked_int.add`. The preceding
 `current < end` comparison proves that this particular operation cannot fault,
 but LCIR has no general validated no-overflow operation yet, so its structural
@@ -238,6 +245,8 @@ infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
 origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
 dumps for structurally different recursive and iterative Fibonacci programs.
+Structural regressions cover thousands of live locals and identity branches,
+bounded persistent-map allocation, and sparse-map reference differentials.
 LLVM-side tests additionally cover typed
 ABIs, block insertion order independent of dominance order, same-target edge
 normalization, exact scalar predicates, checked arithmetic, first-primary fault
