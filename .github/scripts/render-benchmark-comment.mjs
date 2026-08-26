@@ -326,14 +326,12 @@ function chartUpperBound(values) {
   return Math.ceil(padded / step) * step;
 }
 
-function runtimeChart(platform, comparison, runtimeKeys) {
+function runtimeChart(platform, comparison, runtimeKeys, indices, upperBound) {
   if (runtimeKeys.length > MAX_CHART_ENTRIES) {
     fail("benchmark suite contains too many runtime entries for a bounded chart");
   }
   const entries = runtimeKeys.map((key) => comparison.runtime.get(key));
   const labels = entries.map((entry) => JSON.stringify(`${entry.caseName}/${entry.language}`));
-  const indices = entries.map((entry) => chartIndex(entry.base, entry.candidate));
-  const upperBound = chartUpperBound(indices);
   const baseLine = indices.map(() => 100);
   return [
     `#### ${platform.label}`,
@@ -437,14 +435,31 @@ export function renderComment(comparisons, sha) {
     "",
     "### Runtime comparison charts",
     "",
-    "Base is 100. Lower bars are faster, higher bars are slower, and the line marks the base revision.",
+    "Base is 100. Lower bars are faster, higher bars are slower, and the line marks the base revision. All platform charts use the same scale.",
     "",
   );
-  for (const platform of PLATFORM_COLUMNS) {
+  const charts = PLATFORM_COLUMNS.flatMap((platform) => {
     const comparison = byPlatform.get(platform.key);
-    if (comparison) {
-      lines.push(...runtimeChart(platform, comparison, runtimeKeys));
+    if (!comparison) {
+      return [];
     }
+    const indices = runtimeKeys.map((key) => {
+      const entry = comparison.runtime.get(key);
+      return chartIndex(entry.base, entry.candidate);
+    });
+    return [{ platform, comparison, indices }];
+  });
+  const upperBound = chartUpperBound(charts.flatMap((chart) => chart.indices));
+  for (const chart of charts) {
+    lines.push(
+      ...runtimeChart(
+        chart.platform,
+        chart.comparison,
+        runtimeKeys,
+        chart.indices,
+        upperBound,
+      ),
+    );
   }
   return lines.join("\n");
 }

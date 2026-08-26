@@ -125,6 +125,15 @@ test("renders charts only for platforms with measured evidence", () => {
   assert.doesNotMatch(output, /#### Windows/);
 });
 
+test("uses one runtime-index scale across measured platforms", () => {
+  const output = renderComment(
+    [comparison("macos/aarch64", 10, 9), comparison("linux/x86_64", 10, 15)],
+    "0123456789abcdef",
+  );
+  assert.equal(output.match(/y-axis "Runtime index" 0 --> 160/g)?.length, 2);
+  assert.match(output, /All platform charts use the same scale/);
+});
+
 test("rejects a comparison whose percentage delta overflows", () => {
   assert.throws(
     () =>
