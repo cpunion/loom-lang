@@ -249,6 +249,15 @@ fn iterative(limit Int) Int {
     previous
 }
 
+fn highBit() Int {
+    var seen = 0
+    for index in 9223372036854775806..9223372036854775807 {
+        seen = index
+        Unit
+    }
+    seen
+}
+
 fn requireEqual(actual Int, expected Int) Unit {
     if actual == expected {
         Unit
@@ -261,6 +270,7 @@ fn requireEqual(actual Int, expected Int) Unit {
 pub fn main() Unit {
     requireEqual(recursive(10), 55)
     requireEqual(iterative(10), 55)
+    requireEqual(highBit(), 9223372036854775806)
     Unit
 }
 ";
