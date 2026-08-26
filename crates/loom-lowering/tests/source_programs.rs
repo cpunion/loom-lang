@@ -163,6 +163,64 @@ fn contract_and_assert_proofs_remove_only_established_runtime_checks() {
 }
 
 #[test]
+fn checked_mir_accepts_the_total_unary_contract_matrix() {
+    let program = compile_and_validate(
+        "module sample\n\nfn unaryContracts(required Int, returned Int, asserted Int, floating Float, flag Bool) Int\n    requires -required <= 0\n    requires -floating <= 0.0\n    requires !flag\n    ensures -result <= 0\n{\n    assert -asserted <= 0\n    returned\n}\n",
+    );
+    let function = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "unaryContracts"))
+        .expect("unary contract function");
+
+    assert_eq!(function.call_plan.requires.len(), 3);
+    assert_eq!(function.call_plan.ensures.len(), 1);
+    assert!(matches!(
+        function.call_plan.requires[0].expression.kind,
+        loom_mir::ContractExprKind::Binary(
+            _,
+            ref left,
+            _
+        ) if matches!(left.kind, loom_mir::ContractExprKind::Unary(loom_mir::UnaryOp::Negate, _))
+    ));
+    assert!(matches!(
+        function.call_plan.requires[1].expression.kind,
+        loom_mir::ContractExprKind::Binary(
+            _,
+            ref left,
+            _
+        ) if matches!(left.kind, loom_mir::ContractExprKind::Unary(loom_mir::UnaryOp::Negate, _))
+    ));
+    assert!(matches!(
+        function.call_plan.requires[2].expression.kind,
+        loom_mir::ContractExprKind::Unary(loom_mir::UnaryOp::Not, _)
+    ));
+    assert!(matches!(
+        function.call_plan.ensures[0].expression.kind,
+        loom_mir::ContractExprKind::Binary(
+            _,
+            ref left,
+            _
+        ) if matches!(left.kind, loom_mir::ContractExprKind::Unary(loom_mir::UnaryOp::Negate, _))
+    ));
+    assert!(function.body.statements.iter().any(|statement| {
+        matches!(
+            statement.kind,
+            loom_mir::StatementKind::Assert {
+                condition: loom_mir::Expr {
+                    kind: loom_mir::ExprKind::Binary(
+                        _,
+                        ref left,
+                        _
+                    ),
+                    ..
+                }
+            } if matches!(left.kind, loom_mir::ExprKind::Unary(loom_mir::UnaryOp::Negate, _))
+        )
+    }));
+}
+
+#[test]
 fn mutable_receiver_requires_only_proves_the_entry_snapshot() {
     let program = compile_and_validate(
         "module sample\n\nrecord Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self) Unit\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n        Unit\n    }\n}\n",
