@@ -365,6 +365,19 @@ struct RootContext<'ctx> {
     executor: PointerValue<'ctx>,
 }
 
+#[derive(Clone, Copy)]
+struct CallerSpan<'ctx> {
+    file: IntValue<'ctx>,
+    start: IntValue<'ctx>,
+    end: IntValue<'ctx>,
+}
+
+impl<'ctx> CallerSpan<'ctx> {
+    fn metadata(self) -> [BasicMetadataValueEnum<'ctx>; 3] {
+        [self.file.into(), self.start.into(), self.end.into()]
+    }
+}
+
 impl<'ctx> RootContext<'ctx> {
     fn hidden(self) -> PointerValue<'ctx> {
         match self.plan {
@@ -697,6 +710,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 ptr_type.into(),
                 ptr_type.into(),
                 ptr_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
             ],
             false,
         );
@@ -950,10 +966,25 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 .fn_type(&parameters, false)),
             NativeEffectAbi::RuntimeStatus => {
                 parameters.push(self.ptr_type.into());
+                if signature.carries_caller_span() {
+                    parameters.extend([
+                        BasicMetadataTypeEnum::from(self.i64_type),
+                        BasicMetadataTypeEnum::from(self.i64_type),
+                        BasicMetadataTypeEnum::from(self.i64_type),
+                    ]);
+                }
                 Ok(self
                     .native_status_result_type(signature)?
                     .fn_type(&parameters, false))
             }
+        }
+    }
+
+    fn caller_span(&self, file: u32, start: u32, end: u32) -> CallerSpan<'ctx> {
+        CallerSpan {
+            file: self.i64_type.const_int(u64::from(file), false),
+            start: self.i64_type.const_int(u64::from(start), false),
+            end: self.i64_type.const_int(u64::from(end), false),
         }
     }
 
@@ -984,7 +1015,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 } else {
                     NativeEffectAbi::RuntimeStatus
                 };
-                let signature = shape.clone().with_effect(effect);
+                let signature = shape
+                    .clone()
+                    .with_effect(effect, !source.call_plan.requires.is_empty());
                 let native = self.module.add_function(
                     &format!("loom.native.fn.{}.{}", id.0, mangle(&source.name)),
                     self.native_function_type(&signature)?,
@@ -1059,7 +1092,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "assumed recursive Int body is not a pure scalar native function",
             ));
         }
-        let signature = shape.with_effect(NativeEffectAbi::PureNoFault);
+        let signature = shape.with_effect(NativeEffectAbi::PureNoFault, false);
         let function = self.module.add_function(
             &format!("loom.native.assumed.fn.{}.{}", id.0, mangle(&source.name)),
             self.native_function_type(&signature)?,
@@ -2803,6 +2836,39 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(function)
     }
 
+    fn native_context_raise_fault_with_span(&self) -> Result<FunctionValue<'ctx>, CodegenError> {
+        if let Some(function) = self
+            .module
+            .get_function("loom_context_raise_fault_with_span_v1")
+        {
+            return Ok(function);
+        }
+        let function_type = self.context.i32_type().fn_type(
+            &[
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+                self.i64_type.into(),
+                self.i64_type.into(),
+                self.i64_type.into(),
+                self.ptr_type.into(),
+                self.i64_type.into(),
+            ],
+            false,
+        );
+        let function =
+            self.module
+                .add_function("loom_context_raise_fault_with_span_v1", function_type, None);
+        mark_cold_noinline(self.context, function)?;
+        Ok(function)
+    }
+
     fn native_task_join_step(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_task_join_step")
@@ -3005,6 +3071,66 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn raise_fault_with_span(
+        &self,
+        context: PointerValue<'ctx>,
+        code: &str,
+        message: &str,
+        display: &str,
+        detail_prefix: &str,
+        span: CallerSpan<'ctx>,
+        detail_suffix: &str,
+    ) -> Result<(), CodegenError> {
+        let code_data = self
+            .builder
+            .build_global_string_ptr(code, &self.unique("fault.code"))
+            .map_err(builder_error)?;
+        let message_data = self
+            .builder
+            .build_global_string_ptr(message, &self.unique("fault.message"))
+            .map_err(builder_error)?;
+        let display_data = self
+            .builder
+            .build_global_string_ptr(display, &self.unique("fault.display"))
+            .map_err(builder_error)?;
+        let prefix_data = self
+            .builder
+            .build_global_string_ptr(detail_prefix, &self.unique("fault.detail.prefix"))
+            .map_err(builder_error)?;
+        let suffix_data = self
+            .builder
+            .build_global_string_ptr(detail_suffix, &self.unique("fault.detail.suffix"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_call(
+                self.native_context_raise_fault_with_span()?,
+                &[
+                    context.into(),
+                    code_data.as_pointer_value().into(),
+                    self.i64_type.const_int(code.len() as u64, false).into(),
+                    message_data.as_pointer_value().into(),
+                    self.i64_type.const_int(message.len() as u64, false).into(),
+                    display_data.as_pointer_value().into(),
+                    self.i64_type.const_int(display.len() as u64, false).into(),
+                    prefix_data.as_pointer_value().into(),
+                    self.i64_type
+                        .const_int(detail_prefix.len() as u64, false)
+                        .into(),
+                    span.file.into(),
+                    span.start.into(),
+                    span.end.into(),
+                    suffix_data.as_pointer_value().into(),
+                    self.i64_type
+                        .const_int(detail_suffix.len() as u64, false)
+                        .into(),
+                ],
+                "fault.raise.with.span",
+            )
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
     fn printf(
         &self,
         format: &str,
@@ -3083,7 +3209,9 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let declaration = &self.native_functions[&id];
         let signature = &declaration.signature;
         let mut call_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::with_capacity(
-            source.params.len() + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus),
+            source.params.len()
+                + usize::from(signature.effect() == NativeEffectAbi::RuntimeStatus)
+                + 3 * usize::from(signature.carries_caller_span()),
         );
         for parameter in signature.shape().parameters() {
             let argument = self.load_pointer_field(
@@ -3112,6 +3240,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             )?
         } else {
             call_arguments.push(parameter_pointer(wrapper, 4)?.into());
+            if signature.carries_caller_span() {
+                call_arguments.push(parameter_int(wrapper, 5)?.into());
+                call_arguments.push(parameter_int(wrapper, 6)?.into());
+                call_arguments.push(parameter_int(wrapper, 7)?.into());
+            }
             let (status, value) = call_native_status(
                 &self.builder,
                 declaration.function,
@@ -3181,6 +3314,11 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let conformance_proofs = parameter_pointer(constructor, 2)?;
         let requirement_proofs = parameter_pointer(constructor, 3)?;
         let executor = parameter_pointer(constructor, 4)?;
+        let caller_span = CallerSpan {
+            file: parameter_int(constructor, 5)?,
+            start: parameter_int(constructor, 6)?,
+            end: parameter_int(constructor, 7)?,
+        };
         let entry = self.context.append_basic_block(constructor, "entry");
         let ready = self.context.append_basic_block(constructor, "task.ready");
         let failed = self.context.append_basic_block(constructor, "task.failed");
@@ -3208,6 +3346,38 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(ready);
+        if let Some(call_site_slot) = layout.call_site_slot {
+            let call_site = call_pointer(
+                &self.builder,
+                self.native_task_slot(),
+                &[
+                    task.into(),
+                    self.i64_type.const_int(call_site_slot, false).into(),
+                ],
+                "task.call.site",
+            )?;
+            self.builder
+                .build_store(call_site, self.value_type.const_zero())
+                .map_err(builder_error)?;
+            self.store_i64_field(
+                self.value_type,
+                call_site,
+                VALUE_FIELD_SCALAR,
+                caller_span.file,
+            )?;
+            self.store_i64_field(
+                self.value_type,
+                call_site,
+                VALUE_FIELD_AUX,
+                caller_span.start,
+            )?;
+            self.store_i64_field(
+                self.value_type,
+                call_site,
+                VALUE_FIELD_NOMINAL,
+                caller_span.end,
+            )?;
+        }
         for parameter in &source.params {
             let value = self.load_pointer_field(
                 self.arg_node_type,
@@ -3561,18 +3731,24 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         CodegenError::new("NoCompilationRoots", "run harness has no root")
                     })?;
                 let context = self.create_root_context(self.root_context_plan(root)?)?;
-                let mut status = call_int(
-                    &self.builder,
-                    self.functions[&root],
-                    &[
-                        result.into(),
-                        null.into(),
-                        null.into(),
-                        null.into(),
-                        context.hidden().into(),
-                    ],
-                    "run",
-                )?;
+                let root_source = self.program.function(root).ok_or_else(|| {
+                    CodegenError::new("InvalidFunctionReference", "run root is missing")
+                })?;
+                let caller_span = self.caller_span(
+                    root_source.span.file.0,
+                    root_source.span.range.start,
+                    root_source.span.range.end,
+                );
+                let mut root_arguments = vec![
+                    result.into(),
+                    null.into(),
+                    null.into(),
+                    null.into(),
+                    context.hidden().into(),
+                ];
+                root_arguments.extend(caller_span.metadata());
+                let mut status =
+                    call_int(&self.builder, self.functions[&root], &root_arguments, "run")?;
                 if self
                     .program
                     .function(root)
@@ -3626,18 +3802,24 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .map_err(builder_error)?;
                 for root in self.roots.functions() {
                     let context = self.create_root_context(self.root_context_plan(*root)?)?;
-                    let mut status = call_int(
-                        &self.builder,
-                        self.functions[root],
-                        &[
-                            result.into(),
-                            null.into(),
-                            null.into(),
-                            null.into(),
-                            context.hidden().into(),
-                        ],
-                        "test",
-                    )?;
+                    let root_source = self.program.function(*root).ok_or_else(|| {
+                        CodegenError::new("InvalidFunctionReference", "test root is missing")
+                    })?;
+                    let caller_span = self.caller_span(
+                        root_source.span.file.0,
+                        root_source.span.range.start,
+                        root_source.span.range.end,
+                    );
+                    let mut root_arguments = vec![
+                        result.into(),
+                        null.into(),
+                        null.into(),
+                        null.into(),
+                        context.hidden().into(),
+                    ];
+                    root_arguments.extend(caller_span.metadata());
+                    let mut status =
+                        call_int(&self.builder, self.functions[root], &root_arguments, "test")?;
                     if self
                         .program
                         .function(*root)
@@ -4174,6 +4356,7 @@ struct CompletionWait<'ctx> {
 struct AsyncLayout {
     local_slots: BTreeMap<LocalId, u64>,
     old_parameter_slots: BTreeMap<LocalId, u64>,
+    call_site_slot: Option<u64>,
     result_slot: u64,
     slot_count: u64,
 }
@@ -4223,6 +4406,15 @@ impl AsyncLayout {
                 .checked_add(1)
                 .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
         }
+        let call_site_slot = if function.call_plan.requires.is_empty() {
+            None
+        } else {
+            let slot = next;
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many task slots"))?;
+            Some(slot)
+        };
         let result_slot = next;
         let slot_count = next
             .checked_add(1)
@@ -4230,6 +4422,7 @@ impl AsyncLayout {
         Ok(Self {
             local_slots,
             old_parameter_slots,
+            call_site_slot,
             result_slot,
             slot_count,
         })
@@ -4245,6 +4438,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     body_mode: NativeBodyMode,
     witness_parameters: BTreeMap<u32, PointerValue<'ctx>>,
     runtime_context: PointerValue<'ctx>,
+    caller_span: CallerSpan<'ctx>,
     task: Option<PointerValue<'ctx>>,
     loop_depth: Cell<u32>,
     active_range_local: Cell<Option<LocalId>>,
@@ -4305,6 +4499,14 @@ struct PreparedNativeCall<'ctx> {
     inout_records: Vec<NativeCallInOutRecord<'ctx>>,
 }
 
+#[derive(Clone, Copy)]
+struct NativeCallSite<'ctx, 'storage> {
+    destination: PointerValue<'ctx>,
+    record_destination: Option<&'storage [PointerValue<'ctx>]>,
+    body_mode: NativeBodyMode,
+    caller_span: CallerSpan<'ctx>,
+}
+
 struct PreparedCallArguments<'ctx> {
     values: Vec<PointerValue<'ctx>>,
     writebacks: Vec<CallWriteback<'ctx>>,
@@ -4341,6 +4543,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let conformance_proofs = parameter_pointer(function, 2)?;
         let requirement_proofs = parameter_pointer(function, 3)?;
         let runtime_context = parameter_pointer(function, 4)?;
+        let caller_span = CallerSpan {
+            file: parameter_int(function, 5)?,
+            start: parameter_int(function, 6)?,
+            end: parameter_int(function, 7)?,
+        };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
         let gc_may_collect = backend.requirements.function(id)?.body.may_collect();
@@ -4489,6 +4696,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             body_mode: NativeBodyMode::Checked,
             witness_parameters,
             runtime_context,
+            caller_span,
             task: None,
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
@@ -4556,6 +4764,30 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             parameter_pointer(function, context_index)?
         } else {
             backend.ptr_type.const_null()
+        };
+        let caller_span = if signature.carries_caller_span() {
+            let parameter_count = u32::try_from(source.params.len())
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many native parameters"))?;
+            let file_index = parameter_count.checked_add(1).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "too many native parameters")
+            })?;
+            let start_index = file_index.checked_add(1).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "too many native parameters")
+            })?;
+            let end_index = start_index.checked_add(1).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "too many native parameters")
+            })?;
+            CallerSpan {
+                file: parameter_int(function, file_index)?,
+                start: parameter_int(function, start_index)?,
+                end: parameter_int(function, end_index)?,
+            }
+        } else {
+            backend.caller_span(
+                source.span.file.0,
+                source.span.range.start,
+                source.span.range.end,
+            )
         };
         let entry = backend.context.append_basic_block(function, "entry");
         let body_done = backend.context.append_basic_block(function, "body.done");
@@ -4770,6 +5002,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             body_mode,
             witness_parameters: BTreeMap::new(),
             runtime_context,
+            caller_span,
             task: None,
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
@@ -5071,6 +5304,43 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &[task.into()],
             "task.result",
         )?;
+        let caller_span = if let Some(call_site_slot) = layout.call_site_slot {
+            let call_site = call_pointer(
+                &backend.builder,
+                backend.native_task_slot(),
+                &[
+                    task.into(),
+                    backend.i64_type.const_int(call_site_slot, false).into(),
+                ],
+                "task.call.site",
+            )?;
+            CallerSpan {
+                file: backend.load_i64_field(
+                    backend.value_type,
+                    call_site,
+                    VALUE_FIELD_SCALAR,
+                    "task.call.site.file",
+                )?,
+                start: backend.load_i64_field(
+                    backend.value_type,
+                    call_site,
+                    VALUE_FIELD_AUX,
+                    "task.call.site.start",
+                )?,
+                end: backend.load_i64_field(
+                    backend.value_type,
+                    call_site,
+                    VALUE_FIELD_NOMINAL,
+                    "task.call.site.end",
+                )?,
+            }
+        } else {
+            backend.caller_span(
+                source.span.file.0,
+                source.span.range.start,
+                source.span.range.end,
+            )
+        };
         let mut locals = BTreeMap::new();
         let mut gc_root_slots = Vec::new();
         let mut gc_permanent_roots = Vec::new();
@@ -5185,6 +5455,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             body_mode: NativeBodyMode::Checked,
             witness_parameters,
             runtime_context: executor,
+            caller_span,
             task: Some(task),
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
@@ -5871,28 +6142,51 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             "InvariantFault" => "invariant",
             _ => "assertion",
         };
-        let blame_span = if category == "PreconditionFault" {
-            self.source.span
+        let display = format!("{category}: {}", contract.code);
+        if category == "PreconditionFault" {
+            let marker = serde_json::json!({"__loomCallerSpan": true});
+            let marker_text = serde_json::to_string(&marker)
+                .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+            let detail = serde_json::to_string(&serde_json::json!({
+                "channel": "contract",
+                "fault": {
+                    "code": category,
+                    "category": category_name,
+                    "message": message,
+                    "contractSpan": contract.span,
+                    "blameSpan": marker,
+                },
+            }))
+            .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+            let (prefix, suffix) = detail.split_once(&marker_text).ok_or_else(|| {
+                CodegenError::new(
+                    "FaultEncodingFailed",
+                    "caller span marker is missing from contract fault detail",
+                )
+            })?;
+            self.backend.raise_fault_with_span(
+                self.runtime_context,
+                category,
+                &message,
+                &display,
+                prefix,
+                self.caller_span,
+                suffix,
+            )?;
         } else {
-            contract.span
-        };
-        let detail = serde_json::to_string(&serde_json::json!({
-            "channel": "contract",
-            "fault": {
-                "code": category,
-                "category": category_name,
-                "message": message,
-                "contractSpan": contract.span,
-                "blameSpan": blame_span,
-            },
-        }))
-        .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
-        self.record_or_print_fault_with_detail(
-            category,
-            &message,
-            &format!("{category}: {}", contract.code),
-            &detail,
-        )?;
+            let detail = serde_json::to_string(&serde_json::json!({
+                "channel": "contract",
+                "fault": {
+                    "code": category,
+                    "category": category_name,
+                    "message": message,
+                    "contractSpan": contract.span,
+                    "blameSpan": contract.span,
+                },
+            }))
+            .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+            self.record_or_print_fault_with_detail(category, &message, &display, &detail)?;
+        }
         self.emit_all_cleanups()?;
         self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(pass);
@@ -8399,9 +8693,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     *function,
                     arguments,
                     witnesses,
-                    destination,
-                    Some(nodes),
-                    NativeBodyMode::Checked,
+                    NativeCallSite {
+                        destination,
+                        record_destination: Some(nodes),
+                        body_mode: NativeBodyMode::Checked,
+                        caller_span: self.backend.caller_span(
+                            expression.span.file.0,
+                            expression.span.range.start,
+                            expression.span.range.end,
+                        ),
+                    },
                 )
             }
             _ => Err(CodegenError::new(
@@ -9227,9 +9528,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 *function,
                 arguments,
                 witnesses,
-                destination,
-                native_record_destination,
-                NativeBodyMode::Assumed,
+                NativeCallSite {
+                    destination,
+                    record_destination: native_record_destination,
+                    body_mode: NativeBodyMode::Assumed,
+                    caller_span: self.backend.caller_span(
+                        expression.span.file.0,
+                        expression.span.range.start,
+                        expression.span.range.end,
+                    ),
+                },
             );
         }
         if let CallTarget::Direct(function) | CallTarget::Inherent(function) = target
@@ -9244,9 +9552,16 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 *function,
                 arguments,
                 witnesses,
-                destination,
-                native_record_destination,
-                NativeBodyMode::Checked,
+                NativeCallSite {
+                    destination,
+                    record_destination: native_record_destination,
+                    body_mode: NativeBodyMode::Checked,
+                    caller_span: self.backend.caller_span(
+                        expression.span.file.0,
+                        expression.span.range.start,
+                        expression.span.range.end,
+                    ),
+                },
             );
         }
 
@@ -9416,32 +9731,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if may_safepoint {
             self.publish_gc_root_state()?;
         }
+        let call_span = self.backend.caller_span(
+            expression.span.file.0,
+            expression.span.range.start,
+            expression.span.range.end,
+        );
+        let mut call_metadata = vec![
+            destination.into(),
+            argument_head.into(),
+            conformance_proofs.into(),
+            requirement_proofs.into(),
+            self.runtime_context.into(),
+        ];
+        call_metadata.extend(call_span.metadata());
         let status = if let Some(function) = direct {
-            call_int(
-                &self.backend.builder,
-                function,
-                &[
-                    destination.into(),
-                    argument_head.into(),
-                    conformance_proofs.into(),
-                    requirement_proofs.into(),
-                    self.runtime_context.into(),
-                ],
-                "call",
-            )?
+            call_int(&self.backend.builder, function, &call_metadata, "call")?
         } else {
             self.backend
                 .builder
                 .build_indirect_call(
                     self.backend.loom_function_type,
                     indirect.expect("one call target kind is present"),
-                    &[
-                        destination.into(),
-                        argument_head.into(),
-                        conformance_proofs.into(),
-                        requirement_proofs.into(),
-                        self.runtime_context.into(),
-                    ],
+                    &call_metadata,
                     "dyn.call",
                 )
                 .map_err(builder_error)?
@@ -9469,10 +9780,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         function: FunctionId,
         arguments: &[CallArgument],
         witnesses: &[WitnessRef],
-        destination: PointerValue<'ctx>,
-        native_record_destination: Option<&[PointerValue<'ctx>]>,
-        body_mode: NativeBodyMode,
+        call_site: NativeCallSite<'ctx, '_>,
     ) -> Result<bool, CodegenError> {
+        let NativeCallSite {
+            destination,
+            record_destination: native_record_destination,
+            body_mode,
+            caller_span,
+        } = call_site;
         if !witnesses.is_empty() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -9519,6 +9834,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             )?
         } else {
             prepared.arguments.push(self.runtime_context.into());
+            if signature.carries_caller_span() {
+                prepared.arguments.extend(caller_span.metadata());
+            }
             let (status, value) = call_native_status(
                 &self.backend.builder,
                 declaration.function,

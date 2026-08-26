@@ -9,6 +9,7 @@ use loom_codegen_llvm::{
     validate_native_link_target,
 };
 use loom_driver::AnalysisHost;
+use loom_interpreter::Interpreter;
 use loom_mir::{
     Block, CallArgument, CallPlan, CheckedProgram, Constant, Expr, ExprKind, Function, FunctionId,
     Program, Type,
@@ -3252,6 +3253,126 @@ pub fn main() Unit {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
 }
 
+#[test]
+#[allow(clippy::too_many_lines)]
+fn requires_faults_preserve_exact_caller_spans_across_llvm_abis() {
+    let source = r#"module requires_caller_blame
+
+fn legacy(value Int) Text
+    requires value > 0
+{
+    "accepted"
+}
+
+fn native(value Int) Int
+    requires value > 0
+{
+    value
+}
+
+async fn asynchronous(value Int) Int
+    requires value > 0
+{
+    value
+}
+
+test fn a_legacy_first() {
+    discard legacy(0)
+}
+
+test fn b_legacy_second() {
+    discard legacy(0)
+}
+
+test fn c_native_first() {
+    discard native(0)
+}
+
+test fn d_native_second() {
+    discard native(0)
+}
+
+test async fn e_async_first() {
+    discard asynchronous(0).await
+}
+
+test async fn f_async_second() {
+    discard asynchronous(0).await
+}
+
+test fn g_root_boundary() Unit
+    requires false
+{
+    Unit
+}
+"#;
+    let project = tempfile::tempdir().expect("create requires blame project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write requires blame source");
+    let snapshot = AnalysisHost::new(project.path())
+        .expect("load requires blame project")
+        .snapshot()
+        .expect("analyze requires blame project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower requires blame MIR");
+
+    let mut interpreter = Interpreter::new(program);
+    let expected_faults = interpreter
+        .run_tests()
+        .into_iter()
+        .map(|result| {
+            serde_json::to_value(result.failure.expect("requires test must fail"))
+                .expect("serialize interpreted contract fault")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(expected_faults.len(), 7);
+
+    for pair in [0..2, 2..4, 4..6] {
+        assert_eq!(
+            expected_faults[pair.start]["fault"]["contractSpan"],
+            expected_faults[pair.start + 1]["fault"]["contractSpan"]
+        );
+        assert_ne!(
+            expected_faults[pair.start]["fault"]["blameSpan"],
+            expected_faults[pair.start + 1]["fault"]["blameSpan"]
+        );
+    }
+
+    let executable = project.path().join("tests");
+    let ir = project.path().join("tests.ll");
+    let mut options = EmitOptions::tests();
+    options.emit_ir = Some(ir.clone());
+    emit_native(program, &executable, &options).expect("emit requires blame tests");
+    let llvm = std::fs::read_to_string(ir).expect("read requires blame LLVM IR");
+    assert!(
+        llvm.contains("@loom_context_raise_fault_with_span_v1"),
+        "{llvm}"
+    );
+
+    let output = Command::new(executable)
+        .env("LOOM_FAULT_FORMAT", "json")
+        .output()
+        .expect("run requires blame tests");
+    assert!(!output.status.success(), "{output:?}");
+    let compiled = String::from_utf8(output.stderr)
+        .expect("requires fault stderr is UTF-8")
+        .lines()
+        .filter_map(|line| line.strip_prefix("LOOM_FAULT_JSON_V1:"))
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse native fault"))
+        .collect::<Vec<_>>();
+    assert_eq!(compiled, expected_faults);
+    let root_span = program
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with("g_root_boundary"))
+        .expect("find root boundary function")
+        .span;
+    assert_eq!(
+        compiled[6]["fault"]["blameSpan"],
+        serde_json::to_value(root_span).expect("serialize root boundary span"),
+        "the test harness boundary must use the root function span"
+    );
+}
+
 fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
     let marker = "define internal i32 @loom.fn.";
     let start = ir
@@ -4356,11 +4477,17 @@ pub fn main() Unit {
         .map(|(parameters, _)| parameters)
         .expect("Combine.both parameter list");
     let parameters = parameters.split(',').map(str::trim).collect::<Vec<_>>();
-    assert_eq!(parameters.len(), 5, "{signature}");
+    assert_eq!(parameters.len(), 8, "{signature}");
     assert!(
-        parameters
+        parameters[..5]
             .iter()
             .all(|parameter| parameter.starts_with("ptr %")),
+        "{signature}"
+    );
+    assert!(
+        parameters[5..]
+            .iter()
+            .all(|parameter| parameter.starts_with("i64 %")),
         "{signature}"
     );
     let proof_loads = both

@@ -464,7 +464,10 @@ unsafe fn update_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
                     && unsafe { (**child).status != TaskStatus::Completed }
             });
             if let Some(failure) = failure {
-                unsafe { (*parent).join_step = terminal_step(failure) };
+                unsafe {
+                    inherit_primary_task_fault(&mut *parent, &*failure);
+                    (*parent).join_step = terminal_step(failure);
+                }
                 for child in &children {
                     if !terminal(unsafe { (**child).status }) {
                         unsafe { request_cancel(executor, *child) };
@@ -2015,6 +2018,18 @@ fn record_primary_task_fault(task: &mut LoomTask, code: String, message: String,
     task.fault_detail = detail;
 }
 
+fn inherit_primary_task_fault(parent: &mut LoomTask, child: &LoomTask) {
+    if parent.primary_fault_recorded || !child.primary_fault_recorded {
+        return;
+    }
+    record_primary_task_fault(
+        parent,
+        child.fault_code.clone(),
+        child.fault_message.clone(),
+        child.fault_detail.clone(),
+    );
+}
+
 /// Stores the structured failure carried by a native task.
 ///
 /// Generated coroutine code calls this before returning `TASK_FAULTED`.  The
@@ -2181,6 +2196,52 @@ pub unsafe extern "C" fn context_raise_fault_v1(
     unsafe { raise_fault_for_task_or_root(active_task, arguments) }
 }
 
+/// Routes a generated-code fault whose structured detail contains a dynamic source span.
+///
+/// `detail_prefix` and `detail_suffix` are compiler-generated UTF-8 fragments surrounding the
+/// serialized span. This keeps source locations exact across indirect calls without requiring a
+/// JSON implementation in generated code. All byte ranges only need to remain live for this call.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "loom_context_raise_fault_with_span_v1")]
+pub unsafe extern "C" fn context_raise_fault_with_span_v1(
+    context: *mut c_void,
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+    display: *const u8,
+    display_length: u64,
+    detail_prefix: *const u8,
+    detail_prefix_length: u64,
+    file: u64,
+    start: u64,
+    end: u64,
+    detail_suffix: *const u8,
+    detail_suffix_length: u64,
+) -> i32 {
+    let (Some(prefix), Some(suffix)) = (
+        unsafe { copy_text(detail_prefix, detail_prefix_length) },
+        unsafe { copy_text(detail_suffix, detail_suffix_length) },
+    ) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
+    let detail =
+        format!(r#"{prefix}{{"file":{file},"range":{{"start":{start},"end":{end}}}}}{suffix}"#);
+    unsafe {
+        context_raise_fault_v1(
+            context,
+            code,
+            code_length,
+            message,
+            message_length,
+            display,
+            display_length,
+            detail.as_ptr(),
+            detail.len() as u64,
+        )
+    }
+}
+
 #[cfg(test)]
 mod fault_context_tests {
     use super::*;
@@ -2195,6 +2256,8 @@ mod fault_context_tests {
     const CLEANUP_CODE: &[u8] = b"CleanupFault";
     const CLEANUP_MESSAGE: &[u8] = b"cleanup failed";
     const CLEANUP_DETAIL: &[u8] = br#"{"channel":"cleanup"}"#;
+    const CONTRACT_PREFIX: &[u8] = br#"{"channel":"contract","fault":{"blameSpan":"#;
+    const CONTRACT_SUFFIX: &[u8] = br#", "code":"PreconditionFault"}}"#;
 
     unsafe extern "C" fn completed_fixture(
         _task: *mut LoomTask,
@@ -2291,6 +2354,82 @@ mod fault_context_tests {
             assert_eq!((*task).fault_detail, r#"{"channel":"runtime"}"#);
             leave_executor();
             (*executor).active_task = ptr::null_mut();
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn span_fault_context_serializes_the_dynamic_location_exactly() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            let executor = executor_create_for_runtime_v1(runtime);
+            assert!(!executor.is_null());
+            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            assert!(!task.is_null());
+
+            (*executor).active_task = task;
+            enter_executor(executor);
+            assert_eq!(
+                context_raise_fault_with_span_v1(
+                    executor.cast(),
+                    CODE.as_ptr(),
+                    CODE.len() as u64,
+                    MESSAGE.as_ptr(),
+                    MESSAGE.len() as u64,
+                    DISPLAY.as_ptr(),
+                    DISPLAY.len() as u64,
+                    CONTRACT_PREFIX.as_ptr(),
+                    CONTRACT_PREFIX.len() as u64,
+                    7,
+                    11,
+                    19,
+                    CONTRACT_SUFFIX.as_ptr(),
+                    CONTRACT_SUFFIX.len() as u64,
+                ),
+                WAIT_OK,
+            );
+            assert_eq!(
+                (*task).fault_detail,
+                r#"{"channel":"contract","fault":{"blameSpan":{"file":7,"range":{"start":11,"end":19}}, "code":"PreconditionFault"}}"#,
+            );
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn failed_child_primary_fault_is_inherited_once_by_awaiting_parent() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            let executor = executor_create_for_runtime_v1(runtime);
+            assert!(!executor.is_null());
+            let parent = task_spawn(executor, Some(completed_fixture), 1, 0);
+            let child = task_spawn(executor, Some(completed_fixture), 1, 0);
+            assert!(!parent.is_null() && !child.is_null());
+
+            record_primary_task_fault(
+                &mut *child,
+                "PreconditionFault".into(),
+                "child contract failed".into(),
+                r#"{"channel":"contract"}"#.into(),
+            );
+            inherit_primary_task_fault(&mut *parent, &*child);
+            record_primary_task_fault(
+                &mut *parent,
+                "CleanupFault".into(),
+                "cleanup failed".into(),
+                r#"{"channel":"cleanup"}"#.into(),
+            );
+            assert_eq!((*parent).fault_code, "PreconditionFault");
+            assert_eq!((*parent).fault_message, "child contract failed");
+            assert_eq!((*parent).fault_detail, r#"{"channel":"contract"}"#);
 
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
