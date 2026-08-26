@@ -11,9 +11,11 @@ The workspace currently targets LLVM 19 through:
 - `inkwell 0.10.0` with `llvm19-1-prefer-dynamic`;
 - `llvm-sys 191.1.0` with dynamic linking preferred.
 
-Most compiler crates forbid unsafe Rust. Runtime FFI implementation is isolated
-in `loom-runtime`, which explicitly permits the unsafe operations required by
-the compiler-private C ABI.
+Most compiler crates forbid unsafe Rust. `loom-codegen-llvm` denies it by
+default and has one audited exception for Inkwell's typed GEP builder, whose
+pointee/index proof comes from the private native-storage plan. Runtime FFI
+implementation is isolated in `loom-runtime`, which explicitly permits the
+unsafe operations required by the compiler-private C ABI.
 
 Contributors need LLVM 19 development files and a matching `llvm-config`. The
 workspace does not silently fall back to another LLVM major version.

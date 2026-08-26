@@ -2606,6 +2606,33 @@ fn negativeRange() Int {
     values.length()
 }
 
+fn offsetRange() Int {
+    var values = List[Int]()
+    for index in 3..7 {
+        values.add(if index < 5 {
+            index
+        } else {
+            index + 0
+        })
+        Unit
+    }
+    var checksum = 0
+    for index in 0..4 {
+        match values.get(index) {
+            Some(value) => {
+                checksum = checksum + value
+                Unit
+            }
+            None => {
+                assert false
+                Unit
+            }
+        }
+        Unit
+    }
+    checksum
+}
+
 fn twoAppends(size Int) Int {
     var values = List[Int]()
     for index in 0..size {
@@ -2730,6 +2757,7 @@ pub fn main() Unit {
     let emptyAppend = appendOnly(0)
     let one = appendOnly(1)
     let negative = negativeRange()
+    let offset = offsetRange()
     let grown = appendOnly(40)
     let fallback = twoAppends(20)
     let observed = appendObservedLength()
@@ -2743,6 +2771,7 @@ pub fn main() Unit {
     assert emptyAppend == 0
     assert one == 1
     assert negative == 0
+    assert offset == 18
     assert grown == 40
     assert fallback == 40
     assert observed == 54
@@ -2830,8 +2859,8 @@ pub fn faultMain() Unit {
         if ir == &release_ir {
             for (name, instruction) in [
                 ("int.list.loop.data", "= phi ptr"),
-                ("int.list.loop.length", "= phi i64"),
                 ("int.list.loop.capacity", "= phi i64"),
+                ("range.current.scalar", "= phi i64"),
             ] {
                 assert!(
                     scan.lines()
@@ -2839,6 +2868,11 @@ pub fn faultMain() Unit {
                     "release append loop lost `{name}` {instruction}: {scan}"
                 );
             }
+            assert!(
+                scan.lines()
+                    .any(|line| { line.contains("call i64 @llvm.vector.reduce.add.v") }),
+                "exact native Int list scan lost its vector reduction: {scan}"
+            );
             for reload in [
                 "int.list.add.length",
                 "int.list.add.capacity",
@@ -2860,9 +2894,25 @@ pub fn faultMain() Unit {
                 "int.list.loop.data = phi ptr",
                 "int.list.loop.length = phi i64",
                 "int.list.loop.capacity = phi i64",
+                "range.current.scalar = phi i64",
             ] {
                 assert!(append.contains(phi), "missing `{phi}`: {append}");
             }
+            assert!(
+                append
+                    .lines()
+                    .any(|line| line.contains("store i64 %range.current.scalar")),
+                "append value stopped consuming the proved SSA range binder: {append}"
+            );
+            let blocks = llvm_basic_blocks(append);
+            let header = blocks
+                .iter()
+                .find_map(|(label, block)| label.starts_with("range.header.").then_some(*block))
+                .expect("native append has a range header");
+            assert!(
+                !header.contains("load "),
+                "native append reloaded an immutable range bound in its header: {append}"
+            );
             for (name, instruction) in [
                 ("int.list.loop.initial.data", "= load ptr"),
                 ("int.list.loop.initial.length", "= load i64"),
@@ -2878,6 +2928,15 @@ pub fn faultMain() Unit {
                 );
             }
             assert!(!append.contains("int.list.loop.grown.length"), "{append}");
+            for slot in ["int.list.add.slot", "int.list.get.slot"] {
+                assert!(
+                    scan.lines()
+                        .any(|line| { line.contains(slot) && line.contains("getelementptr i64") }),
+                    "private Int list slot `{slot}` lost typed addressing: {scan}"
+                );
+            }
+            assert!(!scan.contains("ptrtoint ptr"), "{scan}");
+            assert!(!scan.contains("inttoptr i64"), "{scan}");
             for (name, instruction) in [
                 ("int.list.add.length", "= load i64"),
                 ("int.list.add.capacity", "= load i64"),

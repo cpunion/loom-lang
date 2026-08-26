@@ -88,6 +88,12 @@ closed-world use scan proves no copy, escape, generic/witness boundary,
 suspension, or cleanup hazard. All other list shapes use the complete generic
 representation.
 
+Element access on this proved layout retains the allocation's pointer
+provenance through typed LLVM GEP instructions. Exact range scans can therefore
+be vectorized without weakening the source bounds rules. The append lowering
+also carries its range induction value in SSA so the private allocation cannot
+make LLVM conservatively reload the universal stack representation.
+
 Similarly, checked integer and flat-record optimizations are private lowering
 choices. They must never appear as requirements in the language reference.
 

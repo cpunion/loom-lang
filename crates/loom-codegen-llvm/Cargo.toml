@@ -24,5 +24,12 @@ toml.workspace = true
 loom-driver.workspace = true
 loom-interpreter.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# LLVM's typed GEP builder is marked unsafe because callers must prove the
+# pointee/index relationship. Keep unsafe denied crate-wide and permit it only
+# on the audited helper that carries Loom's native-storage proof.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
