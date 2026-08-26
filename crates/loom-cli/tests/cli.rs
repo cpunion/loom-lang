@@ -63,6 +63,12 @@ fn loomc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
 }
 
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 #[cfg(unix)]
 fn write_fake_runtime_bundle(root: &std::path::Path, archive: &[u8]) {
     fs::create_dir_all(root).expect("create fake runtime bundle");
@@ -641,6 +647,53 @@ fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
         cache_key(&explicit_release.stdout, "target_object"),
         cache_key(&repeated_release.stdout, "target_object")
     );
+}
+
+#[test]
+fn ordinary_native_commands_use_the_atomic_automatic_route() {
+    let scalar = TestProject::new(
+        "module automatic_scalar\n\nfn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() Unit {\n    discard choose(true)\n    Unit\n}\n\ntest fn scalar() Unit {\n    discard choose(false)\n    Unit\n}\n",
+    );
+    let scalar_object = scalar.0.join("scalar.o");
+    let build = loomc()
+        .args(["build", "--emit", "object", "--output"])
+        .arg(&scalar_object)
+        .arg(&scalar.0)
+        .output()
+        .expect("build scalar object through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(&scalar_object).expect("read scalar object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+
+    let run = loomc()
+        .arg("run")
+        .arg(&scalar.0)
+        .output()
+        .expect("run scalar artifact through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+    let tests = loomc()
+        .arg("test")
+        .arg(&scalar.0)
+        .output()
+        .expect("run scalar tests through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+
+    let unsupported = TestProject::new(
+        "module automatic_legacy\n\npub fn main() Unit {\n    discard \"legacy\"\n    Unit\n}\n",
+    );
+    let legacy_object = unsupported.0.join("legacy.o");
+    let build = loomc()
+        .args(["build", "--emit", "object", "--output"])
+        .arg(&legacy_object)
+        .arg(&unsupported.0)
+        .output()
+        .expect("build unsupported object through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(&legacy_object).expect("read legacy object");
+    assert!(contains_bytes(&object, b"loom.fn."));
+    assert!(!contains_bytes(&object, b"loom.lcir.fn"));
 }
 
 #[test]
@@ -1591,10 +1644,12 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
     let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
     project.write(
         "debug-wrapper",
-        "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ntest \"$1\" = \"alpha\" || exit 93\ntest \"$2\" = \"beta gamma\" || exit 94\nprintf 'debug-wrapper:%s:%s\\n' \"$1\" \"$2\"\n\"$executable\" \"$@\"\n",
+        "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ntest \"$1\" = \"alpha\" || exit 93\ntest \"$2\" = \"beta gamma\" || exit 94\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 95\nprintf 'debug-wrapper:%s:%s\\n' \"$1\" \"$2\"\n\"$executable\" \"$@\"\n",
     );
     project.make_executable("debug-wrapper");
+    let debug_copy = project.0.join("debug-program-copy");
     let output = loomc()
+        .env("LOOM_DEBUG_COPY", &debug_copy)
         .args(["debug", "--debugger"])
         .arg(project.0.join("debug-wrapper"))
         .arg(&project.0)
@@ -1615,6 +1670,10 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
         "{stdout}"
     );
     assert!(stdout.contains("Unit"), "{stdout}");
+    let debug_image = fs::read(debug_copy).expect("debug wrapper copied executable");
+    assert!(contains_bytes(&debug_image, b"loom.fn."));
+    assert!(!contains_bytes(&debug_image, b"loom.lcir.fn"));
+    assert!(contains_bytes(&debug_image, b"main.loom"));
 }
 
 #[test]
@@ -1743,6 +1802,32 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
         .expect("reject cross executable link");
     assert_eq!(cross_link.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&cross_link.stdout).contains("CrossLinkUnavailable"));
+}
+
+#[test]
+fn native_target_preparation_errors_are_usage_errors() {
+    let project = TestProject::new("module invalid_target\n\npub fn main() Unit { Unit }\n");
+    let output = loomc()
+        .args([
+            "--json",
+            "--target-triple",
+            "not-a-real-loom-target",
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
+        .arg(project.0.join("invalid.o"))
+        .arg(&project.0)
+        .output()
+        .expect("reject unavailable LLVM target");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(error.contains("LlvmTargetUnavailable"), "{error}");
 }
 
 #[cfg(unix)]

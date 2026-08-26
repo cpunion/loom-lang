@@ -32,7 +32,7 @@ const DEFAULT_OBJECT_ARTIFACT: &str = "target/loom/program.o";
 const DEFAULT_INTERPRETED_ARTIFACT: &str = "target/loom/program.loomi";
 const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v5";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v6";
 #[cfg(target_os = "macos")]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(target_os = "macos"))]
@@ -107,6 +107,41 @@ enum NativeLinkPlan {
         bundle: Box<loom_codegen_llvm::RuntimeBundle>,
         linker: loom_codegen_llvm::RuntimeLinker,
     },
+}
+
+enum NativePipelineError {
+    Preparation(loom_codegen_llvm::NativePreparationError),
+    Configuration(loom_codegen_llvm::CodegenError),
+    Codegen(loom_codegen_llvm::CodegenError),
+}
+
+impl NativePipelineError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Preparation(error) => error.code(),
+            Self::Configuration(error) | Self::Codegen(error) => error.code(),
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Preparation(error) => error.message(),
+            Self::Configuration(error) | Self::Codegen(error) => error.message(),
+        }
+    }
+
+    const fn exit_status(&self) -> i32 {
+        match self {
+            Self::Preparation(error) => match error.kind() {
+                loom_codegen_llvm::NativePreparationErrorKind::InvalidRoot
+                | loom_codegen_llvm::NativePreparationErrorKind::Resource => EXIT_FAILURE,
+                loom_codegen_llvm::NativePreparationErrorKind::Target => EXIT_USAGE,
+                loom_codegen_llvm::NativePreparationErrorKind::Defect => EXIT_DEFECT,
+            },
+            Self::Configuration(_) => EXIT_USAGE,
+            Self::Codegen(_) => EXIT_DEFECT,
+        }
+    }
 }
 
 impl NativeLinkPlan {
@@ -774,22 +809,11 @@ fn run_build(
             stdout,
         )? {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-            return Ok(EXIT_DEFECT);
+            return Ok(error.exit_status());
         }
         emit_build_result(options, stdout, &output)?;
         return Ok(EXIT_SUCCESS);
     }
-    let native_link = if options.backend == Backend::Llvm {
-        match prepare_native_link_plan(options, &emit_options) {
-            Ok(link) => Some(link),
-            Err(error) => {
-                emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-                return Ok(EXIT_USAGE);
-            }
-        }
-    } else {
-        None
-    };
     let artifact_key = final_artifact_key(&compilation, options.backend, "run", Some(&entry));
     match restore_cached_artifact(
         &compilation,
@@ -821,12 +845,12 @@ fn run_build(
                 program,
                 &output,
                 &emit_options,
-                native_link.as_ref(),
+                loom_codegen_llvm::NativeRoutePolicy::Automatic,
                 options,
                 stdout,
             )? {
                 emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-                return Ok(EXIT_DEFECT);
+                return Ok(error.exit_status());
             }
         }
         Backend::Interpreter => {
@@ -1014,12 +1038,12 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             program,
             &executable,
             &emit_options,
-            None,
+            loom_codegen_llvm::NativeRoutePolicy::Automatic,
             options,
             stdout,
         )? {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-            return Ok(EXIT_DEFECT);
+            return Ok(error.exit_status());
         }
         store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
         return execute_native_with_options(options, &executable, None, stdout, stderr);
@@ -1126,16 +1150,12 @@ fn run_program(
                 program,
                 &executable,
                 &emit_options,
-                None,
+                loom_codegen_llvm::NativeRoutePolicy::Automatic,
                 options,
                 stdout,
             )? {
                 emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-                return Ok(if error.code() == "UnknownEntry" {
-                    EXIT_FAILURE
-                } else {
-                    EXIT_DEFECT
-                });
+                return Ok(error.exit_status());
             }
             store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
             execute_native_with_options(options, &executable, Some(&entry), stdout, stderr)
@@ -1213,12 +1233,12 @@ fn run_debug(
             program,
             &executable,
             &emit_options,
-            None,
+            loom_codegen_llvm::NativeRoutePolicy::LegacyOnly,
             options,
             stdout,
         )? {
             emit_tool_error(options.json, stdout, stderr, error.code(), error.message())?;
-            return Ok(EXIT_DEFECT);
+            return Ok(error.exit_status());
         }
         store_artifact_best_effort(&compilation, artifact_key.as_ref(), &executable);
     }
@@ -1869,16 +1889,17 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
 
 fn target_object_key(
     compilation: &Compilation,
-    program: &loom_mir::CheckedProgram,
-    emit_options: &loom_codegen_llvm::EmitOptions,
-) -> Option<CacheKey> {
-    compilation.key()?;
-    let emit_options = emit_options_with_debug(compilation, emit_options);
-    let fingerprint = loom_codegen_llvm::native_object_fingerprint(program, &emit_options).ok()?;
-    Some(PersistentCache::semantic_key(
+    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
+    cacheable: bool,
+) -> Result<Option<CacheKey>, loom_codegen_llvm::CodegenError> {
+    if compilation.key().is_none() || !cacheable {
+        return Ok(None);
+    }
+    let fingerprint = loom_codegen_llvm::prepared_native_object_fingerprint(prepared)?;
+    Ok(Some(PersistentCache::semantic_key(
         LLVM_OBJECT_CACHE_DOMAIN,
         &[("object-fingerprint", &fingerprint)],
-    ))
+    )))
 }
 
 fn configured_emit_options(
@@ -1893,14 +1914,14 @@ fn configured_emit_options(
 fn prepare_native_link_plan(
     options: &Options,
     emit_options: &loom_codegen_llvm::EmitOptions,
+    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
 ) -> Result<NativeLinkPlan, loom_codegen_llvm::CodegenError> {
     if let (Some(bundle), Some(linker)) = (&options.runtime_bundle, &options.linker) {
-        let target = loom_codegen_llvm::target_identity(
-            emit_options.target_triple.as_deref(),
-            emit_options.optimization,
-        )?;
         return Ok(NativeLinkPlan::RuntimeBundle {
-            bundle: Box::new(loom_codegen_llvm::RuntimeBundle::load(bundle, &target)?),
+            bundle: Box::new(loom_codegen_llvm::RuntimeBundle::load(
+                bundle,
+                loom_codegen_llvm::prepared_native_target_identity(prepared),
+            )?),
             linker: loom_codegen_llvm::RuntimeLinker::load(linker)?,
         });
     }
@@ -1930,31 +1951,40 @@ fn emit_native_with_cache(
     program: &loom_mir::CheckedProgram,
     output: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
-    native_link: Option<&NativeLinkPlan>,
+    policy: loom_codegen_llvm::NativeRoutePolicy,
     options: &Options,
     stdout: &mut dyn Write,
-) -> io::Result<Result<(), loom_codegen_llvm::CodegenError>> {
-    if native_link.is_none()
-        && let Err(error) = loom_codegen_llvm::validate_native_link_target(emit_options)
+) -> io::Result<Result<(), NativePipelineError>> {
+    let complete_options = emit_options_with_debug(compilation, emit_options);
+    let cacheable = complete_options.emit_ir.is_none();
+    let prepared = match loom_codegen_llvm::prepare_native_object(program, complete_options, policy)
     {
-        return Ok(Err(error));
-    }
+        Ok(prepared) => prepared,
+        Err(error) => return Ok(Err(NativePipelineError::Preparation(error))),
+    };
+    let native_link = match prepare_native_link_plan(options, emit_options, &prepared) {
+        Ok(link) => link,
+        Err(error) => return Ok(Err(NativePipelineError::Configuration(error))),
+    };
     let directory = tempfile::tempdir()?;
     let object = directory.path().join("loom-target.o");
-    if let Err(error) =
-        emit_object_with_cache(compilation, program, &object, emit_options, options, stdout)?
-    {
+    if let Err(error) = emit_prepared_object_with_cache(
+        compilation,
+        &prepared,
+        &object,
+        cacheable,
+        options,
+        stdout,
+    )? {
         return Ok(Err(error));
     }
-    let linked = native_link.map_or_else(
-        || loom_codegen_llvm::link_native_object(&object, output),
-        |link| link.link(&object, output),
-    );
+    let linked = native_link.link(&object, output);
     if let Err(error) = linked {
-        return Ok(Err(error));
+        return Ok(Err(NativePipelineError::Codegen(error)));
     }
     if loom_codegen_llvm::is_native_target(emit_options.target_triple.as_deref()) {
-        Ok(loom_codegen_llvm::emit_native_debug_companion(output))
+        Ok(loom_codegen_llvm::emit_native_debug_companion(output)
+            .map_err(NativePipelineError::Codegen))
     } else {
         Ok(Ok(()))
     }
@@ -1967,8 +1997,32 @@ fn emit_object_with_cache(
     emit_options: &loom_codegen_llvm::EmitOptions,
     options: &Options,
     stdout: &mut dyn Write,
-) -> io::Result<Result<(), loom_codegen_llvm::CodegenError>> {
-    let key = target_object_key(compilation, program, emit_options);
+) -> io::Result<Result<(), NativePipelineError>> {
+    let complete_options = emit_options_with_debug(compilation, emit_options);
+    let cacheable = complete_options.emit_ir.is_none();
+    let prepared = match loom_codegen_llvm::prepare_native_object(
+        program,
+        complete_options,
+        loom_codegen_llvm::NativeRoutePolicy::Automatic,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return Ok(Err(NativePipelineError::Preparation(error))),
+    };
+    emit_prepared_object_with_cache(compilation, &prepared, object, cacheable, options, stdout)
+}
+
+fn emit_prepared_object_with_cache(
+    compilation: &Compilation,
+    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
+    object: &Path,
+    cacheable: bool,
+    options: &Options,
+    stdout: &mut dyn Write,
+) -> io::Result<Result<(), NativePipelineError>> {
+    let key = match target_object_key(compilation, prepared, cacheable) {
+        Ok(key) => key,
+        Err(error) => return Ok(Err(NativePipelineError::Codegen(error))),
+    };
     let restored = if let (Some(cache), Some(key)) = (compilation.cache(), key.as_ref()) {
         match cache.load_target_object(key) {
             CacheLookup::Hit(bytes) if cache.materialize(&bytes, object, false).is_ok() => {
@@ -2004,9 +2058,8 @@ fn emit_object_with_cache(
     };
 
     if !restored {
-        let emit_options = emit_options_with_debug(compilation, emit_options);
-        if let Err(error) = loom_codegen_llvm::emit_native_object(program, object, &emit_options) {
-            return Ok(Err(error));
+        if let Err(error) = loom_codegen_llvm::emit_prepared_native_object(prepared, object) {
+            return Ok(Err(NativePipelineError::Codegen(error)));
         }
         if let (Some(cache), Some(key), Ok(bytes)) =
             (compilation.cache(), key.as_ref(), std::fs::read(object))
@@ -2681,13 +2734,20 @@ fn take_option(arguments: &mut Vec<String>, option: &str) -> Result<Option<Strin
 
 #[cfg(test)]
 mod tests {
+    use loom_driver::{AnalysisHost, PersistentCache, ProjectOptions};
+
+    use super::{
+        Backend, Command, Compilation, CompilationData, NativePipelineError, Options,
+        emit_object_with_cache,
+    };
+
     fn valid_sha256(value: &str) -> bool {
         value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     }
 
     #[test]
     fn llvm_object_cache_domain_is_pinned() {
-        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v5");
+        assert_eq!(super::LLVM_OBJECT_CACHE_DOMAIN, "loom-llvm-object-cache-v6");
     }
 
     #[test]
@@ -2697,5 +2757,66 @@ mod tests {
         assert!(valid_sha256(frontend), "{frontend}");
         assert!(valid_sha256(object), "{object}");
         assert_ne!(frontend, object);
+    }
+
+    #[test]
+    fn ir_side_artifacts_bypass_the_object_cache_and_are_still_written() {
+        let project = tempfile::tempdir().expect("create source project");
+        std::fs::write(
+            project.path().join("main.loom"),
+            "module cache_bypass\n\npub fn main() Unit { Unit }\n",
+        )
+        .expect("write source fixture");
+        let snapshot = AnalysisHost::new(project.path())
+            .expect("load source project")
+            .snapshot()
+            .expect("analyze source project");
+        assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+        let cache = tempfile::tempdir().expect("create object cache");
+        let compilation = Compilation {
+            data: CompilationData::Fresh(Box::new(snapshot)),
+            cache: Some(PersistentCache::new(cache.path())),
+            key: Some(PersistentCache::semantic_key(
+                "cli-cache-bypass-test-v1",
+                &[("source", "scalar")],
+            )),
+        };
+        let options = Options {
+            command: Command::Check,
+            path: project.path().to_path_buf(),
+            json: true,
+            backend: Backend::Llvm,
+            target: None,
+            no_cache: false,
+            cache_dir: None,
+            project: ProjectOptions::default(),
+            target_triple: None,
+            runtime_bundle: None,
+            linker: None,
+            optimization: loom_codegen_llvm::OptimizationProfile::Development,
+            program_arguments: Vec::new(),
+        };
+        let ir = project.path().join("program.ll");
+        let object = project.path().join("program.o");
+        let mut emit_options = loom_codegen_llvm::EmitOptions::run("main");
+        emit_options.emit_ir = Some(ir.clone());
+        let mut stdout = Vec::new();
+        let result: Result<(), NativePipelineError> = emit_object_with_cache(
+            &compilation,
+            compilation.executable().expect("checked MIR"),
+            &object,
+            &emit_options,
+            &options,
+            &mut stdout,
+        )
+        .expect("run cached object boundary");
+        assert!(result.is_ok());
+        assert!(object.is_file());
+        let llvm = std::fs::read_to_string(ir).expect("read requested LLVM IR");
+        assert!(llvm.contains("loom.lcir.fn"), "{llvm}");
+        let report = String::from_utf8(stdout).expect("UTF-8 cache report");
+        assert!(report.contains("\"layer\":\"target_object\""), "{report}");
+        assert!(report.contains("\"status\":\"disabled\""), "{report}");
+        assert!(report.contains("\"key\":null"), "{report}");
     }
 }
