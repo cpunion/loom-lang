@@ -62,6 +62,13 @@ boundary.
 `check_program` cross the independent validation boundary and return a
 `CheckedProgram`.
 
+`ArtifactRootRequest` selects either one run root or an ordered, possibly
+empty test-root list. `check_artifact` independently checks branded function
+identity, existence, duplicate tests, the zero-parameter `Unit` root signature,
+and exact direct/invoke callable closure. It then returns a `CheckedArtifact`
+which owns both the checked program and privately checked roots. This artifact
+boundary is not connected to the production emitter yet.
+
 A function contains:
 
 - an `InstanceId`, stable name, source MIR function origin, signature, and
@@ -155,10 +162,11 @@ compiler-private and has no compatibility or serialization guarantee.
 ## Repository evidence
 
 The crate's focused tests cover source-root selection, recursive graph closure,
-stable source-graph serialization and errors, the scalar representation
-catalog, target pointer-width validation, block-parameter joins, loop
-backedges, pure scalar operations, infallible direct calls, fallible invokes,
-edge-defined checked results, active cleanup paths, recursive effect closure,
-stable fallible dumps, optional origins, and malformed SSA programs. The
+stable source-graph serialization and errors, branded artifact roots and root
+signatures, the scalar representation catalog, target pointer-width
+validation, block-parameter joins, loop backedges, pure scalar operations,
+infallible direct calls, fallible invokes, edge-defined checked results, active
+cleanup paths, recursive effect closure, stable fallible dumps, optional
+origins, and malformed SSA programs. The
 platform-independent Windows CI job checks, lints, tests, and builds this crate
 without claiming a Windows LLVM backend.

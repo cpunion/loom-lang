@@ -19,6 +19,7 @@
 //! builder and independent validator never interpret another function's local
 //! identity by its raw table index.
 
+mod artifact;
 mod builder;
 mod dump;
 mod ids;
@@ -27,6 +28,10 @@ mod repr;
 mod source_graph;
 mod validate;
 
+pub use artifact::{
+    ArtifactKind, ArtifactRootRequest, ArtifactValidationCode, ArtifactValidationError,
+    ArtifactValidationErrors, CheckedArtifact, check_artifact, validate_artifact_roots,
+};
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
 pub use ids::{BlockId, InstanceId, InstructionId, ReprId, ValueId, ValueTypeId};
