@@ -17,21 +17,19 @@ const PLATFORM_COLUMNS = [
     key: "macos/aarch64",
     label: "macOS",
     unavailable: "— (not measured)",
-    chartPlot: "bar",
     chartColor: "#0969da",
-    chartLegend: "blue bars",
+    chartLegend: "blue candidate bars",
   },
   {
     key: "linux/x86_64",
     label: "Linux",
     unavailable: "— (not measured)",
-    chartPlot: "line",
     chartColor: "#eb670f",
-    chartLegend: "orange line",
+    chartLegend: "orange candidate bars",
   },
   { key: "windows/x86_64", label: "Windows", unavailable: "— (frontend only)" },
 ];
-const RUNTIME_CHART_PLATFORMS = PLATFORM_COLUMNS.filter((platform) => platform.chartPlot);
+const RUNTIME_CHART_PLATFORMS = PLATFORM_COLUMNS.filter((platform) => platform.chartColor);
 const BASE_CHART_COLOR = "#59636e";
 
 function fail(message) {
@@ -342,74 +340,69 @@ function chartUpperBound(values) {
   return Math.ceil(padded / step) * step;
 }
 
-function runtimeChart(byPlatform, runtimeKeys) {
+function runtimeChartBlock(panel, runtimeKeys, upperBound) {
+  const entries = runtimeKeys.map((key) => panel.comparison.runtime.get(key));
+  const labels = entries.map((entry) => JSON.stringify(`${entry.caseName}/${entry.language}`));
+  const baseLine = runtimeKeys.map(() => 100);
+  const indices = runtimeKeys.map((key) => {
+    const entry = panel.comparison.runtime.get(key);
+    return chartIndex(entry.base, entry.candidate);
+  });
+  // Mermaid renders a one-value line as a zero-length, invisible path. Give a
+  // single runtime entry a meaningful base -> candidate layout instead.
+  if (runtimeKeys.length === 1) {
+    labels.unshift(JSON.stringify("base"));
+    baseLine.unshift(100);
+    indices.unshift(100);
+  }
+  return [
+    "```mermaid",
+    "---",
+    "config:",
+    "  themeVariables:",
+    "    xyChart:",
+    `      plotColorPalette: "${panel.platform.chartColor}, ${BASE_CHART_COLOR}"`,
+    "---",
+    "xychart-beta horizontal",
+    `  title "${panel.platform.label} runtime index (base = 100)"`,
+    `  x-axis [${labels.join(", ")}]`,
+    `  y-axis "Runtime index" 0 --> ${upperBound}`,
+    `  bar [${indices.join(", ")}]`,
+    `  line [${baseLine.join(", ")}]`,
+    "```",
+  ];
+}
+
+function runtimeCharts(byPlatform, runtimeKeys) {
   if (runtimeKeys.length > MAX_CHART_ENTRIES) {
     fail("benchmark suite contains too many runtime entries for a bounded chart");
   }
-  const series = RUNTIME_CHART_PLATFORMS.flatMap((platform) => {
+  const panels = RUNTIME_CHART_PLATFORMS.flatMap((platform) => {
     const comparison = byPlatform.get(platform.key);
     if (!comparison) {
       return [];
     }
-    return [
-      {
-        platform,
-        comparison,
-        indices: runtimeKeys.map((key) => {
-          const entry = comparison.runtime.get(key);
-          return chartIndex(entry.base, entry.candidate);
-        }),
-      },
-    ];
+    return [{ platform, comparison }];
   });
-  if (series.length === 0) {
+  if (panels.length === 0) {
     return null;
   }
-  const entries = runtimeKeys.map((key) => series[0].comparison.runtime.get(key));
-  const labels = entries.map((entry) => JSON.stringify(`${entry.caseName}/${entry.language}`));
-  const baseLine = runtimeKeys.map(() => 100);
-  // Mermaid renders a one-value line as a zero-length, invisible path. Give a
-  // single runtime entry a meaningful base -> candidate layout instead.
-  const needsBaseAnchor = runtimeKeys.length === 1;
-  if (needsBaseAnchor) {
-    labels.unshift(JSON.stringify("base"));
-    baseLine.unshift(100);
-  }
-  const upperBound = chartUpperBound(series.flatMap((entry) => entry.indices));
-  const anchoredSeries = series.map((entry) => ({
-    ...entry,
-    indices: needsBaseAnchor ? [100, ...entry.indices] : entry.indices,
-  }));
-  // Draw the base after bars so it remains visible, then draw platform lines so
-  // an unchanged index of 100 is still identified by the platform color.
-  const plots = [
-    ...anchoredSeries.filter((entry) => entry.platform.chartPlot === "bar"),
-    { platform: { chartPlot: "line", chartColor: BASE_CHART_COLOR }, indices: baseLine },
-    ...anchoredSeries.filter((entry) => entry.platform.chartPlot === "line"),
-  ];
-  const palette = plots.map((entry) => entry.platform.chartColor);
+  const upperBound = chartUpperBound(
+    panels.flatMap((panel) =>
+      runtimeKeys.map((key) => {
+        const runtime = panel.comparison.runtime.get(key);
+        return chartIndex(runtime.base, runtime.candidate);
+      }),
+    ),
+  );
+  const blocks = panels.map((panel) => runtimeChartBlock(panel, runtimeKeys, upperBound));
+  const lines = blocks.flatMap((block, index) => (index === 0 ? block : ["", ...block]));
+  lines.push("");
   return {
-    description: `Each \`case/language\` position shows the measured platforms together, with every index computed against its own platform base: ${series
-      .map((entry) => `${entry.platform.label} = ${entry.platform.chartLegend}`)
-      .join("; ")}; base revision = gray line at 100. Lower is faster and higher is slower.`,
-    lines: [
-      "```mermaid",
-      "---",
-      "config:",
-      "  themeVariables:",
-      "    xyChart:",
-      `      plotColorPalette: "${palette.join(", ")}"`,
-      "---",
-      "xychart-beta horizontal",
-      '  title "Runtime index by platform (base = 100)"',
-      `  x-axis [${labels.join(", ")}]`,
-      `  y-axis "Runtime index" 0 --> ${upperBound}`,
-      ...plots.map(
-        (entry) => `  ${entry.platform.chartPlot} [${entry.indices.join(", ")}]`,
-      ),
-      "```",
-      "",
-    ],
+    description: `The platforms are intentionally separated into independent charts: ${panels
+      .map((panel) => `${panel.platform.label} = ${panel.platform.chartLegend}`)
+      .join("; ")}. Each index is computed only against the same-platform base, shown as a gray line at 100. The panels share one scale; lower is faster and higher is slower.`,
+    lines,
   };
 }
 
@@ -496,9 +489,9 @@ export function renderComment(comparisons, sha) {
     );
     lines.push(`| Artifact size | ${language} | ${cells.join(" | ")} |`);
   }
-  const chart = runtimeChart(byPlatform, runtimeKeys);
+  const chart = runtimeCharts(byPlatform, runtimeKeys);
   if (chart) {
-    lines.push("", "### Runtime comparison chart", "", chart.description, "", ...chart.lines);
+    lines.push("", "### Runtime comparison charts", "", chart.description, "", ...chart.lines);
   }
   return lines.join("\n");
 }

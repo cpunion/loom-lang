@@ -70,8 +70,10 @@ differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow
 validates both pairs of reports and posts one informational sticky comment with
-an exact table and one visible combined runtime-index chart. It is not a
-cross-platform performance certification or a merge threshold.
+an exact table plus separate macOS and Linux runtime-index charts. The charts
+are stacked for readability, and each is normalized only to its same-platform
+base. The comment is not a cross-platform performance certification or a merge
+threshold.
 
 ## Not established
 
