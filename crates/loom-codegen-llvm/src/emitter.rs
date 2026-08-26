@@ -4223,6 +4223,10 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     task: Option<PointerValue<'ctx>>,
     loop_depth: Cell<u32>,
     active_range_local: Cell<Option<LocalId>>,
+    /// The SSA induction value exposed only while emitting a proved native
+    /// append body. This keeps private-storage aliasing from forcing the
+    /// source range binder back through its universal stack representation.
+    active_range_scalar: Cell<Option<(LocalId, IntValue<'ctx>)>>,
     resume_blocks: BTreeMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     locals: BTreeMap<LocalId, PointerValue<'ctx>>,
     stack_record_nodes: BTreeMap<LocalId, Vec<PointerValue<'ctx>>>,
@@ -4259,6 +4263,17 @@ struct NativeCallInOutRecord<'ctx> {
     abi_pointer: PointerValue<'ctx>,
     layout: NativePodRecord,
 }
+
+struct NativeIntListAppendBackedge<'ctx> {
+    data: PointerValue<'ctx>,
+    length: IntValue<'ctx>,
+    capacity: IntValue<'ctx>,
+    current: IntValue<'ctx>,
+    block: BasicBlock<'ctx>,
+}
+
+type NativeIntListAppendResult<'ctx> =
+    Result<Option<NativeIntListAppendBackedge<'ctx>>, CodegenError>;
 
 struct PreparedNativeCall<'ctx> {
     arguments: Vec<BasicMetadataValueEnum<'ctx>>,
@@ -4452,6 +4467,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             task: None,
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
+            active_range_scalar: Cell::new(None),
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
@@ -4732,6 +4748,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             task: None,
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
+            active_range_scalar: Cell::new(None),
             resume_blocks: BTreeMap::new(),
             locals,
             stack_record_nodes,
@@ -5146,6 +5163,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             task: Some(task),
             loop_depth: Cell::new(0),
             active_range_local: Cell::new(None),
+            active_range_scalar: Cell::new(None),
             resume_blocks,
             locals,
             stack_record_nodes: BTreeMap::new(),
@@ -6280,6 +6298,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             INT_LIST_FIELD_CAPACITY,
             "int.list.loop.initial.capacity",
         )?;
+        let initial_current = self.int_scalar(current)?;
+        let range_end = self.int_scalar(end_value)?;
         let preheader = self
             .backend
             .builder
@@ -6307,19 +6327,24 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .builder
             .build_phi(self.backend.i64_type, "int.list.loop.capacity")
             .map_err(builder_error)?;
+        let current_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "range.current.scalar")
+            .map_err(builder_error)?;
         data_phi.add_incoming(&[(&initial_data, preheader)]);
         length_phi.add_incoming(&[(&initial_length, preheader)]);
         capacity_phi.add_incoming(&[(&initial_capacity, preheader)]);
+        current_phi.add_incoming(&[(&initial_current, preheader)]);
         let data = data_phi.as_basic_value().into_pointer_value();
         let length = length_phi.as_basic_value().into_int_value();
         let capacity = capacity_phi.as_basic_value().into_int_value();
+        let current_scalar = current_phi.as_basic_value().into_int_value();
 
-        let current_scalar = self.int_scalar(current)?;
-        let end_scalar = self.int_scalar(end_value)?;
         let has_next = self
             .backend
             .builder
-            .build_int_compare(IntPredicate::SLT, current_scalar, end_scalar, "range.more")
+            .build_int_compare(IntPredicate::SLT, current_scalar, range_end, "range.more")
             .map_err(builder_error)?;
         self.backend
             .builder
@@ -6333,16 +6358,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         })?;
         self.loop_depth.set(iteration_loop_depth);
         let outer_range_local = self.active_range_local.replace(Some(range_local));
+        let outer_range_scalar = self
+            .active_range_scalar
+            .replace(Some((range_local, current_scalar)));
 
-        let append_result: Result<
-            Option<(
-                PointerValue<'ctx>,
-                IntValue<'ctx>,
-                IntValue<'ctx>,
-                BasicBlock<'ctx>,
-            )>,
-            CodegenError,
-        > = (|| {
+        let append_result: NativeIntListAppendResult<'ctx> = (|| {
             // A direct local receiver has no evaluation effects. Evaluate the
             // element before checking/growing capacity, matching List.add's
             // established source order while the memory header is coherent.
@@ -6459,7 +6479,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 next_length,
             )?;
 
-            let current_scalar = self.int_scalar(current)?;
             let next = self
                 .backend
                 .builder
@@ -6479,15 +6498,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 CodegenError::new("LlvmBuilderFailed", "append range has no backedge")
             })?;
             self.backend.branch(header)?;
-            Ok(Some((ready_data, next_length, ready_capacity, backedge)))
+            Ok(Some(NativeIntListAppendBackedge {
+                data: ready_data,
+                length: next_length,
+                capacity: ready_capacity,
+                current: next,
+                block: backedge,
+            }))
         })();
 
+        self.active_range_scalar.set(outer_range_scalar);
         self.active_range_local.set(outer_range_local);
         self.loop_depth.set(outer_loop_depth);
-        if let Some((next_data, next_length, next_capacity, backedge)) = append_result? {
-            data_phi.add_incoming(&[(&next_data, backedge)]);
-            length_phi.add_incoming(&[(&next_length, backedge)]);
-            capacity_phi.add_incoming(&[(&next_capacity, backedge)]);
+        if let Some(backedge) = append_result? {
+            data_phi.add_incoming(&[(&backedge.data, backedge.block)]);
+            length_phi.add_incoming(&[(&backedge.length, backedge.block)]);
+            capacity_phi.add_incoming(&[(&backedge.capacity, backedge.block)]);
+            current_phi.add_incoming(&[(&backedge.current, backedge.block)]);
         }
 
         self.backend.builder.position_at_end(exit);
@@ -6525,6 +6552,20 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ExprKind::Tuple(elements) => self.emit_tuple(elements, destination),
             ExprKind::List(elements) => self.emit_list(elements, destination),
             ExprKind::Copy(place) => {
+                if place.projection.is_empty()
+                    && expression.ty == Type::Int
+                    && let Some((local, scalar)) = self.active_range_scalar.get()
+                    && place.local == local
+                {
+                    self.initialize(destination, VALUE_TAG_INT)?;
+                    self.backend.store_i64_field(
+                        self.backend.value_type,
+                        destination,
+                        VALUE_FIELD_SCALAR,
+                        scalar,
+                    )?;
+                    return Ok(true);
+                }
                 if place.projection.is_empty() && self.stack_record_nodes.contains_key(&place.local)
                 {
                     self.emit_stack_record_copy(place.local, destination)?;
@@ -11172,10 +11213,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     INT_LIST_FIELD_LENGTH,
                     "int.list.add.index",
                 )?;
-                // The backend supports only 64-bit targets. Integer-addressed
-                // indexing avoids introducing unsafe Rust into the compiler;
-                // the private header invariant proves the resulting address
-                // lies within the runtime-owned allocation.
                 let slot =
                     self.native_int_list_element_pointer(data, length, "int.list.add.slot")?;
                 self.backend
@@ -11343,35 +11380,27 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_expr(&matched.some.value, destination)
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "Inkwell requires an audited pointee/index proof for typed GEP construction"
+    )]
     fn native_int_list_element_pointer(
         &self,
         data: PointerValue<'ctx>,
         index: IntValue<'ctx>,
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let base = self
-            .backend
-            .builder
-            .build_ptr_to_int(data, self.backend.i64_type, &format!("{name}.base"))
-            .map_err(builder_error)?;
-        let offset = self
-            .backend
-            .builder
-            .build_int_mul(
-                index,
-                self.backend.i64_type.const_int(8, false),
-                &format!("{name}.offset"),
-            )
-            .map_err(builder_error)?;
-        let address = self
-            .backend
-            .builder
-            .build_int_add(base, offset, &format!("{name}.address"))
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_int_to_ptr(address, self.backend.ptr_type, name)
-            .map_err(builder_error)
+        // SAFETY: private native `List[Int]` storage is one contiguous `i64`
+        // allocation. Append calls this only after reserving space for
+        // `index == length`; get calls it only on a proven or checked
+        // `0 <= index < length` edge. A typed GEP preserves allocation
+        // provenance for LLVM's alias and loop-vectorization analyses.
+        unsafe {
+            self.backend
+                .builder
+                .build_gep(self.backend.i64_type, data, &[index], name)
+                .map_err(builder_error)
+        }
     }
 
     fn emit_list_builtin_values(
