@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt,
+    rc::Rc,
 };
 
 use loom_mir::{
@@ -123,12 +124,196 @@ struct FunctionEdges {
     concrete_methods: BTreeSet<(WitnessId, RequirementId)>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct WitnessFlow {
-    /// `None` means a value may carry any runtime witness. A concrete set is
-    /// retained only while straight-line MIR proves every reaching value.
-    locals: BTreeMap<LocalId, Option<BTreeSet<WitnessId>>>,
+type WitnessTrie = Option<Rc<WitnessTrieNode>>;
+
+#[derive(Debug)]
+enum WitnessTrieNode {
+    Branch { zero: WitnessTrie, one: WitnessTrie },
+    Leaf(BTreeSet<WitnessId>),
 }
+
+/// Persistent sparse facts for witnesses proven to inhabit local values.
+///
+/// Missing locals and explicitly unknown witness facts are semantically
+/// identical, so the trie stores only concrete non-empty facts. Branch copies
+/// share their root and merges skip pointer-identical subtries. Updating one
+/// local copies at most one 32-node radix path.
+#[derive(Clone, Debug, Default)]
+struct WitnessFlow {
+    root: WitnessTrie,
+}
+
+impl WitnessFlow {
+    fn get(&self, local: LocalId) -> Option<&BTreeSet<WitnessId>> {
+        witness_trie_get(&self.root, local.0)
+    }
+
+    fn set(&mut self, local: LocalId, witnesses: Option<BTreeSet<WitnessId>>) {
+        self.root = match witnesses.filter(|witnesses| !witnesses.is_empty()) {
+            Some(witnesses) => witness_trie_set(&self.root, local.0, Some(witnesses), 0),
+            None => witness_trie_set(&self.root, local.0, None, 0),
+        };
+    }
+
+    fn remove(&mut self, local: LocalId) {
+        self.root = witness_trie_set(&self.root, local.0, None, 0);
+    }
+
+    fn merge(&self, other: &Self) -> Self {
+        Self {
+            root: merge_witness_tries(&self.root, &other.root, 0),
+        }
+    }
+
+    fn same_root(&self, other: &Self) -> bool {
+        witness_roots_equal(&self.root, &other.root)
+    }
+}
+
+fn witness_trie_get(root: &WitnessTrie, key: u32) -> Option<&BTreeSet<WitnessId>> {
+    let mut current = root.as_ref()?;
+    for depth in 0..u32::BITS {
+        let WitnessTrieNode::Branch { zero, one } = current.as_ref() else {
+            return None;
+        };
+        let bit = u32::BITS - depth - 1;
+        current = if key & (1_u32 << bit) == 0 {
+            zero.as_ref()?
+        } else {
+            one.as_ref()?
+        };
+    }
+    match current.as_ref() {
+        WitnessTrieNode::Leaf(witnesses) => Some(witnesses),
+        WitnessTrieNode::Branch { .. } => None,
+    }
+}
+
+fn witness_trie_set(
+    root: &WitnessTrie,
+    key: u32,
+    value: Option<BTreeSet<WitnessId>>,
+    depth: u32,
+) -> WitnessTrie {
+    if depth == u32::BITS {
+        return match value {
+            None => None,
+            Some(value) if matches!(root.as_deref(), Some(WitnessTrieNode::Leaf(current)) if current == &value) => {
+                root.clone()
+            }
+            Some(value) => Some(witness_leaf(value)),
+        };
+    }
+
+    let (zero, one) = witness_children(root);
+    let bit = u32::BITS - depth - 1;
+    let (next_zero, next_one) = if key & (1_u32 << bit) == 0 {
+        (witness_trie_set(&zero, key, value, depth + 1), one)
+    } else {
+        (zero, witness_trie_set(&one, key, value, depth + 1))
+    };
+    if next_zero.is_none() && next_one.is_none() {
+        return None;
+    }
+    if witness_children_equal(root, &next_zero, &next_one) {
+        return root.clone();
+    }
+    Some(witness_branch(next_zero, next_one))
+}
+
+fn merge_witness_tries(left: &WitnessTrie, right: &WitnessTrie, depth: u32) -> WitnessTrie {
+    if witness_roots_equal(left, right) {
+        return left.clone();
+    }
+    let (Some(left_node), Some(right_node)) = (left.as_deref(), right.as_deref()) else {
+        // A fact is known after a join only when every incoming path knows it.
+        return None;
+    };
+    if depth == u32::BITS {
+        let (WitnessTrieNode::Leaf(left_values), WitnessTrieNode::Leaf(right_values)) =
+            (left_node, right_node)
+        else {
+            debug_assert!(false, "witness radix leaf depth contained a branch");
+            return None;
+        };
+        if left_values == right_values {
+            return left.clone();
+        }
+        let mut merged = left_values.clone();
+        merged.extend(right_values.iter().copied());
+        return if merged == *left_values {
+            left.clone()
+        } else if merged == *right_values {
+            right.clone()
+        } else {
+            Some(witness_leaf(merged))
+        };
+    }
+
+    let (left_zero, left_one) = witness_children(left);
+    let (right_zero, right_one) = witness_children(right);
+    let zero = merge_witness_tries(&left_zero, &right_zero, depth + 1);
+    let one = merge_witness_tries(&left_one, &right_one, depth + 1);
+    if zero.is_none() && one.is_none() {
+        None
+    } else if witness_children_equal(left, &zero, &one) {
+        left.clone()
+    } else if witness_children_equal(right, &zero, &one) {
+        right.clone()
+    } else {
+        Some(witness_branch(zero, one))
+    }
+}
+
+fn witness_children(root: &WitnessTrie) -> (WitnessTrie, WitnessTrie) {
+    match root.as_deref() {
+        Some(WitnessTrieNode::Branch { zero, one }) => (zero.clone(), one.clone()),
+        Some(WitnessTrieNode::Leaf(_)) | None => (None, None),
+    }
+}
+
+fn witness_children_equal(root: &WitnessTrie, zero: &WitnessTrie, one: &WitnessTrie) -> bool {
+    let (current_zero, current_one) = witness_children(root);
+    witness_roots_equal(&current_zero, zero) && witness_roots_equal(&current_one, one)
+}
+
+fn witness_roots_equal(left: &WitnessTrie, right: &WitnessTrie) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => Rc::ptr_eq(left, right),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn witness_branch(zero: WitnessTrie, one: WitnessTrie) -> Rc<WitnessTrieNode> {
+    debug_assert!(zero.is_some() || one.is_some());
+    count_witness_node_allocation();
+    Rc::new(WitnessTrieNode::Branch { zero, one })
+}
+
+fn witness_leaf(witnesses: BTreeSet<WitnessId>) -> Rc<WitnessTrieNode> {
+    debug_assert!(!witnesses.is_empty());
+    count_witness_node_allocation();
+    Rc::new(WitnessTrieNode::Leaf(witnesses))
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static WITNESS_NODE_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_witness_node_allocation() {
+    WITNESS_NODE_ALLOCATIONS.set(WITNESS_NODE_ALLOCATIONS.get() + 1);
+}
+
+#[cfg(test)]
+fn witness_node_allocations() -> usize {
+    WITNESS_NODE_ALLOCATIONS.get()
+}
+
+#[cfg(not(test))]
+const fn count_witness_node_allocation() {}
 
 /// Traverses calls from the selected roots and closes dynamic edges through
 /// only witness values that reachable code actually constructs or passes.
@@ -294,7 +479,7 @@ fn scan_block_with_flow<'mir>(
             StatementKind::Let { local, value } => {
                 let witnesses = expression_witnesses(value, flow);
                 if scan_expr(value, edges, flow, active_cleanups) {
-                    flow.locals.insert(*local, witnesses);
+                    flow.set(*local, witnesses);
                     true
                 } else {
                     false
@@ -323,7 +508,7 @@ fn scan_block_with_flow<'mir>(
                 };
                 if continues {
                     for (index, local) in locals.iter().enumerate() {
-                        flow.locals.insert(
+                        flow.set(
                             *local,
                             elements
                                 .as_ref()
@@ -340,9 +525,9 @@ fn scan_block_with_flow<'mir>(
                 let witnesses = expression_witnesses(value, flow);
                 if scan_expr(value, edges, flow, active_cleanups) {
                     if place.projection.is_empty() {
-                        flow.locals.insert(place.local, witnesses);
+                        flow.set(place.local, witnesses);
                     } else {
-                        flow.locals.insert(place.local, None);
+                        flow.remove(place.local);
                     }
                     true
                 } else {
@@ -371,12 +556,12 @@ fn scan_block_with_flow<'mir>(
                     let mut loop_head = entry.clone();
                     loop {
                         let mut body_flow = loop_head.clone();
-                        body_flow.locals.insert(*local, None);
+                        body_flow.remove(*local);
                         if !scan_block_with_flow(body, edges, &mut body_flow, active_cleanups) {
                             break;
                         }
                         let next = merge_witness_flows([&entry, &body_flow]);
-                        if next == loop_head {
+                        if next.same_root(&loop_head) {
                             break;
                         }
                         loop_head = next;
@@ -552,7 +737,7 @@ fn scan_expr<'mir>(
                     arguments.first().and_then(|argument| match argument {
                         CallArgument::Value(receiver) => expression_witnesses(receiver, flow),
                         CallArgument::InOut(place) if place.projection.is_empty() => {
-                            flow.locals.get(&place.local).cloned().flatten()
+                            flow.get(place.local).cloned()
                         }
                         CallArgument::InOut(_) => None,
                     })
@@ -567,7 +752,7 @@ fn scan_expr<'mir>(
                         }
                     }
                     CallArgument::InOut(place) => {
-                        flow.locals.insert(place.local, None);
+                        flow.remove(place.local);
                     }
                 }
             }
@@ -634,7 +819,7 @@ fn scan_expr<'mir>(
         }
         ExprKind::Constant(_) | ExprKind::Copy(_) | ExprKind::ReborrowView { .. } => {}
         ExprKind::Move(place) => {
-            flow.locals.remove(&place.local);
+            flow.remove(place.local);
         }
     }
     expression.ty != Type::Never
@@ -646,36 +831,21 @@ fn expression_witnesses(expression: &Expr, flow: &WitnessFlow) -> Option<BTreeSe
             concrete_witness(witness).map(|witness| BTreeSet::from([witness]))
         }
         ExprKind::Copy(place) | ExprKind::Move(place) if place.projection.is_empty() => {
-            flow.locals.get(&place.local).cloned().flatten()
+            flow.get(place.local).cloned()
         }
         ExprKind::ReborrowView { owner, .. } if owner.projection.is_empty() => {
-            flow.locals.get(&owner.local).cloned().flatten()
+            flow.get(owner.local).cloned()
         }
         _ => None,
     }
 }
 
 fn merge_witness_flows<'a>(flows: impl IntoIterator<Item = &'a WitnessFlow>) -> WitnessFlow {
-    let flows = flows.into_iter().collect::<Vec<_>>();
-    let mut locals = BTreeMap::new();
-    let keys = flows
-        .iter()
-        .flat_map(|flow| flow.locals.keys().copied())
-        .collect::<BTreeSet<_>>();
-    for local in keys {
-        let mut witnesses = BTreeSet::new();
-        let mut known = true;
-        for flow in &flows {
-            if let Some(Some(values)) = flow.locals.get(&local) {
-                witnesses.extend(values.iter().copied());
-            } else {
-                known = false;
-                break;
-            }
-        }
-        locals.insert(local, known.then_some(witnesses));
-    }
-    WitnessFlow { locals }
+    let mut flows = flows.into_iter();
+    let Some(first) = flows.next() else {
+        return WitnessFlow::default();
+    };
+    flows.fold(first.clone(), |merged, flow| merged.merge(flow))
 }
 
 fn collect_witness(reference: &WitnessRef, output: &mut BTreeSet<WitnessId>) {
@@ -841,6 +1011,175 @@ mod tests {
             statement(StatementKind::Evaluate(direct_call(target, Type::Unit))),
             statement(StatementKind::Evaluate(dynamic_call())),
         ])
+    }
+
+    #[test]
+    fn persistent_witness_flow_identity_joins_allocate_no_per_local_work() {
+        const LOCAL_COUNT: u32 = 8_192;
+        const IDENTITY_JOIN_COUNT: usize = 8_192;
+
+        let allocations_before_population = witness_node_allocations();
+        let mut flow = WitnessFlow::default();
+        for raw in 0..LOCAL_COUNT {
+            flow.set(LocalId(raw), Some(BTreeSet::from([FIRST])));
+        }
+        let allocations_after_population = witness_node_allocations();
+        assert!(
+            allocations_after_population - allocations_before_population
+                <= usize::try_from(LOCAL_COUNT).expect("local count fits usize") * 33
+        );
+
+        for _ in 0..IDENTITY_JOIN_COUNT {
+            let then_flow = flow.clone();
+            let else_flow = flow.clone();
+            let joined = merge_witness_flows([&then_flow, &else_flow]);
+            assert!(joined.same_root(&flow));
+            flow = joined;
+        }
+        assert_eq!(witness_node_allocations(), allocations_after_population);
+    }
+
+    #[test]
+    fn scanner_identity_branches_share_all_known_local_witness_facts() {
+        const LOCAL_COUNT: u32 = 8_192;
+        const IDENTITY_BRANCH_COUNT: u32 = 8_192;
+
+        let population = block(
+            (0..LOCAL_COUNT)
+                .map(|raw| {
+                    statement(StatementKind::Let {
+                        local: LocalId(raw),
+                        value: make_view(FIRST),
+                    })
+                })
+                .collect(),
+        );
+        let identity_branches = block(
+            (0..IDENTITY_BRANCH_COUNT)
+                .map(|index| {
+                    let expression = if index & 1 == 0 {
+                        Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::If {
+                                condition: Box::new(boolean(true)),
+                                then_branch: block(Vec::new()),
+                                else_branch: block(Vec::new()),
+                            },
+                            ty: Type::Unit,
+                            span: Default::default(),
+                        }
+                    } else {
+                        Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::Binary(
+                                BinaryOp::And,
+                                Box::new(boolean(true)),
+                                Box::new(boolean(true)),
+                            ),
+                            ty: Type::Bool,
+                            span: Default::default(),
+                        }
+                    };
+                    statement(StatementKind::Evaluate(expression))
+                })
+                .collect(),
+        );
+
+        let mut edges = FunctionEdges::default();
+        let mut flow = WitnessFlow::default();
+        assert!(scan_block_with_flow(
+            &population,
+            &mut edges,
+            &mut flow,
+            &mut Vec::new()
+        ));
+        let allocations_after_population = witness_node_allocations();
+        assert!(scan_block_with_flow(
+            &identity_branches,
+            &mut edges,
+            &mut flow,
+            &mut Vec::new()
+        ));
+
+        assert_eq!(witness_node_allocations(), allocations_after_population);
+        assert_eq!(flow.get(LocalId(0)), Some(&BTreeSet::from([FIRST])));
+        assert_eq!(
+            flow.get(LocalId(LOCAL_COUNT - 1)),
+            Some(&BTreeSet::from([FIRST]))
+        );
+    }
+
+    #[test]
+    fn persistent_witness_flow_matches_a_small_map_reference() {
+        fn update(
+            flow: &mut WitnessFlow,
+            reference: &mut BTreeMap<LocalId, BTreeSet<WitnessId>>,
+            local: LocalId,
+            witnesses: Option<BTreeSet<WitnessId>>,
+        ) {
+            flow.set(local, witnesses.clone());
+            match witnesses.filter(|witnesses| !witnesses.is_empty()) {
+                Some(witnesses) => {
+                    reference.insert(local, witnesses);
+                }
+                None => {
+                    reference.remove(&local);
+                }
+            }
+        }
+
+        fn assert_matches(
+            flow: &WitnessFlow,
+            reference: &BTreeMap<LocalId, BTreeSet<WitnessId>>,
+            locals: &[LocalId],
+        ) {
+            for local in locals {
+                assert_eq!(flow.get(*local), reference.get(local), "local #{}", local.0);
+            }
+        }
+
+        let mut locals = (0..48).map(LocalId).collect::<Vec<_>>();
+        locals.extend([LocalId(1_u32 << 31), LocalId(u32::MAX)]);
+        let mut left = WitnessFlow::default();
+        let mut right = WitnessFlow::default();
+        let mut left_reference = BTreeMap::new();
+        let mut right_reference = BTreeMap::new();
+        let mut state = 0x6d2b_79f5_u32;
+        for step in 0..512 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let local = locals[usize::try_from(state).expect("u32 fits usize") % locals.len()];
+            let witnesses = match (state >> 8) & 3 {
+                0 => None,
+                1 => Some(BTreeSet::from([FIRST])),
+                2 => Some(BTreeSet::from([SECOND])),
+                _ => Some(BTreeSet::from([FIRST, SECOND])),
+            };
+            if state & 1 == 0 {
+                update(&mut left, &mut left_reference, local, witnesses);
+            } else {
+                update(&mut right, &mut right_reference, local, witnesses);
+            }
+            if step % 17 == 0 {
+                assert_matches(&left, &left_reference, &locals);
+                assert_matches(&right, &right_reference, &locals);
+            }
+        }
+
+        let merged = left.merge(&right);
+        let merged_reference = left_reference
+            .iter()
+            .filter_map(|(local, left_witnesses)| {
+                right_reference.get(local).map(|right_witnesses| {
+                    let mut witnesses = left_witnesses.clone();
+                    witnesses.extend(right_witnesses.iter().copied());
+                    (*local, witnesses)
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_matches(&merged, &merged_reference, &locals);
+        let fixed_point = merged.merge(&left);
+        assert!(fixed_point.same_root(&merged));
+        assert_matches(&fixed_point, &merged_reference, &locals);
     }
 
     #[test]
