@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_complete_function_state_expansion() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 4);
+fn identity_schema_is_pinned_after_complete_type_encoding() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 5);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
