@@ -608,8 +608,8 @@ pub enum ExprKind {
     Sleep {
         milliseconds: Box<Expr>,
     },
-    WaitFd {
-        descriptor: Box<Expr>,
+    WaitIo {
+        source: Box<Expr>,
         writable: bool,
     },
     TaskJoin {
@@ -757,9 +757,8 @@ impl<'function> ExprPreorder<'function> {
             | ExprKind::Sleep {
                 milliseconds: operand,
             }
-            | ExprKind::WaitFd {
-                descriptor: operand,
-                ..
+            | ExprKind::WaitIo {
+                source: operand, ..
             } => self.pending.push(ExprWalkNode::Expr(operand)),
             ExprKind::Binary(_, left, right) => {
                 self.pending.push(ExprWalkNode::Expr(right));
@@ -901,9 +900,8 @@ impl ExprIdAssigner {
             | ExprKind::Sleep {
                 milliseconds: operand,
             }
-            | ExprKind::WaitFd {
-                descriptor: operand,
-                ..
+            | ExprKind::WaitIo {
+                source: operand, ..
             } => self.assign_expr(operand),
             ExprKind::Binary(_, left, right) => {
                 self.assign_expr(left)?;

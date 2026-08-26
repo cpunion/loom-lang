@@ -315,9 +315,9 @@ fn scan_stack_record_expr(
             initialized,
             forbidden,
         ),
-        ExprKind::WaitFd { descriptor, .. } => {
+        ExprKind::WaitIo { source, .. } => {
             scan_stack_record_expr(
-                descriptor,
+                source,
                 eligible,
                 native_pod_initializers,
                 initialized,
@@ -864,7 +864,7 @@ fn expr_mutates_list(expression: &Expr, list: LocalId) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         } => expr_mutates_list(value, list),
-        ExprKind::WaitFd { descriptor, .. } => expr_mutates_list(descriptor, list),
+        ExprKind::WaitIo { source, .. } => expr_mutates_list(source, list),
         ExprKind::Binary(_, left, right) => {
             expr_mutates_list(left, list) || expr_mutates_list(right, list)
         }
@@ -1014,7 +1014,7 @@ impl IntListUseScanner {
                 }
                 self.scan_expr(task);
             }
-            ExprKind::WaitFd { descriptor, .. } => self.scan_expr(descriptor),
+            ExprKind::WaitIo { source, .. } => self.scan_expr(source),
             ExprKind::Binary(_, left, right) => {
                 self.scan_expr(left);
                 self.scan_expr(right);
@@ -1214,7 +1214,7 @@ fn expr_references_local(expression: &Expr, local: LocalId) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         } => expr_references_local(value, local),
-        ExprKind::WaitFd { descriptor, .. } => expr_references_local(descriptor, local),
+        ExprKind::WaitIo { source, .. } => expr_references_local(source, local),
         ExprKind::Binary(_, left, right) => {
             expr_references_local(left, local) || expr_references_local(right, local)
         }

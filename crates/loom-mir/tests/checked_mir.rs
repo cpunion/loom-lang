@@ -461,8 +461,8 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
             Type::Task(Box::new(Type::Unit)),
         ),
         expr(
-            ExprKind::WaitFd {
-                descriptor: Box::new(constant(Constant::Int(1), Type::Int)),
+            ExprKind::WaitIo {
+                source: Box::new(constant(Constant::Int(1), Type::Int)),
                 writable: false,
             },
             Type::Task(Box::new(Type::Unit)),

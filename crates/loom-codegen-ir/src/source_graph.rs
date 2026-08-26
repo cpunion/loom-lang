@@ -812,8 +812,8 @@ fn scan_expr<'mir>(
                 return false;
             }
         }
-        ExprKind::WaitFd { descriptor, .. } => {
-            if !scan_expr(descriptor, edges, flow, active_cleanups) {
+        ExprKind::WaitIo { source, .. } => {
+            if !scan_expr(source, edges, flow, active_cleanups) {
                 return false;
             }
         }

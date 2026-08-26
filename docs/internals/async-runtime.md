@@ -40,21 +40,22 @@ readiness need not create the reactor.
 
 The versioned wait ABI (`wait-v1`) defines:
 
-- `LoomWaitSource` for timers, file-descriptor readiness, and worker
+- `LoomWaitSource` for timers, opaque platform I/O readiness, and worker
   completions;
 - `LoomRegistration` with a key and generation;
 - one-shot `LoomReadyNotification` records;
 - cancellation and stale-registration rejection.
 
-The Unix implementation uses the Rust `polling` crate, which maps to the host
-readiness mechanism (epoll on Linux and kqueue on macOS). Notifications carry
-the suspended frame identity and enqueue the corresponding Task for another
-resume step.
+The runtime uses the Rust `polling` crate, which maps to epoll on Linux, kqueue
+on macOS, and its IOCP/AFD implementation on Windows. The ABI transports only
+opaque 64-bit handle bits; Unix descriptor and Windows socket ownership types
+remain private to the platform adapter. Notifications carry the suspended
+frame identity and enqueue the corresponding Task for another resume step.
 
-The public safe `WaitSet` utility duplicates registered file descriptors, so a
-caller closing or reusing its descriptor cannot invalidate the registration.
-Compiler-generated resource tasks also retain or duplicate the descriptor
-according to the scoped resource operation's ownership contract.
+The public safe `WaitSet` utility duplicates registered I/O handles, so a
+caller closing or reusing its source cannot invalidate the registration.
+Compiler-generated resource tasks likewise retain or duplicate the native
+resource according to the scoped operation's ownership contract.
 
 ## Blocking I/O
 

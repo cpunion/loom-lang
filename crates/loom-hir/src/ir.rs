@@ -426,8 +426,8 @@ pub enum Expr {
     Await(ExprId),
     /// Compiler-known timer task constructor: `Task.sleep(milliseconds)`.
     Sleep(Vec<ExprId>),
-    /// Compiler-known one-shot descriptor readiness task.
-    WaitFd {
+    /// Compiler-known one-shot platform I/O readiness task.
+    WaitIo {
         writable: bool,
         arguments: Vec<ExprId>,
     },

@@ -165,13 +165,13 @@ The built-in task constructors are:
 ```text
 Task.sleep(milliseconds Int) Task[Unit]
 Task.sleep(duration Duration) Task[Unit]
-Task.waitReadable(descriptor Int) Task[Unit]
-Task.waitWritable(descriptor Int) Task[Unit]
+Task.waitReadable(handle Int) Task[Unit]
+Task.waitWritable(handle Int) Task[Unit]
 ```
 
 Sleep duration must be non-negative. The standard function
 `standard.time.milliseconds` constructs a non-negative `Duration`, whose
-`.as_milliseconds()` method returns `Int`. Invalid durations or descriptors
+`.as_milliseconds()` method returns `Int`. Invalid durations or I/O handles
 produce a RuntimeFault.
 
 File and socket operations expose typed tasks rather than requiring raw

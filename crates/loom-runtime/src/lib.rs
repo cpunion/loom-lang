@@ -2,8 +2,8 @@
 //!
 //! The scheduler, structured Task tree, joins, cancellation and managed frame
 //! relocation are ordinary Rust. Unsafe code is confined to the private C ABI
-//! and the one-shot raw-fd registration whose lifetime is represented by a
-//! runtime registration entry.
+//! and platform handle conversions whose lifetimes are represented by runtime
+//! registration or scoped-resource entries.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 // This crate is a compiler-private C ABI. Its exported unsafe entry points are
@@ -75,7 +75,7 @@ pub use loom_runtime_abi::{
     STANDARD_LIBRARY_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
     TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
     WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_READABLE,
-    WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION,
+    WAIT_SOURCE_COMPLETION, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION,
     WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE, WITNESS_ABI_VERSION,
 };
 
@@ -334,7 +334,7 @@ mod tests {
 
             let (left, mut right) = socket_pair().expect("create socket pair");
             left.set_nonblocking(true).expect("make socket nonblocking");
-            let mut readable = source(WAIT_SOURCE_FD);
+            let mut readable = source(WAIT_SOURCE_IO);
             readable.handle = crate::platform::socket_handle_bits(&left);
             readable.interests = WAIT_READABLE;
             assert_eq!(

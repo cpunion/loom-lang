@@ -2547,19 +2547,16 @@ impl<'program> Interpreter<'program> {
                 self.gc_stats.live = self.tasks.len() as u64;
                 Ok(Value::Task { id: task_id })
             }
-            ExprKind::WaitFd {
-                descriptor,
-                writable,
-            } => {
-                let descriptor = self.eval_expr(frame, descriptor)?;
-                let Value::Int { value: descriptor } = descriptor else {
+            ExprKind::WaitIo { source, writable } => {
+                let source = self.eval_expr(frame, source)?;
+                let Value::Int { value: handle } = source else {
                     return Err(EvalAbort::from(self.runtime_fault(
                         "LOOM_RUNTIME_INVALID_MIR",
-                        "descriptor wait did not produce Int",
+                        "I/O wait source did not produce Int",
                         expression.span,
                     )));
                 };
-                if descriptor == -1 {
+                if handle == -1 {
                     return Err(EvalAbort::from(self.runtime_fault(
                         "InvalidWaitHandle",
                         "wait source must contain a live platform I/O handle",
@@ -2573,7 +2570,7 @@ impl<'program> Interpreter<'program> {
                 };
                 let span = expression.span;
                 self.spawn_host_io_task(span, move || {
-                    loom_runtime::wait_source_once(descriptor, interests)
+                    loom_runtime::wait_source_once(handle, interests)
                         .map(|_| HostIoValue::Value(Value::Unit))
                         .map_err(|error| io_failure("IoWaitFault", &error, span))
                 })

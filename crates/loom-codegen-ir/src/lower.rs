@@ -1369,8 +1369,8 @@ impl<'program> Classifier<'program> {
                 );
                 expression.ty != Type::Never
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                if !self.visit_expr(function, descriptor, &format!("{path}.descriptor")) {
+            ExprKind::WaitIo { source, .. } => {
+                if !self.visit_expr(function, source, &format!("{path}.source")) {
                     return false;
                 }
                 self.expression_item(
@@ -1616,7 +1616,7 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
         ExprKind::MakeView { value, .. } => scan_effect_expr(value, summary),
         ExprKind::Await { task, .. } => scan_effect_expr(task, summary),
         ExprKind::Sleep { milliseconds } => scan_effect_expr(milliseconds, summary),
-        ExprKind::WaitFd { descriptor, .. } => scan_effect_expr(descriptor, summary),
+        ExprKind::WaitIo { source, .. } => scan_effect_expr(source, summary),
         ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(arguments, summary),
     }
 }
@@ -1804,7 +1804,7 @@ fn scan_mutation_expr(expression: &mir::Expr, changed: &mut BTreeSet<LocalId>) -
         }
         ExprKind::Await { task, .. } => scan_mutation_expr(task, changed),
         ExprKind::Sleep { milliseconds } => scan_mutation_expr(milliseconds, changed),
-        ExprKind::WaitFd { descriptor, .. } => scan_mutation_expr(descriptor, changed),
+        ExprKind::WaitIo { source, .. } => scan_mutation_expr(source, changed),
         ExprKind::TaskJoin { arguments, .. } => arguments
             .iter()
             .all(|argument| scan_mutation_expr(argument, changed)),
@@ -2783,8 +2783,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             ExprKind::Sleep { milliseconds } => {
                 self.lower_unsupported_operand(flow, milliseconds, "sleep")
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                self.lower_unsupported_operand(flow, descriptor, "fd wait")
+            ExprKind::WaitIo { source, .. } => {
+                self.lower_unsupported_operand(flow, source, "I/O wait")
             }
             ExprKind::TaskJoin { arguments, .. } => {
                 self.lower_unsupported_values(flow, arguments, "task join")

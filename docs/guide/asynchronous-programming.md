@@ -140,21 +140,22 @@ The compiler-known wait constructors return storable `Task[Unit]` values:
 
 ```loom
 Task.sleep(10).await
-Task.waitReadable(fd).await
-Task.waitWritable(fd).await
+Task.waitReadable(handle).await
+Task.waitWritable(handle).await
 ```
 
 `Task.sleep` accepts a non-negative millisecond `Int` or a `Duration`.
-Readiness waits borrow a platform descriptor for one registration; they do not
-own or close it. Higher-level file and socket APIs are safer for ordinary code.
+Readiness waits borrow an opaque platform I/O handle for one registration; they
+do not own or close it. Higher-level file and socket APIs are safer for ordinary
+code.
 
 The native runtime uses a generation-checked, one-shot wait-registration ABI,
-`kqueue` on macOS, and `epoll` on Linux. Notifications enqueue a ready task;
-they never re-enter a coroutine directly on a callback stack. Pending tasks are
-registered with a real wait source rather than busy-polled.
-
-Native asynchronous I/O is currently supported only on the tested Linux and
-macOS configurations. Windows native scheduling and I/O are not yet supported.
+kqueue on macOS, epoll on Linux, and the `polling` crate's IOCP/AFD backend on
+Windows. Notifications enqueue a ready task; they never re-enter a coroutine
+directly on a callback stack. Pending tasks are registered with a real wait
+source rather than busy-polled. Windows compilation is covered by target checks;
+native Windows scheduling and I/O execution are gated by the configured Windows
+CI job and are not claimed from a Unix cross-check.
 
 ## Cleanup and cancellation
 

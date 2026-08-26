@@ -2188,7 +2188,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             Expr::Await(value) => self.check_await(expression, value, await_allowed),
             Expr::Sleep(arguments) => self.check_sleep(expression, &arguments),
-            Expr::WaitFd { arguments, .. } => self.check_wait_fd(expression, &arguments),
+            Expr::WaitIo { arguments, .. } => self.check_wait_io(expression, &arguments),
             Expr::TaskJoin { mode, arguments } => {
                 self.check_task_join(expression, mode, &arguments)
             }
@@ -2315,7 +2315,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.types().intern(TyData::Task(unit))
     }
 
-    fn check_wait_fd(&mut self, expression: ExprId, arguments: &[ExprId]) -> TyId {
+    fn check_wait_io(&mut self, expression: ExprId, arguments: &[ExprId]) -> TyId {
         let int = self.types().builtin(BuiltinType::Int);
         self.check_fixed_arguments(expression, arguments, &[int]);
         let unit = self.types().builtin(BuiltinType::Unit);
@@ -4766,7 +4766,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::Assign { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
+            | Expr::WaitIo { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
@@ -5030,7 +5030,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
+            | Expr::WaitIo { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
@@ -8675,7 +8675,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
             | Expr::Sleep(_)
-            | Expr::WaitFd { .. }
+            | Expr::WaitIo { .. }
             | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_) => false,

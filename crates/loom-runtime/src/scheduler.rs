@@ -27,7 +27,7 @@ use crate::witness::{WitnessArena, clone_witnesses};
 use crate::{
     COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
     TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
-    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
+    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER,
     WAIT_UNSUPPORTED,
 };
 
@@ -1138,7 +1138,7 @@ unsafe fn suspend_io(
 ) -> i32 {
     let source = LoomWaitSource {
         abi_version: WAIT_ABI_VERSION,
-        kind: WAIT_SOURCE_FD,
+        kind: WAIT_SOURCE_IO,
         handle,
         interests,
         reserved: 0,
@@ -1148,13 +1148,7 @@ unsafe fn suspend_io(
     if unsafe { task_suspend_wait(executor, task, &raw const source) } == WAIT_OK {
         TASK_PENDING
     } else {
-        unsafe {
-            fail_message(
-                task,
-                "IoWaitFault",
-                "could not register descriptor readiness",
-            )
-        }
+        unsafe { fail_message(task, "IoWaitFault", "could not register I/O readiness") }
     }
 }
 
@@ -1928,7 +1922,7 @@ pub unsafe extern "C" fn task_from_wait_source(
     // SAFETY: source is borrowed for this call only.
     let copied = unsafe { *source };
     if copied.abi_version != WAIT_ABI_VERSION
-        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_FD)
+        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_IO)
     {
         return ptr::null_mut();
     }

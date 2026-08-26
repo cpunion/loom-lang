@@ -855,7 +855,7 @@ fn collect_assumed_expr(
         | ExprKind::ReborrowView { .. }
         | ExprKind::Await { .. }
         | ExprKind::Sleep { .. }
-        | ExprKind::WaitFd { .. }
+        | ExprKind::WaitIo { .. }
         | ExprKind::TaskJoin { .. }
         | ExprKind::Copy(_)
         | ExprKind::Move(_) => None,
@@ -1611,8 +1611,8 @@ impl FunctionAnalyzer<'_, '_> {
                 self.eval_expr(milliseconds, environment);
                 AbstractValue::Top
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                self.eval_expr(descriptor, environment);
+            ExprKind::WaitIo { source, .. } => {
+                self.eval_expr(source, environment);
                 AbstractValue::Top
             }
             ExprKind::TaskJoin { arguments, .. } => {
@@ -2536,9 +2536,7 @@ fn collect_expr_mutations(expression: &Expr, roots: &mut BTreeSet<LocalId>) {
         | ExprKind::Sleep {
             milliseconds: value,
         }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
-        } => collect_expr_mutations(value, roots),
+        | ExprKind::WaitIo { source: value, .. } => collect_expr_mutations(value, roots),
         ExprKind::Binary(_, left, right) => {
             collect_expr_mutations(left, roots);
             collect_expr_mutations(right, roots);
@@ -2627,9 +2625,7 @@ fn expression_moves_local(expression: &Expr, local: LocalId) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
-        } => expression_moves_local(value, local),
+        | ExprKind::WaitIo { source: value, .. } => expression_moves_local(value, local),
         ExprKind::Binary(_, left, right) => {
             expression_moves_local(left, local) || expression_moves_local(right, local)
         }
@@ -2880,7 +2876,7 @@ fn expression_contains_loop(expression: &Expr) -> bool {
         }),
         ExprKind::Await { task, .. } => expression_contains_loop(task),
         ExprKind::Sleep { milliseconds } => expression_contains_loop(milliseconds),
-        ExprKind::WaitFd { descriptor, .. } => expression_contains_loop(descriptor),
+        ExprKind::WaitIo { source, .. } => expression_contains_loop(source),
         ExprKind::TaskJoin { arguments, .. } => arguments.iter().any(expression_contains_loop),
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
@@ -2971,9 +2967,7 @@ fn expression_contains_nested_loop_at(expression: &Expr, inside_loop: bool) -> b
         ExprKind::Sleep { milliseconds } => {
             expression_contains_nested_loop_at(milliseconds, inside_loop)
         }
-        ExprKind::WaitFd { descriptor, .. } => {
-            expression_contains_nested_loop_at(descriptor, inside_loop)
-        }
+        ExprKind::WaitIo { source, .. } => expression_contains_nested_loop_at(source, inside_loop),
         ExprKind::TaskJoin { arguments, .. } => arguments
             .iter()
             .any(|argument| expression_contains_nested_loop_at(argument, inside_loop)),
@@ -3040,7 +3034,7 @@ fn expression_contains_return(expression: &Expr) -> bool {
         }),
         ExprKind::Await { task, .. } => expression_contains_return(task),
         ExprKind::Sleep { milliseconds } => expression_contains_return(milliseconds),
-        ExprKind::WaitFd { descriptor, .. } => expression_contains_return(descriptor),
+        ExprKind::WaitIo { source, .. } => expression_contains_return(source),
         ExprKind::TaskJoin { arguments, .. } => arguments.iter().any(expression_contains_return),
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
@@ -3100,7 +3094,7 @@ fn expression_contains_defer(expression: &Expr) -> bool {
         }),
         ExprKind::Await { task, .. } => expression_contains_defer(task),
         ExprKind::Sleep { milliseconds } => expression_contains_defer(milliseconds),
-        ExprKind::WaitFd { descriptor, .. } => expression_contains_defer(descriptor),
+        ExprKind::WaitIo { source, .. } => expression_contains_defer(source),
         ExprKind::TaskJoin { arguments, .. } => arguments.iter().any(expression_contains_defer),
         ExprKind::Constant(_)
         | ExprKind::Copy(_)

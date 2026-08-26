@@ -14,7 +14,7 @@ use crate::scheduler::{LoomJoinSpec, LoomTask, WorkerCompletion};
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
     WAIT_DUPLICATE_SOURCE, WAIT_INFINITE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
-    WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_FD, WAIT_SOURCE_TIMER,
+    WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER,
     WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR, WAIT_WRITABLE,
 };
 
@@ -289,7 +289,7 @@ impl WaitSet {
     /// # Errors
     ///
     /// Returns an I/O error if handle duplication or poll registration
-    /// fails, or if `interests` is not a supported descriptor interest.
+    /// fails, or if `interests` is not a supported I/O interest.
     pub fn register_source(
         &mut self,
         source: &impl WaitableSource,
@@ -298,7 +298,7 @@ impl WaitSet {
         let handle = waitable::Sealed::clone_wait_handle(source)?;
         let wait_source = LoomWaitSource {
             abi_version: WAIT_ABI_VERSION,
-            kind: WAIT_SOURCE_FD,
+            kind: WAIT_SOURCE_IO,
             handle: wait_handle_bits(&handle),
             interests,
             reserved: 0,
@@ -426,7 +426,7 @@ impl WaitSet {
 impl Drop for Reactor {
     fn drop(&mut self) {
         for entry in self.entries.values() {
-            if entry.source.kind == WAIT_SOURCE_FD
+            if entry.source.kind == WAIT_SOURCE_IO
                 && let Some(source) = raw_poll_source(entry.source.handle)
             {
                 let _ = self.poller.delete(source);
@@ -454,7 +454,7 @@ fn valid_source(source: &LoomWaitSource) -> bool {
     }
     match source.kind {
         WAIT_SOURCE_TIMER | WAIT_SOURCE_COMPLETION => source.interests == 0,
-        WAIT_SOURCE_FD => {
+        WAIT_SOURCE_IO => {
             raw_poll_source(source.handle).is_some()
                 && source.interests != 0
                 && source.interests & !(WAIT_READABLE | WAIT_WRITABLE) == 0
@@ -472,7 +472,7 @@ fn registration_exists(reactor: &Reactor, registration: LoomRegistration) -> boo
 
 fn remove_entry(reactor: &mut Reactor, key: u64) -> Option<Entry> {
     let entry = reactor.entries.remove(&key)?;
-    if entry.source.kind == WAIT_SOURCE_FD
+    if entry.source.kind == WAIT_SOURCE_IO
         && let Some(source) = raw_poll_source(entry.source.handle)
         && let Err(error) = reactor.poller.delete(source)
     {
@@ -567,9 +567,9 @@ pub unsafe extern "C" fn executor_register(
     let Ok(reactor) = executor.ensure_reactor() else {
         return WAIT_SYSTEM_ERROR;
     };
-    if source.kind == WAIT_SOURCE_FD
+    if source.kind == WAIT_SOURCE_IO
         && reactor.entries.values().any(|entry| {
-            entry.source.kind == WAIT_SOURCE_FD
+            entry.source.kind == WAIT_SOURCE_IO
                 && entry.source.handle == source.handle
                 && entry.source.interests & source.interests != 0
         })
@@ -585,7 +585,7 @@ pub unsafe extern "C" fn executor_register(
     }
     reactor.next_key = key.wrapping_add(1);
     let registration = LoomRegistration { key, generation: 1 };
-    if source.kind == WAIT_SOURCE_FD {
+    if source.kind == WAIT_SOURCE_IO {
         let Some(platform_source) = raw_poll_source(source.handle) else {
             return WAIT_INVALID_ARGUMENT;
         };

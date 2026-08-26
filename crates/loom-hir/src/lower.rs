@@ -864,7 +864,7 @@ impl<'a> BodyLower<'a> {
             && path.segments.len() == 1
             && path.segments[0].text == "Task"
         {
-            return Expr::WaitFd {
+            return Expr::WaitIo {
                 writable: name.text == "waitWritable",
                 arguments,
             };

@@ -179,7 +179,7 @@ pub const WAIT_STALE_REGISTRATION: i32 = 5;
 pub const WAIT_NO_MEMORY: i32 = 6;
 
 pub const WAIT_SOURCE_TIMER: u32 = 1;
-pub const WAIT_SOURCE_FD: u32 = 2;
+pub const WAIT_SOURCE_IO: u32 = 2;
 pub const WAIT_SOURCE_COMPLETION: u32 = 3;
 
 pub const WAIT_READABLE: u32 = 1 << 0;

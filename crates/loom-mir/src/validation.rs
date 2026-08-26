@@ -3877,20 +3877,11 @@ impl<'program> Validator<'program> {
                 }
                 Some(Type::Task(Box::new(Type::Unit)))
             }
-            ExprKind::WaitFd { descriptor, .. } => {
-                let actual = self.validate_expr(
-                    function,
-                    descriptor,
-                    &format!("{path}.descriptor"),
-                    depth + 1,
-                );
+            ExprKind::WaitIo { source, .. } => {
+                let actual =
+                    self.validate_expr(function, source, &format!("{path}.source"), depth + 1);
                 if !types_compatible(&Type::Int, &actual) {
-                    self.type_mismatch(
-                        &Type::Int,
-                        &actual,
-                        descriptor.span,
-                        &format!("{path}.descriptor"),
-                    );
+                    self.type_mismatch(&Type::Int, &actual, source.span, &format!("{path}.source"));
                 }
                 Some(Type::Task(Box::new(Type::Unit)))
             }
@@ -7882,11 +7873,11 @@ impl<'program> Validator<'program> {
                 &format!("{path}.milliseconds"),
                 depth + 1,
             ),
-            ExprKind::WaitFd { descriptor, .. } => self.validate_borrowed_view_expr(
+            ExprKind::WaitIo { source, .. } => self.validate_borrowed_view_expr(
                 function,
-                descriptor,
+                source,
                 other,
-                &format!("{path}.descriptor"),
+                &format!("{path}.source"),
                 depth + 1,
             ),
             ExprKind::TaskJoin { arguments, .. } => {
@@ -8721,12 +8712,12 @@ impl<'program> Validator<'program> {
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
-            ExprKind::WaitFd { descriptor, .. } => {
+            ExprKind::WaitIo { source, .. } => {
                 let flow = self.dataflow_expr(
                     function,
-                    descriptor,
+                    source,
                     state,
-                    &format!("{path}.descriptor"),
+                    &format!("{path}.source"),
                     depth + 1,
                 );
                 if !flow.diverges {
@@ -9185,8 +9176,8 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
+        | ExprKind::WaitIo {
+            source: value, ..
         } => {
             expr_contains_await(value, depth + 1)
         }
@@ -9244,8 +9235,8 @@ fn expr_definitely_diverges(expression: &Expr, depth: u16) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         }
-        | ExprKind::WaitFd {
-            descriptor: value, ..
+        | ExprKind::WaitIo {
+            source: value, ..
         } => {
             expr_definitely_diverges(value, depth + 1)
         }
