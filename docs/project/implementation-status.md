@@ -52,7 +52,7 @@ input tests.
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
-| Local and HTTPS registry | Implemented with authentication, immutable checksums, bounded downloads, offline validated cache, and hostile-cache tests. |
+| Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/object/portable artifacts; native final link intentionally uncached. |
 | Debug source info | Linux DWARF checked in CI; macOS dSYM generation covered by workspace tests/build and native implementation. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |

@@ -24,11 +24,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate release tag
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Select and validate release identity
+        id: release
         env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          if [ "$RELEASE_EVENT" = "workflow_dispatch" ]; then
+            echo "name=manual-$RELEASE_RUN_ID" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           workspace_version="$(
             awk '
               /^\[workspace.package\]$/ { in_package = 1; next }
@@ -49,6 +56,7 @@ jobs:
             echo "Release tag $RELEASE_TAG must equal v$workspace_version" >&2
             exit 1
           fi
+          echo "name=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Install LLVM 19 on Linux
         if: runner.os == 'Linux'
         run: |
@@ -101,10 +109,9 @@ jobs:
       - name: Archive and checksum
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
-          RELEASE_REF: ${{ github.ref_name }}
+          RELEASE_NAME: ${{ steps.release.outputs.name }}
         run: |
-          version="${RELEASE_REF:-manual}"
-          archive="loom-lang-${version}-${RELEASE_PLATFORM}.tar.gz"
+          archive="loom-lang-${RELEASE_NAME}-${RELEASE_PLATFORM}.tar.gz"
           staging="target/release-package"
           mkdir -p "$staging"
           cp target/release/loomc target/release/loom-lsp "$staging/"
@@ -119,7 +126,7 @@ jobs:
       - name: Upload release archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: loom-lang-${{ github.ref_name }}-${{ matrix.platform }}
+          name: loom-lang-${{ steps.release.outputs.name }}-${{ matrix.platform }}
           path: |
             loom-lang-*.tar.gz
             loom-lang-*.tar.gz.sha256

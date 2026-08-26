@@ -105,8 +105,8 @@ fault preservation, resource transfer, and runtime/executor lifecycle.
 
 Use temporary directories and local loopback servers. Cover path traversal,
 symlinks, oversized input, identity/checksum mismatch, credential redaction,
-immutable package versions, corrupted cache records and blobs, offline misses,
-and atomic materialization.
+changed versions already present in the validated cache, corrupted cache
+records and blobs, offline misses, and atomic materialization.
 
 ## Controlled quality gate
 

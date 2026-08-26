@@ -36,10 +36,11 @@ For each archive platform, the workflow:
 9. links and executes a smoke program using that exported bundle;
 10. archives and hashes the exact staged files.
 
-A manually dispatched workflow uploads Actions artifacts. A pushed tag that
-exactly matches `v` plus the workspace package version additionally creates the
-GitHub Release when necessary and uploads both platform archives and checksums.
-The workflow refuses to replace an asset with the same name.
+A manually dispatched workflow uploads Actions artifacts named with its run ID,
+independent of the source branch spelling. A pushed tag that exactly matches
+`v` plus the workspace package version additionally creates the GitHub Release
+when necessary and uploads both platform archives and checksums. The workflow
+refuses to replace an asset with the same name.
 
 ## Preparing a release pull request
 
