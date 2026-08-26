@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -6,8 +6,8 @@ use loom_mir::Type;
 
 use crate::{
     BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
-    Program, Repr, RepresentationPlan, Terminator, TerminatorKind, ValueDefinition, ValueId,
-    ValueTypeId,
+    Program, Repr, RepresentationPlan, ResultTarget, Terminator, TerminatorKind, UnwindTarget,
+    ValueDefinition, ValueId, ValueTypeId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -31,6 +31,7 @@ pub enum ValidationCode {
     ReturnType,
     CallShape,
     EffectMismatch,
+    FaultState,
     OriginMismatch,
     DuplicateSuccessor,
     UninhabitedValue,
@@ -61,6 +62,7 @@ impl ValidationCode {
             Self::ReturnType => "LcirReturnType",
             Self::CallShape => "LcirCallShape",
             Self::EffectMismatch => "LcirEffectMismatch",
+            Self::FaultState => "LcirFaultState",
             Self::OriginMismatch => "LcirOriginMismatch",
             Self::DuplicateSuccessor => "LcirDuplicateSuccessor",
             Self::UninhabitedValue => "LcirUninhabitedValue",
@@ -210,13 +212,19 @@ pub fn check_program(program: Program) -> Result<CheckedProgram, ValidationError
 
 struct Validator<'a> {
     program: &'a Program,
+    fault_states: Vec<Vec<FaultStateSet>>,
+    exact_effects: Vec<Effects>,
     errors: Vec<ValidationError>,
 }
 
 impl<'a> Validator<'a> {
     fn new(program: &'a Program) -> Self {
+        let fault_states = compute_program_fault_states(program);
+        let exact_effects = compute_exact_effects(program, &fault_states);
         Self {
             program,
+            fault_states,
+            exact_effects,
             errors: Vec::new(),
         }
     }
@@ -281,6 +289,22 @@ impl<'a> Validator<'a> {
     fn validate_function(&mut self, function: &Function, function_index: usize) {
         let base = format!("function[{function_index}]");
         self.validate_signature(function, &base);
+        let exact_effects = self
+            .exact_effects
+            .get(function_index)
+            .copied()
+            .unwrap_or(Effects::NONE);
+        if function.effects != exact_effects {
+            self.error(
+                ValidationCode::EffectMismatch,
+                format!("{base}.effects"),
+                format!(
+                    "function declares {}, but its body and transitive callees require exactly {}",
+                    effects_name(function.effects),
+                    effects_name(exact_effects)
+                ),
+            );
+        }
 
         for (index, block) in function.blocks.iter().enumerate() {
             if block.id.owner() != function.id || block.id.index() != index {
@@ -354,6 +378,28 @@ impl<'a> Validator<'a> {
                     format!("{base}.block[{index}]"),
                     "block is not reachable from the function entry",
                 );
+            }
+        }
+        for index in 0..function.blocks.len() {
+            let state = self
+                .fault_states
+                .get(function_index)
+                .and_then(|states| states.get(index))
+                .copied()
+                .unwrap_or(FaultStateSet::NONE);
+            if state == FaultStateSet::BOTH {
+                self.error(
+                    ValidationCode::FaultState,
+                    format!("{base}.block[{index}]"),
+                    "block is reachable with both inactive and active source-fault state; split the control-flow merge",
+                );
+            }
+            if let Some(terminator) = function
+                .blocks
+                .get(index)
+                .and_then(|block| block.terminator.as_ref())
+            {
+                self.validate_terminator_fault_state(terminator, state, index, &base);
             }
         }
         let dominators = compute_dominators(entry.index(), &reachable, &successors, &predecessors);
@@ -579,12 +625,12 @@ impl<'a> Validator<'a> {
             return;
         };
         self.validate_terminator(function, block_index, terminator, base);
-        for target in terminator.targets() {
-            if function.block(target.block).is_none() {
+        for edge in terminator.control_flow_edges() {
+            if function.block(edge.block).is_none() {
                 continue;
             }
-            successors[block_index].push(target.block.index());
-            if let Some(incoming) = predecessors.get_mut(target.block.index()) {
+            successors[block_index].push(edge.block.index());
+            if let Some(incoming) = predecessors.get_mut(edge.block.index()) {
                 incoming.push(block_index);
             }
         }
@@ -627,6 +673,33 @@ impl<'a> Validator<'a> {
                     format!("{path}.operand[0]"),
                 );
                 self.require_results(function, instruction, &[boolean], &path);
+            }
+            InstructionKind::BoolCompare { left, right, .. } => {
+                self.require_known_value_type(
+                    function,
+                    *left,
+                    boolean,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[0]"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *right,
+                    boolean,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[1]"),
+                );
+                self.require_results(function, instruction, &[boolean], &path);
+            }
+            InstructionKind::FloatNegate { value } => {
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    float,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[0]"),
+                );
+                self.require_results(function, instruction, &[float], &path);
             }
             InstructionKind::FloatBinary { left, right, .. } => {
                 self.require_known_value_type(
@@ -680,19 +753,20 @@ impl<'a> Validator<'a> {
                 self.require_results(function, instruction, &[boolean], &path);
             }
             InstructionKind::DirectCall { callee, arguments } => {
-                let Some(callee) = self.program.function(*callee) else {
+                let callee_id = *callee;
+                let Some(callee) = self.program.function(callee_id) else {
                     self.error(
                         ValidationCode::InvalidFunctionReference,
                         format!("{path}.callee"),
-                        format!("callee {callee} does not exist"),
+                        format!("callee {callee_id} does not exist"),
                     );
                     return;
                 };
-                if !callee.effects.is_empty() {
+                if self.exact_effect(callee_id) != Some(Effects::NONE) {
                     self.error(
                         ValidationCode::CallShape,
                         format!("{path}.callee"),
-                        "foundation direct calls require an infallible callee",
+                        "direct call requires an exactly infallible callee; use invoke for a may-fault callee",
                     );
                 }
                 if arguments.len() != callee.signature.params().len() {
@@ -730,6 +804,7 @@ impl<'a> Validator<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_terminator(
         &mut self,
         function: &Function,
@@ -750,14 +825,14 @@ impl<'a> Validator<'a> {
             );
         }
         let mut targets = BTreeSet::new();
-        for target in terminator.targets() {
-            if !targets.insert(target.block) {
+        for edge in terminator.control_flow_edges() {
+            if !targets.insert(edge.block) {
                 self.error(
                     ValidationCode::DuplicateSuccessor,
                     path.clone(),
                     format!(
                         "terminator has multiple edges from one block to {}; split the edges",
-                        target.block
+                        edge.block
                     ),
                 );
             }
@@ -790,44 +865,187 @@ impl<'a> Validator<'a> {
                     format!("{path}.value"),
                 );
             }
-            TerminatorKind::Fault { .. } => {
-                if !function.effects.contains(Effects::MAY_FAULT) {
+            TerminatorKind::CheckedIntNegate {
+                value,
+                normal,
+                fault,
+            } => {
+                let integer = self.scalar_type(&Type::Int);
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.validate_result_target(function, normal, integer, &format!("{path}.normal"));
+                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.require_may_fault_effect(function, &path, "checked integer negate");
+            }
+            TerminatorKind::CheckedIntBinary {
+                left,
+                right,
+                normal,
+                fault,
+                ..
+            } => {
+                let integer = self.scalar_type(&Type::Int);
+                self.require_known_value_type(
+                    function,
+                    *left,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.left"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *right,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.right"),
+                );
+                self.validate_result_target(function, normal, integer, &format!("{path}.normal"));
+                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.require_may_fault_effect(function, &path, "checked integer binary operation");
+            }
+            TerminatorKind::Invoke {
+                callee,
+                arguments,
+                normal,
+                unwind,
+            } => {
+                let callee_id = *callee;
+                let callee = self.program.function(callee_id);
+                if callee.is_none() {
                     self.error(
-                        ValidationCode::EffectMismatch,
-                        path,
-                        "fault terminator requires the function's MAY_FAULT effect",
+                        ValidationCode::InvalidFunctionReference,
+                        format!("{path}.callee"),
+                        format!("callee {callee_id} does not exist"),
                     );
                 }
+                if callee.is_some() && self.exact_effect(callee_id) != Some(Effects::MAY_FAULT) {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.callee"),
+                        "invoke requires an exactly may-fault callee; use direct call for an infallible callee",
+                    );
+                }
+                if let Some(callee) = callee {
+                    self.validate_call_arguments(
+                        function,
+                        arguments,
+                        callee,
+                        &format!("{path}.argument"),
+                    );
+                    self.validate_result_target(
+                        function,
+                        normal,
+                        Some(callee.signature.result()),
+                        &format!("{path}.normal"),
+                    );
+                } else {
+                    self.validate_result_target(function, normal, None, &format!("{path}.normal"));
+                }
+                self.validate_unwind_target(function, unwind, format!("{path}.unwind"));
+                self.require_may_fault_effect(function, &path, "invoke");
+            }
+            TerminatorKind::Assert {
+                condition,
+                success,
+                fault,
+                ..
+            } => {
+                self.require_known_value_type(
+                    function,
+                    *condition,
+                    self.scalar_type(&Type::Bool),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.condition"),
+                );
+                self.validate_target(function, success, format!("{path}.success"));
+                self.validate_unwind_target(function, fault, format!("{path}.fault"));
+                self.require_may_fault_effect(function, &path, "assert");
+            }
+            TerminatorKind::Fault { .. } => {
+                self.require_may_fault_effect(function, &path, "fault");
+            }
+            TerminatorKind::ResumeFault => {
+                self.require_may_fault_effect(function, &path, "resume_fault");
             }
         }
     }
 
     fn validate_target(&mut self, function: &Function, target: &crate::BlockTarget, path: String) {
+        self.validate_forwarded_target(function, target.block, &target.arguments, 0, path);
+    }
+
+    fn validate_result_target(
+        &mut self,
+        function: &Function,
+        target: &ResultTarget,
+        result_type: Option<ValueTypeId>,
+        path: &str,
+    ) {
+        self.validate_forwarded_target(
+            function,
+            target.block,
+            &target.arguments,
+            1,
+            path.to_owned(),
+        );
         let Some(block) = function.block(target.block) else {
+            return;
+        };
+        let Some(parameter) = block.params.first().copied() else {
+            return;
+        };
+        if let Some(result_type) = result_type {
+            self.require_value_type(
+                function,
+                parameter,
+                result_type,
+                ValidationCode::BlockArgument,
+                format!("{path}.result"),
+            );
+        }
+    }
+
+    fn validate_unwind_target(&mut self, function: &Function, target: &UnwindTarget, path: String) {
+        self.validate_forwarded_target(function, target.block, &target.arguments, 0, path);
+    }
+
+    fn validate_forwarded_target(
+        &mut self,
+        function: &Function,
+        target_block: BlockId,
+        arguments: &[ValueId],
+        parameter_offset: usize,
+        path: String,
+    ) {
+        let Some(block) = function.block(target_block) else {
             self.error(
                 ValidationCode::InvalidBlockReference,
                 path,
-                format!("target block {} does not exist", target.block),
+                format!("target block {target_block} does not exist"),
             );
             return;
         };
-        if target.arguments.len() != block.params.len() {
+        let supplied = arguments.len().saturating_add(parameter_offset);
+        if supplied != block.params.len() {
             self.error(
                 ValidationCode::BlockArgument,
                 path.clone(),
                 format!(
-                    "edge has {} arguments, target {} requires {}",
-                    target.arguments.len(),
-                    target.block,
+                    "edge supplies {supplied} parameter value(s), including {parameter_offset} implicit result(s); target {} requires {}",
+                    target_block,
                     block.params.len()
                 ),
             );
         }
-        for (index, (argument, parameter)) in target
-            .arguments
+        for (index, (argument, parameter)) in arguments
             .iter()
             .copied()
-            .zip(block.params.iter().copied())
+            .zip(block.params.iter().copied().skip(parameter_offset))
             .enumerate()
         {
             let Some(expected) = function.value(parameter).map(|value| value.ty) else {
@@ -841,6 +1059,88 @@ impl<'a> Validator<'a> {
                 format!("{path}.argument[{index}]"),
             );
         }
+    }
+
+    fn validate_call_arguments(
+        &mut self,
+        function: &Function,
+        arguments: &[ValueId],
+        callee: &Function,
+        path: &str,
+    ) {
+        if arguments.len() != callee.signature.params().len() {
+            self.error(
+                ValidationCode::CallShape,
+                format!("{path}s"),
+                format!(
+                    "call has {} arguments, callee requires {}",
+                    arguments.len(),
+                    callee.signature.params().len()
+                ),
+            );
+        }
+        for (index, (argument, expected)) in arguments
+            .iter()
+            .copied()
+            .zip(callee.signature.params().iter().copied())
+            .enumerate()
+        {
+            self.require_value_type(
+                function,
+                argument,
+                expected,
+                ValidationCode::CallShape,
+                format!("{path}[{index}]"),
+            );
+        }
+    }
+
+    fn require_may_fault_effect(&mut self, function: &Function, path: &str, operation: &str) {
+        if !function.effects.contains(Effects::MAY_FAULT) {
+            self.error(
+                ValidationCode::EffectMismatch,
+                path,
+                format!("{operation} requires the function's MAY_FAULT effect"),
+            );
+        }
+    }
+
+    fn validate_terminator_fault_state(
+        &mut self,
+        terminator: &Terminator,
+        state: FaultStateSet,
+        block_index: usize,
+        base: &str,
+    ) {
+        if state == FaultStateSet::BOTH || state == FaultStateSet::NONE {
+            return;
+        }
+        let path = format!("{base}.block[{block_index}].terminator");
+        match terminator.kind() {
+            TerminatorKind::Return(_) | TerminatorKind::Fault { .. }
+                if state == FaultStateSet::ACTIVE =>
+            {
+                self.error(
+                    ValidationCode::FaultState,
+                    path,
+                    "an active source fault cannot return normally or originate a second terminal fault; propagate it with resume_fault",
+                );
+            }
+            TerminatorKind::ResumeFault if state == FaultStateSet::INACTIVE => {
+                self.error(
+                    ValidationCode::FaultState,
+                    path,
+                    "resume_fault requires an active source fault from an unwind edge",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn exact_effect(&self, function: InstanceId) -> Option<Effects> {
+        (function.brand() == self.program.brand)
+            .then(|| self.exact_effects.get(function.index()).copied())
+            .flatten()
     }
 
     fn validate_dominance(
@@ -1057,6 +1357,187 @@ impl<'a> Validator<'a> {
     }
 }
 
+fn compute_program_fault_states(program: &Program) -> Vec<Vec<FaultStateSet>> {
+    program
+        .functions
+        .iter()
+        .map(|function| {
+            let mut edges = vec![Vec::new(); function.blocks.len()];
+            for (source, block) in function.blocks.iter().enumerate() {
+                let Some(terminator) = block.terminator.as_ref() else {
+                    continue;
+                };
+                for edge in terminator.control_flow_edges() {
+                    if edge.block.owner() == function.id
+                        && edge.block.index() < function.blocks.len()
+                    {
+                        edges[source].push(FaultEdge {
+                            target: edge.block.index(),
+                            activates_fault: edge.activates_fault,
+                        });
+                    }
+                }
+            }
+            function.entry.map_or_else(
+                || vec![FaultStateSet::NONE; function.blocks.len()],
+                |entry| {
+                    if entry.owner() == function.id && entry.index() < function.blocks.len() {
+                        compute_fault_states(entry.index(), &edges)
+                    } else {
+                        vec![FaultStateSet::NONE; function.blocks.len()]
+                    }
+                },
+            )
+        })
+        .collect()
+}
+
+/// Computes the least function-level fault effect from paths that are still
+/// inactive. Operations in active cleanup can only preserve the primary fault
+/// or suppress a secondary one, so they cannot seed or propagate `MAY_FAULT` for
+/// an otherwise infallible function.
+fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>]) -> Vec<Effects> {
+    let function_count = program.functions.len();
+    let mut reverse_calls = vec![Vec::new(); function_count];
+    let mut may_fault = vec![false; function_count];
+
+    for (caller, function) in program.functions.iter().enumerate() {
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            let state = fault_states
+                .get(caller)
+                .and_then(|states| states.get(block_index))
+                .copied()
+                .unwrap_or(FaultStateSet::NONE);
+            if !state.contains(FaultStateSet::INACTIVE) {
+                continue;
+            }
+
+            for instruction_id in block.instructions.iter().copied() {
+                let Some(instruction) = function.instruction(instruction_id) else {
+                    continue;
+                };
+                if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
+                    && let Some(callee) = canonical_function_index(program, *callee)
+                {
+                    reverse_calls[callee].push(caller);
+                }
+            }
+
+            let Some(terminator) = block.terminator.as_ref() else {
+                continue;
+            };
+            match terminator.kind() {
+                TerminatorKind::CheckedIntNegate { .. }
+                | TerminatorKind::CheckedIntBinary { .. }
+                | TerminatorKind::Assert { .. }
+                | TerminatorKind::Fault { .. } => may_fault[caller] = true,
+                TerminatorKind::Invoke { callee, .. } => {
+                    if let Some(callee) = canonical_function_index(program, *callee) {
+                        reverse_calls[callee].push(caller);
+                    }
+                }
+                TerminatorKind::Jump(_)
+                | TerminatorKind::Branch { .. }
+                | TerminatorKind::Return(_)
+                // Propagation cannot seed the least effect fixed point.
+                | TerminatorKind::ResumeFault => {}
+            }
+        }
+    }
+
+    let mut pending = may_fault
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(index, effect)| effect.then_some(index))
+        .collect::<VecDeque<_>>();
+    while let Some(callee) = pending.pop_front() {
+        for caller in reverse_calls[callee].iter().copied() {
+            if !may_fault[caller] {
+                may_fault[caller] = true;
+                pending.push_back(caller);
+            }
+        }
+    }
+
+    may_fault
+        .into_iter()
+        .map(|effect| {
+            if effect {
+                Effects::MAY_FAULT
+            } else {
+                Effects::NONE
+            }
+        })
+        .collect()
+}
+
+fn canonical_function_index(program: &Program, function: InstanceId) -> Option<usize> {
+    (function.brand() == program.brand && function.index() < program.functions.len())
+        .then_some(function.index())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FaultEdge {
+    target: usize,
+    activates_fault: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FaultStateSet(u8);
+
+impl FaultStateSet {
+    const NONE: Self = Self(0);
+    const INACTIVE: Self = Self(1);
+    const ACTIVE: Self = Self(2);
+    const BOTH: Self = Self(3);
+
+    const fn contains(self, state: Self) -> bool {
+        self.0 & state.0 == state.0
+    }
+
+    fn insert(&mut self, state: Self) -> bool {
+        let previous = self.0;
+        self.0 |= state.0;
+        self.0 != previous
+    }
+}
+
+fn compute_fault_states(entry: usize, edges: &[Vec<FaultEdge>]) -> Vec<FaultStateSet> {
+    let mut states = vec![FaultStateSet::NONE; edges.len()];
+    let Some(entry_state) = states.get_mut(entry) else {
+        return states;
+    };
+    *entry_state = FaultStateSet::INACTIVE;
+    let mut pending = VecDeque::from([entry]);
+    while let Some(source) = pending.pop_front() {
+        let Some(source_state) = states.get(source).copied() else {
+            continue;
+        };
+        let Some(outgoing) = edges.get(source) else {
+            continue;
+        };
+        for edge in outgoing {
+            // An unwind edge activates the first fault or suppresses a later
+            // cleanup fault. In either case the destination carries exactly
+            // the same active-state obligation: cleanup must continue and
+            // eventually resume the primary fault.
+            let incoming = if edge.activates_fault {
+                FaultStateSet::ACTIVE
+            } else {
+                source_state
+            };
+            let Some(target_state) = states.get_mut(edge.target) else {
+                continue;
+            };
+            if target_state.insert(incoming) {
+                pending.push_back(edge.target);
+            }
+        }
+    }
+    states
+}
+
 fn reachable_blocks(entry: usize, successors: &[Vec<usize>]) -> Vec<bool> {
     let mut reachable = vec![false; successors.len()];
     let mut pending = vec![entry];
@@ -1077,6 +1558,16 @@ fn reachable_blocks(entry: usize, successors: &[Vec<usize>]) -> Vec<bool> {
         }
     }
     reachable
+}
+
+const fn effects_name(effects: Effects) -> &'static str {
+    if effects.is_empty() {
+        "none"
+    } else if effects.contains(Effects::MAY_FAULT) {
+        "may_fault"
+    } else {
+        "unknown"
+    }
 }
 
 #[derive(Clone, Copy)]

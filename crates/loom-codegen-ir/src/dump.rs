@@ -3,8 +3,9 @@ use std::fmt::{self, Write};
 use loom_mir::Type;
 
 use crate::{
-    BlockTarget, CheckedProgram, Constant, Effects, FloatBinaryOp, FloatPredicate, Instruction,
-    InstructionKind, IntPredicate, Origin, Repr, ScalarRepr, Terminator, TerminatorKind,
+    BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
+    FloatBinaryOp, FloatPredicate, Instruction, InstructionKind, IntPredicate, Origin, Repr,
+    ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -156,6 +157,16 @@ fn write_instruction(output: &mut impl Write, instruction: &Instruction) -> fmt:
     match instruction.kind() {
         InstructionKind::Constant(constant) => write_constant(output, *constant),
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
+        InstructionKind::BoolCompare {
+            predicate,
+            left,
+            right,
+        } => write!(
+            output,
+            "bool.compare.{} %{left}, %{right}",
+            bool_predicate_name(*predicate)
+        ),
+        InstructionKind::FloatNegate { value } => write!(output, "float.negate %{value}"),
         InstructionKind::FloatBinary {
             op, left, right, ..
         } => write!(output, "float.{} %{left}, %{right}", float_binary_name(*op)),
@@ -217,19 +228,90 @@ fn write_terminator(output: &mut impl Write, terminator: &Terminator) -> fmt::Re
             write_target(output, else_target)
         }
         TerminatorKind::Return(value) => write!(output, "return %{value}"),
+        TerminatorKind::CheckedIntNegate {
+            value,
+            normal,
+            fault,
+        } => {
+            write!(output, "checked_int.negate %{value}, normal ")?;
+            write_result_target(output, normal)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault)
+        }
+        TerminatorKind::CheckedIntBinary {
+            op,
+            left,
+            right,
+            normal,
+            fault,
+        } => {
+            write!(
+                output,
+                "checked_int.{} %{left}, %{right}, normal ",
+                checked_int_binary_name(*op)
+            )?;
+            write_result_target(output, normal)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault)
+        }
+        TerminatorKind::Invoke {
+            callee,
+            arguments,
+            normal,
+            unwind,
+        } => {
+            write!(output, "invoke {callee}(")?;
+            write_arguments(output, arguments)?;
+            write!(output, "), normal ")?;
+            write_result_target(output, normal)?;
+            write!(output, ", unwind ")?;
+            write_unwind_target(output, unwind)
+        }
+        TerminatorKind::Assert {
+            condition,
+            code,
+            success,
+            fault,
+        } => {
+            write!(output, "assert %{condition}, {code:?}, success ")?;
+            write_target(output, success)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault)
+        }
         TerminatorKind::Fault { code } => write!(output, "fault {code:?}"),
+        TerminatorKind::ResumeFault => write!(output, "resume_fault"),
     }
 }
 
 fn write_target(output: &mut impl Write, target: &BlockTarget) -> fmt::Result {
     write!(output, "{}(", target.block)?;
-    for (index, argument) in target.arguments.iter().enumerate() {
+    write_arguments(output, &target.arguments)?;
+    write!(output, ")")
+}
+
+fn write_result_target(output: &mut impl Write, target: &ResultTarget) -> fmt::Result {
+    write!(output, "{}(result", target.block)?;
+    if !target.arguments.is_empty() {
+        write!(output, "; ")?;
+        write_arguments(output, &target.arguments)?;
+    }
+    write!(output, ")")
+}
+
+fn write_unwind_target(output: &mut impl Write, target: &UnwindTarget) -> fmt::Result {
+    write!(output, "{}(", target.block)?;
+    write_arguments(output, &target.arguments)?;
+    write!(output, ")")
+}
+
+fn write_arguments(output: &mut impl Write, arguments: &[crate::ValueId]) -> fmt::Result {
+    for (index, argument) in arguments.iter().enumerate() {
         if index != 0 {
             write!(output, ", ")?;
         }
         write!(output, "%{argument}")?;
     }
-    write!(output, ")")
+    Ok(())
 }
 
 fn write_origin(output: &mut impl Write, origin: Origin, prefix: &str) -> fmt::Result {
@@ -290,6 +372,22 @@ const fn float_binary_name(op: FloatBinaryOp) -> &'static str {
         FloatBinaryOp::Subtract => "subtract",
         FloatBinaryOp::Multiply => "multiply",
         FloatBinaryOp::Divide => "divide",
+    }
+}
+
+const fn bool_predicate_name(predicate: BoolPredicate) -> &'static str {
+    match predicate {
+        BoolPredicate::Equal => "equal",
+        BoolPredicate::NotEqual => "not_equal",
+    }
+}
+
+const fn checked_int_binary_name(op: CheckedIntBinaryOp) -> &'static str {
+    match op {
+        CheckedIntBinaryOp::Add => "add",
+        CheckedIntBinaryOp::Subtract => "subtract",
+        CheckedIntBinaryOp::Multiply => "multiply",
+        CheckedIntBinaryOp::Divide => "divide",
     }
 }
 

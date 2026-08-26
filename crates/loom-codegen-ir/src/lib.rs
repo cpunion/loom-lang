@@ -31,9 +31,10 @@ pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
 pub use ids::{BlockId, InstanceId, InstructionId, ReprId, ValueId, ValueTypeId};
 pub use ir::{
-    Block, BlockTarget, Constant, Effects, FaultCode, FloatBinaryOp, FloatPredicate, Function,
-    Instruction, InstructionKind, IntPredicate, Origin, Program, Signature, Terminator,
-    TerminatorKind, Value, ValueDefinition,
+    Block, BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, Effects, FaultCode,
+    FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
+    Program, ResultTarget, Signature, Terminator, TerminatorKind, UnwindTarget, Value,
+    ValueDefinition,
 };
 pub use repr::{Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError, ValueType};
 pub use source_graph::{

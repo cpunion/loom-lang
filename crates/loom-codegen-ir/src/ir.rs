@@ -310,6 +310,25 @@ pub enum FloatBinaryOp {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoolPredicate {
+    Equal,
+    NotEqual,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckedIntBinaryOp {
+    /// Faults with [`FaultCode::IntegerOverflow`] on signed overflow.
+    Add,
+    /// Faults with [`FaultCode::IntegerOverflow`] on signed overflow.
+    Subtract,
+    /// Faults with [`FaultCode::IntegerOverflow`] on signed overflow.
+    Multiply,
+    /// Distinguishes [`FaultCode::IntegerDivisionByZero`] from
+    /// [`FaultCode::IntegerDivisionOverflow`] in the active fault context.
+    Divide,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntPredicate {
     Equal,
     NotEqual,
@@ -335,6 +354,14 @@ pub enum InstructionKind {
     BoolNot {
         value: ValueId,
     },
+    BoolCompare {
+        predicate: BoolPredicate,
+        left: ValueId,
+        right: ValueId,
+    },
+    FloatNegate {
+        value: ValueId,
+    },
     FloatBinary {
         op: FloatBinaryOp,
         left: ValueId,
@@ -350,9 +377,9 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
-    /// Foundation calls are deliberately limited to infallible scalar
-    /// callees. Fallible calls need an explicit invoke/status ABI in the next
-    /// vertical slice.
+    /// Direct calls are deliberately limited to exactly infallible callees.
+    /// A call which can fault is represented by [`TerminatorKind::Invoke`],
+    /// so its result cannot exist on the unwind edge.
     DirectCall {
         callee: InstanceId,
         arguments: Box<[ValueId]>,
@@ -363,8 +390,9 @@ impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Constant(_) => Vec::new(),
-            Self::BoolNot { value } => vec![*value],
-            Self::FloatBinary { left, right, .. }
+            Self::BoolNot { value } | Self::FloatNegate { value } => vec![*value],
+            Self::BoolCompare { left, right, .. }
+            | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],
             Self::DirectCall { arguments, .. } => arguments.to_vec(),
@@ -379,6 +407,53 @@ pub struct BlockTarget {
 }
 
 impl BlockTarget {
+    #[must_use]
+    pub fn new(block: BlockId, arguments: impl Into<Box<[ValueId]>>) -> Self {
+        Self {
+            block,
+            arguments: arguments.into(),
+        }
+    }
+}
+
+/// A normal edge which defines an operation result only in its destination.
+///
+/// The implicit result is injected into destination parameter zero. Explicit
+/// `arguments` are forwarded to the remaining destination parameters. There
+/// is intentionally no result [`ValueId`] in the source block which could be
+/// used by a fault edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResultTarget {
+    pub block: BlockId,
+    pub arguments: Box<[ValueId]>,
+}
+
+impl ResultTarget {
+    #[must_use]
+    pub fn new(block: BlockId, arguments: impl Into<Box<[ValueId]>>) -> Self {
+        Self {
+            block,
+            arguments: arguments.into(),
+        }
+    }
+}
+
+/// An edge entered with a source fault active.
+///
+/// Fault identity and diagnostics live in the runtime fault context rather
+/// than in an ordinary SSA value. Explicit arguments are therefore only the
+/// values forwarded to destination block parameters. When the source block
+/// was inactive, this edge activates the operation's fault as the primary
+/// fault. During active cleanup, the existing fault remains primary, the new
+/// cleanup fault is suppressed, and the edge stays active so remaining cleanup
+/// can continue before [`TerminatorKind::ResumeFault`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnwindTarget {
+    pub block: BlockId,
+    pub arguments: Box<[ValueId]>,
+}
+
+impl UnwindTarget {
     #[must_use]
     pub fn new(block: BlockId, arguments: impl Into<Box<[ValueId]>>) -> Self {
         Self {
@@ -423,9 +498,17 @@ impl Terminator {
         self.kind.operands()
     }
 
-    pub(crate) fn targets(&self) -> Vec<&BlockTarget> {
-        self.kind.targets()
+    pub(crate) fn control_flow_edges(&self) -> Vec<ControlFlowEdge> {
+        self.kind.control_flow_edges()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ControlFlowEdge {
+    pub block: BlockId,
+    /// Sets the destination state to active without replacing an already
+    /// active primary fault.
+    pub activates_fault: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -437,9 +520,47 @@ pub enum TerminatorKind {
         else_target: BlockTarget,
     },
     Return(ValueId),
+    /// Negates a signed integer, producing its value only on `normal` and
+    /// activating [`FaultCode::IntegerOverflow`] on `fault`.
+    CheckedIntNegate {
+        value: ValueId,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
+    /// Computes checked signed arithmetic, producing its value only on
+    /// `normal` and activating the operation-specific source fault on `fault`.
+    CheckedIntBinary {
+        op: CheckedIntBinaryOp,
+        left: ValueId,
+        right: ValueId,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
+    /// Calls an exactly may-fault function. Its return value exists only on
+    /// `normal`; `unwind` is entered with the callee's fault still active.
+    Invoke {
+        callee: InstanceId,
+        arguments: Box<[ValueId]>,
+        normal: ResultTarget,
+        unwind: UnwindTarget,
+    },
+    /// Continues through `success` when true or activates `code` and enters
+    /// `fault` when false.
+    Assert {
+        condition: ValueId,
+        code: FaultCode,
+        success: BlockTarget,
+        fault: UnwindTarget,
+    },
+    /// Originates and reports a source fault at an inactive terminal boundary.
     Fault {
         code: FaultCode,
     },
+    /// Propagates the already active source fault without reporting it again.
+    /// This is not a local `MAY_FAULT` source: the checked operation, assertion,
+    /// terminal fault, or transitively faulting invoke which made the path
+    /// active supplies that effect.
+    ResumeFault,
 }
 
 impl TerminatorKind {
@@ -460,19 +581,91 @@ impl TerminatorKind {
                 operands
             }
             Self::Return(value) => vec![*value],
-            Self::Fault { .. } => Vec::new(),
+            Self::CheckedIntNegate {
+                value,
+                normal,
+                fault,
+            } => {
+                let mut operands =
+                    Vec::with_capacity(1 + normal.arguments.len() + fault.arguments.len());
+                operands.push(*value);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
+            Self::CheckedIntBinary {
+                left,
+                right,
+                normal,
+                fault,
+                ..
+            } => {
+                let mut operands =
+                    Vec::with_capacity(2 + normal.arguments.len() + fault.arguments.len());
+                operands.push(*left);
+                operands.push(*right);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
+            Self::Invoke {
+                arguments,
+                normal,
+                unwind,
+                ..
+            } => {
+                let mut operands = Vec::with_capacity(
+                    arguments.len() + normal.arguments.len() + unwind.arguments.len(),
+                );
+                operands.extend_from_slice(arguments);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&unwind.arguments);
+                operands
+            }
+            Self::Assert {
+                condition,
+                success,
+                fault,
+                ..
+            } => {
+                let mut operands =
+                    Vec::with_capacity(1 + success.arguments.len() + fault.arguments.len());
+                operands.push(*condition);
+                operands.extend_from_slice(&success.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
+            Self::Fault { .. } | Self::ResumeFault => Vec::new(),
         }
     }
 
-    pub(crate) fn targets(&self) -> Vec<&BlockTarget> {
+    pub(crate) fn control_flow_edges(&self) -> Vec<ControlFlowEdge> {
+        let preserve = |block| ControlFlowEdge {
+            block,
+            activates_fault: false,
+        };
+        let activate = |block| ControlFlowEdge {
+            block,
+            activates_fault: true,
+        };
         match self {
-            Self::Jump(target) => vec![target],
+            Self::Jump(target) => vec![preserve(target.block)],
             Self::Branch {
                 then_target,
                 else_target,
                 ..
-            } => vec![then_target, else_target],
-            Self::Return(_) | Self::Fault { .. } => Vec::new(),
+            } => vec![preserve(then_target.block), preserve(else_target.block)],
+            Self::CheckedIntNegate { normal, fault, .. }
+            | Self::CheckedIntBinary { normal, fault, .. } => {
+                vec![preserve(normal.block), activate(fault.block)]
+            }
+            Self::Invoke { normal, unwind, .. } => {
+                vec![preserve(normal.block), activate(unwind.block)]
+            }
+            Self::Assert { success, fault, .. } => {
+                vec![preserve(success.block), activate(fault.block)]
+            }
+            Self::Return(_) | Self::Fault { .. } | Self::ResumeFault => Vec::new(),
         }
     }
 }
