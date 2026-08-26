@@ -54,10 +54,11 @@ jobs:
         run: |
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
           cargo build --locked -p loom-cli
+          runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           target/debug/loomc runtime pack \
             --archive target/debug/libloom_runtime.a \
-            --output target/debug/runtime
-          echo "LOOM_RUNTIME_BUNDLE=$PWD/target/debug/runtime" >> "$GITHUB_ENV"
+            --output "$runtime_bundle"
+          echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
       - name: Test workspace
         run: cargo test --locked --workspace --all-targets
       - name: Build complete workspace
@@ -189,10 +190,11 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
           cargo build --locked -p loom-cli
+          runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           target/debug/loomc runtime pack \
             --archive target/debug/libloom_runtime.a \
-            --output target/debug/runtime
-          export LOOM_RUNTIME_BUNDLE="$PWD/target/debug/runtime"
+            --output "$runtime_bundle"
+          export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
@@ -313,10 +315,11 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
           cargo build --locked -p loom-cli
+          runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           target/debug/loomc.exe runtime pack \
             --archive target/debug/loom_runtime.lib \
-            --output target/debug/runtime
-          export LOOM_RUNTIME_BUNDLE="$PWD/target/debug/runtime"
+            --output "$runtime_bundle"
+          export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
