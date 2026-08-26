@@ -161,9 +161,9 @@ enum CheckedRoots {
 
 /// A complete checked LCIR program paired with independently checked roots.
 ///
-/// This is the boundary a future object emitter consumes. It deliberately has
-/// no operation which returns an unchecked [`crate::Program`] or unchecked
-/// [`ArtifactRootRequest`].
+/// This is the boundary consumed by the independent scalar LLVM object
+/// emitter. It deliberately has no operation which returns an unchecked
+/// [`crate::Program`] or unchecked [`ArtifactRootRequest`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckedArtifact {
     program: CheckedProgram,
