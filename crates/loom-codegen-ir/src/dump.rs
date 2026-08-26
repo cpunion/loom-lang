@@ -4,8 +4,8 @@ use loom_mir::Type;
 
 use crate::{
     BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
-    FloatBinaryOp, FloatPredicate, Instruction, InstructionKind, IntPredicate, Origin, Repr,
-    ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget,
+    FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
+    Repr, ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 2")?;
+    writeln!(output, "lcir 3")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -111,7 +111,14 @@ pub fn write_program_with_options(
             }
             write!(output, "]")?;
         }
-        writeln!(output, " effects={} {{", effects_name(function.effects()))?;
+        let entry = function
+            .entry()
+            .expect("checked LCIR function has an entry block");
+        writeln!(
+            output,
+            " entry={entry} effects={} {{",
+            effects_name(function.effects())
+        )?;
         if options.include_origins {
             write_origin(output, function.origin(), "  ; function-origin")?;
         }
@@ -136,7 +143,7 @@ pub fn write_program_with_options(
                 let instruction = function
                     .instruction(*instruction_id)
                     .expect("checked LCIR instruction exists");
-                write_instruction(output, instruction)?;
+                write_instruction(output, function, instruction)?;
                 if options.include_origins {
                     write_origin(output, instruction.origin(), " ; origin")?;
                 } else {
@@ -161,14 +168,22 @@ pub fn write_program_with_options(
     Ok(())
 }
 
-fn write_instruction(output: &mut impl Write, instruction: &Instruction) -> fmt::Result {
+fn write_instruction(
+    output: &mut impl Write,
+    function: &Function,
+    instruction: &Instruction,
+) -> fmt::Result {
     write!(output, "    {} ", instruction.id())?;
     if !instruction.results().is_empty() {
         for (index, result) in instruction.results().iter().enumerate() {
             if index != 0 {
                 write!(output, ", ")?;
             }
-            write!(output, "%{result}")?;
+            let ty = function
+                .value(*result)
+                .expect("checked LCIR instruction result exists")
+                .ty();
+            write!(output, "%{result}: {ty}")?;
         }
         write!(output, " = ")?;
     }

@@ -98,7 +98,7 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 3 carries
+compiler-private identity for that complete checked artifact. Schema 4 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -113,10 +113,13 @@ target-machine, optimization, runtime ABI, and debug-source identities.
 
 The callable-instance plan introduced artifact-identity schema 2 without
 changing the emitted machine ABI. Direct products, inout writebacks, and their
-operations change the encoded LCIR meaning and advance the identity to schema
-3 and the text dump to `lcir 2`. They also change the emitted machine ABI, so
-the independent native-object format advances to `loom-lcir-native-object-v2`
-and the CLI object-cache domain to `loom-llvm-object-cache-v7`.
+operations changed the encoded LCIR meaning and advanced the identity to
+schema 3 and the text dump to `lcir 2`. They also changed the emitted machine
+ABI, so the independent native-object format advanced to
+`loom-lcir-native-object-v2` and the CLI object-cache domain to
+`loom-llvm-object-cache-v7`. Explicit function entries and checked types on
+every instruction result advance the identity to schema 4 and the text dump to
+`lcir 3`; this closes identity ambiguities without changing the machine ABI.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -301,10 +304,11 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 2` text includes
-canonical representation registrations, the dense instance plan, and complete
-instance keys. It is compiler-private and has no compatibility or serialization
-guarantee.
+text even when the graphs are otherwise equivalent. The `lcir 3` text includes
+canonical representation registrations, the dense instance plan, complete
+instance keys, every function's selected entry block, and the checked value
+type of every block parameter and instruction result. It is compiler-private
+and has no compatibility or serialization guarantee.
 
 ## Repository evidence
 
