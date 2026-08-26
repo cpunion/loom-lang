@@ -88,7 +88,7 @@ fn branch_merge_is_a_typed_block_parameter_and_dump_is_deterministic() {
     assert_eq!(first_dump, second_dump);
     assert_eq!(
         first_dump,
-        r#"lcir 1
+        r#"lcir 3
 target pointer_bits=64
 
 repr r0 = uninhabited
@@ -103,9 +103,15 @@ type t2 = Bool => r2
 type t3 = Int => r3
 type t4 = Float => r4
 
+registration k0 = Never => t0
+registration k1 = Unit => t1
+registration k2 = Bool => t2
+registration k3 = Int => t3
+registration k4 = Float => t4
+
 instance i0 = source=f7 types=[] witnesses=[]
 
-fn i0 mir=f7 "example.choose" (t2, t3, t3) -> t3 effects=none {
+fn i0 mir=f7 "example.choose" (t2, t3, t3) -> t3 entry=b0 effects=none {
   b0(%v0: t2, %v1: t3, %v2: t3):
     branch %v0, b1(), b2()
 

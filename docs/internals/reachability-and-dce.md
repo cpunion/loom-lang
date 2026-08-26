@@ -11,7 +11,7 @@ checked-MIR identities; they are intentionally distinct from the LCIR
 production LLVM boundary maps structured `GraphError` values into native-backend
 diagnostics. Source root selection and closure accept only
 `loom_mir::CheckedProgram`; raw MIR cannot enter this production pass, and the
-automatic native router either lowers the complete reachable scalar artifact
+automatic native router either lowers the complete reachable typed artifact
 to independently checked LCIR or stores this exact source graph for one
 whole-artifact legacy emission.
 

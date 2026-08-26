@@ -369,7 +369,7 @@ struct SelectedRoots {
 /// Returns a structured error for an invalid request or a compiler/resource
 /// failure while constructing the complete artifact.
 #[allow(clippy::too_many_lines)]
-pub fn lower_scalar_artifact(
+pub fn lower_typed_artifact(
     mir: &mir::CheckedProgram,
     request: &SourceArtifactRequest,
     target: TargetLayout,
@@ -381,7 +381,7 @@ pub fn lower_scalar_artifact(
             format!("checked-MIR reachability failed: {error}"),
         )
     })?;
-    let mut classifier = Classifier::new();
+    let mut classifier = Classifier::new(mir.as_program());
     for function in &graph.functions {
         let source = mir.function(*function).ok_or_else(|| {
             LoweringError::defect(
@@ -396,6 +396,7 @@ pub fn lower_scalar_artifact(
             items: classifier.items,
         }));
     }
+    let pod_records = classifier.pod_records;
     let summaries = graph
         .functions
         .iter()
@@ -413,7 +414,83 @@ pub fn lower_scalar_artifact(
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
     let effects = solve_effects(summaries)?;
+    let mut record_fields = BTreeMap::new();
+    let mut remaining_dependencies = BTreeMap::new();
+    let mut dependents: BTreeMap<mir::TypeId, Vec<mir::TypeId>> = BTreeMap::new();
+    let mut ready_records = BTreeSet::new();
+    for record in &pod_records {
+        let semantic = Type::Nominal(*record, Vec::new());
+        let fields = closed_record_fields(mir.as_program(), &semantic).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("classified POD record #{} disappeared", record.0),
+            )
+        })?;
+        let field_types = fields
+            .iter()
+            .map(|field| field.ty.clone())
+            .collect::<Vec<_>>();
+        let dependencies = field_types
+            .iter()
+            .filter_map(|field| match field {
+                Type::Nominal(dependency, arguments) if arguments.is_empty() => Some(*dependency),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if dependencies
+            .iter()
+            .any(|dependency| !pod_records.contains(dependency))
+        {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "classified POD record #{} depends on an unplanned record",
+                    record.0
+                ),
+            ));
+        }
+        for dependency in &dependencies {
+            dependents.entry(*dependency).or_default().push(*record);
+        }
+        if dependencies.is_empty() {
+            ready_records.insert(*record);
+        }
+        remaining_dependencies.insert(*record, dependencies.len());
+        record_fields.insert(*record, field_types);
+    }
+
     let mut builder = ProgramBuilder::new(target);
+    let mut registered_records = 0_usize;
+    while let Some(record) = ready_records.pop_first() {
+        let field_types = record_fields.get(&record).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("classified POD record #{} has no field plan", record.0),
+            )
+        })?;
+        builder
+            .add_pod_record_type(Type::Nominal(record, Vec::new()), field_types)
+            .map_err(LoweringError::from)?;
+        registered_records = registered_records.saturating_add(1);
+        for dependent in dependents.get(&record).into_iter().flatten() {
+            let Some(remaining) = remaining_dependencies.get_mut(dependent) else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("classified dependent record #{} disappeared", dependent.0),
+                ));
+            };
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                ready_records.insert(*dependent);
+            }
+        }
+    }
+    if registered_records != pod_records.len() {
+        return Err(LoweringError::defect(
+            LoweringDefectCode::InconsistentPlan,
+            "classified POD record graph is cyclic",
+        ));
+    }
     for (index, planned) in effects.entries().iter().enumerate() {
         let function_id = planned.key.source();
         let function = mir.function(function_id).ok_or_else(|| {
@@ -428,6 +505,11 @@ pub fn lower_scalar_artifact(
             .map(|parameter| required_type(&builder, &parameter.ty))
             .collect::<Result<Vec<_>, _>>()?;
         let result = required_type(&builder, &function.return_ty)?;
+        let signature = if function.receiver == Some(mir::Receiver::Mutable) {
+            Signature::with_inout_params(params, effect_result(result), [0_u32])
+        } else {
+            Signature::new(params, effect_result(result))
+        };
         let instance = builder
             .declare_instance(
                 planned.key.clone(),
@@ -437,7 +519,7 @@ pub fn lower_scalar_artifact(
                     span: function.span,
                 },
                 &function.name,
-                Signature::new(params, effect_result(result)),
+                signature,
                 planned.effects,
             )
             .map_err(LoweringError::from)?;
@@ -471,7 +553,14 @@ pub fn lower_scalar_artifact(
             )
         })?;
         let function_builder = builder.function(instance).map_err(LoweringError::from)?;
-        FunctionLowerer::new(source, function_builder, &instances, &instance_effects).lower()?;
+        FunctionLowerer::new(
+            mir.as_program(),
+            source,
+            function_builder,
+            &instances,
+            &instance_effects,
+        )
+        .lower()?;
     }
     let checked = builder.finish_checked().map_err(|errors| {
         LoweringError::defect(
@@ -521,7 +610,7 @@ fn required_type(builder: &ProgramBuilder, ty: &Type) -> Result<ValueTypeId, Low
     builder.type_id(ty).ok_or_else(|| {
         LoweringError::defect(
             LoweringDefectCode::InconsistentPlan,
-            format!("classified scalar type {ty:?} has no LCIR representation"),
+            format!("classified direct type {ty:?} has no LCIR representation"),
         )
     })
 }
@@ -618,17 +707,178 @@ const fn is_scalar_type(ty: &Type) -> bool {
     matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
 }
 
-const fn is_supported_expression_type(ty: &Type) -> bool {
-    is_scalar_type(ty) || matches!(ty, Type::Never)
+fn closed_record_fields<'program>(
+    program: &'program mir::Program,
+    ty: &Type,
+) -> Option<&'program [mir::FieldDef]> {
+    let Type::Nominal(id, arguments) = ty else {
+        return None;
+    };
+    if !arguments.is_empty() {
+        return None;
+    }
+    let definition = program.type_def(*id)?;
+    if definition.type_parameters != 0 {
+        return None;
+    }
+    let mir::TypeDefKind::Record { fields, invariant } = &definition.kind else {
+        return None;
+    };
+    invariant.is_none().then_some(fields)
 }
 
-struct Classifier {
+struct Classifier<'program> {
+    program: &'program mir::Program,
     items: Vec<UnsupportedItem>,
+    pod_records: BTreeSet<mir::TypeId>,
+    rejected_pod_records: BTreeSet<mir::TypeId>,
 }
 
-impl Classifier {
-    const fn new() -> Self {
-        Self { items: Vec::new() }
+impl<'program> Classifier<'program> {
+    fn new(program: &'program mir::Program) -> Self {
+        Self {
+            program,
+            items: Vec::new(),
+            pod_records: BTreeSet::new(),
+            rejected_pod_records: BTreeSet::new(),
+        }
+    }
+
+    fn supported_value_type(&mut self, ty: &Type) -> bool {
+        if is_scalar_type(ty) {
+            return true;
+        }
+        self.supported_record_type(ty)
+    }
+
+    fn supported_record_type(&mut self, ty: &Type) -> bool {
+        let Type::Nominal(id, arguments) = ty else {
+            return false;
+        };
+        if !arguments.is_empty() {
+            return false;
+        }
+        self.supported_pod_record(*id)
+    }
+
+    fn supported_pod_record(&mut self, id: mir::TypeId) -> bool {
+        if self.pod_records.contains(&id) {
+            return true;
+        }
+        if self.rejected_pod_records.contains(&id) {
+            return false;
+        }
+
+        // Walk the nominal graph iteratively so an adversarial checked-MIR
+        // chain cannot consume the Rust call stack before LCIR validation.
+        // Both limits apply to each root's complete transitive product shape;
+        // exceeding either is unsupported coverage and therefore selects the
+        // atomic legacy route rather than reporting a compiler defect.
+        let mut stack = vec![(id, 1_usize, false)];
+        let mut discovered = BTreeSet::new();
+        let mut visiting = BTreeSet::new();
+        let mut structural_nodes = 0_usize;
+        let mut supported = true;
+        while let Some((record, depth, exiting)) = stack.pop() {
+            if exiting {
+                visiting.remove(&record);
+                continue;
+            }
+            if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
+                || !visiting.insert(record)
+                || self.rejected_pod_records.contains(&record)
+            {
+                supported = false;
+                break;
+            }
+            let semantic = Type::Nominal(record, Vec::new());
+            let Some(fields) = closed_record_fields(self.program, &semantic) else {
+                supported = false;
+                break;
+            };
+            discovered.insert(record);
+            let Some(next_structural_nodes) = structural_nodes
+                .checked_add(1)
+                .and_then(|nodes| nodes.checked_add(fields.len()))
+            else {
+                supported = false;
+                break;
+            };
+            if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+                supported = false;
+                break;
+            }
+            structural_nodes = next_structural_nodes;
+            let mut children = Vec::new();
+            for field in fields {
+                match &field.ty {
+                    field if is_scalar_type(field) => {}
+                    Type::Nominal(child, arguments) if arguments.is_empty() => {
+                        children.push(*child);
+                    }
+                    _ => {
+                        supported = false;
+                        break;
+                    }
+                }
+            }
+            if !supported {
+                break;
+            }
+            stack.push((record, depth, true));
+            stack.extend(
+                children
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, depth.saturating_add(1), false)),
+            );
+        }
+        if supported {
+            self.pod_records.extend(discovered);
+        } else {
+            self.rejected_pod_records.insert(id);
+        }
+        supported
+    }
+
+    fn supported_expression_type(&mut self, ty: &Type) -> bool {
+        matches!(ty, Type::Never) || self.supported_value_type(ty)
+    }
+
+    fn local_type(function: &mir::Function, local: LocalId) -> Option<&Type> {
+        function
+            .params
+            .iter()
+            .chain(&function.locals)
+            .find(|candidate| candidate.id == local)
+            .map(|candidate| &candidate.ty)
+    }
+
+    fn supported_projected_place(&mut self, function: &mir::Function, place: &mir::Place) -> bool {
+        if place.projection.is_empty() {
+            return true;
+        }
+        let Some(base) = Self::local_type(function, place.local) else {
+            return false;
+        };
+        let mut ty = base.clone();
+        if !self.supported_value_type(&ty) {
+            return false;
+        }
+        for field in &place.projection {
+            let Some(fields) = closed_record_fields(self.program, &ty) else {
+                return false;
+            };
+            let Some(next) = usize::try_from(*field)
+                .ok()
+                .and_then(|index| fields.get(index))
+                .map(|field| field.ty.clone())
+            else {
+                return false;
+            };
+            ty = next;
+        }
+        self.supported_value_type(&ty)
     }
 
     fn classify_function(&mut self, function: &mir::Function) {
@@ -642,7 +892,12 @@ impl Classifier {
         if !function.witness_params.is_empty() || function.witness_prefix_count != 0 {
             self.function_item(UnsupportedFeature::WitnessParameters, function, &base);
         }
-        if function.receiver == Some(mir::Receiver::Mutable) {
+        let mutable_pod_receiver = function.receiver == Some(mir::Receiver::Mutable)
+            && function
+                .params
+                .first()
+                .is_some_and(|parameter| self.supported_record_type(&parameter.ty));
+        if function.receiver == Some(mir::Receiver::Mutable) && !mutable_pod_receiver {
             self.function_item(UnsupportedFeature::MutableReceiver, function, &base);
         }
         if function.call_plan.receiver_invariant.is_some()
@@ -657,7 +912,10 @@ impl Classifier {
         }
         for (index, parameter) in function.params.iter().enumerate() {
             let path = format!("{base}.params[{index}]");
-            if parameter.mutable {
+            let supported_inout_receiver = index == 0
+                && function.receiver == Some(mir::Receiver::Mutable)
+                && self.supported_record_type(&parameter.ty);
+            if parameter.mutable && !supported_inout_receiver {
                 self.item(
                     UnsupportedFeature::MutableParameter,
                     function.id,
@@ -666,7 +924,7 @@ impl Classifier {
                     path.clone(),
                 );
             }
-            if !is_scalar_type(&parameter.ty) {
+            if !self.supported_value_type(&parameter.ty) {
                 self.item(
                     UnsupportedFeature::SignatureType,
                     function.id,
@@ -676,7 +934,7 @@ impl Classifier {
                 );
             }
         }
-        if !is_scalar_type(&function.return_ty) {
+        if !self.supported_value_type(&function.return_ty) {
             self.item(
                 UnsupportedFeature::SignatureType,
                 function.id,
@@ -688,8 +946,8 @@ impl Classifier {
         // Function-local declarations include values from syntactically dead
         // regions. Reachable expressions below carry their checked types, so
         // classifying uses rather than the whole declaration table keeps DCE
-        // exact while still rejecting every executable non-scalar value.
-        self.visit_block(function.id, &function.body, &format!("{base}.body"));
+        // exact while still rejecting every executable unsupported value.
+        self.visit_block(function, &function.body, &format!("{base}.body"));
     }
 
     fn function_item(&mut self, feature: UnsupportedFeature, function: &mir::Function, path: &str) {
@@ -716,13 +974,13 @@ impl Classifier {
     fn expression_item(
         &mut self,
         feature: UnsupportedFeature,
-        function: FunctionId,
+        function: &mir::Function,
         expression: &mir::Expr,
         path: &str,
     ) {
         self.item(
             feature,
-            function,
+            function.id,
             Some(expression.id),
             expression.span,
             path.to_owned(),
@@ -731,16 +989,16 @@ impl Classifier {
 
     fn projected_place(
         &mut self,
-        function: FunctionId,
+        function: &mir::Function,
         expression: Option<&mir::Expr>,
         place: &mir::Place,
         span: Span,
         path: &str,
     ) {
-        if !place.projection.is_empty() {
+        if !self.supported_projected_place(function, place) {
             self.item(
                 UnsupportedFeature::ProjectedPlace,
-                function,
+                function.id,
                 expression.map(|value| value.id),
                 span,
                 path.to_owned(),
@@ -748,7 +1006,7 @@ impl Classifier {
         }
     }
 
-    fn visit_block(&mut self, function: FunctionId, block: &mir::Block, path: &str) -> bool {
+    fn visit_block(&mut self, function: &mir::Function, block: &mir::Block, path: &str) -> bool {
         for (index, statement) in block.statements.iter().enumerate() {
             let statement_path = format!("{path}.statements[{index}]");
             if !self.visit_statement(function, statement, &statement_path) {
@@ -765,7 +1023,7 @@ impl Classifier {
     #[allow(clippy::too_many_lines)]
     fn visit_statement(
         &mut self,
-        function: FunctionId,
+        function: &mir::Function,
         statement: &mir::Statement,
         path: &str,
     ) -> bool {
@@ -779,7 +1037,7 @@ impl Classifier {
                 }
                 self.item(
                     UnsupportedFeature::TupleBinding,
-                    function,
+                    function.id,
                     Some(value.id),
                     statement.span,
                     path.to_owned(),
@@ -819,7 +1077,7 @@ impl Classifier {
                 }
                 self.item(
                     UnsupportedFeature::AssertionCleanup,
-                    function,
+                    function.id,
                     Some(condition.id),
                     statement.span,
                     path.to_owned(),
@@ -832,7 +1090,7 @@ impl Classifier {
             StatementKind::Defer(cleanup) => {
                 self.item(
                     UnsupportedFeature::DeferredCleanup,
-                    function,
+                    function.id,
                     None,
                     statement.span,
                     path.to_owned(),
@@ -850,7 +1108,7 @@ impl Classifier {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn visit_expr(&mut self, function: FunctionId, expression: &mir::Expr, path: &str) -> bool {
+    fn visit_expr(&mut self, function: &mir::Function, expression: &mir::Expr, path: &str) -> bool {
         let continues = match &expression.kind {
             ExprKind::Constant(mir::Constant::Text(_)) => {
                 self.expression_item(UnsupportedFeature::TextConstant, function, expression, path);
@@ -872,23 +1130,49 @@ impl Classifier {
                 expression.ty != Type::Never
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
-                self.projected_place(
-                    function,
-                    Some(expression),
-                    place,
-                    expression.span,
-                    &format!("{path}.place"),
-                );
+                if matches!(expression.kind, ExprKind::Move(_)) && !place.projection.is_empty() {
+                    self.item(
+                        UnsupportedFeature::ProjectedPlace,
+                        function.id,
+                        Some(expression.id),
+                        expression.span,
+                        format!("{path}.place"),
+                    );
+                } else {
+                    self.projected_place(
+                        function,
+                        Some(expression),
+                        place,
+                        expression.span,
+                        &format!("{path}.place"),
+                    );
+                }
                 true
             }
             ExprKind::Unary(_, operand) => {
-                self.visit_expr(function, operand, &format!("{path}.operand"))
-                    && expression.ty != Type::Never
+                let continues = self.visit_expr(function, operand, &format!("{path}.operand"));
+                if continues && !is_scalar_type(&operand.ty) {
+                    self.expression_item(
+                        UnsupportedFeature::NominalValue,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
+                continues && expression.ty != Type::Never
             }
             ExprKind::Binary(operator, left, right) => {
                 if self.visit_expr(function, left, &format!("{path}.left")) {
                     let right_continues =
                         self.visit_expr(function, right, &format!("{path}.right"));
+                    if right_continues && !is_scalar_type(&left.ty) {
+                        self.expression_item(
+                            UnsupportedFeature::NominalValue,
+                            function,
+                            expression,
+                            path,
+                        );
+                    }
                     right_continues || matches!(operator, BinaryOp::And | BinaryOp::Or)
                 } else {
                     false
@@ -927,11 +1211,27 @@ impl Classifier {
                 }
                 continues
             }
-            ExprKind::Record { fields, .. } => {
+            ExprKind::Record {
+                ty,
+                type_arguments,
+                fields,
+                construction,
+            } => {
                 if !self.visit_exprs(function, fields, &format!("{path}.fields")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::NominalValue, function, expression, path);
+                let plain_pod = *construction == mir::ConstructionMode::Plain
+                    && type_arguments.is_empty()
+                    && expression.ty == Type::Nominal(*ty, Vec::new())
+                    && self.supported_value_type(&expression.ty);
+                if !plain_pod {
+                    self.expression_item(
+                        UnsupportedFeature::NominalValue,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Variant { payload, .. } => {
@@ -954,6 +1254,18 @@ impl Classifier {
                 arguments,
                 witnesses,
             } => {
+                let mutable_receiver = match target {
+                    CallTarget::Inherent(callee) => {
+                        self.program.function(*callee).and_then(|callee| {
+                            (callee.receiver == Some(mir::Receiver::Mutable))
+                                .then(|| {
+                                    callee.params.first().map(|parameter| parameter.ty.clone())
+                                })
+                                .flatten()
+                        })
+                    }
+                    _ => None,
+                };
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -966,19 +1278,30 @@ impl Classifier {
                             }
                         }
                         CallArgument::InOut(place) => {
-                            self.expression_item(
-                                UnsupportedFeature::InOutArgument,
-                                function,
-                                expression,
-                                &format!("{path}.arguments[{index}]"),
-                            );
-                            self.projected_place(
-                                function,
-                                Some(expression),
-                                place,
-                                expression.span,
-                                &format!("{path}.arguments[{index}].place"),
-                            );
+                            let local_type = Self::local_type(function, place.local).cloned();
+                            let allowed = index == 0
+                                && place.projection.is_empty()
+                                && mutable_receiver.as_ref() == local_type.as_ref()
+                                && local_type
+                                    .as_ref()
+                                    .is_some_and(|ty| self.supported_record_type(ty));
+                            if !allowed {
+                                self.expression_item(
+                                    UnsupportedFeature::InOutArgument,
+                                    function,
+                                    expression,
+                                    &format!("{path}.arguments[{index}]"),
+                                );
+                            }
+                            if !place.projection.is_empty() {
+                                self.item(
+                                    UnsupportedFeature::ProjectedPlace,
+                                    function.id,
+                                    Some(expression.id),
+                                    expression.span,
+                                    format!("{path}.arguments[{index}].place"),
+                                );
+                            }
                         }
                     }
                 }
@@ -1072,7 +1395,7 @@ impl Classifier {
             }
         };
         let continues = continues && expression.ty != Type::Never;
-        if continues && !is_supported_expression_type(&expression.ty) {
+        if continues && !self.supported_expression_type(&expression.ty) {
             self.expression_item(
                 UnsupportedFeature::ExpressionType,
                 function,
@@ -1083,7 +1406,12 @@ impl Classifier {
         continues
     }
 
-    fn visit_exprs(&mut self, function: FunctionId, expressions: &[mir::Expr], path: &str) -> bool {
+    fn visit_exprs(
+        &mut self,
+        function: &mir::Function,
+        expressions: &[mir::Expr],
+        path: &str,
+    ) -> bool {
         for (index, expression) in expressions.iter().enumerate() {
             if !self.visit_expr(function, expression, &format!("{path}[{index}]")) {
                 return false;
@@ -1810,17 +2138,20 @@ enum StatementFlow {
 }
 
 struct FunctionLowerer<'function, 'builder, 'plan> {
+    program: &'plan mir::Program,
     source: &'function mir::Function,
     builder: FunctionBuilder<'builder>,
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
     local_types: BTreeMap<LocalId, Type>,
+    inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
     fault_block: Option<BlockId>,
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn new(
+        program: &'plan mir::Program,
         source: &'function mir::Function,
         builder: FunctionBuilder<'builder>,
         instances: &'plan InstanceLookup,
@@ -1832,12 +2163,23 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .chain(&source.locals)
             .map(|local| (local.id, local.ty.clone()))
             .collect();
+        let inout_locals: Box<[LocalId]> = if source.receiver == Some(mir::Receiver::Mutable) {
+            source
+                .params
+                .first()
+                .map(|receiver| vec![receiver.id].into_boxed_slice())
+                .unwrap_or_default()
+        } else {
+            Box::new([])
+        };
         Self {
+            program,
             source,
             builder,
             instances,
             effects,
             local_types,
+            inout_locals,
             environments: EnvironmentArena::new(),
             fault_block: None,
         }
@@ -1857,8 +2199,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
         let flow = Flow { block: entry, env };
         match self.lower_scoped_block(flow, &self.source.body)? {
-            EvalFlow::Continue { flow, value } => self.terminate(
-                flow.block,
+            EvalFlow::Continue { flow, value } => self.terminate_exit(
+                flow,
                 TerminatorKind::Return(value),
                 self.block_origin(&self.source.body),
             ),
@@ -1870,7 +2212,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         self.builder.representations().type_id(ty).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
-                format!("classified scalar type {ty:?} has no LCIR type"),
+                format!("classified direct type {ty:?} has no LCIR type"),
             )
         })
     }
@@ -1888,6 +2230,52 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         self.type_id(ty)
     }
 
+    fn product_field_type(
+        &self,
+        aggregate: ValueTypeId,
+        field: u32,
+    ) -> Result<ValueTypeId, LoweringError> {
+        let value_type = self
+            .builder
+            .representations()
+            .value_type(aggregate)
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("missing product value type {aggregate}"),
+                )
+            })?;
+        let crate::Repr::Product(product) = self
+            .builder
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("missing representation for product value type {aggregate}"),
+                )
+            })?
+        else {
+            return Err(self.unsupported_reached("projection through a non-product value"));
+        };
+        self.builder
+            .representations()
+            .product(product)
+            .and_then(|product| {
+                usize::try_from(field)
+                    .ok()
+                    .and_then(|index| product.fields().get(index))
+            })
+            .copied()
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("product field index {field} is missing from {aggregate}"),
+                )
+            })
+    }
+
     fn create_block(&mut self) -> Result<BlockId, LoweringError> {
         self.builder.create_block().map_err(LoweringError::from)
     }
@@ -1900,6 +2288,41 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     ) -> Result<(), LoweringError> {
         self.builder
             .terminate(block, Terminator::new(kind, origin))
+            .map_err(LoweringError::from)
+    }
+
+    fn current_writebacks(
+        &self,
+        environment: EnvironmentRoot,
+    ) -> Result<Vec<ValueId>, LoweringError> {
+        self.inout_locals
+            .iter()
+            .map(|local| {
+                self.environments.get(environment, *local).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!(
+                            "function #{} lost inout local #{} before an exit",
+                            self.source.id.0, local.0
+                        ),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn terminate_exit(
+        &mut self,
+        flow: Flow,
+        kind: TerminatorKind,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        let writebacks = self.current_writebacks(flow.env)?;
+        self.builder
+            .terminate(
+                flow.block,
+                Terminator::with_writebacks(kind, origin, writebacks),
+            )
             .map_err(LoweringError::from)
     }
 
@@ -1932,14 +2355,32 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return Ok(block);
         }
         let block = self.create_block()?;
+        let mut writebacks = Vec::with_capacity(self.inout_locals.len());
+        for local in self.inout_locals.iter().copied() {
+            writebacks.push(
+                self.builder
+                    .append_block_parameter(block, self.local_type(local)?)
+                    .map_err(LoweringError::from)?,
+            );
+        }
         let origin = Origin {
             source_function: self.source.id,
             expression: None,
             span: self.source.span,
         };
-        self.terminate(block, TerminatorKind::ResumeFault, origin)?;
+        self.builder
+            .terminate(
+                block,
+                Terminator::with_writebacks(TerminatorKind::ResumeFault, origin, writebacks),
+            )
+            .map_err(LoweringError::from)?;
         self.fault_block = Some(block);
         Ok(block)
+    }
+
+    fn fault_target(&mut self, flow: Flow) -> Result<UnwindTarget, LoweringError> {
+        let arguments = self.current_writebacks(flow.env)?;
+        Ok(UnwindTarget::new(self.fault_block()?, arguments))
     }
 
     fn one_instruction(
@@ -2024,10 +2465,97 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             } => self.lower_for_range(flow, *local, start, end, body, statement),
             StatementKind::Assign { place, value } => match self.lower_expr(flow, value)? {
                 EvalFlow::Continue { mut flow, value } => {
-                    if !place.projection.is_empty() {
-                        return Err(self.unsupported_reached("projected assignment"));
+                    if let Some((field, prefix)) = place.projection.split_last() {
+                        let root =
+                            self.environments
+                                .get(flow.env, place.local)
+                                .ok_or_else(|| {
+                                    LoweringError::defect(
+                                        LoweringDefectCode::InconsistentPlan,
+                                        format!(
+                                            "function #{} writes unavailable product local #{}",
+                                            self.source.id.0, place.local.0
+                                        ),
+                                    )
+                                })?;
+                        let root_type = self.local_type(place.local)?;
+                        let mut aggregate = root;
+                        let mut aggregate_type = root_type;
+                        let mut parents = Vec::with_capacity(prefix.len());
+                        for projected in prefix {
+                            let field_type = self.product_field_type(aggregate_type, *projected)?;
+                            let extracted = match self.one_instruction(
+                                flow,
+                                InstructionKind::ProductExtract {
+                                    aggregate,
+                                    field: *projected,
+                                },
+                                field_type,
+                                self.statement_origin(statement),
+                            )? {
+                                EvalFlow::Continue { flow: next, value } => {
+                                    flow = next;
+                                    value
+                                }
+                                EvalFlow::Terminated => {
+                                    return Err(LoweringError::defect(
+                                        LoweringDefectCode::Builder,
+                                        "product extraction unexpectedly terminated",
+                                    ));
+                                }
+                            };
+                            parents.push((aggregate, aggregate_type, *projected));
+                            aggregate = extracted;
+                            aggregate_type = field_type;
+                        }
+                        let mut inserted = match self.one_instruction(
+                            flow,
+                            InstructionKind::ProductInsert {
+                                aggregate,
+                                field: *field,
+                                value,
+                            },
+                            aggregate_type,
+                            self.statement_origin(statement),
+                        )? {
+                            EvalFlow::Continue { flow: next, value } => {
+                                flow = next;
+                                value
+                            }
+                            EvalFlow::Terminated => {
+                                return Err(LoweringError::defect(
+                                    LoweringDefectCode::Builder,
+                                    "product insertion unexpectedly terminated",
+                                ));
+                            }
+                        };
+                        for (parent, parent_type, projected) in parents.into_iter().rev() {
+                            inserted = match self.one_instruction(
+                                flow,
+                                InstructionKind::ProductInsert {
+                                    aggregate: parent,
+                                    field: projected,
+                                    value: inserted,
+                                },
+                                parent_type,
+                                self.statement_origin(statement),
+                            )? {
+                                EvalFlow::Continue { flow: next, value } => {
+                                    flow = next;
+                                    value
+                                }
+                                EvalFlow::Terminated => {
+                                    return Err(LoweringError::defect(
+                                        LoweringDefectCode::Builder,
+                                        "product reconstruction unexpectedly terminated",
+                                    ));
+                                }
+                            };
+                        }
+                        flow.env = self.environments.set(flow.env, place.local, inserted)?;
+                    } else {
+                        flow.env = self.environments.set(flow.env, place.local, value)?;
                     }
-                    flow.env = self.environments.set(flow.env, place.local, value)?;
                     Ok(StatementFlow::Continue(flow))
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
@@ -2053,7 +2581,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 };
                 match lowered {
                     EvalFlow::Continue { flow, value } => {
-                        self.terminate(flow.block, TerminatorKind::Return(value), origin)?;
+                        self.terminate_exit(flow, TerminatorKind::Return(value), origin)?;
                         Ok(StatementFlow::Terminated)
                     }
                     EvalFlow::Terminated => Ok(StatementFlow::Terminated),
@@ -2084,9 +2612,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.constant(flow, constant, &expression.ty, origin)
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
-                if !place.projection.is_empty() {
-                    return Err(self.unsupported_reached("projected place read"));
-                }
                 let mut flow = flow;
                 let value = self
                     .environments
@@ -2100,6 +2625,47 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             ),
                         )
                     })?;
+                if !place.projection.is_empty() {
+                    if matches!(expression.kind, ExprKind::Move(_)) {
+                        return Err(self.unsupported_reached("projected move"));
+                    }
+                    let mut aggregate = value;
+                    let mut aggregate_type = self.local_type(place.local)?;
+                    for field in &place.projection {
+                        let field_type = self.product_field_type(aggregate_type, *field)?;
+                        aggregate = match self.one_instruction(
+                            flow,
+                            InstructionKind::ProductExtract {
+                                aggregate,
+                                field: *field,
+                            },
+                            field_type,
+                            origin,
+                        )? {
+                            EvalFlow::Continue { flow: next, value } => {
+                                flow = next;
+                                value
+                            }
+                            EvalFlow::Terminated => {
+                                return Err(LoweringError::defect(
+                                    LoweringDefectCode::Builder,
+                                    "product extraction unexpectedly terminated",
+                                ));
+                            }
+                        };
+                        aggregate_type = field_type;
+                    }
+                    if aggregate_type != self.type_id(&expression.ty)? {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "projected read type does not match its checked MIR expression",
+                        ));
+                    }
+                    return Ok(EvalFlow::Continue {
+                        flow,
+                        value: aggregate,
+                    });
+                }
                 if matches!(expression.kind, ExprKind::Move(_)) {
                     flow.env = self.environments.remove(flow.env, place.local)?;
                 }
@@ -2179,7 +2745,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.lower_unsupported_operand(flow, scrutinee, "pattern match")
             }
             ExprKind::Record { fields, .. } => {
-                self.lower_unsupported_values(flow, fields, "record value")
+                let mut flow = flow;
+                let mut lowered = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, field)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    lowered.push(value);
+                }
+                self.one_instruction(
+                    flow,
+                    InstructionKind::ProductConstruct {
+                        fields: lowered.into_boxed_slice(),
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                )
             }
             ExprKind::Variant { payload, .. } => {
                 self.lower_unsupported_values(flow, payload, "variant value")
@@ -2336,13 +2922,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .builder
             .append_block_parameter(normal, integer)
             .map_err(LoweringError::from)?;
-        let fault = self.fault_block()?;
+        let fault = self.fault_target(flow)?;
         self.terminate(
             flow.block,
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal: ResultTarget::new(normal, []),
-                fault: UnwindTarget::new(fault, []),
+                fault,
             },
             origin,
         )?;
@@ -2369,7 +2955,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .builder
             .append_block_parameter(normal, integer)
             .map_err(LoweringError::from)?;
-        let fault = self.fault_block()?;
+        let fault = self.fault_target(flow)?;
         self.terminate(
             flow.block,
             TerminatorKind::CheckedIntBinary {
@@ -2377,7 +2963,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 left,
                 right,
                 normal: ResultTarget::new(normal, []),
-                fault: UnwindTarget::new(fault, []),
+                fault,
             },
             origin,
         )?;
@@ -2815,6 +3401,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_call(
         &mut self,
         mut flow: Flow,
@@ -2825,20 +3412,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
-        for argument in arguments {
-            let CallArgument::Value(argument) = argument else {
-                return Err(self.unsupported_reached("inout call argument"));
-            };
-            let EvalFlow::Continue {
-                flow: next_flow,
-                value,
-            } = self.lower_expr(flow, argument)?
-            else {
-                return Ok(EvalFlow::Terminated);
-            };
-            flow = next_flow;
-            lowered_arguments.push(value);
-        }
         if !type_arguments.is_empty() || !witnesses.is_empty() {
             return Err(self.unsupported_reached("generic or witnessed call"));
         }
@@ -2846,6 +3419,68 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             CallTarget::Direct(callee) | CallTarget::Inherent(callee) => *callee,
             _ => return Err(self.unsupported_reached("non-direct call")),
         };
+        let callee_source = self.program.function(callee).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("call target #{} disappeared", callee.0),
+            )
+        })?;
+        let expected_inout = callee_source
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| parameter.mutable.then_some(index))
+            .collect::<Vec<_>>();
+        let mut inout_arguments = Vec::with_capacity(expected_inout.len());
+        for (index, argument) in arguments.iter().enumerate() {
+            match argument {
+                CallArgument::Value(argument) => {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, argument)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    lowered_arguments.push(value);
+                }
+                CallArgument::InOut(place) => {
+                    if !place.projection.is_empty() {
+                        return Err(self.unsupported_reached("projected inout call argument"));
+                    }
+                    let value = self
+                        .environments
+                        .get(flow.env, place.local)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                format!(
+                                    "function #{} passes unavailable inout local #{}",
+                                    self.source.id.0, place.local.0
+                                ),
+                            )
+                        })?;
+                    lowered_arguments.push(value);
+                    inout_arguments.push((index, place.local, self.local_type(place.local)?));
+                }
+            }
+        }
+        if expected_inout.as_slice()
+            != inout_arguments
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<Vec<_>>()
+                .as_slice()
+        {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "call to #{} has inout arguments inconsistent with its mutable parameters",
+                    callee.0
+                ),
+            ));
+        }
         let key = InstanceKey::monomorphic(callee);
         let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(
@@ -2856,37 +3491,89 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let effect = effect_for(self.effects, instance)?;
         let origin = self.expression_origin(expression);
         let result_type = self.type_id(&expression.ty)?;
+        let mut result_types = Vec::with_capacity(1 + inout_arguments.len());
+        result_types.push(result_type);
+        result_types.extend(inout_arguments.iter().map(|(_, _, ty)| *ty));
         if effect == Effects::NONE {
-            return self.one_instruction(
+            let results = self
+                .builder
+                .append_instruction(
+                    flow.block,
+                    InstructionKind::DirectCall {
+                        callee: instance,
+                        arguments: lowered_arguments.into_boxed_slice(),
+                    },
+                    &result_types,
+                    origin,
+                )
+                .map_err(LoweringError::from)?;
+            let result = results.first().copied().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "direct call produced no source result",
+                )
+            })?;
+            for ((_, local, _), writeback) in
+                inout_arguments.iter().zip(results.iter().copied().skip(1))
+            {
+                flow.env = self.environments.set(flow.env, *local, writeback)?;
+            }
+            return Ok(EvalFlow::Continue {
                 flow,
-                InstructionKind::DirectCall {
-                    callee: instance,
-                    arguments: lowered_arguments.into_boxed_slice(),
-                },
-                result_type,
-                origin,
-            );
+                value: result,
+            });
         }
         let normal = self.create_block()?;
         let result = self
             .builder
             .append_block_parameter(normal, result_type)
             .map_err(LoweringError::from)?;
-        let fault = self.fault_block()?;
+        let mut normal_env = flow.env;
+        for (_, local, ty) in &inout_arguments {
+            let writeback = self
+                .builder
+                .append_block_parameter(normal, *ty)
+                .map_err(LoweringError::from)?;
+            normal_env = self.environments.set(normal_env, *local, writeback)?;
+        }
+        let unwind = if inout_arguments.is_empty() {
+            self.fault_target(flow)?
+        } else {
+            let bridge = self.create_block()?;
+            let mut bridge_env = flow.env;
+            for (_, local, ty) in &inout_arguments {
+                let writeback = self
+                    .builder
+                    .append_block_parameter(bridge, *ty)
+                    .map_err(LoweringError::from)?;
+                bridge_env = self.environments.set(bridge_env, *local, writeback)?;
+            }
+            let bridge_flow = Flow {
+                block: bridge,
+                env: bridge_env,
+            };
+            let propagation = self.fault_target(bridge_flow)?;
+            self.terminate(
+                bridge,
+                TerminatorKind::Jump(BlockTarget::new(propagation.block, propagation.arguments)),
+                origin,
+            )?;
+            UnwindTarget::new(bridge, [])
+        };
         self.terminate(
             flow.block,
             TerminatorKind::Invoke {
                 callee: instance,
                 arguments: lowered_arguments.into_boxed_slice(),
                 normal: ResultTarget::new(normal, []),
-                unwind: UnwindTarget::new(fault, []),
+                unwind,
             },
             origin,
         )?;
         Ok(EvalFlow::Continue {
             flow: Flow {
                 block: normal,
-                env: flow.env,
+                env: normal_env,
             },
             value: result,
         })

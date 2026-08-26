@@ -59,7 +59,7 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
         EmitOptions::run("main"),
         NativeRoutePolicy::Automatic,
     )
-    .expect("prepare scalar artifact");
+    .expect("prepare typed artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let text = text_program();
@@ -156,9 +156,9 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     scalar_options.emit_ir = Some(scalar_ir.clone());
     let scalar_prepared =
         prepare_native_object(&scalar, scalar_options, NativeRoutePolicy::Automatic)
-            .expect("prepare scalar artifact");
+            .expect("prepare typed artifact");
     emit_prepared_native_object(&scalar_prepared, &directory.path().join("scalar.o"))
-        .expect("emit scalar LCIR");
+        .expect("emit typed LCIR");
     let scalar_ir = std::fs::read_to_string(scalar_ir).expect("read scalar IR");
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
@@ -183,7 +183,7 @@ fn lcir_emission_failure_does_not_change_the_prepared_route() {
     let mut options = EmitOptions::run("main");
     options.emit_ir = Some(directory.path().to_path_buf());
     let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare scalar artifact");
+        .expect("prepare typed artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let object = directory.path().join("must-not-exist.o");
@@ -314,11 +314,11 @@ fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
     let options =
         EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
     let prepared = prepare_native_object(&scalar, options, NativeRoutePolicy::Automatic)
-        .expect("32-bit scalar LCIR is representable");
+        .expect("32-bit typed LCIR is representable");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
     let directory = tempfile::tempdir().expect("create output directory");
     let object = directory.path().join("scalar-i686.o");
-    emit_prepared_native_object(&prepared, &object).expect("emit 32-bit scalar LCIR object");
+    emit_prepared_native_object(&prepared, &object).expect("emit 32-bit typed LCIR object");
     assert!(
         std::fs::read(object)
             .expect("read 32-bit object")

@@ -156,7 +156,7 @@ impl Program {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Type {
     /// Internal control-flow bottom; no runtime value can inhabit this type.
     Never,

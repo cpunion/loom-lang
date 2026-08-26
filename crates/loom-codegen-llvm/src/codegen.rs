@@ -325,7 +325,7 @@ pub fn emit_native_object(
     Emitter::emit_object(program.as_program(), &reachable, &roots, output, options)
 }
 
-/// Emits a verified, optimized target object directly from checked scalar LCIR.
+/// Emits a verified, optimized target object directly from checked typed LCIR.
 ///
 /// This boundary has no checked-MIR fallback and does not infer roots from
 /// function names or backend options. The artifact's validated roots select

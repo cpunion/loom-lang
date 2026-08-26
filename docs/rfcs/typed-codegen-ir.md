@@ -14,21 +14,21 @@ LCIR is compiler-private. Its Rust API, textual dump, physical ABI, and object
 symbols may change with the compiler build. It is not a source IR, a stable
 artifact format, an ownership system, or a public FFI ABI.
 
-The scalar foundation and its first production route are described in the
+The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
-native build, run, and test preparation now selects complete supported scalar
-artifacts into typed LCIR and falls back atomically for reachable unsupported
-features. The broader representation migration and legacy deletion gates in
-this record are not complete.
+native build, run, and test preparation now selects complete supported
+primitive and closed-POD-record artifacts into typed LCIR and falls back
+atomically for reachable unsupported features. The broader representation
+migration and legacy deletion gates in this record are not complete.
 
 ## Motivation
 
-The production LLVM backend still lowers artifacts outside current scalar LCIR
+The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Record, managed, concept, contract, cleanup, async,
-and private-list paths still repeat representation, proof, call-compatibility,
-and runtime-requirement decisions inside the legacy target emitter. Some
-legacy functions may acquire universal, checked-native, and
+native specializations. Managed or refined records, concepts, contracts,
+cleanup, async, and private-list paths still repeat representation, proof,
+call-compatibility, and runtime-requirement decisions inside the legacy target
+emitter. Some legacy functions may acquire universal, checked-native, and
 assumption-specialized bodies.
 
 That structure makes a correct fast path depend on exact MIR shapes and makes
@@ -69,18 +69,24 @@ representation from an expression shape, or create new callable instances.
 
 ## Representation policy
 
-Statically known values use direct representations by default. The initial
-scalar vocabulary is:
+Statically known values use direct representations by default. The implemented
+vocabulary is:
 
 - `Uninhabited` as control-flow vocabulary for `Never`, never as an SSA value;
 - `Zst` for `Unit`;
 - `Scalar(I1)` for `Bool`;
 - `Scalar(I64)` for `Int`;
 - `Scalar(F64)` for `Float`.
+- `Product(field value types...)` for a closed, invariant-free record whose
+  transitive fields are direct values.
 
-Aggregate, managed, dynamic-witness, erased, and coroutine representations are
-added only with complete lowering and validation rules. A generic or dynamic
-operation elsewhere in an artifact does not make an unrelated scalar carry a
+Products are immutable register aggregates and may recursively contain other
+acyclic products. Each representation plan has an explicit canonical
+registration key for semantic-type lookup; value-representation alternatives
+are not required to be globally unique by semantic type. Managed,
+dynamic-witness, erased, and coroutine representations are added only with
+complete lowering and validation rules. A generic or dynamic operation
+elsewhere in an artifact does not make an unrelated direct value carry a
 universal tag.
 
 Every representation change is explicit in LCIR. Genuine erased boundaries,
@@ -121,9 +127,10 @@ identity. The backend build fingerprint includes the LCIR implementation.
 ## Edge-result control flow
 
 A fallible or suspending operation is a terminator, not an ordinary instruction
-that returns a value beside an ignorable status. Its result exists only on the
-normal or resume edge and is injected into the destination block's first
-parameter. Forwarded edge arguments are modeled separately from that result.
+that returns a value beside an ignorable status. Its source result exists only
+on the normal or resume edge. Ordered functional inout writebacks follow that
+result on the normal edge and are also injected on the fault edge. Forwarded
+edge arguments are modeled separately from implicit results.
 
 The scalar fault slice adds forms equivalent to:
 
@@ -133,8 +140,8 @@ checked_int operation, operands
     fault target(forwarded...)
 
 invoke callee(arguments...)
-    normal target(result; forwarded...)
-    unwind target(forwarded...)
+    normal target(result, writebacks...; forwarded...)
+    unwind target(writebacks...; forwarded...)
 
 resume_fault
 ```
@@ -147,9 +154,11 @@ faults remain distinguishable.
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not
 recognize an adjacent instruction-and-branch pattern to recover this meaning.
-The same rule will apply to suspension and resume data.
+Function return, fault, and resume-fault exits independently carry the current
+values of their declared inout parameters. The same edge-result rule will
+apply to suspension and resume data.
 
-## Scalar LLVM ABI
+## Direct LLVM ABI
 
 The first LLVM emitter uses one compiler-private ABI family for every LCIR
 source function:
@@ -160,20 +169,24 @@ source function:
 | `Scalar(I1)` | `i1` |
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
+| `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
 
-An infallible function returns its typed result directly. A function with the
-`MAY_FAULT` effect returns `{ i32 status, T value }` and receives one trailing
-opaque runtime-context pointer. Status zero is success; status one is a source
-runtime fault. A normal return supplies `{ 0, value }`. A fault origin reports
-the fault once and returns `{ 1, zero }`; an unwind continuation propagates the
-failure without reporting it again.
+An infallible function without inout parameters returns its typed result
+directly. With ordered writebacks `W...`, it returns `{ T, W... }`. A function
+with the `MAY_FAULT` effect returns `{ i32 status, T, W... }` and receives one
+trailing opaque runtime-context pointer. Status zero is success; status one is
+a source runtime fault. A normal return supplies the result and current
+writebacks. A fault origin reports the fault once and returns status one, a
+zero source result, and the current writebacks; an unwind continuation
+propagates the failure without reporting it again.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
 parameters; non-entry block parameters map to phi nodes. The run or test
-harness calls the typed root directly. It creates no runtime for an infallible
-scalar root and creates a runtime, but no executor, for a synchronous faulting
-root.
+harness calls the typed root directly. Product construction and functional
+field replacement use `insertvalue`, while projection uses `extractvalue`.
+It creates no runtime for an infallible direct root and creates a runtime, but
+no executor, for a synchronous faulting root.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
@@ -188,8 +201,9 @@ runtime-requirement graphs.
 It creates all functions and blocks first, translates values in SSA, records
 edge inputs, and completes phi nodes after terminators are emitted. If two
 edges from one source block target the same destination, normalization or an
-edge block gives each phi input a unique LLVM predecessor. Ordinary scalar
-function bodies do not allocate universal stack slots.
+edge block gives each phi input a unique LLVM predecessor. Ordinary direct
+function bodies do not allocate universal stack slots or private record
+storage.
 
 Proved integer add, subtract, and multiply may use LLVM's `nsw` operations.
 The first such primitive is an integer successor carrying the exact comparison
@@ -216,7 +230,7 @@ Legacy implementation is removed by demonstrated semantic coverage:
 | Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, and run/test harnesses with zero eligible fallback. |
 | Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
 | Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | General representation, escape, range, and scalar-replacement planning covers the same copy, mutation, bounds, GC, cleanup, and suspension behavior. |
+| Aggregate and private-storage specializations | Direct products cover closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
 | Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
 
 New exact-shape native specializations are not accepted migration work. Range,
@@ -233,7 +247,7 @@ Every LCIR slice requires:
 - interpreter/native differential tests for results and faults;
 - LLVM structure tests for direct signatures, phi nodes, calls, checked
   operations, and fault propagation;
-- negative IR assertions that a complete scalar artifact has no universal
+- negative IR assertions that a complete direct artifact has no universal
   value, linked argument nodes, tag operations, GC setup, executor setup, or
   universal root wrapper;
 - reachable-unsupported and unreachable-unsupported route tests;
@@ -241,7 +255,7 @@ Every LCIR slice requires:
 - development and release verification on every supported native CI host;
 - object-identity tests for LCIR format, planning, target-layout, root,
   reachability, or route-selection changes;
-- controlled scalar benchmarks against the legacy compiler and the maintained
+- controlled direct-value benchmarks against the legacy compiler and the maintained
   Go, Rust, C, and C++ cases.
 
 The migration is complete only after the legacy universal source-function ABI

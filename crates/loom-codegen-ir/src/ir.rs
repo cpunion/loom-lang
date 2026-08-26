@@ -76,6 +76,9 @@ impl Effects {
 pub struct Signature {
     params: Box<[ValueTypeId]>,
     result: ValueTypeId,
+    /// Parameter positions whose current values are returned as ordered
+    /// functional writebacks on both normal and fault exits.
+    inout_params: Box<[u32]>,
 }
 
 impl Signature {
@@ -84,6 +87,23 @@ impl Signature {
         Self {
             params: params.into(),
             result,
+            inout_params: Box::new([]),
+        }
+    }
+
+    /// Constructs a signature with explicit functional inout parameters.
+    /// Independent validation requires the positions to be strictly ordered,
+    /// in range, and backed by direct product values.
+    #[must_use]
+    pub fn with_inout_params(
+        params: impl Into<Box<[ValueTypeId]>>,
+        result: ValueTypeId,
+        inout_params: impl Into<Box<[u32]>>,
+    ) -> Self {
+        Self {
+            params: params.into(),
+            result,
+            inout_params: inout_params.into(),
         }
     }
 
@@ -95,6 +115,11 @@ impl Signature {
     #[must_use]
     pub const fn result(&self) -> ValueTypeId {
         self.result
+    }
+
+    #[must_use]
+    pub const fn inout_params(&self) -> &[u32] {
+        &self.inout_params
     }
 }
 
@@ -366,6 +391,23 @@ pub enum FloatPredicate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionKind {
     Constant(Constant),
+    /// Constructs an immutable product value from fields in representation
+    /// order. The result's checked value type selects the product definition.
+    ProductConstruct {
+        fields: Box<[ValueId]>,
+    },
+    /// Reads one field from an immutable product value.
+    ProductExtract {
+        aggregate: ValueId,
+        field: u32,
+    },
+    /// Produces a new product value by replacing one field. The input remains
+    /// independently usable, preserving source copy semantics in SSA.
+    ProductInsert {
+        aggregate: ValueId,
+        field: u32,
+        value: ValueId,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -418,6 +460,11 @@ impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Constant(_) => Vec::new(),
+            Self::ProductConstruct { fields } => fields.to_vec(),
+            Self::ProductExtract { aggregate, .. } => vec![*aggregate],
+            Self::ProductInsert {
+                aggregate, value, ..
+            } => vec![*aggregate, *value],
             Self::BoolNot { value } | Self::FloatNegate { value } => vec![*value],
             Self::BoolCompare { left, right, .. }
             | Self::FloatBinary { left, right, .. }
@@ -509,12 +556,32 @@ pub enum FaultCode {
 pub struct Terminator {
     pub(crate) kind: TerminatorKind,
     pub(crate) origin: Origin,
+    pub(crate) writebacks: Box<[ValueId]>,
 }
 
 impl Terminator {
     #[must_use]
-    pub const fn new(kind: TerminatorKind, origin: Origin) -> Self {
-        Self { kind, origin }
+    pub fn new(kind: TerminatorKind, origin: Origin) -> Self {
+        Self {
+            kind,
+            origin,
+            writebacks: Box::new([]),
+        }
+    }
+
+    /// Constructs a terminal return/fault operation carrying the current
+    /// values of all signature inout parameters.
+    #[must_use]
+    pub fn with_writebacks(
+        kind: TerminatorKind,
+        origin: Origin,
+        writebacks: impl Into<Box<[ValueId]>>,
+    ) -> Self {
+        Self {
+            kind,
+            origin,
+            writebacks: writebacks.into(),
+        }
     }
 
     #[must_use]
@@ -527,8 +594,15 @@ impl Terminator {
         self.origin
     }
 
+    #[must_use]
+    pub const fn writebacks(&self) -> &[ValueId] {
+        &self.writebacks
+    }
+
     pub(crate) fn operands(&self) -> Vec<ValueId> {
-        self.kind.operands()
+        let mut operands = self.kind.operands();
+        operands.extend_from_slice(&self.writebacks);
+        operands
     }
 
     pub(crate) fn control_flow_edges(&self) -> Vec<ControlFlowEdge> {

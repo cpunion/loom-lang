@@ -20,6 +20,7 @@ pub enum BuildErrorCode {
     InvalidFunction,
     InvalidBlock,
     InvalidValueType,
+    InvalidProductType,
     DuplicateEntry,
     BlockAlreadyTerminated,
 }
@@ -67,7 +68,7 @@ impl ProgramBuilder {
         let brand = ProgramBrand::fresh();
         Self {
             brand,
-            representations: RepresentationPlan::scalar_with_brand(target, brand),
+            representations: RepresentationPlan::direct_with_brand(target, brand),
             instances: InstancePlan::with_brand(brand),
             functions: Vec::new(),
         }
@@ -86,6 +87,36 @@ impl ProgramBuilder {
     #[must_use]
     pub const fn instances(&self) -> &InstancePlan {
         &self.instances
+    }
+
+    /// Adds one monomorphic record whose fields already have canonical direct
+    /// representations. Nested products must therefore be registered before
+    /// their containing products. Product types must be registered before
+    /// declaring functions so every signature is fixed before CFG construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a duplicate/non-nominal semantic type, a
+    /// unregistered field, or an exhausted representation identity domain.
+    pub fn add_pod_record_type(
+        &mut self,
+        semantic: Type,
+        fields: &[Type],
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidProductType,
+                "LCIR product types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_pod_record(semantic, fields)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidProductType,
+                    "LCIR POD record requires one unique monomorphic nominal type whose fields already have direct representations",
+                )
+            })
     }
 
     /// Declares a monomorphic function before its CFG is built. Declaring all

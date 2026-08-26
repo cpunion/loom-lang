@@ -3,12 +3,12 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar representations, whole-artifact checked-MIR
+provides target-aware scalar and closed-product representations, whole-artifact checked-MIR
 lowering, typed SSA data structures, builders, independent program and
 artifact-root validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
-its scalar functions and run/test harness without the universal value ABI or
+its typed functions and run/test harness without the universal value ABI or
 an executor. Its production prepared router attempts that whole-artifact
 lowering once. `Complete` selects only typed LCIR; only `Unsupported` stores a
 source reachability graph and selects the complete legacy emitter. Both routes
@@ -36,9 +36,11 @@ structured `GraphError`; the LLVM boundary maps that error into its backend
 diagnostic without making source-graph analysis depend on LLVM. References
 inside the program have already crossed the independent MIR validator.
 
-## Current scalar representation catalog
+## Current direct representation catalog
 
-`TargetLayout` currently records only pointer width. The canonical
+`TargetLayout` currently records only pointer width. LLVM target data supplies
+the ABI layout of direct register products; a future representation with an
+explicit byte or address-space layout must add its deciding facts here. The canonical
 `RepresentationPlan` contains:
 
 | Loom type | LCIR representation |
@@ -48,10 +50,32 @@ inside the program have already crossed the independent MIR validator.
 | `Bool` | `Scalar(I1)` |
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
+| closed invariant-free record | `Product(field value types...)` |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
-signatures and SSA values. Aggregate, managed, list, dynamic-witness, and Task
-representations are not implemented in this crate.
+signatures and SSA values. A product is an immutable register aggregate. Its
+fields may be primitive values or other acyclic products; generic records,
+records with invariants, and records containing managed or refined fields are
+not selected. Managed, list, dynamic-witness, and Task representations are not
+implemented in this crate.
+
+Support classification walks each candidate product graph iteratively and
+limits both nesting depth and the expanded structural size to 256. Structural
+size counts each product occurrence plus each of its field occurrences, so a
+single very wide record and repeated nested products consume the same finite
+budget as a deep chain. Crossing either limit is stable unsupported coverage
+and selects the atomic legacy route; it is not a lowering defect and cannot
+consume the compiler's call stack. Independent LCIR validation enforces the
+same limits for explicit builder clients.
+
+`ValueType` entries are representation alternatives, not a global uniqueness
+claim for a semantic type. A separate canonical registration table selects the
+ordinary SSA value representation used by this plan. This permits later plans
+to add another representation for the same semantic type without making
+semantic type equality an accidental layout key. The plan maintains a
+deterministic ordered map for logarithmic canonical lookup; validation rebuilds
+that map from the ordered registrations and rejects a duplicate or stale
+index.
 
 `TargetLayout::new` accepts nonzero, byte-sized pointer widths no greater than
 128 bits. Acceptance by this standalone type is not a Loom native-target claim;
@@ -74,7 +98,7 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 2 carries
+compiler-private identity for that complete checked artifact. Schema 4 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -87,13 +111,17 @@ the same deterministic numbering and content have the same identity. The
 production LCIR fingerprint streams this identity together with backend,
 target-machine, optimization, runtime ABI, and debug-source identities.
 
-The callable-instance plan changed the compiler-private artifact identity but
-not the emitted machine ABI. Advancing the artifact identity to schema 2 is
-therefore the complete persistent-cache invalidation for this change because
-that identity is an input to the native-object fingerprint. The
-`loom-lcir-native-object-v1` format tag does not require an independent bump.
+The callable-instance plan introduced artifact-identity schema 2 without
+changing the emitted machine ABI. Direct products, inout writebacks, and their
+operations changed the encoded LCIR meaning and advanced the identity to
+schema 3 and the text dump to `lcir 2`. They also changed the emitted machine
+ABI, so the independent native-object format advanced to
+`loom-lcir-native-object-v2` and the CLI object-cache domain to
+`loom-llvm-object-cache-v7`. Explicit function entries and checked types on
+every instruction result advance the identity to schema 4 and the text dump to
+`lcir 3`; this closes identity ambiguities without changing the machine ABI.
 
-`lower_scalar_artifact` accepts a checked MIR program, a source run/test
+`lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
 `analyze_source_reachability`, and classifies every reachable function before
 allocating LCIR. It returns either one complete independently checked
@@ -101,11 +129,16 @@ allocating LCIR. It returns either one complete independently checked
 Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
-The initial lowering coverage is monomorphic synchronous scalar signatures,
-constants, scalar locals and assignment, blocks and conditionals,
+The current lowering coverage is monomorphic synchronous scalar and closed-POD
+record signatures, constants, locals and assignment, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
-checked integer arithmetic, and direct/readonly-inherent scalar calls including
-recursion. A dense reverse-call worklist computes the least fault-effect fixed
+checked integer arithmetic, and direct/readonly-inherent calls including
+recursion. Plain record construction, whole-value copy and move, nested field
+read/write, product block parameters, returns, and loop-carried products lower
+directly to SSA. A mutable inherent receiver is a functional inout parameter:
+the callee returns its current product on both normal and fault exits. Only a
+whole local may cross that boundary; projected inout selects atomic fallback.
+A dense reverse-call worklist computes the least fault-effect fixed
 point in linear time and chooses direct calls versus fallible invokes. Cleanup
 registration and assertions are conservatively unsupported together until
 their complete normal/return/fault ladders can be emitted.
@@ -134,7 +167,7 @@ do not recognize a for-loop, Fibonacci, or another exact MIR shape.
 The source root boundary and LCIR artifact boundary intentionally differ. A
 run root has no value, type, witness, or receiver inputs and returns `Unit`. A
 source test root has no inputs and returns `Unit` or `Result[Unit, E]`; the
-current scalar catalog cannot represent the latter, so it selects
+current direct catalog cannot represent the latter, so it selects
 whole-artifact `Unsupported(SignatureType)`. A completed LCIR
 `CheckedArtifact` therefore retains the narrower zero-parameter `Unit` root
 signature required by its independent validator.
@@ -192,15 +225,18 @@ The current instruction set is deliberately small:
 - signed integer comparisons;
 - a proof-carrying signed successor below an `Int` upper bound;
 - explicitly ordered or unordered floating-point comparisons;
-- direct calls to infallible scalar functions.
+- product construction, field extraction, and immutable field insertion;
+- direct calls to infallible typed functions.
 
 The current terminators include jump, conditional branch, return, terminal
 fault, checked integer negate/add/subtract/multiply/divide, assertion,
 fallible `invoke`, and `resume_fault`. A checked operation or invoke has a
-`ResultTarget`: the result exists only as destination parameter zero on the
-normal edge, followed by separately forwarded arguments. Its `UnwindTarget`
-has no ordinary fault value and is entered with the source fault active. This
-shape makes it impossible to use an operation result on its fault edge.
+`ResultTarget`: the source result exists only on the normal edge, followed by
+ordered inout writebacks and separately forwarded arguments. An invoke's
+`UnwindTarget` carries only its inout writebacks before forwarded arguments and
+is entered with the source fault active. Checked scalar operations have one
+normal result and no fault result. This shape makes it impossible to use an
+operation result on its fault edge while preserving partial receiver mutation.
 
 Fault state is part of CFG validity. Entry is inactive; ordinary and result
 edges preserve their source state; unwind edges make the destination active.
@@ -211,10 +247,10 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Aggregates, managed values, dynamic dispatch, cleanup registration and
-ordering, and coroutine control flow are not implemented. The current CFG can
-represent the scalar operations and fault-state transitions which a later
-cleanup lowering will use.
+Managed values, enums, refined values, dynamic dispatch, cleanup registration
+and ordering, and coroutine control flow are not implemented. The current CFG
+can represent direct products plus the scalar operations and fault-state
+transitions which later slices will use.
 
 `Origin` records a source MIR function, optional MIR expression, and source
 span for each function, instruction, and terminator. There is no inlining
@@ -225,7 +261,8 @@ provenance model yet.
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
 
-- canonical representation tables and dense identities;
+- canonical registrations, representation tables, well-founded and
+  structurally bounded product graphs, and dense identities;
 - a branded, dense, unique, structurally bounded instance plan whose entries
   agree with function origins and all callable references;
 - valid function, block, instruction, value, and value-type references;
@@ -235,7 +272,7 @@ not repair a malformed program. Current checks include:
 - instruction result shapes and operand types;
 - direct-call and invoke arity, types, result types, and exact callee effects;
 - edge argument arity and types;
-- implicit result parameter shape and type;
+- implicit result/writeback parameter shape and type on normal and fault edges;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal `MAY_FAULT` closure across the complete call graph;
 - consistent inactive or active fault state at every block, including
@@ -251,7 +288,7 @@ one unconditional edge. When their arguments differ, the emitter creates two
 physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
 distinct-target branches remain direct.
 
-These checks apply both to explicit clients and to the whole-artifact scalar
+These checks apply both to explicit clients and to the whole-artifact typed
 lowerer. The production automatic route consumes only the resulting checked
 artifact when the complete reachable graph is supported. Source contracts
 remain `Unsupported`: the generic
@@ -267,17 +304,20 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 1` text includes
-the dense instance plan and complete instance keys. It is compiler-private and
-has no compatibility or serialization guarantee.
+text even when the graphs are otherwise equivalent. The `lcir 3` text includes
+canonical representation registrations, the dense instance plan, complete
+instance keys, every function's selected entry block, and the checked value
+type of every block parameter and instruction result. It is compiler-private
+and has no compatibility or serialization guarantee.
 
 ## Repository evidence
 
 The crate's focused tests cover source-root selection, recursive graph closure,
 stable source-graph serialization and errors, branded artifact roots and root
 signatures, distinct type/witness instance keys, dense-plan and
-structural-budget validation, artifact identity and invalidation inputs, the
-scalar representation catalog, target pointer-width validation, block-parameter
+instance structural-budget validation, artifact identity and invalidation
+inputs, the direct representation catalog, product structural budgets and
+large-catalog lookup behavior, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
@@ -289,7 +329,11 @@ LLVM-side tests additionally cover typed ABIs, block insertion order independent
 of dominance order, same-target edge normalization, exact scalar predicates,
 checked arithmetic, proved successors, first-primary fault suppression, fatal
 runtime setup failures, ordered tests, atomic automatic/legacy route selection,
-route-separated identity, object-cache behavior, linking, execution, and
-verifier/optimization gates on Linux and macOS. The platform-independent
-Windows CI job checks, lints, tests, and builds `loom-codegen-ir` without
-claiming a Windows LLVM backend.
+direct-product construction and mutation, normal and fault writebacks,
+source/interpreter/legacy differentials, route-separated identity, object-cache
+behavior, linking, execution, and verifier/optimization gates on Linux and
+macOS. The parameter-driven cross-language benchmark remains on the atomic
+legacy route because its root also reaches Text, List, parsing, and matching;
+the direct-product tests are the current closed-workload evidence. The
+platform-independent Windows CI job checks, lints, tests, and builds
+`loom-codegen-ir` without claiming a Windows LLVM backend.

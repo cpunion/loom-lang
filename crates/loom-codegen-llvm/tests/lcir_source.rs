@@ -3,11 +3,11 @@
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, lower_scalar_artifact,
+    CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
-    DebugSource, EmitOptions, NativeObjectOptions, emit_lcir_native_object, emit_native,
-    link_native_object,
+    DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
+    emit_lcir_native_object, emit_native, link_native_object, prepare_native_object,
 };
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
@@ -42,7 +42,7 @@ fn lower_source_artifact(
     program: &CheckedProgram,
     request: &SourceArtifactRequest,
 ) -> CheckedArtifact {
-    match lower_scalar_artifact(program, request, host_layout()).expect("classify scalar LCIR") {
+    match lower_typed_artifact(program, request, host_layout()).expect("classify typed LCIR") {
         LoweringOutcome::Complete(artifact) => artifact,
         LoweringOutcome::Unsupported(report) => {
             panic!("source fixture unexpectedly unsupported: {report:?}")
@@ -122,6 +122,167 @@ fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
         "fallible and return-only parameter records must both survive:\n{ir}"
     );
     assert!(ir.contains("#dbg_value(ptr %__loom_fault_context"), "{ir}");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn product_debug_metadata_matches_direct_and_fallible_inout_physical_returns() {
+    let source = r"module lcir_product_debug
+
+record Counter {
+    value Int
+    enabled Bool
+}
+
+record Gauge {
+    value Int
+    enabled Bool
+}
+
+impl Counter {
+    method reset(mut self, value Int) Unit {
+        self.value = value
+        Unit
+    }
+
+    method add(mut self, value Int) Unit {
+        self.value = self.value + value
+        Unit
+    }
+}
+
+impl Gauge {
+    method reset(mut self, value Int) Unit {
+        self.value = value
+        Unit
+    }
+
+    method add(mut self, value Int) Unit {
+        self.value = self.value + value
+        Unit
+    }
+}
+
+fn forward(value Counter) Counter {
+    value
+}
+
+pub fn main() Unit {
+    var counter = Counter { value = 1, enabled = true }
+    counter.reset(2)
+    counter.add(3)
+    let copied = forward(counter)
+    discard copied.value
+    var gauge = Gauge { value = 4, enabled = false }
+    gauge.reset(5)
+    gauge.add(6)
+    discard gauge.value
+    Unit
+}
+";
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create product debug output directory");
+    let object = directory.path().join("product-debug.o");
+    let ir_path = directory.path().join("product-debug.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit product debug object");
+    let ir = std::fs::read_to_string(ir_path).expect("read product debug IR");
+
+    assert!(
+        ir.contains("define internal { {}, { i64, i1 } } @loom.lcir.fn."),
+        "infallible inout must return its functional writeback:\n{ir}"
+    );
+    assert!(
+        ir.contains("define internal { i32, {}, { i64, i1 } } @loom.lcir.fn."),
+        "fallible inout must return status, result, and writeback:\n{ir}"
+    );
+    let product = ir
+        .lines()
+        .find(|line| line.contains("name: \"LoomProduct<t"))
+        .unwrap_or_else(|| panic!("missing compiler-private product debug type:\n{ir}"));
+    assert!(
+        product.contains("size: 128, align: 64") && product.contains("DIFlagArtificial"),
+        "{product}\n{ir}"
+    );
+    let direct_inouts = ir
+        .lines()
+        .filter(|line| line.contains("name: \"LoomInOut<t1;writebacks=[t"))
+        .collect::<Vec<_>>();
+    assert_eq!(direct_inouts.len(), 2, "{direct_inouts:#?}\n{ir}");
+    assert!(
+        direct_inouts.iter().all(|line| {
+            line.contains("size: 128, align: 64")
+                && line.contains("DIFlagArtificial")
+                && line.contains(
+                    "identifier: \"loom.compiler.LoomReturn.inout.result.t1.writebacks.1.t",
+                )
+        }),
+        "{direct_inouts:#?}\n{ir}"
+    );
+    assert_ne!(direct_inouts[0], direct_inouts[1], "{direct_inouts:#?}");
+    let fallible_inouts = ir
+        .lines()
+        .filter(|line| line.contains("name: \"LoomFallibleInOut<t1;writebacks=[t"))
+        .collect::<Vec<_>>();
+    assert_eq!(fallible_inouts.len(), 2, "{fallible_inouts:#?}\n{ir}");
+    assert!(
+        fallible_inouts.iter().all(|line| {
+            line.contains("size: 192, align: 64")
+                && line.contains("DIFlagArtificial")
+                && line.contains(
+                    "identifier: \"loom.compiler.LoomReturn.fallible.result.t1.writebacks.1.t",
+                )
+        }),
+        "{fallible_inouts:#?}\n{ir}"
+    );
+    assert_ne!(
+        fallible_inouts[0], fallible_inouts[1],
+        "{fallible_inouts:#?}"
+    );
+    assert!(
+        ir.lines().any(|line| {
+            line.contains("name: \"field1\"")
+                && line.contains("size: 1")
+                && line.contains("offset: 64")
+        }),
+        "the product Bool field must use its target-data offset:\n{ir}"
+    );
+    let writebacks = ir
+        .lines()
+        .filter(|line| line.contains("name: \"writeback0\""))
+        .collect::<Vec<_>>();
+    assert_eq!(writebacks.len(), 4, "{writebacks:#?}\n{ir}");
+    assert!(
+        writebacks
+            .iter()
+            .all(|line| line.contains("DIFlagArtificial")),
+        "{writebacks:#?}\n{ir}"
+    );
+    assert!(
+        writebacks.iter().any(|line| line.contains("offset: 64")),
+        "fallible writeback must follow the padded status/result prefix:\n{ir}"
+    );
+    assert!(
+        ir.lines()
+            .filter(|line| line.starts_with("define internal "))
+            .all(|line| line.contains(" !dbg !")),
+        "no product-bearing function may silently lose its subprogram type:\n{ir}"
+    );
+    assert!(!ir.contains("loom.Value"), "{ir}");
 }
 
 fn interpret_run(program: &CheckedProgram, entry: &str) -> Result<Value, ExecutionFailure> {
@@ -468,4 +629,165 @@ test fn middle() { Unit }
         ]
     );
     assert_pure_surface(&native.ir);
+}
+
+#[test]
+fn source_pod_records_use_direct_ssa_products_and_functional_receiver_writeback() {
+    let source = r"module lcir_source_records
+
+record Counter {
+    total Int
+    calls Int
+}
+
+record Holder {
+    counter Counter
+    enabled Bool
+}
+
+impl Holder {
+    method setTotal(mut self, value Int) Unit {
+        self.counter.total = value
+        Unit
+    }
+}
+
+impl Counter {
+    method add(mut self, value Int) Unit {
+        self.total = self.total + value
+        self.calls = self.calls + 1
+        Unit
+    }
+}
+
+fn periodicValue(index Int) Int {
+    index - (index / 8) * 8
+}
+
+fn recordMethod(size Int) Counter {
+    var counter = Counter { total = 0, calls = 0 }
+    for index in 0..size {
+        counter.add(periodicValue(index))
+        Unit
+    }
+    counter
+}
+
+fn nestedUpdate() Holder {
+    var holder = Holder {
+        counter = Counter { total = 1, calls = 2 },
+        enabled = true,
+    }
+    holder.setTotal(11)
+    holder
+}
+
+fn requireEqual(actual Int, expected Int) Unit {
+    if actual == expected {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    var original = Counter { total = 3, calls = 4 }
+    var copied = original
+    copied.add(5)
+    requireEqual(original.total, 3)
+    requireEqual(original.calls, 4)
+    requireEqual(copied.total, 8)
+    requireEqual(copied.calls, 5)
+    let looped = recordMethod(10)
+    requireEqual(looped.total, 29)
+    requireEqual(looped.calls, 10)
+    let holder = nestedUpdate()
+    requireEqual(holder.counter.total, 11)
+    requireEqual(holder.counter.calls, 2)
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic record route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir(&artifact, "source-records");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-records");
+
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
+    for forbidden in ["alloca", "loom.Value", "loom_gc_", "loom_executor_"] {
+        assert!(
+            !lowered_functions.contains(forbidden),
+            "unexpected `{forbidden}`:\n{lowered_functions}"
+        );
+    }
+    assert!(lcir.ir.contains("insertvalue { i64, i64 }"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("extractvalue { i64, i64 }"), "{}", lcir.ir);
+    assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn source_record_fault_edges_return_the_latest_receiver_writeback() {
+    let source = r"module lcir_source_record_fault
+
+record Counter { value Int }
+
+impl Counter {
+    method mutateThenFail(mut self) Unit {
+        self.value = 9
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    var counter = Counter { value = 1 }
+    counter.mutateThenFail()
+    Unit
+}
+";
+    let program = compile_source(source);
+    let failure = interpret_run(&program, "main").expect_err("interpreter fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerDivisionByZero"),
+        "{failure:?}"
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir(&artifact, "source-record-fault");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-record-fault");
+
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!legacy.status.success(), "{legacy:?}");
+    assert!(
+        diagnostic_text(&lcir.output).contains("IntegerDivisionByZero"),
+        "{:?}",
+        lcir.output
+    );
+    assert!(
+        diagnostic_text(&legacy).contains("IntegerDivisionByZero"),
+        "{legacy:?}"
+    );
+    assert!(lcir.ir.contains("{ i32, {}, { i64 } }"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("insertvalue { i64 }"), "{}", lcir.ir);
+    assert_fallible_surface(&lcir.ir);
 }

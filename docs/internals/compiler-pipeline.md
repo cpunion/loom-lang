@@ -17,7 +17,7 @@ project input
      or
      native route preparation
        -> exact LLVM target machine and target layout
-       -> whole-artifact scalar classification/lowering
+       -> whole-artifact direct classification/lowering
           -> complete checked LCIR -> typed LLVM emitter
           or
           -> unsupported -> checked-MIR reachability -> legacy LLVM emitter
@@ -25,7 +25,7 @@ project input
 ```
 
 This diagram is the current production pipeline. `loom-codegen-ir` owns both
-checked-MIR source reachability and whole-artifact scalar MIR-to-LCIR
+checked-MIR source reachability and whole-artifact direct MIR-to-LCIR
 lowering. `loom-codegen-llvm` prepares one opaque route, target machine, and
 route-specific object identity for the cache and emitter. See
 [Code generation IR](codegen-ir.md) for the implemented boundary and the
@@ -110,7 +110,8 @@ descriptors all contribute edges. See
 The interpreter executes MIR deterministically and provides an independent
 semantic oracle for end-to-end tests. The production LLVM path prepares one
 representation-neutral target machine, derives LCIR's pointer-width layout
-from its target data, and attempts one atomic whole-artifact scalar lowering.
+from its target data, and attempts one atomic whole-artifact direct lowering
+for primitive values and closed POD records.
 A complete result retains only the independently validated `CheckedArtifact`
 and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
 legacy source graph and universal-value emitter for the complete artifact.

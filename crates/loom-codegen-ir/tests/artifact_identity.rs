@@ -4,10 +4,10 @@ use loom_codegen_ir::{
     ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget,
     CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind,
     IntPredicate, Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
-    artifact_identity, write_artifact_identity,
+    artifact_identity, dump_program, write_artifact_identity,
 };
 use loom_core::{FileId, Span};
-use loom_mir::{ExprId, FunctionId as MirFunctionId, Type};
+use loom_mir::{ExprId, FunctionId as MirFunctionId, Type, TypeId};
 
 #[derive(Clone, Copy)]
 struct BodyOrigins {
@@ -24,6 +24,11 @@ impl BodyOrigins {
             terminator: origin(Some(8), 1, 31, 40),
         }
     }
+}
+
+#[test]
+fn identity_schema_is_pinned_after_complete_function_state_expansion() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 4);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -101,7 +106,141 @@ fn scalar_artifact(
     }
     builder
         .finish_checked()
-        .expect("valid scalar LCIR")
+        .expect("valid typed LCIR")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
+fn product_result_artifact(use_second_product: bool) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let int_ty = builder.type_id(&Type::Int).expect("Int type");
+    let first_product = builder
+        .add_pod_record_type(
+            Type::Nominal(TypeId(80), Vec::new()),
+            &[Type::Int, Type::Int],
+        )
+        .expect("first nominal product");
+    let second_product = builder
+        .add_pod_record_type(
+            Type::Nominal(TypeId(81), Vec::new()),
+            &[Type::Int, Type::Int],
+        )
+        .expect("second nominal product");
+    let body_origin = Origin::synthetic(MirFunctionId(82));
+    let root = builder
+        .declare_function(
+            body_origin,
+            "identity.product_result",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let left = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(1)),
+                &[int_ty],
+                body_origin,
+            )
+            .expect("left field")[0];
+        let right = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(2)),
+                &[int_ty],
+                body_origin,
+            )
+            .expect("right field")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([left, right]),
+                },
+                &[if use_second_product {
+                    second_product
+                } else {
+                    first_product
+                }],
+                body_origin,
+            )
+            .expect("nominal product construction");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                body_origin,
+            )
+            .expect("Unit constant")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(unit), body_origin),
+            )
+            .expect("return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid typed LCIR")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
+fn selected_entry_artifact(use_second_block: bool) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let body_origin = Origin::synthetic(MirFunctionId(83));
+    let root = builder
+        .declare_function(
+            body_origin,
+            "identity.selected_entry",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let first = function.create_block().expect("first block");
+        let second = function.create_block().expect("second block");
+        let (entry, exit) = if use_second_block {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        function.set_entry(entry).expect("set entry");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                body_origin,
+            )
+            .expect("Unit constant")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Jump(BlockTarget::new(exit, [])),
+                    body_origin,
+                ),
+            )
+            .expect("entry jump");
+        function
+            .terminate(
+                exit,
+                Terminator::new(TerminatorKind::Return(unit), body_origin),
+            )
+            .expect("return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid typed LCIR with the selected entry")
         .into_artifact(ArtifactRootRequest::Run(root))
         .expect("closed run artifact")
 }
@@ -295,6 +434,55 @@ fn identity_is_brand_independent_and_repeatable() {
     let mut written = String::new();
     write_artifact_identity(&first, &mut written).expect("String writer is infallible");
     assert_eq!(identity, written);
+}
+
+#[test]
+fn nominal_product_instruction_result_type_is_a_dump_and_identity_input() {
+    let first = product_result_artifact(false);
+    let second = product_result_artifact(true);
+    let first_dump = dump_program(first.program());
+    let second_dump = dump_program(second.program());
+
+    assert!(
+        first_dump.contains("%v2: t5 = product.construct"),
+        "{first_dump}"
+    );
+    assert!(
+        second_dump.contains("%v2: t6 = product.construct"),
+        "{second_dump}"
+    );
+    assert_eq!(
+        first_dump.replace("%v2: t5 =", "%v2: product ="),
+        second_dump.replace("%v2: t6 =", "%v2: product ="),
+        "the checked instruction result type must be the only dump mutation"
+    );
+    assert_ne!(first_dump, second_dump);
+    assert_ne!(artifact_identity(&first), artifact_identity(&second));
+}
+
+#[test]
+fn selected_function_entry_is_explicit_in_dump_and_identity() {
+    // A fixed checked CFG has exactly one legal zero-predecessor entry, so use
+    // mirrored legal graphs to cover both dense entry identities.
+    let first = selected_entry_artifact(false);
+    let second = selected_entry_artifact(true);
+    let first_dump = dump_program(first.program());
+    let second_dump = dump_program(second.program());
+    let first_identity = artifact_identity(&first);
+    let second_identity = artifact_identity(&second);
+
+    assert!(
+        first_dump.contains("-> t1 entry=b0 effects=none"),
+        "{first_dump}"
+    );
+    assert!(
+        second_dump.contains("-> t1 entry=b1 effects=none"),
+        "{second_dump}"
+    );
+    assert!(first_identity.contains("-> t1 entry=b0 effects=none"));
+    assert!(second_identity.contains("-> t1 entry=b1 effects=none"));
+    assert_ne!(first_dump, second_dump);
+    assert_ne!(first_identity, second_identity);
 }
 
 #[test]

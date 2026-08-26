@@ -95,7 +95,7 @@ jobs:
         run: |
           llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
           llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/scalar-lcir
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
           target/ci-lcir-debug
           llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_producer.*loomc lcir'
           llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_linkage_name.*loom.lcir.fn'
@@ -177,7 +177,7 @@ jobs:
           cargo test --locked -p loom-codegen-llvm --test runtime_bundle
       - name: Verify typed LCIR dSYM
         run: |
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/scalar-lcir
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
           target/ci-lcir-debug
           debug_image=target/ci-lcir-debug.dSYM/Contents/Resources/DWARF/ci-lcir-debug
           llvm-dwarfdump --debug-info "$debug_image" | grep 'DW_AT_producer.*loomc lcir'
