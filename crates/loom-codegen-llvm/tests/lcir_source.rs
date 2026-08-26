@@ -581,6 +581,71 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
 }
 
 #[test]
+fn contract_int_negation_overflow_matches_interpreter_and_legacy() {
+    let source = r"module contract_int_negation
+
+fn guarded(value Int) Unit
+    requires -value >= 0
+{
+    Unit
+}
+
+fn returnMinimum() Int
+    ensures -result >= 0
+{
+    -9223372036854775808
+}
+
+pub fn requiresMain() Unit {
+    guarded(-9223372036854775808)
+}
+
+pub fn ensuresMain() Unit {
+    discard returnMinimum()
+    Unit
+}
+
+pub fn assertMain() Unit {
+    let minimum = -9223372036854775808
+    assert -minimum >= 0
+    Unit
+}
+";
+    let program = compile_source(source);
+
+    for entry in ["requiresMain", "ensuresMain", "assertMain"] {
+        let failure = interpret_run(&program, entry).expect_err("interpreter overflow");
+        assert!(
+            matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerOverflow"),
+            "{entry}: {failure:?}"
+        );
+
+        let legacy = emit_and_run_legacy(
+            &program,
+            entry,
+            &format!("legacy-contract-int-negation-{entry}"),
+        );
+        let diagnostic = diagnostic_text(&legacy);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(
+            diagnostic.contains("IntegerOverflow"),
+            "{entry}: {legacy:?}"
+        );
+        for contract_fault in [
+            "PreconditionFault",
+            "PostconditionFault",
+            "InvariantFault",
+            "AssertionFault",
+        ] {
+            assert!(
+                !diagnostic.contains(contract_fault),
+                "{entry}: overflow was misreported as {contract_fault}: {legacy:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn source_test_roots_preserve_declaration_order_in_one_pure_artifact() {
     let source = r"module lcir_source_tests
 

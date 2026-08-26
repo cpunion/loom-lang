@@ -4288,6 +4288,7 @@ impl<'program> Validator<'program> {
     ) -> Option<Type> {
         let operand = self.contract_base_type(operand, span, path)?;
         match (operator, operand) {
+            (UnaryOp::Negate, Type::Int) => Some(Type::Int),
             (UnaryOp::Negate, Type::Float) => Some(Type::Float),
             (UnaryOp::Not, Type::Bool) => Some(Type::Bool),
             (operator, operand) => {
