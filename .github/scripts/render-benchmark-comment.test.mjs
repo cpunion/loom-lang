@@ -92,46 +92,122 @@ function evidenceFixture(runId, reports) {
 
 test("renders exactly one horizontal table for macOS, Linux, and unavailable Windows", () => {
   const output = renderComment(
-    [comparison("linux/x86_64", 10, 9), comparison("macos/aarch64", 20, 18)],
+    [comparison("linux/x86_64", 10, 11), comparison("macos/aarch64", 20, 18)],
     "0123456789abcdef",
   );
   assert.match(output, /Candidate `0123456789ab`/);
   assert.match(output, /macOS \(base \\\| candidate \\\| delta\).*Linux.*Windows/);
   assert.match(output, /20\.000 ms \\\| 18\.000 ms \\\| -10\.0%/);
-  assert.match(output, /10\.000 ms \\\| 9\.000 ms \\\| -10\.0%/);
+  assert.match(output, /10\.000 ms \\\| 11\.000 ms \\\| \+10\.0%/);
   assert.match(output, /— \(frontend only\)/);
   assert.match(output, /10\.00 ms \\\| 11\.00 ms \\\| \+10\.0%/);
   assert.match(output, /4096 B \\\| 4096 B \\\| 0\.0%/);
   assert.equal(output.match(/^\| ---/gm)?.length, 1);
   assert.doesNotMatch(output, /<details>/);
-  assert.equal(output.match(/^```mermaid$/gm)?.length, 2);
-  assert.match(output, /#### macOS\n\n```mermaid\nxychart-beta horizontal/);
-  assert.match(output, /#### Linux\n\n```mermaid\nxychart-beta horizontal/);
-  assert.match(output, /x-axis \["integer\/loom"\]/);
-  assert.match(output, /y-axis "Runtime index" 0 --> 110/);
-  assert.match(output, /bar \[90\]/);
-  assert.match(output, /line \[100\]/);
-  assert.ok(output.indexOf("| Case |") < output.indexOf("### Runtime comparison charts"));
+  assert.doesNotMatch(output, /<summary>/);
+  assert.equal(output.match(/^```mermaid$/gm)?.length, 1);
+  assert.match(output, /### Runtime comparison chart/);
+  assert.match(output, /macOS = blue bars; Linux = orange line/);
+  assert.match(output, /plotColorPalette: "#0969da, #59636e, #eb670f"/);
+  assert.match(output, /title "Runtime index by platform \(base = 100\)"/);
+  assert.match(output, /x-axis \["integer\/loom", " "\]/);
+  assert.match(output, /y-axis "Runtime index" 0 --> 120/);
+  assert.match(output, /bar \[90, 0\]\n  line \[100, 100\]\n  line \[110, 110\]/);
+  assert.ok(output.indexOf("| Case |") < output.indexOf("### Runtime comparison chart"));
 });
 
-test("renders charts only for platforms with measured evidence", () => {
+test("renders only the measured platform series", () => {
   const output = renderComment(
     [comparison("linux/x86_64", 10, 9)],
     "0123456789abcdef",
   );
   assert.equal(output.match(/^```mermaid$/gm)?.length, 1);
-  assert.match(output, /#### Linux/);
-  assert.doesNotMatch(output, /#### macOS/);
-  assert.doesNotMatch(output, /#### Windows/);
+  assert.match(output, /Linux = orange line/);
+  assert.doesNotMatch(output, /macOS = blue bars/);
+  assert.match(output, /plotColorPalette: "#59636e, #eb670f"/);
+  assert.doesNotMatch(output, /^  bar \[/m);
+  assert.equal(output.match(/^  line \[/gm)?.length, 2);
+  assert.match(output, /line \[100, 100\]\n  line \[90, 90\]/);
 });
 
-test("uses one runtime-index scale across measured platforms", () => {
+test("renders a macOS-only chart with a visible base-line anchor", () => {
+  const output = renderComment(
+    [comparison("macos/aarch64", 10, 9)],
+    "0123456789abcdef",
+  );
+  assert.equal(output.match(/^```mermaid$/gm)?.length, 1);
+  assert.match(output, /macOS = blue bars/);
+  assert.doesNotMatch(output, /Linux = orange line/);
+  assert.match(output, /plotColorPalette: "#0969da, #59636e"/);
+  assert.match(output, /bar \[90, 0\]\n  line \[100, 100\]/);
+});
+
+test("omits the chart when no chartable platform evidence exists", () => {
+  const output = renderComment(
+    [comparison("windows/x86_64", 10, 9)],
+    "0123456789abcdef",
+  );
+  assert.doesNotMatch(output, /### Runtime comparison chart/);
+  assert.doesNotMatch(output, /^```mermaid$/m);
+});
+
+test("uses one runtime-index scale for both measured platform series", () => {
   const output = renderComment(
     [comparison("macos/aarch64", 10, 9), comparison("linux/x86_64", 10, 15)],
     "0123456789abcdef",
   );
-  assert.equal(output.match(/y-axis "Runtime index" 0 --> 160/g)?.length, 2);
-  assert.match(output, /All platform charts use the same scale/);
+  assert.equal(output.match(/y-axis "Runtime index" 0 --> 160/g)?.length, 1);
+  assert.match(output, /bar \[90, 0\]/);
+  assert.match(output, /line \[150, 150\]/);
+});
+
+test("aligns every platform series to the same runtime keys", () => {
+  const macos = comparison("macos/aarch64", 20, 18);
+  const linux = comparison("linux/x86_64", 10, 11);
+  macos.runtime.set("fib\0loom", {
+    caseName: "fib",
+    language: "loom",
+    scale: 30,
+    base: 25,
+    candidate: 30,
+  });
+  linux.runtime.set("fib\0loom", {
+    caseName: "fib",
+    language: "loom",
+    scale: 30,
+    base: 25,
+    candidate: 20,
+  });
+
+  const output = renderComment([linux, macos], "0123456789abcdef");
+  assert.match(output, /x-axis \["integer\/loom", "fib\/loom"\]/);
+  assert.match(
+    output,
+    /bar \[90, 120\]\n  line \[100, 100\]\n  line \[110, 80\]/,
+  );
+});
+
+test("draws Linux after the base line so unchanged results remain visible", () => {
+  const macos = comparison("macos/aarch64", 10, 9);
+  const linux = comparison("linux/x86_64", 10, 10);
+  macos.runtime.set("fib\0loom", {
+    caseName: "fib",
+    language: "loom",
+    scale: 30,
+    base: 20,
+    candidate: 18,
+  });
+  linux.runtime.set("fib\0loom", {
+    caseName: "fib",
+    language: "loom",
+    scale: 30,
+    base: 20,
+    candidate: 20,
+  });
+
+  const output = renderComment([macos, linux], "0123456789abcdef");
+  assert.match(output, /plotColorPalette: "#0969da, #59636e, #eb670f"/);
+  assert.match(output, /bar \[90, 90\]\n  line \[100, 100\]\n  line \[100, 100\]/);
 });
 
 test("rejects a comparison whose percentage delta overflows", () => {
