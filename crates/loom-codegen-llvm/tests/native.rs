@@ -2606,6 +2606,29 @@ fn negativeRange() Int {
     values.length()
 }
 
+fn nonemptyEmptyRange() Int {
+    var values = List[Int]()
+    values.add(41)
+    for index in 3..-2 {
+        values.add(index)
+        Unit
+    }
+    values.length()
+}
+
+fn earlyReturnAppend(size Int) Int {
+    var values = List[Int]()
+    for index in 0..size {
+        values.add(if index == 7 {
+            return 77
+        } else {
+            index
+        })
+        Unit
+    }
+    values.length()
+}
+
 fn offsetRange() Int {
     var values = List[Int]()
     for index in 3..7 {
@@ -2659,7 +2682,7 @@ fn appendObservedLength() Int {
 }
 
 fn checkedElement(index Int, accepted Bool) Int {
-    assert accepted || index != 9
+    assert accepted || index != 7
     index
 }
 
@@ -2757,6 +2780,8 @@ pub fn main() Unit {
     let emptyAppend = appendOnly(0)
     let one = appendOnly(1)
     let negative = negativeRange()
+    let nonemptyEmpty = nonemptyEmptyRange()
+    let earlyReturn = earlyReturnAppend(40)
     let offset = offsetRange()
     let grown = appendOnly(40)
     let fallback = twoAppends(20)
@@ -2771,6 +2796,8 @@ pub fn main() Unit {
     assert emptyAppend == 0
     assert one == 1
     assert negative == 0
+    assert nonemptyEmpty == 1
+    assert earlyReturn == 77
     assert offset == 18
     assert grown == 40
     assert fallback == 40
@@ -2898,6 +2925,9 @@ pub fn faultMain() Unit {
             ] {
                 assert!(append.contains(phi), "missing `{phi}`: {append}");
             }
+            assert_deferred_native_int_list_length_commits(append);
+            let nonempty_empty = llvm_native_function(&llvm, "native_int_list_nonemptyEmptyRange");
+            assert_deferred_native_int_list_length_commits(nonempty_empty);
             assert!(
                 append
                     .lines()
@@ -2956,6 +2986,7 @@ pub fn faultMain() Unit {
                 observed.contains("int.list.loop.length = phi i64"),
                 "same-list length observation lost append-loop SSA: {observed}"
             );
+            assert_eager_native_int_list_length_commits(observed);
             let fallback = llvm_native_function(&llvm, "native_int_list_twoAppends");
             assert!(
                 !fallback.contains("int.list.loop.length = phi i64"),
@@ -2980,22 +3011,22 @@ pub fn faultMain() Unit {
                 faultable.contains("int.list.loop.length = phi i64"),
                 "fallible element lost append-loop SSA: {faultable}"
             );
+            assert_deferred_native_int_list_length_commits(faultable);
             assert_native_int_list_dropped_once_on_each_return(faultable);
-            let slot_store = faultable
-                .lines()
-                .position(|line| line.contains("ptr %int.list.add.slot"))
-                .expect("fallible append stores its Int slot");
-            let length_commit = faultable
-                .lines()
-                .position(|line| {
-                    line.contains("store i64 %int.list.add.next.length")
-                        && !line.contains("ptr %int.list.add.slot")
-                })
-                .expect("fallible append commits its header length");
+            let element_call = faultable
+                .find("native_int_list_checkedElement")
+                .expect("fallible append evaluates its element call");
+            let capacity_test = faultable
+                .find("int.list.add.full = icmp")
+                .expect("fallible append tests capacity");
             assert!(
-                slot_store < length_commit,
-                "header length was committed before its element slot: {faultable}"
+                element_call < capacity_test,
+                "element evaluation must precede capacity synchronization: {faultable}"
             );
+
+            let early_return = llvm_native_function(&llvm, "native_int_list_earlyReturnAppend");
+            assert_deferred_native_int_list_length_commits(early_return);
+            assert_native_int_list_dropped_once_on_each_return(early_return);
 
             for fallback in [
                 "native_int_list_interveningAppendKeepsCheck",
@@ -3350,6 +3381,94 @@ fn assert_native_int_list_dropped_once_on_each_return(function: &str) {
             "return `{label}` has an unexpected root-pop shape: {cleanup}"
         );
     }
+}
+
+fn assert_deferred_native_int_list_length_commits(function: &str) {
+    let blocks = llvm_basic_blocks(function);
+    let grow = blocks
+        .iter()
+        .find_map(|(label, block)| {
+            (label.starts_with("int.list.add.grow.")
+                && block.contains("call i32 @loom_int_list_reserve_v1")
+                && block.contains("int.list.loop.length"))
+            .then_some(*block)
+        })
+        .unwrap_or_else(|| panic!("native append has no growth block: {function}"));
+    let length_sync = grow
+        .find("store i64 %int.list.loop.length")
+        .unwrap_or_else(|| panic!("growth did not publish the SSA length: {grow}"));
+    let reserve = grow
+        .find("call i32 @loom_int_list_reserve_v1")
+        .expect("growth block calls reserve");
+    assert!(
+        length_sync < reserve,
+        "SSA length must be published before reserve: {grow}"
+    );
+
+    let exit = blocks
+        .iter()
+        .find_map(|(label, block)| label.starts_with("range.exit.").then_some(*block))
+        .unwrap_or_else(|| panic!("native append has no range exit: {function}"));
+    assert!(
+        exit.contains("store i64 %int.list.loop.length"),
+        "normal exit did not publish the final SSA length: {exit}"
+    );
+    let ready = blocks
+        .iter()
+        .find_map(|(label, block)| {
+            (label.starts_with("int.list.add.ready.") && block.contains("int.list.loop.length"))
+                .then_some(*block)
+        })
+        .unwrap_or_else(|| panic!("native append has no ready block: {function}"));
+    assert!(
+        !ready.contains("store i64 %int.list.add.next.length"),
+        "non-observing append retained a per-iteration length commit: {ready}"
+    );
+}
+
+fn assert_eager_native_int_list_length_commits(function: &str) {
+    let blocks = llvm_basic_blocks(function);
+    let ready = blocks
+        .iter()
+        .find_map(|(label, block)| {
+            (label.starts_with("int.list.add.ready.") && block.contains("int.list.loop.length"))
+                .then_some(*block)
+        })
+        .unwrap_or_else(|| panic!("receiver-observing append has no ready block: {function}"));
+    let slot_store = ready
+        .find("ptr %int.list.add.slot")
+        .unwrap_or_else(|| panic!("receiver-observing append did not store its slot: {ready}"));
+    let length_commit = ready
+        .find("store i64 %int.list.add.next.length")
+        .unwrap_or_else(|| {
+            panic!("receiver-observing append lost its eager length commit: {ready}")
+        });
+    assert!(
+        slot_store < length_commit,
+        "receiver-observing append committed length before its slot: {ready}"
+    );
+
+    let grow = blocks
+        .iter()
+        .find_map(|(label, block)| {
+            (label.starts_with("int.list.add.grow.")
+                && block.contains("call i32 @loom_int_list_reserve_v1")
+                && block.contains("int.list.loop.length"))
+            .then_some(*block)
+        })
+        .unwrap_or_else(|| panic!("receiver-observing append has no growth block: {function}"));
+    assert!(
+        !grow.contains("store i64 %int.list.loop.length"),
+        "eager growth retained a redundant deferred sync: {grow}"
+    );
+    let exit = blocks
+        .iter()
+        .find_map(|(label, block)| label.starts_with("range.exit.").then_some(*block))
+        .unwrap_or_else(|| panic!("receiver-observing append has no exit block: {function}"));
+    assert!(
+        !exit.contains("store i64 %int.list.loop.length"),
+        "eager exit retained a redundant deferred sync: {exit}"
+    );
 }
 
 fn assert_balanced_gc_root_frame(function: &str) {

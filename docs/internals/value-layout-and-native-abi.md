@@ -91,8 +91,11 @@ representation.
 Element access on this proved layout retains the allocation's pointer
 provenance through typed LLVM GEP instructions. Exact range scans can therefore
 be vectorized without weakening the source bounds rules. The append lowering
-also carries its range induction value in SSA so the private allocation cannot
-make LLVM conservatively reload the universal stack representation.
+also carries its range induction value and non-observable length in SSA so the
+private allocation cannot make LLVM conservatively reload or update the header
+on every iteration. Length is synchronized at allocation-growth boundaries and
+normal loop exit; an element expression that references its receiver keeps
+eager length updates.
 
 Similarly, checked integer and flat-record optimizations are private lowering
 choices. They must never appear as requirements in the language reference.
