@@ -90,5 +90,6 @@ partial-construction helpers. LLVM integration tests exercise
 synchronous shadow-stack maps, coroutine state liveness, structured values,
 standard-library outputs, and collections at compiler-generated boundaries.
 
-Windows currently has frontend CI only, so this native GC/runtime description
-must not be interpreted as tested Windows runtime support.
+Windows CI currently covers selected platform-independent compiler layers
+only, so this native GC/runtime description must not be interpreted as tested
+Windows runtime support.

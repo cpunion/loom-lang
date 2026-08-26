@@ -99,7 +99,7 @@ test("renders exactly one horizontal table for macOS, Linux, and unavailable Win
   assert.match(output, /macOS \(base \\\| candidate \\\| delta\).*Linux.*Windows/);
   assert.match(output, /20\.000 ms \\\| 18\.000 ms \\\| -10\.0%/);
   assert.match(output, /10\.000 ms \\\| 11\.000 ms \\\| \+10\.0%/);
-  assert.match(output, /— \(frontend only\)/);
+  assert.match(output, /— \(native unavailable\)/);
   assert.match(output, /10\.00 ms \\\| 11\.00 ms \\\| \+10\.0%/);
   assert.match(output, /4096 B \\\| 4096 B \\\| 0\.0%/);
   assert.equal(output.match(/^\| ---/gm)?.length, 1);

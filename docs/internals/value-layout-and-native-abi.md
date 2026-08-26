@@ -5,6 +5,9 @@ LLVM and the Rust runtime agree within one toolchain build. Source code cannot
 inspect tags, pointers, allocation addresses, witness descriptors, or calling
 conventions, and external code must not depend on them.
 
+Production native compilation currently lowers checked MIR through the legacy
+layouts below. The standalone LCIR catalog does not participate in that path.
+
 ## Universal value envelope
 
 The complete fallback representation is `ValueSlot`: six 64-bit words.
@@ -41,6 +44,17 @@ use GC-managed nodes. Logical copy is independent: mutating one value cannot
 write through an earlier copy merely because the runtime shares an allocation
 internally.
 
+## Standalone LCIR representations
+
+The unconnected `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
+as `I1`, `Int` as `I64`, and `Float` as `F64`. Those definitions are exercised
+only by hand-built LCIR tests. They do not currently change generated LLVM,
+the universal value envelope, or the runtime ABI.
+
+See [Code generation IR](codegen-ir.md) for the implemented foundation and the
+[typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
+representation and migration design.
+
 ## `Text`
 
 A universal `Text` slot contains its tag and one pointer to a `TextObject`.
@@ -50,8 +64,8 @@ the same object layout in immortal globals; dynamically created text is moved
 by the GC.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
-tag and does not make `Text` a dynamic type. A future direct typed-call layout
-may bypass the universal envelope without changing `Text` semantics.
+tag and does not make `Text` a dynamic type. No direct typed-call `Text` layout
+is implemented.
 
 ## Dynamic concept values
 

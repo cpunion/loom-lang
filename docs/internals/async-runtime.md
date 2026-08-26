@@ -102,4 +102,5 @@ streams, actors, persistent coroutines, and remote execution are not
 implemented language features.
 
 Linux x86-64 and macOS arm64 run the native async/standard-library gates in CI.
-Windows currently runs frontend-only CI and is not evidence for this runtime.
+Windows currently runs CI only for selected platform-independent compiler
+layers and is not evidence for this runtime.

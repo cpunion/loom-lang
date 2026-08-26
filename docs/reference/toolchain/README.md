@@ -41,7 +41,8 @@ Do not infer platform support merely because LLVM recognizes a target triple.
 The project distinguishes:
 
 - a platform on which CI exercises the complete native toolchain;
-- a platform on which only frontend crates are CI-tested;
+- a platform on which selected platform-independent compiler layers are
+  CI-tested;
 - an LLVM target for which a relocatable object can be emitted;
 - a target for which a compatible runtime bundle and linker are available;
 - a platform for which a release archive is published.

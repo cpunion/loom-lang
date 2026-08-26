@@ -31,8 +31,8 @@ unimplemented roadmap item into a command or standard-library reference.
   `Unit`, `Task[T]`, postfix `.await`, `scoped`, and `defer`.
 - Distinguish “must” (required behavior), “may” (permitted variation), and
   “currently” (implementation fact).
-- Qualify platform support as CI-tested frontend, native runtime, cross target,
-  or release archive.
+- Qualify platform support as CI-tested compiler layers, native runtime, cross
+  target, or release archive.
 - Prefer links to one authoritative page over duplicated version tables.
 
 Avoid marketing claims, vague “production ready” language, and comparisons

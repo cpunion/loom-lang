@@ -7,7 +7,7 @@ long-term compatibility guarantee.
 
 ## Platform support matrix
 
-| Platform / target | CI-tested | Frontend | Native runtime and LLVM closure | Cross-target object | Release archive |
+| Platform / target | CI-tested | Compiler layers | Native runtime and LLVM closure | Cross-target object | Release archive |
 | --- | --- | --- | --- | --- | --- |
 | Linux x86-64 (Ubuntu 24.04) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
 | macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
@@ -16,10 +16,11 @@ long-term compatibility guarantee.
 | 32-bit triples | no | not a native claim | unsupported by current native value ABI | rejected | no |
 
 The Windows job checks, lints, tests, and builds `loom-core`, `loom-syntax`,
-`loom-hir`, `loom-sema`, `loom-mir`, `loom-lowering`, `loom-runtime-abi`, and
-`loom-benchmark`. It does not build `loomc`, the LLVM backend, interpreter,
-native runtime, driver, or LSP. Therefore it is frontend evidence, not a
-Windows Loom toolchain claim.
+`loom-hir`, `loom-sema`, `loom-mir`, `loom-codegen-ir`, `loom-lowering`,
+`loom-runtime-abi`, and `loom-benchmark`. It does not build `loomc`, the LLVM
+backend, interpreter, native runtime, driver, or LSP. Therefore it is evidence
+for selected platform-independent compiler layers, not a Windows Loom
+toolchain claim.
 
 Linux and macOS build the complete Cargo workspace with Rust 1.88 and LLVM 19.
 They also execute native/runtime integration gates. Linux additionally runs
@@ -48,6 +49,7 @@ input tests.
 | Capability | Status and evidence boundary |
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
+| Code generation IR foundation | Standalone scalar typed-SSA builders, validator, and dump are implemented and tested; MIR lowering and production emission do not use them yet. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |

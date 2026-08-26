@@ -13,6 +13,7 @@ mod fingerprint;
 use fingerprint::{BuildFingerprint, assert_no_local_feature_table, emit_rerun_inputs};
 
 const OBJECT_CRATES: &[&str] = &[
+    "loom-codegen-ir",
     "loom-codegen-llvm",
     "loom-core",
     "loom-mir",

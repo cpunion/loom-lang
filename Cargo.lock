@@ -287,6 +287,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-codegen-ir"
+version = "0.1.0"
+dependencies = [
+ "loom-core",
+ "loom-mir",
+]
+
+[[package]]
 name = "loom-codegen-llvm"
 version = "0.1.0"
 dependencies = [
