@@ -134,7 +134,24 @@ record Counter {
     enabled Bool
 }
 
+record Gauge {
+    value Int
+    enabled Bool
+}
+
 impl Counter {
+    method reset(mut self, value Int) Unit {
+        self.value = value
+        Unit
+    }
+
+    method add(mut self, value Int) Unit {
+        self.value = self.value + value
+        Unit
+    }
+}
+
+impl Gauge {
     method reset(mut self, value Int) Unit {
         self.value = value
         Unit
@@ -156,6 +173,10 @@ pub fn main() Unit {
     counter.add(3)
     let copied = forward(counter)
     discard copied.value
+    var gauge = Gauge { value = 4, enabled = false }
+    gauge.reset(5)
+    gauge.add(6)
+    discard gauge.value
     Unit
 }
 ";
@@ -197,22 +218,40 @@ pub fn main() Unit {
         product.contains("size: 128, align: 64") && product.contains("DIFlagArtificial"),
         "{product}\n{ir}"
     );
-    let direct_inout = ir
+    let direct_inouts = ir
         .lines()
-        .find(|line| line.contains("name: \"LoomInOut<t1;1>\""))
-        .unwrap_or_else(|| panic!("missing direct inout return debug type:\n{ir}"));
+        .filter(|line| line.contains("name: \"LoomInOut<t1;writebacks=[t"))
+        .collect::<Vec<_>>();
+    assert_eq!(direct_inouts.len(), 2, "{direct_inouts:#?}\n{ir}");
     assert!(
-        direct_inout.contains("size: 128, align: 64") && direct_inout.contains("DIFlagArtificial"),
-        "{direct_inout}\n{ir}"
+        direct_inouts.iter().all(|line| {
+            line.contains("size: 128, align: 64")
+                && line.contains("DIFlagArtificial")
+                && line.contains(
+                    "identifier: \"loom.compiler.LoomReturn.inout.result.t1.writebacks.1.t",
+                )
+        }),
+        "{direct_inouts:#?}\n{ir}"
     );
-    let fallible_inout = ir
+    assert_ne!(direct_inouts[0], direct_inouts[1], "{direct_inouts:#?}");
+    let fallible_inouts = ir
         .lines()
-        .find(|line| line.contains("name: \"LoomFallibleInOut<t1;1>\""))
-        .unwrap_or_else(|| panic!("missing fallible inout return debug type:\n{ir}"));
+        .filter(|line| line.contains("name: \"LoomFallibleInOut<t1;writebacks=[t"))
+        .collect::<Vec<_>>();
+    assert_eq!(fallible_inouts.len(), 2, "{fallible_inouts:#?}\n{ir}");
     assert!(
-        fallible_inout.contains("size: 192, align: 64")
-            && fallible_inout.contains("DIFlagArtificial"),
-        "{fallible_inout}\n{ir}"
+        fallible_inouts.iter().all(|line| {
+            line.contains("size: 192, align: 64")
+                && line.contains("DIFlagArtificial")
+                && line.contains(
+                    "identifier: \"loom.compiler.LoomReturn.fallible.result.t1.writebacks.1.t",
+                )
+        }),
+        "{fallible_inouts:#?}\n{ir}"
+    );
+    assert_ne!(
+        fallible_inouts[0], fallible_inouts[1],
+        "{fallible_inouts:#?}"
     );
     assert!(
         ir.lines().any(|line| {
@@ -226,7 +265,7 @@ pub fn main() Unit {
         .lines()
         .filter(|line| line.contains("name: \"writeback0\""))
         .collect::<Vec<_>>();
-    assert_eq!(writebacks.len(), 2, "{writebacks:#?}\n{ir}");
+    assert_eq!(writebacks.len(), 4, "{writebacks:#?}\n{ir}");
     assert!(
         writebacks
             .iter()

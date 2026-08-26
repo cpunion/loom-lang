@@ -550,7 +550,7 @@ impl<'ctx> DebugState<'ctx> {
 
         let mut logical_types = Vec::with_capacity(1 + writebacks.len());
         logical_types.push(source.signature().result());
-        logical_types.extend(writebacks);
+        logical_types.extend(writebacks.iter().copied());
         let fallible = source.effects().contains(Effects::MAY_FAULT);
         let mut fields = Vec::with_capacity(logical_types.len() + usize::from(fallible));
         if fallible {
@@ -583,14 +583,24 @@ impl<'ctx> DebugState<'ctx> {
             .collect::<Vec<_>>();
         let physical_type = backend.context.struct_type(&physical_fields, false);
         let result = source.signature().result().raw();
-        let writeback_count = source.signature().inout_params().len();
+        let writeback_count = writebacks.len();
+        let writeback_names = writebacks
+            .iter()
+            .map(|ty| format!("t{}", ty.raw()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let writeback_identity = writebacks
+            .iter()
+            .map(|ty| ty.raw().to_string())
+            .collect::<Vec<_>>()
+            .join(".t");
         let name = if fallible {
-            format!("LoomFallibleInOut<t{result};{writeback_count}>")
+            format!("LoomFallibleInOut<t{result};writebacks=[{writeback_names}]>")
         } else {
-            format!("LoomInOut<t{result};{writeback_count}>")
+            format!("LoomInOut<t{result};writebacks=[{writeback_names}]>")
         };
         let identifier = format!(
-            "loom.compiler.LoomReturn.{}.t{result}.w{writeback_count}",
+            "loom.compiler.LoomReturn.{}.result.t{result}.writebacks.{writeback_count}.t{writeback_identity}",
             if fallible { "fallible" } else { "inout" }
         );
         create_aggregate_debug_type(
