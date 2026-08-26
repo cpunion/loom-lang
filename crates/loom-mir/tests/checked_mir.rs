@@ -1185,6 +1185,27 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             ty: Type::Nominal(plain, Vec::new()),
             span: span(),
         },
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Refine {
+                ty: money,
+                value: Box::new(constant(Constant::Float(1.0), Type::Float)),
+                construction: ConstructionMode::Recheck,
+            },
+            ty: Type::Nominal(money, Vec::new()),
+            span: span(),
+        },
+        Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Record {
+                ty: guarded,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(1), Type::Int)],
+                construction: ConstructionMode::Recheck,
+            },
+            ty: Type::Nominal(guarded, Vec::new()),
+            span: span(),
+        },
     ];
     let mut program = Program {
         types,
@@ -1213,6 +1234,18 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
         ..Program::default()
     };
     validate_program(&program).expect("valid checked construction modes");
+
+    let mut wrong_recheck_shape = program.clone();
+    let StatementKind::Evaluate(expression) =
+        &mut wrong_recheck_shape.functions[0].body.statements[5].kind
+    else {
+        unreachable!();
+    };
+    expression.ty = result_of(money);
+    assert!(
+        validation_errors(&wrong_recheck_shape).contains(MirValidationCode::TypeMismatch),
+        "proof rechecks must preserve direct nominal shape rather than the source-facing Result shape"
+    );
 
     if let StatementKind::Evaluate(Expr {
         kind: ExprKind::Refine { construction, .. },
@@ -1728,6 +1761,86 @@ fn float_program(bits: u64) -> CheckedProgram {
     .expect("valid floating-point artifact fixture")
 }
 
+fn forged_proof_program() -> CheckedProgram {
+    let rejected = || Contract {
+        code: "always.reject".to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Constant(Constant::Bool(false)),
+            span: span(),
+        },
+    };
+    let refined = TypeId(0);
+    let guarded = TypeId(1);
+    Program {
+        types: vec![
+            TypeDef {
+                id: refined,
+                name: "Positive".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Refined {
+                    base: Type::Int,
+                    predicate: rejected(),
+                },
+            },
+            TypeDef {
+                id: guarded,
+                name: "Guarded".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "value".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: Some(rejected()),
+                },
+            },
+        ],
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::Evaluate(expr(
+                            ExprKind::Refine {
+                                ty: refined,
+                                value: Box::new(constant(Constant::Int(-1), Type::Int)),
+                                construction: ConstructionMode::Proven,
+                            },
+                            Type::Nominal(refined, Vec::new()),
+                        )),
+                        span: span(),
+                    },
+                    Statement {
+                        kind: StatementKind::Evaluate(expr(
+                            ExprKind::Record {
+                                ty: guarded,
+                                type_arguments: Vec::new(),
+                                fields: vec![constant(Constant::Int(-1), Type::Int)],
+                                construction: ConstructionMode::Proven,
+                            },
+                            Type::Nominal(guarded, Vec::new()),
+                        )),
+                        span: span(),
+                    },
+                ],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("shape-valid forged proof fixture")
+}
+
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
     let program = float_program(0x7ff8_0000_0000_0042);
@@ -1756,12 +1869,44 @@ fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
 }
 
 #[test]
+fn artifact_wire_proofs_are_one_way_normalized_to_runtime_rechecks() {
+    let program = forged_proof_program();
+    assert!(program.requires_serialized_construction_replay());
+    assert!(!program.serialized_construction_proofs_were_distrusted());
+    let encoded = encode_interpreted_artifact(&program).expect("encode proof fixture");
+    let encoded_text = String::from_utf8(encoded.clone()).expect("artifact JSON is UTF-8");
+    assert!(!encoded_text.contains("\"construction\":\"proven\""));
+    assert_eq!(
+        encoded_text.matches("\"construction\":\"recheck\"").count(),
+        2
+    );
+
+    let decoded = decode_interpreted_artifact(&encoded).expect("decode normalized proof fixture");
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    assert!(decoded.requires_serialized_construction_replay());
+    let debug = format!("{decoded:#?}");
+    assert_eq!(debug.matches("construction: Recheck").count(), 2, "{debug}");
+
+    let forged = encoded_text.replace(
+        "\"construction\":\"recheck\"",
+        "\"construction\":\"proven\"",
+    );
+    let decoded = decode_interpreted_artifact(forged.as_bytes())
+        .expect("a forged Proven spelling must be safely normalized");
+    let debug = format!("{decoded:#?}");
+    assert_eq!(debug.matches("construction: Recheck").count(), 2, "{debug}");
+    assert!(!debug.contains("construction: Proven"), "{debug}");
+}
+
+#[test]
 fn interpreted_executable_artifact_round_trips_and_validates_its_fixed_entry() {
     let program = float_program(1.0_f64.to_bits());
     let bytes =
         encode_interpreted_executable_artifact(&program, "main").expect("encode executable");
     let (decoded, entry) =
         decode_interpreted_executable_artifact(&bytes).expect("decode executable");
+    assert!(!decoded.serialized_construction_proofs_were_distrusted());
+    assert!(!decoded.requires_serialized_construction_replay());
     assert_eq!(entry, "main");
     assert!(decoded.exports.contains_key(&entry));
 
@@ -1853,7 +1998,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 18);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 19);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);
@@ -1863,14 +2008,30 @@ fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 18,
+            expected: 19,
             found: 17
         }
     ));
 }
 
 #[test]
-fn artifact_version_eighteen_requires_explicit_witness_segmentation() {
+fn artifact_rejects_pre_proof_provenance_version_eighteen() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(18);
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 18 could trust serialized Proven construction modes");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected: 19,
+            found: 18
+        }
+    ));
+}
+
+#[test]
+fn artifact_version_nineteen_requires_explicit_witness_segmentation() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["program"]["functions"]
@@ -1880,7 +2041,7 @@ fn artifact_version_eighteen_requires_explicit_witness_segmentation() {
         .and_then(|function| function.remove("witness_prefix_count"))
         .expect("encoded function witness segmentation field");
     let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 18 function segmentation is required");
+        .expect_err("version 19 function segmentation is required");
     assert!(matches!(
         error,
         ArtifactError::Malformed(message) if message.contains("witness_prefix_count")

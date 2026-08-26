@@ -56,6 +56,51 @@ Validation covers:
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
 
+## Construction proof provenance
+
+Semantic analysis can mark a refined-type or invariant-bearing record
+construction as `Proven`. That mark is a process-local compiler conclusion,
+not a portable proof certificate. Fresh source keeps the direct nominal result
+and emits no predicate or invariant check.
+
+Portable checked-MIR serialization writes `Recheck`. Decoding also changes a
+forged `Proven` spelling to `Recheck` before MIR validation. This rule applies
+to standalone `.loomi` envelopes and the checked-MIR payload inside
+`.loomlib`.
+
+`Recheck` retains the direct nominal result type; it is not the source-facing
+`Result[T, ConstraintError]` produced by an ordinary runtime-checked
+construction. The interpreter and legacy LLVM route replay the embedded
+predicate or invariant exactly once, using a private candidate and publishing
+the nominal destination only after acceptance. Success preserves source
+behavior. Failure raises the canonical `ArtifactProofRejected` `RuntimeFault`;
+it cannot become a source `Result` or a nominal value. Direct calls, `.await`,
+and `Task.all` propagate it normally. `Task.settled` and `Task.race` observe a
+faulted child through the same `TaskFault` terminal-state rules as every other
+child fault. Only OOM is a process-level exception. Typed LCIR currently
+rejects `Recheck` and atomically selects the legacy route for the whole
+artifact.
+
+The persistent compiler cache does not turn a cache hit into a replay build.
+Proof-bearing checked MIR and typed semantic state are not published, and a
+forged cached proof disposition is rejected as a miss. A later process rebuilds
+those layers from the exact source, obtains the same process-local `Proven`
+conclusion, and therefore preserves cold/warm diagnostics, route selection and
+check elimination. In-process semantic reuse remains available because it has
+not crossed a wire trust boundary.
+
+This rule prevents the construction disposition alone from bypassing the
+predicate or invariant embedded in the same artifact. It does not authenticate
+the source, type definition, or artifact as a whole. Registry and lockfile
+checksums, authenticated distribution, and the user's trust policy establish
+that separate boundary. A local cache digest detects corruption; it is not a
+credential or a signature against an attacker with the same filesystem
+authority.
+
+A future serialized proof format may avoid replay only if it carries a
+structured certificate that the decoder can independently validate. A boolean
+or enum disposition is not such a certificate.
+
 ## Suspension liveness
 
 Async lowering records state-machine suspension points and live Task-frame
@@ -73,7 +118,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `18`;
+- artifact version `19`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
@@ -81,7 +126,9 @@ The decoder checks the envelope, format and language versions, nesting bounds,
 numeric encodings, the entry, and the complete MIR program.
 
 Portable library artifacts use a separate versioned envelope (`.loomlib`
-version `1`) around checked MIR and package/public-interface metadata.
+version `1`) around checked MIR and package/public-interface metadata. Its
+nested checked-MIR envelope is still version `19` and uses the construction
+proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project
 decoder and validator rather than constructing JSON that happens to match the

@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `18` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `19` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
 | Runtime bundle manifest | schema `2` |
@@ -68,6 +68,12 @@ must not be inferred from the toolchain package version.
 Never “fix” incompatibility by editing an envelope version or checksum.
 Regenerate the artifact with the intended compiler and review any source or
 dependency migration.
+
+MIR version `19` makes process-local construction proofs non-portable. A
+matching `.loomi` or nested `.loomlib` payload replays each serialized proof;
+the local compiler cache instead rebuilds proof-bearing semantic and MIR layers
+from source so a warm build retains the cold build's route and eliminated
+checks.
 
 ## Reproducibility and rollback
 

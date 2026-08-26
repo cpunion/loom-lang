@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
+use loom_core::runtime_fault::{
+    ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+};
 use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LockMode, PersistentCache,
@@ -11,7 +14,7 @@ use loom_driver::{
     format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
-use loom_interpreter::{Interpreter, TestStatus, Value};
+use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -418,6 +421,150 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         "{:#?}",
         private_import.diagnostics()
     );
+}
+
+#[test]
+fn portable_library_rechecks_proofs_while_compiler_cache_rebuilds_them_from_source() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"proofs\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "src/main.loom",
+        "module proofs\n\ntype Positive = Float where self >= 0.0\n\npub fn make() Positive { Positive(10.0) }\n",
+    );
+    let host = AnalysisHost::new(&project.root).expect("open proof producer");
+    let snapshot = host.snapshot().expect("compile proof producer");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let fresh = snapshot.executable().expect("fresh proof checked MIR");
+    let fresh_debug = format!("{fresh:#?}");
+    assert!(
+        fresh_debug.contains("construction: Proven"),
+        "{fresh_debug}"
+    );
+    Interpreter::new(fresh)
+        .invoke(fresh.exports["make"], Vec::new(), Span::default())
+        .expect("fresh proven construction succeeds");
+
+    let library = encode_library_artifact(snapshot.project(), snapshot.sources(), fresh)
+        .expect("encode proof library");
+    let mut library_json: serde_json::Value =
+        serde_json::from_slice(&library).expect("proof library JSON");
+    let nested = library_json["checkedMir"]
+        .as_str()
+        .expect("nested checked MIR")
+        .to_owned();
+    assert_eq!(nested.matches("\"construction\":\"recheck\"").count(), 1);
+    library_json["checkedMir"] = serde_json::Value::String(nested.replace(
+        "\"construction\":\"recheck\"",
+        "\"construction\":\"proven\"",
+    ));
+    let decoded_library = decode_library_artifact(
+        &serde_json::to_vec(&library_json).expect("forge nested library proof flag"),
+    )
+    .expect("library decoder safely normalizes the forged proof flag");
+    let library_debug = format!("{:#?}", decoded_library.program());
+    assert!(
+        library_debug.contains("construction: Recheck"),
+        "{library_debug}"
+    );
+    assert!(
+        !library_debug.contains("construction: Proven"),
+        "{library_debug}"
+    );
+    Interpreter::new(decoded_library.program())
+        .invoke(
+            decoded_library.program().exports["make"],
+            Vec::new(),
+            Span::default(),
+        )
+        .expect("valid library proof recheck preserves source behavior");
+
+    let mut invalid_library_json = library_json.clone();
+    let mut invalid_mir: serde_json::Value = serde_json::from_str(
+        invalid_library_json["checkedMir"]
+            .as_str()
+            .expect("forged library checked MIR"),
+    )
+    .expect("nested checked MIR JSON");
+    let mut replaced = 0;
+    for bits in invalid_mir["floatBits"]
+        .as_array_mut()
+        .expect("nested Float table")
+    {
+        if bits.as_u64() == Some(10.0_f64.to_bits()) {
+            *bits = serde_json::json!((-1.0_f64).to_bits());
+            replaced += 1;
+        }
+    }
+    assert_eq!(replaced, 1);
+    invalid_library_json["checkedMir"] = serde_json::Value::String(
+        serde_json::to_string(&invalid_mir).expect("encode invalid nested checked MIR"),
+    );
+    let invalid_library = decode_library_artifact(
+        &serde_json::to_vec(&invalid_library_json).expect("encode invalid proof library"),
+    )
+    .expect("invalid proof value remains structurally valid MIR");
+    let failure = Interpreter::new(invalid_library.program())
+        .invoke(
+            invalid_library.program().exports["make"],
+            Vec::new(),
+            Span::default(),
+        )
+        .expect_err("library proof replay must reject a tampered value");
+    assert!(matches!(
+        failure,
+        ExecutionFailure::Runtime { fault }
+            if fault.code == ARTIFACT_PROOF_REJECTED_FAULT_CODE
+                && fault.message == ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE
+    ));
+
+    let cache = PersistentCache::new(project.root.join("target/proof-cache"));
+    let context = portable_cache_context();
+    let cold_host = AnalysisHost::new(&project.root).expect("open cold proof build");
+    let cold_sources = cold_host.load_sources().expect("load cold proof sources");
+    let key = PersistentCache::compilation_key(cold_host.project(), &cold_sources, &context);
+    let (cold, _) = cold_host.snapshot_from_sources_with_parse_cache(
+        cold_sources,
+        &cache,
+        &context.frontend_identity,
+    );
+    let cold_program = cold.executable().expect("cold proof checked MIR");
+    assert!(
+        format!("{cold_program:#?}").contains("construction: Proven"),
+        "cold source analysis must derive the proof"
+    );
+    cache
+        .store_compilation(&key, cold_program, &cold.diagnostic_records())
+        .expect("proof-bearing checked MIR is a non-fatal cache skip");
+    assert!(
+        matches!(cache.load_compilation(&key), CacheLookup::Miss),
+        "a proof-bearing cache entry must never become a warm Recheck hit"
+    );
+
+    let warm_host = AnalysisHost::new(&project.root).expect("open warm proof build");
+    let warm_sources = warm_host.load_sources().expect("load warm proof sources");
+    let (warm, warm_parse_stats) = warm_host.snapshot_from_sources_with_parse_cache(
+        warm_sources,
+        &cache,
+        &context.frontend_identity,
+    );
+    assert!(warm_parse_stats.is_full_hit());
+    assert_eq!(warm.semantic_query_stats().modules_reused, 0);
+    assert!(warm.semantic_query_stats().bodies_checked > 0);
+    let warm_program = warm.executable().expect("rebuilt warm proof MIR");
+    let warm_debug = format!("{warm_program:#?}");
+    assert!(warm_debug.contains("construction: Proven"), "{warm_debug}");
+    assert!(
+        !warm_debug.contains("construction: Recheck"),
+        "{warm_debug}"
+    );
+    assert_eq!(cold.diagnostic_records(), warm.diagnostic_records());
+    assert_eq!(format!("{cold_program:#?}"), warm_debug);
+    Interpreter::new(warm_program)
+        .invoke(warm_program.exports["make"], Vec::new(), Span::default())
+        .expect("warm source proof preserves cold execution behavior");
 }
 
 #[test]

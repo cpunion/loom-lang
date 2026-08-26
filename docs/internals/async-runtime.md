@@ -92,6 +92,12 @@ drains or cancels them before terminal completion. Lexical cleanup continues
 while a task drains. The first fault recorded for a Task remains the primary
 fault; a later cleanup fault does not overwrite it.
 
+Runtime faults do not become ordinary source `Result` values. Direct calls,
+`.await`, and `Task.all` propagate a child fault. `Task.settled` and
+`Task.race`, whose purpose is to observe terminal child states, represent the
+same fault as `TaskFault`; this includes an artifact construction-proof replay
+failure. OOM alone remains process-level and is not a Task terminal value.
+
 Current join modes implement the language's tuple and list forms of:
 
 - `Task.all`;
