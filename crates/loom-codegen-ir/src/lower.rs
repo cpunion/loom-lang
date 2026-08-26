@@ -2384,6 +2384,13 @@ enum ProductConstruction {
     InvariantProven,
 }
 
+#[derive(Clone)]
+struct LoweredMatchArm {
+    source_arm: usize,
+    block: BlockId,
+    captures: Box<[(LocalId, crate::match_plan::MatchValueId, ValueId)]>,
+}
+
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
     source: &'function mir::Function,
@@ -3265,16 +3272,88 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         // Grow exactly as payload ids are observed below rather than using
         // source local counts or a universal runtime frame.
         values[0] = Some(scrutinee);
+        let mut lowered_arms = BTreeMap::new();
+        for (node, decision) in plan.nodes() {
+            let MatchNode::Arm { arm, captures } = decision else {
+                continue;
+            };
+            let source_arm = arms.get(*arm).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("match decision references missing arm {arm}"),
+                )
+            })?;
+            let block = self.create_block()?;
+            let mut parameters = Vec::with_capacity(captures.len());
+            for (local, capture) in captures.iter().copied() {
+                let planned_type = plan.value_type(capture).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "match capture has no planned type",
+                    )
+                })?;
+                let ty = self.type_id(planned_type)?;
+                if self.local_type(local)? != ty {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("match arm {arm} binding type does not match its payload"),
+                    ));
+                }
+                let parameter = self
+                    .builder
+                    .append_block_parameter(block, ty)
+                    .map_err(LoweringError::from)?;
+                parameters.push((local, capture, parameter));
+            }
+            if source_arm.bindings.len() != parameters.len() {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("match arm {arm} has an inconsistent capture plan"),
+                ));
+            }
+            lowered_arms.insert(
+                node,
+                LoweredMatchArm {
+                    source_arm: *arm,
+                    block,
+                    captures: parameters.into_boxed_slice(),
+                },
+            );
+        }
         let mut alternatives = Vec::new();
-        self.lower_match_node(
-            &plan,
-            plan.root(),
-            flow,
-            &values,
-            arms,
-            expression,
-            &mut alternatives,
-        )?;
+        self.lower_match_node(&plan, plan.root(), flow, &values, expression, &lowered_arms)?;
+        for lowered_arm in lowered_arms.values().cloned() {
+            let source_arm = arms.get(lowered_arm.source_arm).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "match decision references missing arm {}",
+                        lowered_arm.source_arm
+                    ),
+                )
+            })?;
+            let mut env = flow.env;
+            for (local, _, parameter) in lowered_arm.captures.iter().copied() {
+                env = self.environments.set(env, local, parameter)?;
+            }
+            let lowered = self.lower_expr(
+                Flow {
+                    block: lowered_arm.block,
+                    env,
+                },
+                &source_arm.value,
+            )?;
+            let lowered = match lowered {
+                EvalFlow::Continue { mut flow, value } => {
+                    for local in &source_arm.bindings {
+                        flow.env = self.environments.remove(flow.env, *local)?;
+                    }
+                    EvalFlow::Continue { flow, value }
+                }
+                EvalFlow::Terminated => EvalFlow::Terminated,
+            };
+            alternatives.push(lowered);
+        }
         self.merge_evaluations(
             alternatives,
             flow.env,
@@ -3294,27 +3373,38 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         node: crate::match_plan::MatchNodeId,
         flow: Flow,
         values: &[Option<ValueId>],
-        arms: &[mir::MatchArm],
         expression: &mir::Expr,
-        alternatives: &mut Vec<EvalFlow>,
+        lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredMatchArm>,
     ) -> Result<(), LoweringError> {
-        let node = plan.node(node).cloned().ok_or_else(|| {
+        let decision = plan.node(node).cloned().ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 "match decision references a missing node",
             )
         })?;
-        match node {
+        match decision {
             MatchNode::Arm { arm, captures } => {
-                let source_arm = arms.get(arm).ok_or_else(|| {
+                let lowered = lowered_arms.get(&node).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
-                        format!("match decision references missing arm {arm}"),
+                        format!("match decision has no shared LCIR block for arm {arm}"),
                     )
                 })?;
-                let mut arm_flow = flow;
-                for (local, capture) in captures.iter().copied() {
-                    let value =
+                if captures.len() != lowered.captures.len()
+                    || captures.iter().zip(&lowered.captures).any(
+                        |((local, value), (planned_local, planned_value, _))| {
+                            local != planned_local || value != planned_value
+                        },
+                    )
+                {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("match arm {arm} changed after its shared block was planned"),
+                    ));
+                }
+                let arguments = captures
+                    .iter()
+                    .map(|(_, capture)| {
                         values
                             .get(capture.index())
                             .copied()
@@ -3327,33 +3417,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                                         capture.index()
                                     ),
                                 )
-                            })?;
-                    let planned_type = plan.value_type(capture).ok_or_else(|| {
-                        LoweringError::defect(
-                            LoweringDefectCode::InconsistentPlan,
-                            "match capture has no planned type",
-                        )
-                    })?;
-                    if self.local_type(local)? != self.type_id(planned_type)? {
-                        return Err(LoweringError::defect(
-                            LoweringDefectCode::InconsistentPlan,
-                            format!("match arm {arm} binding type does not match its payload"),
-                        ));
-                    }
-                    arm_flow.env = self.environments.set(arm_flow.env, local, value)?;
-                }
-                let lowered = self.lower_expr(arm_flow, &source_arm.value)?;
-                let lowered = match lowered {
-                    EvalFlow::Continue { mut flow, value } => {
-                        for local in &source_arm.bindings {
-                            flow.env = self.environments.remove(flow.env, *local)?;
-                        }
-                        EvalFlow::Continue { flow, value }
-                    }
-                    EvalFlow::Terminated => EvalFlow::Terminated,
-                };
-                alternatives.push(lowered);
-                Ok(())
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Jump(BlockTarget::new(lowered.block, arguments)),
+                    self.expression_origin(expression),
+                )
             }
             MatchNode::Constant {
                 value,
@@ -3448,9 +3519,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         env: flow.env,
                     },
                     values,
-                    arms,
                     expression,
-                    alternatives,
+                    lowered_arms,
                 )?;
                 self.lower_match_node(
                     plan,
@@ -3460,9 +3530,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         env: flow.env,
                     },
                     values,
-                    arms,
                     expression,
-                    alternatives,
+                    lowered_arms,
                 )
             }
             MatchNode::Sum { value, cases } => {
@@ -3517,9 +3586,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             env: flow.env,
                         },
                         &case_values,
-                        arms,
                         expression,
-                        alternatives,
+                        lowered_arms,
                     )?;
                 }
                 Ok(())

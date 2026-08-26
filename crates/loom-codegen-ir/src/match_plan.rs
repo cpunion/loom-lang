@@ -7,6 +7,8 @@ use crate::aggregate_plan::closed_enum_variants;
 pub(crate) const DIRECT_MATCH_MAX_PATTERN_NODES: usize = 512;
 pub(crate) const DIRECT_MATCH_MAX_DECISION_NODES: usize = 512;
 pub(crate) const DIRECT_MATCH_MAX_VALUES: usize = 512;
+pub(crate) const DIRECT_MATCH_MAX_CFG_BLOCKS: usize = 1_024;
+const DIRECT_MATCH_MAX_PLANNING_WORK: usize = 32_768;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct MatchNodeId(usize);
@@ -71,6 +73,13 @@ impl MatchPlan {
         self.nodes.get(node.index())
     }
 
+    pub(crate) fn nodes(&self) -> impl ExactSizeIterator<Item = (MatchNodeId, &MatchNode)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (MatchNodeId(index), node))
+    }
+
     pub(crate) const fn value_count(&self) -> usize {
         self.values.len()
     }
@@ -100,6 +109,8 @@ struct Planner<'program> {
     values: Vec<Type>,
     nodes: Vec<MatchNode>,
     arm_nodes: BTreeMap<(usize, Vec<(LocalId, MatchValueId)>), MatchNodeId>,
+    reserved_nodes: usize,
+    planning_work: usize,
 }
 
 pub(crate) fn plan_match(
@@ -107,10 +118,7 @@ pub(crate) fn plan_match(
     scrutinee: &Type,
     arms: &[mir::MatchArm],
 ) -> Option<MatchPlan> {
-    let pattern_nodes = arms.iter().try_fold(0_usize, |total, arm| {
-        total.checked_add(pattern_node_count(&arm.pattern)?)
-    })?;
-    if pattern_nodes > DIRECT_MATCH_MAX_PATTERN_NODES || arms.is_empty() {
+    if arms.is_empty() || !patterns_fit_budget(arms) {
         return None;
     }
 
@@ -133,8 +141,20 @@ pub(crate) fn plan_match(
         values: vec![scrutinee.clone()],
         nodes: Vec::new(),
         arm_nodes: BTreeMap::new(),
+        reserved_nodes: 0,
+        planning_work: 0,
     };
     let root = planner.compile(rows, vec![MatchValueId(0)])?;
+    let cfg_blocks = planner.nodes.iter().try_fold(0_usize, |blocks, node| {
+        blocks.checked_add(match node {
+            MatchNode::Arm { .. } => 1,
+            MatchNode::Constant { .. } => 2,
+            MatchNode::Sum { cases, .. } => cases.len(),
+        })
+    })?;
+    if cfg_blocks > DIRECT_MATCH_MAX_CFG_BLOCKS {
+        return None;
+    }
     Some(MatchPlan {
         root,
         values: planner.values.into_boxed_slice(),
@@ -142,13 +162,26 @@ pub(crate) fn plan_match(
     })
 }
 
-fn pattern_node_count(pattern: &Pattern) -> Option<usize> {
-    match pattern {
-        Pattern::Wildcard | Pattern::Binding | Pattern::Constant(_) => Some(1),
-        Pattern::Variant { payload, .. } => payload.iter().try_fold(1_usize, |total, child| {
-            total.checked_add(pattern_node_count(child)?)
-        }),
+fn patterns_fit_budget(arms: &[mir::MatchArm]) -> bool {
+    let mut pending = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+    let mut nodes = 0_usize;
+    while let Some(pattern) = pending.pop() {
+        nodes = nodes.saturating_add(1);
+        if nodes > DIRECT_MATCH_MAX_PATTERN_NODES {
+            return false;
+        }
+        if let Pattern::Variant { payload, .. } = pattern {
+            if nodes
+                .saturating_add(pending.len())
+                .saturating_add(payload.len())
+                > DIRECT_MATCH_MAX_PATTERN_NODES
+            {
+                return false;
+            }
+            pending.extend(payload);
+        }
     }
+    true
 }
 
 fn annotate_pattern(
@@ -180,9 +213,10 @@ impl Planner<'_> {
         reason = "the bounded matrix-specialization cases stay together so source order and capture propagation remain auditable"
     )]
     fn compile(&mut self, mut rows: Vec<Row>, columns: Vec<MatchValueId>) -> Option<MatchNodeId> {
-        if self.nodes.len() >= DIRECT_MATCH_MAX_DECISION_NODES || rows.is_empty() {
+        if rows.is_empty() {
             return None;
         }
+        self.charge_work(matrix_cost(&rows, columns.len())?)?;
         for row in &mut rows {
             if row.patterns.len() != columns.len() {
                 return None;
@@ -214,8 +248,24 @@ impl Planner<'_> {
                 if !constant_matches_type(&constant, &ty) {
                     return None;
                 }
-                let mut equal_rows = Vec::new();
-                let mut not_equal_rows = Vec::new();
+                if matches!(&constant, mir::Constant::Float(value) if value.is_nan()) {
+                    // Loom constant patterns use the same IEEE ordered equality
+                    // as `==`: NaN is unequal to every value, including itself.
+                    // Dropping this impossible row also guarantees progress.
+                    rows.remove(0);
+                    return self.compile(rows, columns);
+                }
+                self.reserve_node()?;
+                let clone_cost = rows.iter().try_fold(0_usize, |cost, row| {
+                    if matches!(row.patterns.get(column), Some(PlannedPattern::Wildcard)) {
+                        cost.checked_add(row_cost(row)?)
+                    } else {
+                        Some(cost)
+                    }
+                })?;
+                self.charge_work(rows.len().checked_mul(2)?.checked_add(clone_cost)?)?;
+                let mut equal_rows = Vec::with_capacity(rows.len());
+                let mut not_equal_rows = Vec::with_capacity(rows.len());
                 for mut row in rows {
                     match row.patterns.get(column)? {
                         PlannedPattern::Wildcard => {
@@ -256,10 +306,12 @@ impl Planner<'_> {
                 })
             }
             PlannedPattern::Variant { .. } => {
+                self.reserve_node()?;
                 let Type::Nominal(type_id, _) = ty.clone() else {
                     return None;
                 };
                 let variants = closed_enum_variants(self.program, &ty)?;
+                self.charge_work(variants.len())?;
                 let mut cases = Vec::with_capacity(variants.len());
                 for (variant_index, payload_types) in variants.iter().enumerate() {
                     let payload = payload_types
@@ -267,7 +319,15 @@ impl Planner<'_> {
                         .cloned()
                         .map(|payload| self.push_value(payload))
                         .collect::<Option<Vec<_>>>()?;
-                    let mut specialized = Vec::new();
+                    let clone_cost = rows
+                        .iter()
+                        .try_fold(0_usize, |cost, row| cost.checked_add(row_cost(row)?))?;
+                    self.charge_work(
+                        rows.len()
+                            .checked_add(columns.len())?
+                            .checked_add(clone_cost)?,
+                    )?;
+                    let mut specialized = Vec::with_capacity(rows.len());
                     for mut row in rows.iter().cloned() {
                         match row.patterns.remove(column) {
                             PlannedPattern::Wildcard => {
@@ -339,6 +399,7 @@ impl Planner<'_> {
         if let Some(node) = self.arm_nodes.get(&key) {
             return Some(*node);
         }
+        self.reserve_node()?;
         let node = self.push_node(MatchNode::Arm {
             arm,
             captures: captures.into_boxed_slice(),
@@ -348,13 +409,43 @@ impl Planner<'_> {
     }
 
     fn push_node(&mut self, node: MatchNode) -> Option<MatchNodeId> {
-        if self.nodes.len() >= DIRECT_MATCH_MAX_DECISION_NODES {
+        if self.nodes.len() >= self.reserved_nodes {
             return None;
         }
         let id = MatchNodeId(self.nodes.len());
         self.nodes.push(node);
         Some(id)
     }
+
+    fn reserve_node(&mut self) -> Option<()> {
+        self.reserved_nodes = self.reserved_nodes.checked_add(1)?;
+        (self.reserved_nodes <= DIRECT_MATCH_MAX_DECISION_NODES).then_some(())
+    }
+
+    fn charge_work(&mut self, amount: usize) -> Option<()> {
+        self.planning_work = self.planning_work.checked_add(amount)?;
+        (self.planning_work <= DIRECT_MATCH_MAX_PLANNING_WORK).then_some(())
+    }
+}
+
+fn matrix_cost(rows: &[Row], columns: usize) -> Option<usize> {
+    rows.iter()
+        .try_fold(columns, |cost, row| cost.checked_add(row_cost(row)?))
+}
+
+fn row_cost(row: &Row) -> Option<usize> {
+    let mut pending = row.patterns.iter().collect::<Vec<_>>();
+    let mut nodes = row.captures.len();
+    while let Some(pattern) = pending.pop() {
+        nodes = nodes.checked_add(1)?;
+        if nodes > DIRECT_MATCH_MAX_PLANNING_WORK {
+            return None;
+        }
+        if let PlannedPattern::Variant { payload, .. } = pattern {
+            pending.extend(payload);
+        }
+    }
+    Some(nodes)
 }
 
 fn constant_matches_type(constant: &mir::Constant, ty: &Type) -> bool {
@@ -372,10 +463,25 @@ fn same_constant(left: &mir::Constant, right: &mir::Constant) -> bool {
         (mir::Constant::Unit, mir::Constant::Unit) => true,
         (mir::Constant::Bool(left), mir::Constant::Bool(right)) => left == right,
         (mir::Constant::Int(left), mir::Constant::Int(right)) => left == right,
-        (mir::Constant::Float(left), mir::Constant::Float(right)) => {
-            left.to_bits() == right.to_bits()
-        }
+        // Match constants use Float's language equality, not artifact identity:
+        // signed zeroes compare equal and every NaN compares unequal.
+        (mir::Constant::Float(left), mir::Constant::Float(right)) => left == right,
         (mir::Constant::Text(left), mir::Constant::Text(right)) => left == right,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn float_mode_equivalence_is_ieee_ordered_equality() {
+        assert!(same_constant(
+            &mir::Constant::Float(0.0),
+            &mir::Constant::Float(-0.0)
+        ));
+        let nan = mir::Constant::Float(f64::from_bits(0x7ff8_0000_0000_0042));
+        assert!(!same_constant(&nan, &nan));
     }
 }

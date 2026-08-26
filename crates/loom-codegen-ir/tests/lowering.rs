@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use loom_codegen_ir::{
-    InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
-    SourceArtifactRequest, TargetLayout, UnsupportedFeature, artifact_identity, dump_program,
-    lower_typed_artifact,
+    CheckedIntBinaryOp, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
+    LoweringOutcome, SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature,
+    artifact_identity, dump_program, lower_typed_artifact,
 };
 use loom_core::FileId;
 use loom_hir::{SourceUnit, lower_files};
@@ -2150,6 +2150,69 @@ pub fn main() Unit {
     assert!(dump.contains("payload0"), "{dump}");
     assert!(dump.contains("int.compare.equal"), "{dump}");
     assert!(dump.contains("bool.compare.equal"), "{dump}");
+}
+
+#[test]
+fn wide_sum_match_shares_one_typed_capturing_arm_block() {
+    const VARIANTS: usize = 128;
+    let mut variants = String::new();
+    for index in 0..VARIANTS {
+        writeln!(variants, "    V{index}").expect("variant declaration");
+    }
+    let source = format!(
+        "module wide_sum_dag\n\nenum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(Wide.V127)\n    Unit\n}}\n"
+    );
+    let mir = compile(&source);
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower wide sum DAG") else {
+        panic!("a bounded wide sum match must remain on typed LCIR")
+    };
+    let classify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".classify"))
+        .expect("lowered classify function");
+    assert_eq!(
+        classify
+            .blocks()
+            .iter()
+            .filter(|block| matches!(
+                block.terminator().map(|terminator| terminator.kind()),
+                Some(TerminatorKind::CheckedIntBinary {
+                    op: CheckedIntBinaryOp::Add,
+                    ..
+                })
+            ))
+            .count(),
+        1,
+        "the shared source arm must be lowered once, not once per enum case"
+    );
+    let mut incoming_jumps = BTreeMap::new();
+    for block in classify.blocks() {
+        if let Some(TerminatorKind::Jump(target)) = block.terminator().map(|term| term.kind()) {
+            *incoming_jumps.entry(target.block).or_insert(0_usize) += 1;
+        }
+    }
+    let (shared_arm, incoming) = incoming_jumps
+        .into_iter()
+        .max_by_key(|(_, incoming)| *incoming)
+        .expect("shared arm jump target");
+    assert_eq!(incoming, VARIANTS - 1);
+    assert_eq!(
+        classify
+            .block(shared_arm)
+            .expect("shared capturing arm")
+            .params()
+            .len(),
+        1,
+        "the binding must cross the shared arm edge as one typed SSA parameter"
+    );
 }
 
 #[test]
