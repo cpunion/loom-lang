@@ -1,13 +1,14 @@
-//! LLVM object-code backend for checked Loom MIR.
+//! LLVM object-code backends for checked Loom MIR and checked LCIR.
 //!
-//! The backend consumes only validated MIR. Source/HIR concepts do not leak
-//! into this layer: static calls are direct edges and erased calls use the
+//! The LCIR boundary emits its checked target-typed SSA directly. The older
+//! checked-MIR boundary remains separate: its erased calls use the
 //! compiler-private `{ data, witness }` ABI described by [`abi`].
 
 mod abi;
 mod codegen;
 mod emitter;
 mod error;
+mod lcir_emitter;
 mod native_layout;
 mod native_range;
 mod native_storage;
@@ -16,8 +17,9 @@ mod runtime_bundle;
 mod target;
 
 pub use codegen::{
-    DebugSource, EmitKind, EmitOptions, NativeArtifact, NativeObjectArtifact, emit_native,
-    emit_native_object, link_native_object, native_object_fingerprint, validate_native_link_target,
+    DebugSource, EmitKind, EmitOptions, NativeArtifact, NativeObjectArtifact, NativeObjectOptions,
+    emit_lcir_native_object, emit_native, emit_native_object, link_native_object,
+    native_object_fingerprint, validate_native_link_target,
 };
 pub use error::CodegenError;
 pub use runtime_bundle::{

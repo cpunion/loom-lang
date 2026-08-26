@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use loom_codegen_ir::{ReachableSourceGraph, SourceRoots, analyze_source_reachability};
+use loom_codegen_ir::{
+    CheckedArtifact, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
+};
 use loom_mir::CheckedProgram;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CodegenError, OptimizationProfile, emitter::Emitter};
+use crate::{CodegenError, OptimizationProfile, emitter::Emitter, lcir_emitter::LcirEmitter};
 
 const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v4";
 
@@ -26,6 +28,44 @@ pub struct EmitOptions {
     /// Explicit normalized LLVM target triple, or the host target when absent.
     pub target_triple: Option<String>,
     pub optimization: OptimizationProfile,
+}
+
+/// Target and side-artifact policy for emitting one already-rooted LCIR artifact.
+///
+/// Roots deliberately do not appear here: [`CheckedArtifact`] is the sole
+/// authority for run-versus-tests selection and its closed callable graph.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NativeObjectOptions {
+    /// Optional LLVM IR side artifact, useful for diagnostics and golden tests.
+    pub emit_ir: Option<PathBuf>,
+    /// Stable source inputs recorded in LCIR compile-unit/file metadata.
+    ///
+    /// Function-level LCIR DWARF is deliberately withheld until the source
+    /// type contract covers the fallible status aggregate and hidden context.
+    pub debug_sources: Vec<DebugSource>,
+    /// Explicit normalized LLVM target triple, or the host target when absent.
+    pub target_triple: Option<String>,
+    pub optimization: OptimizationProfile,
+}
+
+impl NativeObjectOptions {
+    #[must_use]
+    pub fn with_debug_sources(mut self, sources: Vec<DebugSource>) -> Self {
+        self.debug_sources = sources;
+        self
+    }
+
+    #[must_use]
+    pub fn with_target_triple(mut self, triple: Option<String>) -> Self {
+        self.target_triple = triple;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_optimization(mut self, optimization: OptimizationProfile) -> Self {
+        self.optimization = optimization;
+        self
+    }
 }
 
 /// Relocation-independent source metadata consumed only by native debug info.
@@ -258,6 +298,25 @@ pub fn emit_native_object(
 ) -> Result<NativeObjectArtifact, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
     Emitter::emit_object(program.as_program(), &reachable, &roots, output, options)
+}
+
+/// Emits a verified, optimized target object directly from checked scalar LCIR.
+///
+/// This boundary has no checked-MIR fallback and does not infer roots from
+/// function names or backend options. The artifact's validated roots select
+/// the generated executable harness.
+///
+/// # Errors
+///
+/// Returns a stable backend error if the LCIR target layout disagrees with the
+/// selected LLVM target, or LLVM verification, optimization, IR writing, or
+/// object emission fails.
+pub fn emit_lcir_native_object(
+    artifact: &CheckedArtifact,
+    output: &Path,
+    options: &NativeObjectOptions,
+) -> Result<NativeObjectArtifact, CodegenError> {
+    LcirEmitter::emit_object(artifact, output, options)
 }
 
 /// Links a previously emitted Loom target object with the Rust runtime.

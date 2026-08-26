@@ -187,6 +187,32 @@ pub(crate) fn create_target_machine(
     requested: Option<&str>,
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetMachine, CodegenError> {
+    let target = create_llvm_target_machine(requested, optimization)?;
+    let pointer_bits = target
+        .machine
+        .get_target_data()
+        .get_pointer_byte_size(None)
+        .saturating_mul(8);
+    if pointer_bits != 64 {
+        return Err(CodegenError::new(
+            "UnsupportedNativePointerWidth",
+            format!(
+                "target {} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers",
+                target.triple
+            ),
+        ));
+    }
+    Ok(target)
+}
+
+/// Creates the representation-neutral LLVM target machine shared by emitters.
+///
+/// Callers which need a particular runtime or value ABI must enforce that
+/// policy after comparing the target data against their checked IR layout.
+pub(crate) fn create_llvm_target_machine(
+    requested: Option<&str>,
+    optimization: OptimizationProfile,
+) -> Result<NativeTargetMachine, CodegenError> {
     Target::initialize_all(&InitializationConfig::default());
     let host_native = requested.is_none();
     let triple = requested.map_or_else(TargetMachine::get_default_triple, |triple| {
@@ -217,18 +243,6 @@ pub(crate) fn create_target_machine(
                 format!("LLVM could not create a target machine for {triple}"),
             )
         })?;
-    let pointer_bits = machine
-        .get_target_data()
-        .get_pointer_byte_size(None)
-        .saturating_mul(8);
-    if pointer_bits != 64 {
-        return Err(CodegenError::new(
-            "UnsupportedNativePointerWidth",
-            format!(
-                "target {triple} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers"
-            ),
-        ));
-    }
     Ok(NativeTargetMachine {
         triple,
         machine,

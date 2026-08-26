@@ -146,10 +146,6 @@ fn validator_rejects_type_edge_dominance_and_termination_defects() {
         ValidationCode::EntryPredecessor,
     );
     assert_has_code(
-        duplicate_successor_program(),
-        ValidationCode::DuplicateSuccessor,
-    );
-    assert_has_code(
         cross_function_value_program(),
         ValidationCode::InvalidValueReference,
     );
@@ -173,6 +169,13 @@ fn validator_rejects_type_edge_dominance_and_termination_defects() {
         ValidationCode::InstructionShape,
     );
     assert_has_code(invalid_call_program(), ValidationCode::CallShape);
+}
+
+#[test]
+fn branch_edges_may_select_distinct_arguments_for_one_destination() {
+    same_target_branch_program()
+        .into_checked()
+        .expect("branch edges are normalized independently by target backends");
 }
 
 #[test]
@@ -795,14 +798,14 @@ fn entry_predecessor_program() -> loom_codegen_ir::Program {
     program.finish()
 }
 
-fn duplicate_successor_program() -> loom_codegen_ir::Program {
+fn same_target_branch_program() -> loom_codegen_ir::Program {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let bool_ty = program.type_id(&Type::Bool).expect("Bool type");
     let int_ty = program.type_id(&Type::Int).expect("Int type");
     let function = program
         .declare_function(
             origin(16),
-            "bad.duplicate_successor",
+            "branch.same_target",
             Signature::new(vec![bool_ty, int_ty, int_ty], int_ty),
             Effects::NONE,
         )
