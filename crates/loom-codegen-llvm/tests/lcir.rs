@@ -129,6 +129,71 @@ fn pure_run_has_the_zst_abi_and_no_runtime_or_legacy_surface() {
 }
 
 #[test]
+fn cfg_preorder_not_block_insertion_order_drives_llvm_emission() {
+    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
+    let root = program
+        .declare_function(
+            origin(2),
+            "reverse.block.order",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = program.function(root).expect("root builder");
+        // Deliberately create the exit and its dominator before creating the
+        // entry. Checked LCIR constrains these blocks by CFG dominance, not by
+        // their dense insertion order.
+        let exit = function.create_block().expect("exit");
+        let body = function.create_block().expect("body");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let unit = function
+            .append_instruction(
+                body,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                origin(2),
+            )
+            .expect("unit")[0];
+        function
+            .terminate(
+                entry,
+                terminator(2, TerminatorKind::Jump(BlockTarget::new(body, Vec::new()))),
+            )
+            .expect("enter body");
+        function
+            .terminate(
+                body,
+                terminator(2, TerminatorKind::Jump(BlockTarget::new(exit, Vec::new()))),
+            )
+            .expect("enter exit");
+        function
+            .terminate(exit, terminator(2, TerminatorKind::Return(unit)))
+            .expect("return dominated value");
+    }
+    let artifact = program
+        .finish_checked()
+        .expect("checked reverse-order CFG")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("reverse-order artifact");
+    let directory = tempfile::tempdir().expect("temp directory");
+    let (ir, output) = emit_and_run(&artifact, &directory, "reverse-block-order");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    let entry = ir.find("b2:").expect("LCIR entry block in LLVM IR");
+    let body = ir.find("b1:").expect("LCIR body block in LLVM IR");
+    let exit = ir.find("b0:").expect("LCIR exit block in LLVM IR");
+    assert!(
+        entry < body && body < exit,
+        "LLVM CFG is not in preorder:\n{ir}"
+    );
+    assert_no_legacy_ir(&ir);
+}
+
+#[test]
 fn scalar_abis_direct_calls_phi_predicates_and_float_bits_are_mechanical() {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
@@ -499,6 +564,120 @@ fn same_target_branch_edges_keep_distinct_phi_arguments_via_minimal_normalizatio
         ir.contains("[ %1, %branch.then.edge ], [ %2, %branch.else.edge ]"),
         "same-target values did not retain separate predecessors:\n{ir}"
     );
+}
+
+#[test]
+fn identical_same_target_branch_arms_collapse_to_one_direct_edge() {
+    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
+    let bool_ty = program.type_id(&Type::Bool).expect("Bool type");
+    let int_ty = program.type_id(&Type::Int).expect("Int type");
+    let choose = program
+        .declare_function(
+            origin(17),
+            "same.target.identical",
+            Signature::new(vec![bool_ty, int_ty], int_ty),
+            Effects::NONE,
+        )
+        .expect("declare choose");
+    let root = program
+        .declare_function(
+            origin(18),
+            "main",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = program.function(choose).expect("choose builder");
+        let entry = function.create_block().expect("entry");
+        let exit = function.create_block().expect("exit");
+        function.set_entry(entry).expect("set entry");
+        let condition = function
+            .append_block_parameter(entry, bool_ty)
+            .expect("condition");
+        let value = function
+            .append_block_parameter(entry, int_ty)
+            .expect("value");
+        let selected = function
+            .append_block_parameter(exit, int_ty)
+            .expect("selected");
+        let target = BlockTarget::new(exit, vec![value]);
+        function
+            .terminate(
+                entry,
+                terminator(
+                    17,
+                    TerminatorKind::Branch {
+                        condition,
+                        then_target: target.clone(),
+                        else_target: target,
+                    },
+                ),
+            )
+            .expect("identical branch");
+        function
+            .terminate(exit, terminator(17, TerminatorKind::Return(selected)))
+            .expect("return");
+    }
+    {
+        let mut function = program.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let condition = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Bool(false)),
+                &[bool_ty],
+                origin(18),
+            )
+            .expect("condition")[0];
+        let value = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(7)),
+                &[int_ty],
+                origin(18),
+            )
+            .expect("value")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::DirectCall {
+                    callee: choose,
+                    arguments: vec![condition, value].into_boxed_slice(),
+                },
+                &[int_ty],
+                origin(18),
+            )
+            .expect("choose call");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                origin(18),
+            )
+            .expect("unit")[0];
+        function
+            .terminate(entry, terminator(18, TerminatorKind::Return(unit)))
+            .expect("return");
+    }
+    let artifact = program
+        .finish_checked()
+        .expect("checked identical branch")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("identical-branch artifact");
+    let directory = tempfile::tempdir().expect("temp directory");
+    let ir = emit_ir(&artifact, &directory, "identical-same-target");
+
+    assert!(!ir.contains("branch.then.edge"), "{ir}");
+    assert!(!ir.contains("branch.else.edge"), "{ir}");
+    assert!(
+        !ir.contains("br i1"),
+        "identical arms kept a conditional:\n{ir}"
+    );
+    assert!(ir.contains("br label %b1"), "missing direct edge:\n{ir}");
 }
 
 #[test]

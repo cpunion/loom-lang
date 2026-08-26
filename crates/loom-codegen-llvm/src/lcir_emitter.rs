@@ -23,10 +23,10 @@ use inkwell::values::{
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use loom_codegen_ir::{
-    BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FaultCode,
-    FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction,
-    InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget, ScalarRepr,
-    Terminator, TerminatorKind, UnwindTarget, ValueId, ValueTypeId,
+    BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant, Effects,
+    FaultCode, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId,
+    Instruction, InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget,
+    ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueId, ValueTypeId,
 };
 
 use crate::CodegenError;
@@ -321,6 +321,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     source: &'artifact Function,
     function: FunctionValue<'ctx>,
     blocks: Vec<BasicBlock<'ctx>>,
+    emission_order: Vec<BlockId>,
     phis: Vec<Option<PhiValue<'ctx>>>,
     values: Vec<Option<BasicValueEnum<'ctx>>>,
     fault_context: Option<PointerValue<'ctx>>,
@@ -332,20 +333,33 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         source: &'artifact Function,
     ) -> Result<Self, CodegenError> {
         let function = backend.function(source.id())?;
-        let blocks = source
-            .blocks()
-            .iter()
-            .map(|block| {
+        let emission_order = Self::compute_emission_order(source)?;
+        let mut blocks = vec![None; source.blocks().len()];
+        for block_id in emission_order.iter().copied() {
+            blocks[block_id.index()] = Some(
                 backend
                     .context
-                    .append_basic_block(function, &format!("b{}", block.id().raw()))
+                    .append_basic_block(function, &format!("b{}", block_id.raw())),
+            );
+        }
+        let blocks = blocks
+            .into_iter()
+            .enumerate()
+            .map(|(index, block)| {
+                block.ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("{} is missing LLVM block {index}", source.id()),
+                    )
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut emitter = Self {
             backend,
             source,
             function,
             blocks,
+            emission_order,
             phis: vec![None; source.values().len()],
             values: vec![None; source.values().len()],
             fault_context: None,
@@ -424,10 +438,17 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn compile(mut self) -> Result<(), CodegenError> {
-        for block in self.source.blocks() {
+        for index in 0..self.emission_order.len() {
+            let block_id = self.emission_order[index];
+            let block = self.source.block(block_id).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("LCIR emission order contains missing block {block_id}"),
+                )
+            })?;
             self.backend
                 .builder
-                .position_at_end(self.blocks[block.id().index()]);
+                .position_at_end(self.blocks[block_id.index()]);
             for instruction_id in block.instructions() {
                 let instruction = self.source.instruction(*instruction_id).ok_or_else(|| {
                     CodegenError::new(
@@ -447,6 +468,91 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         }
         self.backend.builder.unset_current_debug_location();
         Ok(())
+    }
+
+    /// Returns a deterministic CFG preorder rooted at the function entry.
+    ///
+    /// Checked LCIR constrains SSA uses by dominance, not by block-table
+    /// insertion order. Every dominator is encountered before the blocks it
+    /// dominates in a preorder rooted at entry, so all non-phi operands have an
+    /// LLVM definition before they are consumed. The explicit stack also keeps
+    /// large generated CFGs off the Rust call stack.
+    fn compute_emission_order(source: &Function) -> Result<Vec<BlockId>, CodegenError> {
+        let entry = source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", source.id()),
+            )
+        })?;
+        let mut order = Vec::with_capacity(source.blocks().len());
+        let mut seen = vec![false; source.blocks().len()];
+        let mut pending = vec![entry];
+        while let Some(block_id) = pending.pop() {
+            let visited = seen.get_mut(block_id.index()).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} references missing block {block_id}", source.id()),
+                )
+            })?;
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            order.push(block_id);
+
+            let block = source.block(block_id).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} references missing block {block_id}", source.id()),
+                )
+            })?;
+            let terminator = block.terminator().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("LCIR block {block_id} is unterminated"),
+                )
+            })?;
+            // Push the secondary edge first so the primary/normal edge is
+            // visited first when popped from the LIFO worklist.
+            match terminator.kind() {
+                TerminatorKind::Jump(target) => pending.push(target.block),
+                TerminatorKind::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(else_target.block);
+                    pending.push(then_target.block);
+                }
+                TerminatorKind::CheckedIntNegate { normal, fault, .. }
+                | TerminatorKind::CheckedIntBinary { normal, fault, .. } => {
+                    pending.push(fault.block);
+                    pending.push(normal.block);
+                }
+                TerminatorKind::Invoke { normal, unwind, .. } => {
+                    pending.push(unwind.block);
+                    pending.push(normal.block);
+                }
+                TerminatorKind::Assert { success, fault, .. } => {
+                    pending.push(fault.block);
+                    pending.push(success.block);
+                }
+                TerminatorKind::Return(_)
+                | TerminatorKind::Fault { .. }
+                | TerminatorKind::ResumeFault => {}
+            }
+        }
+        if order.len() != source.blocks().len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "{} has {} block(s) outside the entry CFG",
+                    source.id(),
+                    source.blocks().len() - order.len()
+                ),
+            ));
+        }
+        Ok(order)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -617,7 +723,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 then_target,
                 else_target,
             } => {
-                if then_target.block == else_target.block {
+                if then_target == else_target {
+                    self.branch(then_target)?;
+                } else if then_target.block == else_target.block {
                     let then_edge = self
                         .backend
                         .context
