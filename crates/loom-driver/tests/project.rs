@@ -64,6 +64,19 @@ fn portable_cache_context() -> CacheContext {
     }
 }
 
+fn constrained_proof_project() -> TestProject {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"proofs\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "src/main.loom",
+        "module proofs\n\ntype Positive = Float where self >= 0.0\n\npub fn make() Positive { Positive(10.0) }\n",
+    );
+    project
+}
+
 #[test]
 fn human_diagnostics_use_scalar_columns_and_keep_machine_records_stable() {
     let project = TestProject::new();
@@ -424,16 +437,8 @@ fn portable_library_is_a_consumable_versioned_dependency() {
 }
 
 #[test]
-fn portable_library_rechecks_proofs_while_compiler_cache_rebuilds_them_from_source() {
-    let project = TestProject::new();
-    project.write(
-        "loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"proofs\"\nversion = \"1.0.0\"\n",
-    );
-    project.write(
-        "src/main.loom",
-        "module proofs\n\ntype Positive = Float where self >= 0.0\n\npub fn make() Positive { Positive(10.0) }\n",
-    );
+fn portable_library_rechecks_process_local_construction_proofs() {
+    let project = constrained_proof_project();
     let host = AnalysisHost::new(&project.root).expect("open proof producer");
     let snapshot = host.snapshot().expect("compile proof producer");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
@@ -519,7 +524,11 @@ fn portable_library_rechecks_proofs_while_compiler_cache_rebuilds_them_from_sour
             if fault.code == ARTIFACT_PROOF_REJECTED_FAULT_CODE
                 && fault.message == ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE
     ));
+}
 
+#[test]
+fn proof_bearing_compiler_cache_rebuilds_from_source() {
+    let project = constrained_proof_project();
     let cache = PersistentCache::new(project.root.join("target/proof-cache"));
     let context = portable_cache_context();
     let cold_host = AnalysisHost::new(&project.root).expect("open cold proof build");
