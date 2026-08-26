@@ -276,25 +276,32 @@ function formatDelta(value) {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
+function comparisonCell(base, candidate, unit, precision, unavailable) {
+  if (base === undefined || candidate === undefined) {
+    return unavailable;
+  }
+  return `${base.toFixed(precision)} ${unit} \\| ${candidate.toFixed(precision)} ${unit} \\| ${formatDelta(deltaPercent(base, candidate))}`;
+}
+
 function runtimeCell(entry, unavailable) {
   if (!entry) {
     return unavailable;
   }
-  return `${entry.base.toFixed(3)} / ${entry.candidate.toFixed(3)} / ${formatDelta(deltaPercent(entry.base, entry.candidate))}`;
+  return comparisonCell(entry.base, entry.candidate, "ms", 3, unavailable);
 }
 
 function compileCell(entry, unavailable) {
   if (!entry) {
     return unavailable;
   }
-  return `${entry.base.compileMs.toFixed(2)} / ${entry.candidate.compileMs.toFixed(2)} / ${formatDelta(deltaPercent(entry.base.compileMs, entry.candidate.compileMs))}`;
+  return comparisonCell(entry.base.compileMs, entry.candidate.compileMs, "ms", 2, unavailable);
 }
 
 function sizeCell(entry, unavailable) {
   if (!entry) {
     return unavailable;
   }
-  return `${entry.base.binaryBytes} / ${entry.candidate.binaryBytes} / ${formatDelta(deltaPercent(entry.base.binaryBytes, entry.candidate.binaryBytes))}`;
+  return comparisonCell(entry.base.binaryBytes, entry.candidate.binaryBytes, "B", 0, unavailable);
 }
 
 function requireSameSuite(comparisons) {
@@ -344,7 +351,7 @@ export function renderComment(comparisons, sha) {
     "",
     `Candidate \`${sha.slice(0, 12)}\` · \`${first.profile}\` profile · ${first.warmups} warmups · ${first.measuredRuns} measured runs`,
     "",
-    "> Each cell is `base / candidate / delta`. Deltas compare revisions only within the same platform and shared runner; they are diagnostic evidence, not a release gate or a cross-platform language ranking.",
+    "> Each cell is `base | candidate | delta`. Deltas compare revisions only within the same platform and shared runner; they are diagnostic evidence, not a release gate or a cross-platform language ranking.",
     "",
   ];
   if (!byPlatform.has("windows/x86_64")) {
@@ -354,9 +361,7 @@ export function renderComment(comparisons, sha) {
     );
   }
   lines.push(
-    "### Runtime median (ms)",
-    "",
-    `| Case | Language | ${PLATFORM_COLUMNS.map((platform) => `${platform.label} (base / candidate / Δ)`).join(" | ")} |`,
+    `| Case | Language | ${PLATFORM_COLUMNS.map((platform) => `${platform.label} (base \\| candidate \\| delta)`).join(" | ")} |`,
     `| --- | --- | ${PLATFORM_COLUMNS.map(() => "---:").join(" | ")} |`,
   );
   for (const key of runtimeKeys) {
@@ -364,40 +369,25 @@ export function renderComment(comparisons, sha) {
     const cells = PLATFORM_COLUMNS.map((platform) =>
       runtimeCell(byPlatform.get(platform.key)?.runtime.get(key), platform.unavailable),
     );
-    lines.push(`| \`${exemplar.caseName}\` | ${exemplar.language} | ${cells.join(" | ")} |`);
+    lines.push(
+      `| \`${exemplar.caseName}\` · runtime median | ${exemplar.language} | ${cells.join(" | ")} |`,
+    );
   }
 
-  lines.push(
-    "",
-    "<details>",
-    "<summary>Cold-like compiler invocation and artifact size</summary>",
-    "",
-    "#### Compile time (ms)",
-    "",
-    `| Language | ${PLATFORM_COLUMNS.map((platform) => `${platform.label} (base / candidate / Δ)`).join(" | ")} |`,
-    `| --- | ${PLATFORM_COLUMNS.map(() => "---:").join(" | ")} |`,
-  );
   for (const language of toolKeys) {
     const cells = PLATFORM_COLUMNS.map((platform) =>
       compileCell(byPlatform.get(platform.key)?.tools.get(language), platform.unavailable),
     );
-    lines.push(`| ${language} | ${cells.join(" | ")} |`);
+    lines.push(`| Compiler invocation | ${language} | ${cells.join(" | ")} |`);
   }
 
-  lines.push(
-    "",
-    "#### Artifact size (bytes)",
-    "",
-    `| Language | ${PLATFORM_COLUMNS.map((platform) => `${platform.label} (base / candidate / Δ)`).join(" | ")} |`,
-    `| --- | ${PLATFORM_COLUMNS.map(() => "---:").join(" | ")} |`,
-  );
   for (const language of toolKeys) {
     const cells = PLATFORM_COLUMNS.map((platform) =>
       sizeCell(byPlatform.get(platform.key)?.tools.get(language), platform.unavailable),
     );
-    lines.push(`| ${language} | ${cells.join(" | ")} |`);
+    lines.push(`| Artifact size | ${language} | ${cells.join(" | ")} |`);
   }
-  lines.push("", "</details>", "");
+  lines.push("");
   return lines.join("\n");
 }
 

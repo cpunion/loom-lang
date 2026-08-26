@@ -90,17 +90,20 @@ function evidenceFixture(runId, reports) {
   return root;
 }
 
-test("renders one horizontal table for macOS, Linux, and unavailable Windows", () => {
+test("renders exactly one horizontal table for macOS, Linux, and unavailable Windows", () => {
   const output = renderComment(
     [comparison("linux/x86_64", 10, 9), comparison("macos/aarch64", 20, 18)],
     "0123456789abcdef",
   );
   assert.match(output, /Candidate `0123456789ab`/);
-  assert.match(output, /macOS \(base \/ candidate \/ Δ\).*Linux.*Windows/);
-  assert.match(output, /20\.000 \/ 18\.000 \/ -10\.0%/);
-  assert.match(output, /10\.000 \/ 9\.000 \/ -10\.0%/);
+  assert.match(output, /macOS \(base \\\| candidate \\\| delta\).*Linux.*Windows/);
+  assert.match(output, /20\.000 ms \\\| 18\.000 ms \\\| -10\.0%/);
+  assert.match(output, /10\.000 ms \\\| 9\.000 ms \\\| -10\.0%/);
   assert.match(output, /— \(frontend only\)/);
-  assert.match(output, /11\.00 \/ \+10\.0%/);
+  assert.match(output, /10\.00 ms \\\| 11\.00 ms \\\| \+10\.0%/);
+  assert.match(output, /4096 B \\\| 4096 B \\\| 0\.0%/);
+  assert.equal(output.match(/^\| ---/gm)?.length, 1);
+  assert.doesNotMatch(output, /<details>/);
 });
 
 test("rejects platform reports that use different profiles", () => {
