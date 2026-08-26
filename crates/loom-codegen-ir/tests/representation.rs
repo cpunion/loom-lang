@@ -1,5 +1,8 @@
-use loom_codegen_ir::{Repr, RepresentationPlan, ScalarRepr, TargetLayout};
-use loom_mir::Type;
+use loom_codegen_ir::{
+    BuildErrorCode, Effects, Origin, ProgramBuilder, Repr, RepresentationPlan, ScalarRepr,
+    Signature, TargetLayout,
+};
+use loom_mir::{FunctionId, Type};
 
 #[test]
 fn direct_representation_catalog_is_canonical() {
@@ -59,4 +62,36 @@ fn target_pointer_width_is_validated_at_the_boundary() {
     assert!(TargetLayout::new(0).is_err());
     assert!(TargetLayout::new(7).is_err());
     assert!(TargetLayout::new(136).is_err());
+}
+
+#[test]
+fn tuple_builder_requires_child_first_unique_predeclaration() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let inner = Type::Tuple(vec![Type::Int, Type::Bool]);
+    let unregistered = builder
+        .add_tuple_type(std::slice::from_ref(&inner))
+        .expect_err("a tuple child must be registered first");
+    assert_eq!(unregistered.code(), BuildErrorCode::InvalidProductType);
+
+    builder
+        .add_tuple_type(&[Type::Int, Type::Bool])
+        .expect("register inner tuple");
+    let duplicate = builder
+        .add_tuple_type(&[Type::Int, Type::Bool])
+        .expect_err("structurally equal tuples have one canonical registration");
+    assert_eq!(duplicate.code(), BuildErrorCode::InvalidProductType);
+
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    builder
+        .declare_function(
+            Origin::synthetic(FunctionId(0)),
+            "declared",
+            Signature::new(Vec::new(), unit),
+            Effects::NONE,
+        )
+        .expect("declare function");
+    let late = builder
+        .add_tuple_type(&[inner, Type::Float])
+        .expect_err("representations are fixed before function signatures");
+    assert_eq!(late.code(), BuildErrorCode::InvalidProductType);
 }

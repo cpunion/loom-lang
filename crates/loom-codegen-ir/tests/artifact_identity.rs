@@ -192,6 +192,47 @@ fn product_result_artifact(use_second_product: bool) -> CheckedArtifact {
         .expect("closed run artifact")
 }
 
+fn tuple_catalog_artifact(second: Type) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
+    builder
+        .add_tuple_type(&[Type::Int, second])
+        .expect("tuple representation");
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let body_origin = Origin::synthetic(MirFunctionId(84));
+    let root = builder
+        .declare_function(
+            body_origin,
+            "identity.tuple_catalog",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                body_origin,
+            )
+            .expect("Unit constant")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(unit), body_origin),
+            )
+            .expect("return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid tuple catalog")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
 fn selected_entry_artifact(use_second_block: bool) -> CheckedArtifact {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target layout"));
     let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
@@ -458,6 +499,23 @@ fn nominal_product_instruction_result_type_is_a_dump_and_identity_input() {
     );
     assert_ne!(first_dump, second_dump);
     assert_ne!(artifact_identity(&first), artifact_identity(&second));
+}
+
+#[test]
+fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
+    let boolean = tuple_catalog_artifact(Type::Bool);
+    let floating = tuple_catalog_artifact(Type::Float);
+    let boolean_dump = dump_program(boolean.program());
+    let floating_dump = dump_program(floating.program());
+
+    assert!(boolean_dump.contains("Tuple[Int,Bool]"), "{boolean_dump}");
+    assert!(
+        floating_dump.contains("Tuple[Int,Float]"),
+        "{floating_dump}"
+    );
+    assert_ne!(boolean_dump, floating_dump);
+    assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 5, "tuple support reuses schema 5");
 }
 
 #[test]

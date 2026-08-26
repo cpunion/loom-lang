@@ -1715,6 +1715,81 @@ pub fn main() Unit {
 }
 
 #[test]
+fn structural_tuples_and_records_lower_through_one_direct_aggregate_plan() {
+    let dump = complete_dump(
+        r"module tuple_products
+
+record Packet { pair (Int, Bool) }
+
+fn rearrange(input (Packet, Float)) (Bool, Packet) {
+    let packet, ignored = input
+    let number, enabled = packet.pair
+    discard ignored
+    (enabled, Packet { pair = (number + 1, enabled) })
+}
+
+pub fn main() Unit {
+    let enabled, packet = rearrange((Packet { pair = (40, true) }, 1.5))
+    discard enabled
+    let number, copied = packet.pair
+    discard number
+    discard copied
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("Tuple[Int,Bool]"), "{dump}");
+    assert!(dump.contains("Tuple[Nominal#"), "{dump}");
+    assert!(dump.contains("Tuple[Bool,Nominal#"), "{dump}");
+    assert!(dump.matches("product.construct").count() >= 4, "{dump}");
+    assert!(dump.matches("product.extract").count() >= 6, "{dump}");
+    assert!(dump.contains("checked_int.add"), "{dump}");
+}
+
+#[test]
+fn managed_tuple_elements_and_over_budget_tuples_select_atomic_fallback() {
+    let managed = lower_run(
+        r#"module managed_tuple
+
+fn make() (Int, Text) { (1, "legacy") }
+
+pub fn main() Unit {
+    let number, label = make()
+    discard number
+    discard label
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Unsupported(managed) = managed else {
+        panic!("a tuple containing Text must select whole-artifact fallback")
+    };
+    assert!(managed.items().iter().any(|item| matches!(
+        item.feature(),
+        UnsupportedFeature::SignatureType
+            | UnsupportedFeature::ExpressionType
+            | UnsupportedFeature::TextConstant
+    )));
+
+    let fields = std::iter::repeat_n("Int", 256)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = std::iter::repeat_n("0", 256).collect::<Vec<_>>().join(", ");
+    let source = format!(
+        "module wide_tuple\n\nfn make() ({fields}) {{ ({values}) }}\n\npub fn main() Unit {{\n    discard make()\n    Unit\n}}\n"
+    );
+    let wide = lower_run(&source);
+    let LoweringOutcome::Unsupported(wide) = wide else {
+        panic!("an expanded tuple over the direct-product budget must select fallback")
+    };
+    assert!(wide.items().iter().any(|item| matches!(
+        item.feature(),
+        UnsupportedFeature::SignatureType | UnsupportedFeature::ExpressionType
+    )));
+}
+
+#[test]
 fn unsupported_record_boundaries_select_one_atomic_fallback() {
     let managed = lower_run(
         r#"module managed_record

@@ -50,23 +50,28 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Bool` | `Scalar(I1)` |
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
+| structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. A product is an immutable register aggregate. Its
-fields may be primitive values or other acyclic products; generic records,
-records with invariants, and records containing managed or refined fields are
-not selected. Managed, list, dynamic-witness, and Task representations are not
-implemented in this crate.
+fields may be primitive values or other acyclic products. Tuples and records
+may therefore contain one another without changing representation. Generic
+records, records with invariants, and aggregates containing managed, refined,
+or uninhabited fields are not selected. Managed, list, dynamic-witness, and
+Task representations are not implemented in this crate.
 
-Support classification walks each candidate product graph iteratively and
-limits both nesting depth and the expanded structural size to 256. Structural
-size counts each product occurrence plus each of its field occurrences, so a
-single very wide record and repeated nested products consume the same finite
-budget as a deep chain. Crossing either limit is stable unsupported coverage
-and selects the atomic legacy route; it is not a lowering defect and cannot
-consume the compiler's call stack. Independent LCIR validation enforces the
-same limits for explicit builder clients.
+Support classification first builds one concrete aggregate plan, without
+allocating LCIR. The plan covers every reachable structural tuple and closed
+record, orders registrations after their aggregate children, and rejects
+by-value cycles. Classification walks each candidate product graph iteratively
+and limits both nesting depth and the expanded structural size to 256.
+Structural size counts each product occurrence plus each field occurrence, so
+a single very wide tuple or record and repeated nested products consume the
+same finite budget as a deep chain. Crossing either limit is stable unsupported
+coverage and selects the atomic legacy route; it is not a lowering defect and
+cannot consume the compiler's call stack. Independent LCIR validation enforces
+the same limits for explicit builder clients.
 
 `ValueType` entries are representation alternatives, not a global uniqueness
 claim for a semantic type. A separate canonical registration table selects the
@@ -121,9 +126,11 @@ ABI, so the independent native-object format advanced to
 every instruction result advance the identity to schema 4 and the text dump to
 `lcir 3`. Reusing the instance-key type encoder for every representation and
 registration advances the identity to schema 5 and the text dump to `lcir 4`;
-future direct tuple, nominal-argument, task, view, and other type entries can no
-longer collapse to a shared placeholder. Neither identity-only change alters
-the machine ABI.
+new direct tuple entries and future nominal-argument, task, view, and other type
+entries cannot collapse to a shared placeholder. Tuple lowering therefore
+reuses schema 5 and dump version 4: its complete semantic identity was already
+encoded before the representation became selectable. Neither identity-only
+change alters the machine ABI.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -133,13 +140,15 @@ allocating LCIR. It returns either one complete independently checked
 Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
-The current lowering coverage is monomorphic synchronous scalar and closed-POD
-record signatures, constants, locals and assignment, blocks and conditionals,
+The current lowering coverage is monomorphic synchronous scalar, structural
+tuple, and closed-POD-record signatures, constants, locals and assignment,
+tuple construction and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
 recursion. Plain record construction, whole-value copy and move, nested field
-read/write, product block parameters, returns, and loop-carried products lower
-directly to SSA. A mutable inherent receiver is a functional inout parameter:
+read/write, tuple/record nesting, product block parameters, parameters,
+returns, and loop-carried products lower directly to SSA. A mutable inherent
+receiver is a functional inout parameter:
 the callee returns its current product on both normal and fault exits. Only a
 whole local may cross that boundary; projected inout selects atomic fallback.
 A dense reverse-call worklist computes the least fault-effect fixed

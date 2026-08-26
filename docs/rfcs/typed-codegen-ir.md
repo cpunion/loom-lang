@@ -17,9 +17,10 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive and closed-POD-record artifacts into typed LCIR and falls back
-atomically for reachable unsupported features. The broader representation
-migration and legacy deletion gates in this record are not complete.
+primitive, structural-tuple, and closed-POD-record artifacts into typed LCIR
+and falls back atomically for reachable unsupported features. The broader
+representation migration and legacy deletion gates in this record are not
+complete.
 
 ## Motivation
 
@@ -76,12 +77,15 @@ vocabulary is:
 - `Zst` for `Unit`;
 - `Scalar(I1)` for `Bool`;
 - `Scalar(I64)` for `Int`;
-- `Scalar(F64)` for `Float`.
+- `Scalar(F64)` for `Float`;
+- `Product(element value types...)` for a structural tuple whose transitive
+  elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
   transitive fields are direct values.
 
-Products are immutable register aggregates and may recursively contain other
-acyclic products. Each representation plan has an explicit canonical
+Products are immutable register aggregates. Tuples and records may recursively
+contain one another when the resulting product graph is acyclic. Each
+representation plan has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. Managed,
 dynamic-witness, erased, and coroutine representations are added only with
@@ -230,7 +234,7 @@ Legacy implementation is removed by demonstrated semantic coverage:
 | Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, and run/test harnesses with zero eligible fallback. |
 | Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
 | Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | Direct products cover closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
+| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
 | Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
 
 New exact-shape native specializations are not accepted migration work. Range,

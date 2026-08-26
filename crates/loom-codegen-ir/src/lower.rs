@@ -8,6 +8,9 @@ use loom_mir::{
     StatementKind, Type, UnaryOp,
 };
 
+use crate::aggregate_plan::{
+    AggregatePlanner, AggregateRegistrationError, closed_record_fields, is_direct_scalar,
+};
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
@@ -219,10 +222,8 @@ pub enum UnsupportedFeature {
     SignatureType,
     ExpressionType,
     ProjectedPlace,
-    TupleBinding,
     AssertionCleanup,
     DeferredCleanup,
-    TupleValue,
     ListValue,
     PatternMatch,
     NominalValue,
@@ -252,10 +253,8 @@ impl UnsupportedFeature {
             Self::SignatureType => "SignatureType",
             Self::ExpressionType => "ExpressionType",
             Self::ProjectedPlace => "ProjectedPlace",
-            Self::TupleBinding => "TupleBinding",
             Self::AssertionCleanup => "AssertionCleanup",
             Self::DeferredCleanup => "DeferredCleanup",
-            Self::TupleValue => "TupleValue",
             Self::ListValue => "ListValue",
             Self::PatternMatch => "PatternMatch",
             Self::NominalValue => "NominalValue",
@@ -396,7 +395,7 @@ pub fn lower_typed_artifact(
             items: classifier.items,
         }));
     }
-    let pod_records = classifier.pod_records;
+    let aggregate_plan = classifier.aggregates.finish();
     let summaries = graph
         .functions
         .iter()
@@ -414,83 +413,15 @@ pub fn lower_typed_artifact(
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
     let effects = solve_effects(summaries)?;
-    let mut record_fields = BTreeMap::new();
-    let mut remaining_dependencies = BTreeMap::new();
-    let mut dependents: BTreeMap<mir::TypeId, Vec<mir::TypeId>> = BTreeMap::new();
-    let mut ready_records = BTreeSet::new();
-    for record in &pod_records {
-        let semantic = Type::Nominal(*record, Vec::new());
-        let fields = closed_record_fields(mir.as_program(), &semantic).ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::InconsistentPlan,
-                format!("classified POD record #{} disappeared", record.0),
-            )
-        })?;
-        let field_types = fields
-            .iter()
-            .map(|field| field.ty.clone())
-            .collect::<Vec<_>>();
-        let dependencies = field_types
-            .iter()
-            .filter_map(|field| match field {
-                Type::Nominal(dependency, arguments) if arguments.is_empty() => Some(*dependency),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        if dependencies
-            .iter()
-            .any(|dependency| !pod_records.contains(dependency))
-        {
-            return Err(LoweringError::defect(
-                LoweringDefectCode::InconsistentPlan,
-                format!(
-                    "classified POD record #{} depends on an unplanned record",
-                    record.0
-                ),
-            ));
-        }
-        for dependency in &dependencies {
-            dependents.entry(*dependency).or_default().push(*record);
-        }
-        if dependencies.is_empty() {
-            ready_records.insert(*record);
-        }
-        remaining_dependencies.insert(*record, dependencies.len());
-        record_fields.insert(*record, field_types);
-    }
-
     let mut builder = ProgramBuilder::new(target);
-    let mut registered_records = 0_usize;
-    while let Some(record) = ready_records.pop_first() {
-        let field_types = record_fields.get(&record).ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::InconsistentPlan,
-                format!("classified POD record #{} has no field plan", record.0),
-            )
-        })?;
-        builder
-            .add_pod_record_type(Type::Nominal(record, Vec::new()), field_types)
-            .map_err(LoweringError::from)?;
-        registered_records = registered_records.saturating_add(1);
-        for dependent in dependents.get(&record).into_iter().flatten() {
-            let Some(remaining) = remaining_dependencies.get_mut(dependent) else {
-                return Err(LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("classified dependent record #{} disappeared", dependent.0),
-                ));
-            };
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                ready_records.insert(*dependent);
+    aggregate_plan
+        .register(&mut builder)
+        .map_err(|error| match error {
+            AggregateRegistrationError::Build(error) => LoweringError::from(error),
+            AggregateRegistrationError::Inconsistent(message) => {
+                LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
             }
-        }
-    }
-    if registered_records != pod_records.len() {
-        return Err(LoweringError::defect(
-            LoweringDefectCode::InconsistentPlan,
-            "classified POD record graph is cyclic",
-        ));
-    }
+        })?;
     for (index, planned) in effects.entries().iter().enumerate() {
         let function_id = planned.key.source();
         let function = mir.function(function_id).ok_or_else(|| {
@@ -704,34 +635,13 @@ fn is_valid_test_return(program: &mir::Program, ty: &Type) -> bool {
 }
 
 const fn is_scalar_type(ty: &Type) -> bool {
-    matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
-}
-
-fn closed_record_fields<'program>(
-    program: &'program mir::Program,
-    ty: &Type,
-) -> Option<&'program [mir::FieldDef]> {
-    let Type::Nominal(id, arguments) = ty else {
-        return None;
-    };
-    if !arguments.is_empty() {
-        return None;
-    }
-    let definition = program.type_def(*id)?;
-    if definition.type_parameters != 0 {
-        return None;
-    }
-    let mir::TypeDefKind::Record { fields, invariant } = &definition.kind else {
-        return None;
-    };
-    invariant.is_none().then_some(fields)
+    is_direct_scalar(ty)
 }
 
 struct Classifier<'program> {
     program: &'program mir::Program,
     items: Vec<UnsupportedItem>,
-    pod_records: BTreeSet<mir::TypeId>,
-    rejected_pod_records: BTreeSet<mir::TypeId>,
+    aggregates: AggregatePlanner<'program>,
 }
 
 impl<'program> Classifier<'program> {
@@ -739,16 +649,12 @@ impl<'program> Classifier<'program> {
         Self {
             program,
             items: Vec::new(),
-            pod_records: BTreeSet::new(),
-            rejected_pod_records: BTreeSet::new(),
+            aggregates: AggregatePlanner::new(program),
         }
     }
 
     fn supported_value_type(&mut self, ty: &Type) -> bool {
-        if is_scalar_type(ty) {
-            return true;
-        }
-        self.supported_record_type(ty)
+        self.aggregates.supports_value_type(ty)
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
@@ -758,87 +664,8 @@ impl<'program> Classifier<'program> {
         if !arguments.is_empty() {
             return false;
         }
-        self.supported_pod_record(*id)
-    }
-
-    fn supported_pod_record(&mut self, id: mir::TypeId) -> bool {
-        if self.pod_records.contains(&id) {
-            return true;
-        }
-        if self.rejected_pod_records.contains(&id) {
-            return false;
-        }
-
-        // Walk the nominal graph iteratively so an adversarial checked-MIR
-        // chain cannot consume the Rust call stack before LCIR validation.
-        // Both limits apply to each root's complete transitive product shape;
-        // exceeding either is unsupported coverage and therefore selects the
-        // atomic legacy route rather than reporting a compiler defect.
-        let mut stack = vec![(id, 1_usize, false)];
-        let mut discovered = BTreeSet::new();
-        let mut visiting = BTreeSet::new();
-        let mut structural_nodes = 0_usize;
-        let mut supported = true;
-        while let Some((record, depth, exiting)) = stack.pop() {
-            if exiting {
-                visiting.remove(&record);
-                continue;
-            }
-            if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
-                || !visiting.insert(record)
-                || self.rejected_pod_records.contains(&record)
-            {
-                supported = false;
-                break;
-            }
-            let semantic = Type::Nominal(record, Vec::new());
-            let Some(fields) = closed_record_fields(self.program, &semantic) else {
-                supported = false;
-                break;
-            };
-            discovered.insert(record);
-            let Some(next_structural_nodes) = structural_nodes
-                .checked_add(1)
-                .and_then(|nodes| nodes.checked_add(fields.len()))
-            else {
-                supported = false;
-                break;
-            };
-            if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
-                supported = false;
-                break;
-            }
-            structural_nodes = next_structural_nodes;
-            let mut children = Vec::new();
-            for field in fields {
-                match &field.ty {
-                    field if is_scalar_type(field) => {}
-                    Type::Nominal(child, arguments) if arguments.is_empty() => {
-                        children.push(*child);
-                    }
-                    _ => {
-                        supported = false;
-                        break;
-                    }
-                }
-            }
-            if !supported {
-                break;
-            }
-            stack.push((record, depth, true));
-            stack.extend(
-                children
-                    .into_iter()
-                    .rev()
-                    .map(|child| (child, depth.saturating_add(1), false)),
-            );
-        }
-        if supported {
-            self.pod_records.extend(discovered);
-        } else {
-            self.rejected_pod_records.insert(id);
-        }
-        supported
+        let semantic = Type::Nominal(*id, Vec::new());
+        self.aggregates.supports_value_type(&semantic)
     }
 
     fn supported_expression_type(&mut self, ty: &Type) -> bool {
@@ -1028,21 +855,8 @@ impl<'program> Classifier<'program> {
         path: &str,
     ) -> bool {
         match &statement.kind {
-            StatementKind::Let { value, .. } => {
+            StatementKind::Let { value, .. } | StatementKind::LetTuple { value, .. } => {
                 self.visit_expr(function, value, &format!("{path}.value"))
-            }
-            StatementKind::LetTuple { value, .. } => {
-                if !self.visit_expr(function, value, &format!("{path}.value")) {
-                    return false;
-                }
-                self.item(
-                    UnsupportedFeature::TupleBinding,
-                    function.id,
-                    Some(value.id),
-                    statement.span,
-                    path.to_owned(),
-                );
-                true
             }
             StatementKind::ForRange {
                 start, end, body, ..
@@ -1119,7 +933,6 @@ impl<'program> Classifier<'program> {
                 if !self.visit_exprs(function, elements, &format!("{path}.elements")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::TupleValue, function, expression, path);
                 expression.ty != Type::Never
             }
             ExprKind::List(elements) => {
@@ -2546,8 +2359,64 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
-            StatementKind::LetTuple { value, .. } => match self.lower_expr(flow, value)? {
-                EvalFlow::Continue { .. } => Err(self.unsupported_reached("tuple binding")),
+            StatementKind::LetTuple { locals, value } => match self.lower_expr(flow, value)? {
+                EvalFlow::Continue {
+                    mut flow,
+                    value: aggregate,
+                } => {
+                    let Type::Tuple(elements) = &value.ty else {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "checked tuple binding value has a non-tuple type",
+                        ));
+                    };
+                    if elements.len() != locals.len() {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "checked tuple binding arity does not match its locals",
+                        ));
+                    }
+                    let aggregate_type = self.type_id(&value.ty)?;
+                    for (index, (local, element)) in locals.iter().zip(elements).enumerate() {
+                        let field = u32::try_from(index).map_err(|_| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "checked tuple binding has too many elements",
+                            )
+                        })?;
+                        let field_type = self.product_field_type(aggregate_type, field)?;
+                        if field_type != self.type_id(element)?
+                            || field_type != self.local_type(*local)?
+                        {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "checked tuple binding element type does not match its local",
+                            ));
+                        }
+                        let extracted = match self.one_instruction(
+                            flow,
+                            InstructionKind::ProductExtract { aggregate, field },
+                            field_type,
+                            self.statement_origin(statement),
+                        )? {
+                            EvalFlow::Continue {
+                                flow: next_flow,
+                                value,
+                            } => {
+                                flow = next_flow;
+                                value
+                            }
+                            EvalFlow::Terminated => {
+                                return Err(LoweringError::defect(
+                                    LoweringDefectCode::Builder,
+                                    "tuple extraction unexpectedly terminated",
+                                ));
+                            }
+                        };
+                        flow.env = self.environments.set(flow.env, *local, extracted)?;
+                    }
+                    Ok(StatementFlow::Continue(flow))
+                }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
             StatementKind::Assert { condition } => match self.lower_expr(flow, condition)? {
@@ -2725,34 +2594,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 witnesses,
                 expression,
             ),
-            ExprKind::Tuple(values) => self.lower_unsupported_values(flow, values, "tuple value"),
+            ExprKind::Tuple(values) => self.lower_product_values(flow, values, expression),
             ExprKind::List(values) => self.lower_unsupported_values(flow, values, "list value"),
             ExprKind::Match { scrutinee, .. } => {
                 self.lower_unsupported_operand(flow, scrutinee, "pattern match")
             }
-            ExprKind::Record { fields, .. } => {
-                let mut flow = flow;
-                let mut lowered = Vec::with_capacity(fields.len());
-                for field in fields {
-                    let EvalFlow::Continue {
-                        flow: next_flow,
-                        value,
-                    } = self.lower_expr(flow, field)?
-                    else {
-                        return Ok(EvalFlow::Terminated);
-                    };
-                    flow = next_flow;
-                    lowered.push(value);
-                }
-                self.one_instruction(
-                    flow,
-                    InstructionKind::ProductConstruct {
-                        fields: lowered.into_boxed_slice(),
-                    },
-                    self.type_id(&expression.ty)?,
-                    origin,
-                )
-            }
+            ExprKind::Record { fields, .. } => self.lower_product_values(flow, fields, expression),
             ExprKind::Variant { payload, .. } => {
                 self.lower_unsupported_values(flow, payload, "variant value")
             }
@@ -2773,6 +2620,34 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.lower_unsupported_values(flow, arguments, "task join")
             }
         }
+    }
+
+    fn lower_product_values(
+        &mut self,
+        mut flow: Flow,
+        fields: &[mir::Expr],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let mut lowered = Vec::with_capacity(fields.len());
+        for field in fields {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, field)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+        self.one_instruction(
+            flow,
+            InstructionKind::ProductConstruct {
+                fields: lowered.into_boxed_slice(),
+            },
+            self.type_id(&expression.ty)?,
+            self.expression_origin(expression),
+        )
     }
 
     fn lower_unsupported_operand(
