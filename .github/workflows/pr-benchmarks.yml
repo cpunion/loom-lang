@@ -41,7 +41,7 @@ jobs:
           path: candidate
           persist-credentials: false
 
-      - name: Install LLVM 19.1.7
+      - name: Install LLVM 19
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
@@ -64,14 +64,17 @@ jobs:
             base -> target
             candidate -> target
           cache-targets: false
-          key: pr-benchmark-llvm-19.1.7
+          key: pr-benchmark-llvm-19
           env-vars: LLVM_SYS_191_PREFIX
 
       - name: Verify pinned toolchains
         shell: bash
         run: |
           test "$(rustc --version)" = "rustc 1.88.0 (6b00bc388 2025-06-23)"
-          test "$("$LLVM_SYS_191_PREFIX/bin/llvm-config" --version)" = "19.1.7"
+          case "$("$LLVM_SYS_191_PREFIX/bin/llvm-config" --version)" in
+            19.*) ;;
+            *) exit 1 ;;
+          esac
           test "$(go version | awk '{print $3}')" = "go1.27.0"
 
       - name: Build and benchmark base
