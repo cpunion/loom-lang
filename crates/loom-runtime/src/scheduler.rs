@@ -45,6 +45,26 @@ const TASK_FAULT_CODE: &str = "TaskFault";
 const TASK_FAULT_MESSAGE: &str = "task execution failed";
 const FILE_TYPE: u64 = 9;
 const SOCKET_TYPE: u64 = 10;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IoResourceKind {
+    File,
+    Socket,
+}
+
+impl IoResourceKind {
+    const fn from_nominal(nominal: u64) -> Option<Self> {
+        match nominal {
+            FILE_TYPE => Some(Self::File),
+            SOCKET_TYPE => Some(Self::Socket),
+            _ => None,
+        }
+    }
+
+    const fn is_file(self) -> bool {
+        matches!(self, Self::File)
+    }
+}
 const RESULT_TYPE: u64 = 1;
 const IO_ERROR_TYPE: u64 = 18;
 const IO_ERROR_KIND_TYPE: u64 = 19;
@@ -1874,16 +1894,18 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     if executor.is_null()
         || value.is_null()
         || unsafe { (*value).words[0] } != VALUE_TAG_RECORD
-        || !matches!(unsafe { (*value).words[1] }, FILE_TYPE | SOCKET_TYPE)
         || unsafe { (*value).words[2] } != 1
     {
         return WAIT_INVALID_ARGUMENT;
     }
+    let nominal = unsafe { (*value).words[1] };
+    let Some(kind) = IoResourceKind::from_nominal(nominal) else {
+        return WAIT_INVALID_ARGUMENT;
+    };
     let node = unsafe { (*value).words[4] as *mut ValueNode };
     if node.is_null() || unsafe { (*node).value.words[0] } != 2 {
         return WAIT_INVALID_ARGUMENT;
     }
-    let nominal = unsafe { (*value).words[1] };
     let handle = unsafe { (*node).value.words[3].cast_signed() };
     if handle == INVALID_HANDLE {
         return WAIT_OK;
@@ -1892,7 +1914,7 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     let mut owned = None;
     for task in &mut executor.tasks {
         if let Some(index) = task.owned_result_resources.iter().position(|candidate| {
-            candidate.handle_bits() == handle && candidate.is_file() == (nominal == FILE_TYPE)
+            candidate.handle_bits() == handle && candidate.is_file() == kind.is_file()
         }) {
             owned = Some(task.owned_result_resources.swap_remove(index));
             break;
@@ -1903,7 +1925,7 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     } else {
         // SAFETY: a well-formed externally transferred File/Socket value owns
         // its raw handle when it is no longer tracked by a runtime task.
-        if unsafe { close_untracked(handle, nominal == FILE_TYPE) }.is_err() {
+        if unsafe { close_untracked(handle, kind.is_file()) }.is_err() {
             return WAIT_INVALID_ARGUMENT;
         }
     }
@@ -3059,6 +3081,53 @@ mod resource_ownership_tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
+    }
+
+    #[test]
+    fn io_close_accepts_only_file_and_socket_nominals() {
+        assert_eq!(
+            IoResourceKind::from_nominal(FILE_TYPE),
+            Some(IoResourceKind::File)
+        );
+        assert_eq!(
+            IoResourceKind::from_nominal(SOCKET_TYPE),
+            Some(IoResourceKind::Socket)
+        );
+        assert_eq!(IoResourceKind::from_nominal(0), None);
+        assert_eq!(IoResourceKind::from_nominal(u64::MAX), None);
+    }
+
+    #[test]
+    fn io_close_rejects_a_hostile_nominal_before_resource_dispatch() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let mut payload = ValueNode {
+            value: ValueSlot {
+                words: [2, 0, 0, INVALID_HANDLE.cast_unsigned(), 0, 0],
+            },
+            next: ptr::null_mut(),
+        };
+        let mut value = ValueSlot {
+            words: [
+                VALUE_TAG_RECORD,
+                u64::MAX,
+                1,
+                0,
+                (&raw mut payload) as u64,
+                0,
+            ],
+        };
+
+        unsafe {
+            assert_eq!(
+                io_close(executor, (&raw mut value).cast()),
+                WAIT_INVALID_ARGUMENT
+            );
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
     }
 
     fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {

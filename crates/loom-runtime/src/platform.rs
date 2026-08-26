@@ -208,7 +208,7 @@ fn raw_fd(handle: i64) -> io::Result<RawFd> {
 #[cfg(windows)]
 fn raw_handle(handle: i64) -> io::Result<RawHandle> {
     let bits = handle.cast_unsigned();
-    if bits == u64::MAX {
+    if bits == 0 || bits == u64::MAX {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid Windows handle",
@@ -276,4 +276,26 @@ fn close_untracked_socket(handle: i64) -> io::Result<()> {
     // ownership table and still owns its raw SOCKET.
     drop(unsafe { TcpStream::from_raw_socket(socket) });
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_file_handle_rejects_both_windows_sentinel_values() {
+        assert_eq!(
+            raw_handle(0)
+                .expect_err("NULL is not an owned Windows HANDLE")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            raw_handle(INVALID_HANDLE)
+                .expect_err("all-ones is not an owned Windows HANDLE")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!raw_handle(1).expect("non-null HANDLE bits").is_null());
+    }
 }
