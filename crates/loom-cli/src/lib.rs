@@ -1879,7 +1879,9 @@ fn final_artifact_key(
     if backend == Backend::Llvm {
         // Native linking is intentionally outside persistent caching until a
         // hermetic link bundle identifies every linker child, SDK/sysroot,
-        // CRT/system library and debug companion as one atomic unit.
+        // CRT/system library and debug companion through one validated link
+        // plan. Publishing a multi-file debug companion is not filesystem-
+        // atomic across every platform.
         return None;
     }
     let parent = compilation.key()?.clone();

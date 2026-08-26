@@ -1653,3 +1653,31 @@ fn debug_sources_fail_closed_on_duplicate_and_missing_file_ids() {
         assert_eq!(error.message(), expected);
     }
 }
+
+#[test]
+fn msvc_debug_sources_emit_codeview_module_flags() {
+    let artifact = unit_run(64);
+    let directory = tempfile::tempdir().expect("temp directory");
+    let object = directory.path().join("debug.obj");
+    let ir_path = directory.path().join("debug-msvc.ll");
+    let options = NativeObjectOptions {
+        emit_ir: Some(ir_path.clone()),
+        debug_sources: vec![DebugSource::new(
+            0,
+            "src/main.loom",
+            "fn main() Unit { Unit }\n",
+        )],
+        target_triple: Some("x86_64-pc-windows-msvc".to_owned()),
+        ..NativeObjectOptions::default()
+    };
+    emit_lcir_native_object(&artifact, &object, &options).expect("emit MSVC LCIR object");
+    assert!(object.is_file());
+    let ir = std::fs::read_to_string(ir_path).expect("read MSVC debug IR");
+    assert!(ir.contains("CodeView"), "{ir}");
+    assert!(!ir.contains("Dwarf Version"), "{ir}");
+    assert!(ir.contains("!DICompileUnit"), "{ir}");
+    assert!(
+        !ir.contains("!DISubprogram"),
+        "LCIR must not claim function-level source metadata:\n{ir}"
+    );
+}

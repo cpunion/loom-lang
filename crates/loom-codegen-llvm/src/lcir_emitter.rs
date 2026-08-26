@@ -18,7 +18,7 @@ use inkwell::debug_info::{
     AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation, DIType,
     DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
-use inkwell::module::{FlagBehavior, Linkage, Module};
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{FileType, TargetData};
 use inkwell::types::{AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType};
@@ -37,7 +37,9 @@ use loom_codegen_ir::{
 
 use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
-use crate::target::{NativeTargetMachine, create_llvm_target_machine};
+use crate::target::{
+    NativeTargetMachine, configure_debug_module_flags, create_llvm_target_machine,
+};
 
 pub(crate) struct LcirEmitter;
 
@@ -157,6 +159,7 @@ impl<'ctx> DebugState<'ctx> {
         context: &'ctx Context,
         module: &Module<'ctx>,
         sources: &[DebugSource],
+        target_triple: &str,
         optimized: bool,
         target_data: &TargetData,
         ptr_type: inkwell::types::PointerType<'ctx>,
@@ -166,16 +169,7 @@ impl<'ctx> DebugState<'ctx> {
             .first()
             .map_or("<loom-generated>.loom", |source| source.path.as_str());
         module.set_source_file_name(primary);
-        module.add_basic_value_flag(
-            "Debug Info Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(3, false),
-        );
-        module.add_basic_value_flag(
-            "Dwarf Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(4, false),
-        );
+        configure_debug_module_flags(context, module, target_triple);
         let (builder, unit) = module.create_debug_info_builder(
             true,
             DWARFSourceLanguage::C,
@@ -947,12 +941,14 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let unit_type = context.struct_type(&[], false);
         let fault_context_type = context.opaque_struct_type("loom.lcir.FaultContext");
         fault_context_type.set_body(&[ptr_type.into(), context.bool_type().into()], false);
+        let target_triple = target.triple.as_str().to_string_lossy();
         let debug = (!options.debug_sources.is_empty())
             .then(|| {
                 DebugState::new(
                     context,
                     &module,
                     &options.debug_sources,
+                    &target_triple,
                     options.optimization == crate::OptimizationProfile::Release,
                     &target_data,
                     ptr_type,

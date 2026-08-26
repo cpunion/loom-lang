@@ -48,12 +48,12 @@ pub(crate) fn native_runtime_link_args(target_triple: &str) -> Vec<String> {
             .collect()
     } else if triple_has_component(target_triple, "windows") {
         [
-            "-ldbghelp",
             "-lkernel32",
-            "-lmsvcrt",
             "-lntdll",
             "-luserenv",
             "-lws2_32",
+            "-ldbghelp",
+            "-lmsvcrt",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -104,7 +104,7 @@ pub(crate) fn native_link_command(
             }
         }
         LinkerFlavor::ClangCl => {
-            arguments.push(prefixed_path("/Fe:", output));
+            arguments.push(prefixed_path("/Fe", output));
             if let Some(pdb) = &pdb {
                 arguments.push(OsString::from("/link"));
                 arguments.push(OsString::from("/DEBUG"));
@@ -161,12 +161,13 @@ mod tests {
 
     #[test]
     fn msvc_linker_receives_obj_lib_out_and_pdb_arguments() {
+        let link_args = native_runtime_link_args("x86_64-pc-windows-msvc");
         let command = native_link_command(
             Path::new("lld-link.exe"),
             "x86_64-pc-windows-msvc",
             Path::new("program.obj"),
             &[Path::new("loom_runtime.lib")],
-            &["-lws2_32".to_owned(), "-lbcrypt".to_owned()],
+            &link_args,
             Path::new("program.exe"),
         );
         assert_eq!(
@@ -174,8 +175,12 @@ mod tests {
             [
                 "program.obj",
                 "loom_runtime.lib",
+                "kernel32.lib",
+                "ntdll.lib",
+                "userenv.lib",
                 "ws2_32.lib",
-                "bcrypt.lib",
+                "dbghelp.lib",
+                "msvcrt.lib",
                 "/OUT:program.exe",
                 "/DEBUG",
                 "/PDB:program.pdb",
@@ -186,12 +191,13 @@ mod tests {
 
     #[test]
     fn clang_driver_receives_windows_pdb_without_changing_driver_output_syntax() {
+        let link_args = native_runtime_link_args("x86_64-pc-windows-msvc");
         let command = native_link_command(
             Path::new("clang.exe"),
             "x86_64-pc-windows-msvc",
             Path::new("program.obj"),
             &[Path::new("loom_runtime.lib")],
-            &["-lws2_32".to_owned()],
+            &link_args,
             Path::new("program.exe"),
         );
         assert_eq!(
@@ -199,7 +205,12 @@ mod tests {
             [
                 "program.obj",
                 "loom_runtime.lib",
+                "-lkernel32",
+                "-lntdll",
+                "-luserenv",
                 "-lws2_32",
+                "-ldbghelp",
+                "-lmsvcrt",
                 "-Wl,/DEBUG",
                 "-Wl,/PDB:program.pdb",
                 "-o",
@@ -224,7 +235,7 @@ mod tests {
                 "program.obj",
                 "loom_runtime.lib",
                 "userenv.lib",
-                "/Fe:program.exe",
+                "/Feprogram.exe",
                 "/link",
                 "/DEBUG",
                 "/PDB:program.pdb",
@@ -247,5 +258,33 @@ mod tests {
             ["program.o", "libloom_runtime.a", "-o", "program"]
         );
         assert_eq!(command.pdb, None);
+    }
+
+    #[test]
+    fn msvc_linkers_use_their_help_probe() {
+        assert_eq!(linker_version_arguments(Path::new("link.exe")), ["/HELP"]);
+        assert_eq!(
+            linker_version_arguments(Path::new("lld-link.exe")),
+            ["/HELP"]
+        );
+        assert_eq!(
+            linker_version_arguments(Path::new("clang-cl.exe")),
+            ["--version"]
+        );
+    }
+
+    #[test]
+    fn windows_runtime_libraries_match_rustc_native_static_lib_order() {
+        assert_eq!(
+            native_runtime_link_args("x86_64-pc-windows-msvc"),
+            [
+                "-lkernel32",
+                "-lntdll",
+                "-luserenv",
+                "-lws2_32",
+                "-ldbghelp",
+                "-lmsvcrt",
+            ]
+        );
     }
 }

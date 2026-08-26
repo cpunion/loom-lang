@@ -28,7 +28,8 @@ pub struct EmitOptions {
     pub kind: EmitKind,
     /// Optional LLVM IR side artifact, useful for diagnostics and golden tests.
     pub emit_ir: Option<PathBuf>,
-    /// Stable relative source paths and byte line starts used for DWARF.
+    /// Stable relative source paths and byte line starts used for native debug
+    /// metadata (DWARF or `CodeView` according to the target).
     pub debug_sources: Vec<DebugSource>,
     /// Explicit normalized LLVM target triple, or the host target when absent.
     pub target_triple: Option<String>,

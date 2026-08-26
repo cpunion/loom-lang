@@ -18,7 +18,8 @@ long-term compatibility guarantee.
 The Windows job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
 builds the complete workspace, and runs the Core 0.1-0.3 check/build/test/run
 loops on both backends. Native builds additionally require the expected `.exe`
-and `.pdb` outputs before executing the artifact. This configuration becomes a
+and `.pdb` outputs, parse the PDB, and inspect a compiler-emitted COFF object for
+CodeView sections before executing the artifact. This configuration becomes a
 Windows toolchain claim only when that job passes; source-level cross-checks on
 another host are not described as Windows execution.
 
@@ -58,7 +59,7 @@ input tests.
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; native final link intentionally uncached. |
-| Debug source info | Linux DWARF and macOS dSYM metadata are checked in CI; the configured Windows native job requests and gates a PDB. Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations; macOS LLDB verifies a fallible parameter and physical step-out result. Unsupported reachable artifacts use the complete legacy route. |
+| Debug source info | Linux DWARF and macOS dSYM metadata are checked in CI. Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations; macOS LLDB verifies a fallible parameter and physical step-out result. MSVC objects select LLVM CodeView metadata and links use `/DEBUG` plus an explicit staged `/PDB:` path; the configured Windows gate inspects typed-LCIR COFF/PDB structures, but no source-level Windows debugger session is claimed yet. Unsupported reachable artifacts use the complete legacy route. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |

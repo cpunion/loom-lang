@@ -12,7 +12,7 @@ use inkwell::debug_info::{
     AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DWARFEmissionKind,
     DWARFSourceLanguage, DebugInfoBuilder,
 };
-use inkwell::module::{FlagBehavior, Linkage, Module};
+use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::FileType;
 use inkwell::types::{
@@ -67,7 +67,7 @@ use crate::native_storage::{
     native_pod_value_argument_local,
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
-use crate::target::{NativeTargetMachine, create_target_machine};
+use crate::target::{NativeTargetMachine, configure_debug_module_flags, create_target_machine};
 
 pub(crate) struct Emitter;
 
@@ -213,6 +213,7 @@ impl Emitter {
             .collect::<BTreeMap<_, _>>();
         let requirements =
             RuntimeRequirementGraph::analyze(program, reachable, &int_ranges, &stack_record_plans)?;
+        let target_triple = target.triple.as_str().to_string_lossy();
         let mut backend = Backend::new(
             &context,
             program,
@@ -222,6 +223,7 @@ impl Emitter {
             requirements,
             int_ranges,
             stack_record_plans,
+            &target_triple,
         );
         backend.module.set_triple(&target.triple);
         backend
@@ -433,21 +435,17 @@ struct DebugState<'ctx> {
 }
 
 impl<'ctx> DebugState<'ctx> {
-    fn new(context: &'ctx Context, module: &Module<'ctx>, sources: &[DebugSource]) -> Self {
+    fn new(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        sources: &[DebugSource],
+        target_triple: &str,
+    ) -> Self {
         let primary = sources
             .first()
             .map_or("<loom-generated>.loom", |source| source.path.as_str());
         module.set_source_file_name(primary);
-        module.add_basic_value_flag(
-            "Debug Info Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(3, false),
-        );
-        module.add_basic_value_flag(
-            "Dwarf Version",
-            FlagBehavior::Warning,
-            context.i32_type().const_int(4, false),
-        );
+        configure_debug_module_flags(context, module, target_triple);
         let (builder, unit) = module.create_debug_info_builder(
             true,
             DWARFSourceLanguage::C,
@@ -573,6 +571,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         requirements: RuntimeRequirementGraph,
         int_ranges: NativeIntRangePlan,
         stack_record_plans: BTreeMap<FunctionId, NativeStackRecordPlan>,
+        target_triple: &str,
     ) -> Self {
         let module = context.create_module("loom.program");
         let builder = context.create_builder();
@@ -709,7 +708,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let task_resume_type = context
             .i32_type()
             .fn_type(&[ptr_type.into(), ptr_type.into()], false);
-        let debug = DebugState::new(context, &module, &options.debug_sources);
+        let debug = DebugState::new(context, &module, &options.debug_sources, target_triple);
         Self {
             context,
             program,

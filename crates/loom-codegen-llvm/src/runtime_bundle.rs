@@ -362,8 +362,8 @@ impl RuntimeLinker {
 /// Links an emitted target object using exactly one validated runtime bundle.
 ///
 /// Arguments are ordered by the detected linker driver convention. The staged
-/// executable (and an MSVC PDB) are published only after all inputs and linked
-/// files are revalidated.
+/// executable (and an MSVC PDB) are validated before publication. Publishing
+/// the two final paths is intentionally not described as filesystem-atomic.
 ///
 /// # Errors
 ///
@@ -498,6 +498,22 @@ fn publish_staged_pdb(
         target_triple,
         crate::NativeArtifactKind::DebugDatabase,
     );
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                "PDB output must be a regular path and cannot be a symbolic link",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CodegenError::new(
+                "DebugInfoWriteFailed",
+                format!("{}: {error}", destination.display()),
+            ));
+        }
+    }
     fs::copy(pdb, &destination).map_err(|error| {
         CodegenError::new(
             "DebugInfoWriteFailed",
@@ -813,4 +829,46 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_msvc_pdb_is_published_to_the_final_companion_path() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staged = directory.path().join(".loom-link-staged.pdb");
+        let output = directory.path().join("program.exe");
+        fs::write(&staged, b"validated PDB bytes").expect("write staged PDB");
+
+        publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+            .expect("publish PDB");
+
+        assert_eq!(
+            fs::read(directory.path().join("program.pdb")).expect("read published PDB"),
+            b"validated PDB bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_msvc_pdb_rejects_a_symlink_destination() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let staged = directory.path().join(".loom-link-staged.pdb");
+        let outside = directory.path().join("outside");
+        let output = directory.path().join("program.exe");
+        let destination = directory.path().join("program.pdb");
+        fs::write(&staged, b"new PDB bytes").expect("write staged PDB");
+        fs::write(&outside, b"preserved").expect("write outside file");
+        symlink(&outside, &destination).expect("create destination symlink");
+
+        let error = publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
+            .expect_err("reject symlink PDB destination");
+
+        assert_eq!(error.code(), "DebugInfoWriteFailed");
+        assert_eq!(fs::read(outside).expect("read outside file"), b"preserved");
+    }
 }
