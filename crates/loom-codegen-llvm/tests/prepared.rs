@@ -274,6 +274,27 @@ fn fingerprint_excludes_output_and_ir_side_artifact_paths() {
 }
 
 #[test]
+fn legacy_fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
+    let mut program = scalar_program().into_program();
+    let root = program.exports["main"];
+    program.tests.push(root);
+    let program = program
+        .into_checked()
+        .expect("shared run and test root is valid checked MIR");
+    let fingerprint = |options| {
+        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::LegacyOnly)
+            .expect("prepare legacy object");
+        prepared_native_object_fingerprint(&prepared).expect("fingerprint legacy object")
+    };
+
+    assert_ne!(
+        fingerprint(EmitOptions::run("main")),
+        fingerprint(EmitOptions::tests()),
+        "the root graph is shared but the emitted main harness is not"
+    );
+}
+
+#[test]
 fn prepared_target_identity_matches_the_machine_policy() {
     let program = scalar_program();
     let host = target_identity(None, OptimizationProfile::Development).expect("host target");

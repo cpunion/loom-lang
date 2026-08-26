@@ -84,6 +84,7 @@ pub struct DebugSource {
 #[derive(Serialize)]
 struct ObjectFingerprint<'a> {
     format: &'static str,
+    harness: &'static str,
     backend_version: &'static str,
     backend_build: &'static str,
     llvm_version: (u32, u32, u32),
@@ -279,6 +280,10 @@ pub(crate) fn legacy_object_fingerprint_with_target(
         .collect::<Result<Vec<_>, CodegenError>>()?;
     let identity = ObjectFingerprint {
         format: NATIVE_OBJECT_FORMAT,
+        harness: match options.kind {
+            EmitKind::Run { .. } => "run",
+            EmitKind::Tests => "tests",
+        },
         backend_version: crate::BACKEND_VERSION,
         backend_build: crate::LLVM_OBJECT_BUILD_FINGERPRINT,
         llvm_version: inkwell::support::get_llvm_version(),
