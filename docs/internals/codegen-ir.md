@@ -62,6 +62,13 @@ boundary.
 `check_program` cross the independent validation boundary and return a
 `CheckedProgram`.
 
+`ArtifactRootRequest` selects either one run root or an ordered, possibly
+empty test-root list. `check_artifact` independently checks branded function
+identity, existence, duplicate tests, the zero-parameter `Unit` root signature,
+and exact direct/invoke callable closure. It then returns a `CheckedArtifact`
+which owns both the checked program and privately checked roots. This artifact
+boundary is not connected to the production emitter yet.
+
 A function contains:
 
 - an `InstanceId`, stable name, source MIR function origin, signature, and
@@ -81,16 +88,34 @@ diagnostics so textual output remains reproducible.
 The current instruction set is deliberately small:
 
 - `Unit`, `Bool`, `Int`, and bit-exact `Float` constants;
-- Boolean negation;
+- Boolean negation and equality comparisons;
+- floating-point negation;
 - floating-point add, subtract, multiply, and divide;
 - signed integer comparisons;
 - explicitly ordered or unordered floating-point comparisons;
 - direct calls to infallible scalar functions.
 
-The current terminators are jump, conditional branch, return, and terminal
-fault. Checked integer arithmetic, fallible calls, edge-defined results,
-cleanup, aggregates, managed values, dynamic dispatch, and coroutine control
-flow are not implemented.
+The current terminators include jump, conditional branch, return, terminal
+fault, checked integer negate/add/subtract/multiply/divide, assertion,
+fallible `invoke`, and `resume_fault`. A checked operation or invoke has a
+`ResultTarget`: the result exists only as destination parameter zero on the
+normal edge, followed by separately forwarded arguments. Its `UnwindTarget`
+has no ordinary fault value and is entered with the source fault active. This
+shape makes it impossible to use an operation result on its fault edge.
+
+Fault state is part of CFG validity. Entry is inactive; ordinary and result
+edges preserve their source state; unwind edges make the destination active.
+An active path cannot return or originate another terminal fault and must end
+in `resume_fault`. Fallible cleanup is still allowed while active. A successful
+cleanup operation preserves the primary fault on its normal edge; a later
+cleanup fault is suppressed, leaves the first fault primary, and continues on
+an active unwind edge so remaining cleanup can run. This is the LCIR form of
+the language's deterministic cleanup policy, not a choice left to LLVM.
+
+Aggregates, managed values, dynamic dispatch, cleanup registration and
+ordering, and coroutine control flow are not implemented. The current CFG can
+represent the scalar operations and fault-state transitions which a later
+cleanup lowering will use.
 
 `Origin` records a source MIR function, optional MIR expression, and source
 span for each function, instruction, and terminator. There is no inlining
@@ -107,9 +132,13 @@ not repair a malformed program. Current checks include:
 - no CFG predecessor for the entry block;
 - one terminator per block and a valid instruction schedule;
 - instruction result shapes and operand types;
-- direct-call arity, types, and infallible-callee effects;
+- direct-call and invoke arity, types, result types, and exact callee effects;
 - edge argument arity and types;
-- return types and fault effects;
+- implicit result parameter shape and type;
+- return types and operation-specific fault-effect requirements;
+- the exact minimal `MAY_FAULT` closure across the complete call graph;
+- consistent inactive or active fault state at every block, including
+  `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
 - no duplicate successor from one terminator;
 - no `Uninhabited` signature or SSA value;
@@ -133,9 +162,11 @@ compiler-private and has no compatibility or serialization guarantee.
 ## Repository evidence
 
 The crate's focused tests cover source-root selection, recursive graph closure,
-stable source-graph serialization and errors, the scalar representation
-catalog, target pointer-width validation, block-parameter joins, loop
-backedges, infallible direct calls, float comparison spelling, optional
-origins, and malformed SSA programs. The platform-independent Windows CI job
-checks, lints, tests, and builds this crate without claiming a Windows LLVM
-backend.
+stable source-graph serialization and errors, branded artifact roots and root
+signatures, the scalar representation catalog, target pointer-width
+validation, block-parameter joins, loop backedges, pure scalar operations,
+infallible direct calls, fallible invokes, edge-defined checked results, active
+cleanup paths, recursive effect closure, stable fallible dumps, optional
+origins, and malformed SSA programs. The
+platform-independent Windows CI job checks, lints, tests, and builds this crate
+without claiming a Windows LLVM backend.
