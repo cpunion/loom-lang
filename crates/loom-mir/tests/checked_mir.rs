@@ -2239,6 +2239,106 @@ fn continuing_for_range_body_may_restore_a_moved_loop_entry_local() {
     .expect("a continuing backedge that restores its outer local is valid");
 }
 
+fn range_with_conditional_move(move_exits: bool) -> Function {
+    let moving = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(expr(
+                ExprKind::Move(Place::local(LocalId(1))),
+                Type::Int,
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let exiting = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Return(Some(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        }],
+        tail: None,
+        span: span(),
+    };
+    let (then_branch, else_branch) = if move_exits {
+        let mut moving_then_exiting = moving;
+        moving_then_exiting.statements.push(Statement {
+            kind: StatementKind::Return(Some(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        });
+        moving_then_exiting.tail = None;
+        (
+            moving_then_exiting,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )
+    } else {
+        (moving, exiting)
+    };
+    function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Int, false), local(2, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::ForRange {
+                        local: LocalId(2),
+                        start: Box::new(constant(Constant::Int(0), Type::Int)),
+                        end: Box::new(constant(Constant::Int(2), Type::Int)),
+                        body: Box::new(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Evaluate(expr(
+                                    ExprKind::If {
+                                        condition: Box::new(copy(0, Type::Bool)),
+                                        then_branch,
+                                        else_branch,
+                                    },
+                                    Type::Unit,
+                                )),
+                                span: span(),
+                            }],
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    )
+}
+
+#[test]
+fn for_range_backedge_uses_only_continuing_conditional_arms() {
+    validate_program(&Program {
+        functions: vec![range_with_conditional_move(true)],
+        ..Program::default()
+    })
+    .expect("a move confined to an exiting arm cannot affect the backedge");
+
+    let errors = validation_errors(&Program {
+        functions: vec![range_with_conditional_move(false)],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error.message.contains("continuing ForRange body")
+    }));
+}
+
 fn short_circuit_with_rhs(
     mutable_value: bool,
     before: Vec<Statement>,

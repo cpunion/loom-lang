@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    Block, CallArgument, Expr, ExprKind, LocalId, MatchArm, Place, Statement, StatementKind, Type,
+    BinaryOp, Block, CallArgument, Expr, ExprKind, LocalId, MatchArm, Place, Statement,
+    StatementKind, Type,
 };
 
 type NodeId = usize;
@@ -191,9 +192,18 @@ impl CfgBuilder {
             ExprKind::Unary(_, operand) | ExprKind::Unrefine(operand) => {
                 self.build_expr(operand, continuation, active_cleanups)
             }
-            ExprKind::Binary(_, left, right) => {
+            ExprKind::Binary(operator, left, right) => {
                 let right = self.build_expr(right, continuation, active_cleanups);
-                self.build_expr(left, right, active_cleanups)
+                if matches!(operator, BinaryOp::And | BinaryOp::Or) {
+                    // A short-circuiting left operand can reach the
+                    // continuation without executing RHS definitions. That
+                    // edge is essential when computing values that must be
+                    // preserved across a suspension in the left operand.
+                    let decision = self.node([], [], [continuation, right]);
+                    self.build_expr(left, decision, active_cleanups)
+                } else {
+                    self.build_expr(left, right, active_cleanups)
+                }
             }
             ExprKind::Block(block) => self.build_block(block, continuation, active_cleanups),
             ExprKind::If {
@@ -439,5 +449,71 @@ mod tests {
         let liveness = analyze_suspension_liveness(&body);
         assert_eq!(liveness[&1], [LocalId(1), LocalId(2), LocalId(3)]);
         assert_eq!(liveness[&2], [LocalId(5)]);
+    }
+
+    #[test]
+    fn short_circuit_path_keeps_pre_rhs_value_live_across_await() {
+        let task = LocalId(0);
+        let value = LocalId(1);
+        for operator in [BinaryOp::And, BinaryOp::Or] {
+            let body = Block {
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::Evaluate(expression(
+                            ExprKind::Binary(
+                                operator,
+                                Box::new(expression(
+                                    ExprKind::Await {
+                                        state: 1,
+                                        task: Box::new(expression(
+                                            ExprKind::Copy(Place::local(task)),
+                                            Type::Task(Box::new(Type::Bool)),
+                                        )),
+                                    },
+                                    Type::Bool,
+                                )),
+                                Box::new(expression(
+                                    ExprKind::Block(Block {
+                                        statements: vec![Statement {
+                                            kind: StatementKind::Assign {
+                                                place: Place::local(value),
+                                                value: expression(
+                                                    ExprKind::Constant(Constant::Int(1)),
+                                                    Type::Int,
+                                                ),
+                                            },
+                                            span: Span::default(),
+                                        }],
+                                        tail: Some(Box::new(expression(
+                                            ExprKind::Constant(Constant::Bool(true)),
+                                            Type::Bool,
+                                        ))),
+                                        span: Span::default(),
+                                    }),
+                                    Type::Bool,
+                                )),
+                            ),
+                            Type::Bool,
+                        )),
+                        span: Span::default(),
+                    },
+                    Statement {
+                        kind: StatementKind::Evaluate(expression(
+                            ExprKind::Copy(Place::local(value)),
+                            Type::Int,
+                        )),
+                        span: Span::default(),
+                    },
+                ],
+                tail: Some(Box::new(expression(
+                    ExprKind::Constant(Constant::Unit),
+                    Type::Unit,
+                ))),
+                span: Span::default(),
+            };
+
+            let liveness = analyze_suspension_liveness(&body);
+            assert_eq!(liveness[&1], [value], "operator {operator:?}");
+        }
     }
 }
