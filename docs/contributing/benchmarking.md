@@ -68,8 +68,12 @@ target/release/loom-benchmark \
 
 The runner builds each language once before measuring and excludes compilation
 from runtime samples. It rotates language execution order by case and round.
-The timed interval is one child process from spawn through checksum validation
-and exit, so it includes process startup and argument parsing.
+The timed interval starts immediately before spawning the direct child and ends
+when the operating system reports that child has exited. It includes process
+startup, argument parsing, benchmark work, and child-side checksum validation.
+It excludes post-exit stdout/stderr pipe draining and parent-side output
+validation. Reports identify this policy as
+`spawn_to_exit_notification`.
 
 For standard and throughput profiles on Linux/macOS, the runner rejects a
 1-minute load average above the greater of 1.0 and 75% of logical CPU count.
@@ -86,7 +90,7 @@ The schema-1 JSON report records:
 - OS, architecture, CPU, logical CPUs, and pre-build load;
 - exact compiler versions and compile argument vectors;
 - compile time, binary size, and source SHA-256;
-- profile, timeouts, warmups, runs, and busy-host override;
+- profile, timeouts, warmups, runs, timing policy, and busy-host override;
 - expected checksum and raw nanosecond samples;
 - minimum, p05, median, mean, p95, maximum, and relative median.
 
