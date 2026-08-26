@@ -754,13 +754,12 @@ impl RequirementScanner<'_> {
                     return self.scan_call(target, arguments, output, false, false);
                 }
                 for (index, argument) in arguments.iter().enumerate() {
-                    if let CallArgument::Value(value) = argument {
-                        if !matches!(target, CallTarget::Builtin(builtin)
+                    if let CallArgument::Value(value) = argument
+                        && !matches!(target, CallTarget::Builtin(builtin)
                         if builtin_borrows_copy_argument(*builtin, index)
                             && matches!(value.kind, ExprKind::Copy(_)))
-                        {
-                            self.scan_expr(value, output)?;
-                        }
+                    {
+                        self.scan_expr(value, output)?;
                     }
                 }
                 match target {
