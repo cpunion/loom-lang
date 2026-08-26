@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use loom_core::{FileId, Severity};
-use loom_mir::{Program, decode_interpreted_artifact, encode_interpreted_artifact};
+use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_sema::{Analysis, DefMapBuild, ImplIndex, ModuleGraph, TypedProgram};
 use loom_syntax::{Parse, SYNTAX_NESTING_LIMIT_VERSION};
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ impl<T> CacheLookup<T> {
 /// A validated MIR cache entry and the stable diagnostics to replay with it.
 #[derive(Clone, Debug)]
 pub struct CachedCompilation {
-    program: Program,
+    program: CheckedProgram,
     diagnostics: Vec<DiagnosticRecord>,
 }
 
@@ -85,13 +85,8 @@ pub(crate) struct CachedSemanticState {
 
 impl CachedCompilation {
     #[must_use]
-    pub const fn program(&self) -> &Program {
+    pub const fn program(&self) -> &CheckedProgram {
         &self.program
-    }
-
-    #[must_use]
-    pub fn into_program(self) -> Program {
-        self.program
     }
 
     #[must_use]
@@ -100,7 +95,7 @@ impl CachedCompilation {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (Program, Vec<DiagnosticRecord>) {
+    pub fn into_parts(self) -> (CheckedProgram, Vec<DiagnosticRecord>) {
         (self.program, self.diagnostics)
     }
 }
@@ -516,7 +511,7 @@ impl PersistentCache {
             return CacheLookup::Miss;
         };
         CacheLookup::Hit(CachedCompilation {
-            program: program.into_program(),
+            program,
             diagnostics: envelope.diagnostics,
         })
     }
@@ -530,7 +525,7 @@ impl PersistentCache {
     pub fn store_compilation(
         &self,
         key: &CacheKey,
-        program: &Program,
+        program: &CheckedProgram,
         diagnostics: &[DiagnosticRecord],
     ) -> Result<(), CacheError> {
         let mir = encode_interpreted_artifact(program)

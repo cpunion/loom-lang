@@ -11,13 +11,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, Expr, ExprId, ExprKind, Function,
     FunctionId, LocalId, Pattern, Place, Program, StatementKind, Type, TypeDefKind, TypeId,
     UnaryOp, VariantId,
 };
-
-use crate::{ReachableProgram, Roots};
 
 const CONTEXT_WIDEN_LIMIT: usize = 64;
 const LOOP_FIXPOINT_LIMIT: usize = 12;
@@ -425,7 +424,11 @@ struct ExprSite {
 impl NativeIntRangePlan {
     #[must_use]
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn analyze(program: &Program, reachable: &ReachableProgram, roots: &Roots) -> Self {
+    pub(crate) fn analyze(
+        program: &Program,
+        reachable: &ReachableSourceGraph,
+        roots: &SourceRoots,
+    ) -> Self {
         let mut contexts = reachable
             .functions
             .iter()
@@ -3258,11 +3261,12 @@ mod tests {
             functions: vec![function],
             ..Program::default()
         };
-        let reachable = ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
-            ..ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
-        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(0)));
+        let plan =
+            NativeIntRangePlan::analyze(&program, &reachable, &SourceRoots::one(FunctionId(0)));
         let assumed = plan.assumption(FunctionId(0)).expect("assumed fibonacci");
         assert_eq!(assumed.upper(), 92);
         assert_eq!(assumed.exact_result(45), Some(1_134_903_170));
@@ -3393,11 +3397,12 @@ mod tests {
             functions: vec![fibonacci, caller],
             ..Program::default()
         };
-        let reachable = ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0), FunctionId(1)]),
-            ..ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
-        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(1)));
+        let plan =
+            NativeIntRangePlan::analyze(&program, &reachable, &SourceRoots::one(FunctionId(1)));
         assert!(calls[..3].iter().all(|expression| {
             plan.uses_assumed_call(
                 NativeBodyMode::Checked,
@@ -3924,11 +3929,12 @@ mod tests {
             functions: vec![function],
             ..Program::default()
         };
-        let reachable = ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
-            ..ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
-        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(0)));
+        let plan =
+            NativeIntRangePlan::analyze(&program, &reachable, &SourceRoots::one(FunctionId(0)));
         assert!(
             !plan.proves(FunctionId(0), &leading_add),
             "a later modulus state reaches 50 and must retain the MAX-18 + 50 check"
@@ -3984,11 +3990,12 @@ mod tests {
             functions: vec![function],
             ..Program::default()
         };
-        let reachable = ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
-            ..ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
-        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(0)));
+        let plan =
+            NativeIntRangePlan::analyze(&program, &reachable, &SourceRoots::one(FunctionId(0)));
         assert!(
             !plan.proves(FunctionId(0), &subtraction),
             "an unchecked mutable loop binding must never inherit the static range interval"
@@ -4455,11 +4462,12 @@ mod tests {
             functions: vec![helper, caller],
             ..Program::default()
         };
-        let reachable = ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0), FunctionId(1)]),
-            ..ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
-        let plan = NativeIntRangePlan::analyze(&program, &reachable, &Roots::one(FunctionId(1)));
+        let plan =
+            NativeIntRangePlan::analyze(&program, &reachable, &SourceRoots::one(FunctionId(1)));
         assert!(
             !plan.proves(FunctionId(0), &helper_add),
             "a deferred helper must retain the MAX + 1 overflow check"

@@ -3,12 +3,20 @@ use std::collections::BTreeMap;
 use loom_core::Span;
 use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptId, Constant,
-    ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue, Expr, ExprId,
-    ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, Place, PreludeIds, Program,
-    Receiver, RequirementId, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId,
-    VariantDef, VariantId, Witness, WitnessId, WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef,
+    ConceptId, Constant, ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue,
+    Expr, ExprId, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MirValidationCode,
+    Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
+    Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness,
+    WitnessId, WitnessRef,
 };
+
+fn checked(mut program: Program) -> CheckedProgram {
+    program
+        .renumber_expr_ids()
+        .expect("renumber checked-MIR fixture expressions");
+    program.into_checked().expect("valid checked-MIR fixture")
+}
 
 fn span() -> Span {
     Span::default()
@@ -92,6 +100,43 @@ fn parse_float_error_type() -> TypeDef {
     }
 }
 
+fn constraint_error_type(id: TypeId) -> TypeDef {
+    TypeDef {
+        id,
+        name: "ConstraintError".into(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: Vec::new(),
+            invariant: None,
+        },
+    }
+}
+
+fn double_interface(dynamic: bool) -> (ConceptDef, RequirementDef) {
+    (
+        ConceptDef {
+            id: ConceptId(0),
+            name: "Double".into(),
+            span: span(),
+            dynamic,
+            associated_types: Vec::new(),
+            requirements: vec![RequirementId(0)],
+        },
+        RequirementDef {
+            id: RequirementId(0),
+            concept: ConceptId(0),
+            name: "read".into(),
+            span: span(),
+            receiver: Some(Receiver::Readonly),
+            method_type_parameters: 0,
+            params: vec![RequirementType::SelfType],
+            return_ty: RequirementType::Int,
+            witness_params: Vec::new(),
+        },
+    )
+}
+
 fn non_negative_contract() -> Contract {
     Contract {
         code: "non_negative".into(),
@@ -134,7 +179,7 @@ fn non_negative_first_field_contract() -> Contract {
 #[test]
 fn refined_construction_returns_language_result() {
     let price = TypeDef {
-        id: TypeId(1),
+        id: TypeId(2),
         name: "shop.Price".into(),
         span: span(),
         type_parameters: 0,
@@ -154,18 +199,30 @@ fn refined_construction_returns_language_result() {
         witness_params: Vec::new(),
         witness_prefix_count: 0,
         locals: Vec::new(),
-        return_ty: Type::Nominal(TypeId(0), vec![Type::Nominal(TypeId(1), vec![])]),
+        return_ty: Type::Nominal(
+            TypeId(0),
+            vec![
+                Type::Nominal(TypeId(2), Vec::new()),
+                Type::Nominal(TypeId(1), Vec::new()),
+            ],
+        ),
         receiver: None,
         body: Block {
             statements: Vec::new(),
             tail: Some(Box::new(Expr {
                 id: ExprId::UNASSIGNED,
                 kind: ExprKind::Refine {
-                    ty: TypeId(1),
+                    ty: TypeId(2),
                     value: Box::new(copy(Place::local(LocalId(0)), Type::Float)),
                     construction: ConstructionMode::Runtime,
                 },
-                ty: Type::Nominal(TypeId(0), Vec::new()),
+                ty: Type::Nominal(
+                    TypeId(0),
+                    vec![
+                        Type::Nominal(TypeId(2), Vec::new()),
+                        Type::Nominal(TypeId(1), Vec::new()),
+                    ],
+                ),
                 span: span(),
             })),
             span: span(),
@@ -173,14 +230,16 @@ fn refined_construction_returns_language_result() {
         call_plan: CallPlan::default(),
     };
     let program = Program {
-        types: vec![result_type(), price],
+        types: vec![result_type(), constraint_error_type(TypeId(1)), price],
         functions: vec![function],
         prelude: PreludeIds {
             result: Some(TypeId(0)),
+            constraint_error: Some(TypeId(1)),
             ..PreludeIds::default()
         },
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
 
     let accepted = interpreter
@@ -317,6 +376,7 @@ fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
         fields: vec![Value::Float { value: 10.0 }],
     };
 
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     let value = interpreter
         .invoke(
@@ -390,6 +450,7 @@ fn early_return_propagates_through_nested_control_expression() {
         functions: vec![function],
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     assert_eq!(
         interpreter
@@ -517,12 +578,16 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
         type_parameters: 0,
         prerequisites: Vec::new(),
     };
+    let (concept, requirement) = double_interface(true);
     let program = Program {
         types: vec![number],
+        concepts: vec![concept],
+        requirements: vec![requirement],
         functions: vec![method, wrapper],
         witnesses: vec![witness],
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     let value = interpreter
         .invoke(
@@ -564,6 +629,7 @@ fn test_runner_distinguishes_ok_and_err_values() {
         tests: vec![FunctionId(0)],
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     let results = interpreter.run_tests();
     assert_eq!(results.len(), 1);
@@ -706,12 +772,16 @@ fn generic_static_concept_call_forwards_hidden_witness_parameter() {
         type_parameters: 0,
         prerequisites: Vec::new(),
     };
+    let (concept, requirement) = double_interface(false);
     let program = Program {
         types: vec![number],
+        concepts: vec![concept],
+        requirements: vec![requirement],
         functions: vec![method, generic, wrapper],
         witnesses: vec![witness],
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     assert_eq!(
         interpreter
@@ -792,6 +862,7 @@ fn integer_overflow_is_a_runtime_fault_and_float_equality_is_ieee() {
         functions: vec![overflow, nan_equal],
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     let failure = interpreter
         .invoke(FunctionId(0), Vec::new(), span())
@@ -810,20 +881,15 @@ fn integer_overflow_is_a_runtime_fault_and_float_equality_is_ieee() {
 }
 
 #[test]
-fn invalid_checked_boundary_state_is_reported_as_an_interpreter_defect() {
+fn invalid_program_cannot_cross_the_interpreter_boundary() {
     let program = Program {
         tests: vec![FunctionId(99)],
         ..Program::default()
     };
-    let results = Interpreter::new(&program).run_tests();
-    let [result] = results.as_slice() else {
-        panic!("one invalid test reference must still produce one report");
-    };
-    assert!(matches!(
-        result.failure,
-        Some(ExecutionFailure::Defect { ref defect })
-            if defect.code == "InterpreterDefect"
-    ));
+    let errors = program
+        .into_checked()
+        .expect_err("an invalid test root must not cross checked MIR");
+    assert!(errors.contains(MirValidationCode::InvalidFunctionReference));
 }
 
 #[test]
@@ -898,6 +964,7 @@ fn method_contract_arguments_exclude_the_receiver() {
         ty: TypeId(0),
         fields: Vec::new(),
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
     assert_eq!(
         interpreter
@@ -925,6 +992,37 @@ fn method_contract_arguments_exclude_the_receiver() {
 
 #[test]
 fn projecting_a_refined_record_reaches_the_requested_field() {
+    let record = TypeDef {
+        id: TypeId(0),
+        name: "Record".into(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "value".into(),
+                ty: Type::Int,
+                span: span(),
+            }],
+            invariant: None,
+        },
+    };
+    let refined = TypeDef {
+        id: TypeId(1),
+        name: "RefinedRecord".into(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Refined {
+            base: Type::Nominal(TypeId(0), Vec::new()),
+            predicate: Contract {
+                code: "record_is_valid".into(),
+                span: span(),
+                expression: ContractExpr {
+                    span: span(),
+                    kind: ContractExprKind::Constant(Constant::Bool(true)),
+                },
+            },
+        },
+    };
     let function = Function {
         id: FunctionId(0),
         name: "read".into(),
@@ -932,7 +1030,12 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
         type_parameters: 0,
         is_async: false,
         suspension_points: Vec::new(),
-        params: vec![local(0, "value", Type::Error, false)],
+        params: vec![local(
+            0,
+            "value",
+            Type::Nominal(TypeId(1), Vec::new()),
+            false,
+        )],
         witness_params: Vec::new(),
         witness_prefix_count: 0,
         locals: Vec::new(),
@@ -952,6 +1055,7 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
         call_plan: CallPlan::default(),
     };
     let program = Program {
+        types: vec![record, refined],
         functions: vec![function],
         ..Program::default()
     };
@@ -962,6 +1066,7 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
             fields: vec![Value::Int { value: 42 }],
         }),
     };
+    let program = checked(program);
     assert_eq!(
         Interpreter::new(&program)
             .invoke(FunctionId(0), vec![value], span())
@@ -973,6 +1078,10 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
 #[test]
 #[allow(clippy::too_many_lines, clippy::float_cmp)]
 fn float_text_builtins_follow_the_frozen_boundary() {
+    let parse_result_ty = Type::Nominal(
+        TypeId(0),
+        vec![Type::Float, Type::Nominal(TypeId(1), Vec::new())],
+    );
     let parse = Function {
         id: FunctionId(0),
         name: "parse".into(),
@@ -984,7 +1093,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         witness_params: Vec::new(),
         witness_prefix_count: 0,
         locals: Vec::new(),
-        return_ty: Type::Error,
+        return_ty: parse_result_ty.clone(),
         receiver: None,
         body: Block {
             statements: Vec::new(),
@@ -999,7 +1108,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
                     ))],
                     witnesses: Vec::new(),
                 },
-                ty: Type::Error,
+                ty: parse_result_ty,
                 span: span(),
             })),
             span: span(),
@@ -1049,6 +1158,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         },
         ..Program::default()
     };
+    let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
 
     let valid = interpreter
@@ -1171,7 +1281,7 @@ fn async_tasks_resume_through_the_ready_queue_and_collect_frames() {
     program
         .renumber_expr_ids()
         .expect("async test expression ids");
-    program.validate().expect("async MIR validates");
+    let program = program.into_checked().expect("async MIR validates");
 
     let mut interpreter = Interpreter::new(&program);
     let value = interpreter
@@ -1232,7 +1342,9 @@ fn async_entry_and_exit_contracts_fault_the_task() {
         program
             .renumber_expr_ids()
             .expect("async contract test expression ids");
-        program.validate().expect("async contract MIR validates");
+        let program = program
+            .into_checked()
+            .expect("async contract MIR validates");
         let failure = Interpreter::new(&program)
             .invoke(FunctionId(0), Vec::new(), span())
             .expect_err("rejected async contract faults its task");

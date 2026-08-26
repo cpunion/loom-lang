@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use loom_core::Span;
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, Constant, ConstructionMode, Contract,
-    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
+    Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
     FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement,
     StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
 };
@@ -559,15 +559,15 @@ pub struct Interpreter<'program> {
 
 impl<'program> Interpreter<'program> {
     #[must_use]
-    pub fn new(program: &'program Program) -> Self {
+    pub fn new(program: &'program CheckedProgram) -> Self {
         Self::with_limits(program, ExecutionLimits::default())
     }
 
     #[must_use]
-    pub fn with_limits(program: &'program Program, limits: ExecutionLimits) -> Self {
+    pub fn with_limits(program: &'program CheckedProgram, limits: ExecutionLimits) -> Self {
         let (host_io_sender, host_io_receiver) = mpsc::channel();
         Self {
-            program,
+            program: program.as_program(),
             frames: BTreeMap::new(),
             next_frame: 0,
             fuel_limit: limits.fuel,
@@ -6069,7 +6069,9 @@ mod socket_readiness_tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("bind interpreter readiness fixture");
         let address = listener.local_addr().expect("fixture address");
-        let program = Program::default();
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
         let mut interpreter = Interpreter::new(&program);
         let mut peers = Vec::with_capacity(PENDING_READS);
         let mut reads = Vec::with_capacity(PENDING_READS);
@@ -6218,7 +6220,7 @@ mod standard_value_tests {
                 type_parameters: 0,
                 kind: TypeDefKind::Record {
                     fields: vec![FieldDef {
-                        name: "value".into(),
+                        name: "raw".into(),
                         ty: Type::Text,
                         span: Span::default(),
                     }],
@@ -6264,7 +6266,9 @@ mod standard_value_tests {
 
     #[test]
     fn unicode_scalars_invalid_utf8_and_lexical_paths_match_the_language_rules() {
-        let program = standard_program();
+        let program = standard_program()
+            .into_checked()
+            .expect("valid standard-value checked-MIR fixture");
         let interpreter = Interpreter::new(&program);
         let span = Span::default();
         let text = Value::Text {

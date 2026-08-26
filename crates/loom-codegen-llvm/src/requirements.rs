@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use loom_codegen_ir::ReachableSourceGraph;
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, Function, FunctionId,
     Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
+use crate::CodegenError;
 use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
 use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
 use crate::native_storage::{
     NativeIntListPlan, NativeStackRecordPlan, native_pod_value_argument_local,
 };
-use crate::{CodegenError, ReachableProgram};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
 ///
@@ -115,7 +116,7 @@ struct LocalFunctionRequirements {
 
 struct RequirementScanner<'a> {
     program: &'a Program,
-    reachable: &'a ReachableProgram,
+    reachable: &'a ReachableSourceGraph,
     function: &'a Function,
     int_ranges: &'a NativeIntRangePlan,
     native_int_lists: NativeIntListPlan,
@@ -127,7 +128,7 @@ struct RequirementScanner<'a> {
 impl RuntimeRequirementGraph {
     pub(crate) fn analyze(
         program: &Program,
-        reachable: &ReachableProgram,
+        reachable: &ReachableSourceGraph,
         int_ranges: &NativeIntRangePlan,
         stack_record_plans: &BTreeMap<FunctionId, NativeStackRecordPlan>,
     ) -> Result<Self, CodegenError> {
@@ -171,7 +172,7 @@ impl RuntimeRequirementGraph {
 
 fn analyze_local_function(
     program: &Program,
-    reachable: &ReachableProgram,
+    reachable: &ReachableSourceGraph,
     int_ranges: &NativeIntRangePlan,
     stack_record_plans: &BTreeMap<FunctionId, NativeStackRecordPlan>,
     id: FunctionId,
@@ -841,7 +842,7 @@ impl RequirementScanner<'_> {
 
 fn add_dynamic_callees(
     program: &Program,
-    reachable: &ReachableProgram,
+    reachable: &ReachableSourceGraph,
     requirement: loom_mir::RequirementId,
     output: &mut LocalRequirements,
 ) -> Result<(), CodegenError> {
@@ -1009,6 +1010,7 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
     use loom_mir::{
         BinaryOp, Block, CallArgument, CallPlan, CallTarget, Constant, Expr, ExprKind, FieldDef,
         Function, FunctionId, LocalDecl, LocalId, Program, Type, TypeDef, TypeDefKind, TypeId,
@@ -1162,14 +1164,14 @@ mod tests {
             functions: vec![fibonacci],
             ..Program::default()
         };
-        let reachable = crate::ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
-            ..crate::ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
         let ranges = crate::native_range::NativeIntRangePlan::analyze(
             &program,
             &reachable,
-            &crate::Roots::one(FunctionId(0)),
+            &SourceRoots::one(FunctionId(0)),
         );
         let graph =
             RuntimeRequirementGraph::analyze(&program, &reachable, &ranges, &BTreeMap::new())
@@ -1216,9 +1218,9 @@ mod tests {
             functions: vec![identity, forward],
             ..Program::default()
         };
-        let reachable = crate::ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0), FunctionId(1)]),
-            ..crate::ReachableProgram::default()
+            ..ReachableSourceGraph::default()
         };
         let graph = RuntimeRequirementGraph::analyze(
             &program,
@@ -1285,7 +1287,7 @@ mod tests {
             ],
             ..Program::default()
         };
-        let reachable = crate::ReachableProgram {
+        let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0), FunctionId(1), FunctionId(2), FunctionId(3)]),
             witnesses: BTreeSet::new(),
             builtins: BTreeSet::new(),

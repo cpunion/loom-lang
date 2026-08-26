@@ -7,7 +7,7 @@ use loom_core::{Diagnostic, FileId, Severity, Span};
 use loom_hir::{BodyId, LoweringResult, PackageSourceUnit, lower_package_files};
 use loom_interpreter::{Interpreter, TestResult};
 use loom_lowering::lower_to_mir;
-use loom_mir::Program as MirProgram;
+use loom_mir::CheckedProgram as CheckedMirProgram;
 use loom_sema::{Analysis, DefMapBuild, ModuleGraph, analyze, analyze_reusing_bodies};
 use loom_syntax::{Parse, parse_with_file};
 use serde::Serialize;
@@ -59,7 +59,7 @@ pub struct CompilerInput<'a> {
 pub struct CompilerOutput {
     pub completed: PipelineStage,
     pub diagnostics: Vec<Diagnostic>,
-    pub executable: Option<MirProgram>,
+    pub executable: Option<CheckedMirProgram>,
     pub unavailable_reason: Option<String>,
 }
 
@@ -111,7 +111,7 @@ pub struct AnalysisSnapshot {
     analysis: Analysis,
     diagnostics: Vec<Diagnostic>,
     completed: PipelineStage,
-    executable: Option<MirProgram>,
+    executable: Option<CheckedMirProgram>,
     unavailable_reason: Option<String>,
     semantic_query_stats: SemanticQueryStats,
 }
@@ -226,7 +226,7 @@ impl AnalysisSnapshot {
     ///
     /// Returns [`StageUnavailable`] if executable lowering did not complete or
     /// an adapter violated its completion contract.
-    pub fn executable(&self) -> Result<&MirProgram, StageUnavailable> {
+    pub fn executable(&self) -> Result<&CheckedMirProgram, StageUnavailable> {
         self.require_stage(PipelineStage::Executable)?;
         self.executable.as_ref().ok_or_else(|| StageUnavailable {
             code: "CompilerPipelineIncomplete",

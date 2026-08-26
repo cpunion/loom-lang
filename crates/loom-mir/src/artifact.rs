@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Block, CallArgument, CheckedProgram, Constant, Contract, ContractExpr, ContractExprKind, Expr,
     ExprKind, MirValidationErrors, Pattern, Program, StatementKind, TypeDefKind, check_program,
-    validate_program,
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
@@ -108,7 +107,7 @@ struct Envelope {
     float_bits: Vec<u64>,
 }
 
-/// Encodes a validated, interpreted MIR artifact entirely in memory.
+/// Encodes a checked, interpreted MIR artifact entirely in memory.
 ///
 /// The byte representation is deterministic: structs have fixed field order,
 /// maps are `BTreeMap`s, and every Float is represented in a traversal-ordered
@@ -116,9 +115,9 @@ struct Envelope {
 ///
 /// # Errors
 ///
-/// Returns [`ArtifactError::InvalidProgram`] when `program` has not crossed the
-/// checked MIR boundary, or [`ArtifactError::Encode`] on serialization failure.
-pub fn encode_interpreted_artifact(program: &Program) -> Result<Vec<u8>, ArtifactError> {
+/// Returns [`ArtifactError::Encode`] on serialization failure. Unchecked MIR
+/// cannot enter this public encoding boundary.
+pub fn encode_interpreted_artifact(program: &CheckedProgram) -> Result<Vec<u8>, ArtifactError> {
     encode_interpreted_artifact_envelope(program, None)
 }
 
@@ -127,19 +126,20 @@ pub fn encode_interpreted_artifact(program: &Program) -> Result<Vec<u8>, Artifac
 /// # Errors
 ///
 /// Returns [`ArtifactError::UnknownEntry`] when `entry` is not exported, in
-/// addition to the ordinary MIR validation and serialization failures.
+/// addition to serialization failures. Unchecked MIR cannot enter this public
+/// encoding boundary.
 pub fn encode_interpreted_executable_artifact(
-    program: &Program,
+    program: &CheckedProgram,
     entry: &str,
 ) -> Result<Vec<u8>, ArtifactError> {
     encode_interpreted_artifact_envelope(program, Some(entry))
 }
 
 fn encode_interpreted_artifact_envelope(
-    program: &Program,
+    checked: &CheckedProgram,
     entry: Option<&str>,
 ) -> Result<Vec<u8>, ArtifactError> {
-    validate_program(program)?;
+    let program = checked.as_program();
     validate_entry(program, entry)?;
     let mut normalized = program.clone();
     let mut float_bits = Vec::new();

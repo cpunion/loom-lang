@@ -3,14 +3,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use loom_codegen_llvm::{EmitOptions, Roots, analyze_reachability, native_object_fingerprint};
+use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
+use loom_codegen_llvm::{EmitOptions, native_object_fingerprint};
 use loom_driver::AnalysisHost;
 use loom_mir::{
-    Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef, ConceptId, Constant, Expr,
-    ExprId, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program, Receiver,
-    RequirementDef, RequirementId, RequirementType, Statement, StatementKind, Type, Witness,
-    WitnessId, WitnessRef, decode_interpreted_artifact, encode_interpreted_artifact,
+    Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef, ConceptId,
+    Constant, Expr, ExprId, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program,
+    Receiver, RequirementDef, RequirementId, RequirementType, Statement, StatementKind, Type,
+    Witness, WitnessId, WitnessRef, decode_interpreted_artifact, encode_interpreted_artifact,
 };
+
+fn checked(mut program: Program) -> CheckedProgram {
+    program
+        .renumber_expr_ids()
+        .expect("renumber checked-MIR fixture expressions");
+    program.into_checked().expect("valid checked-MIR fixture")
+}
 
 #[test]
 fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
@@ -36,8 +44,8 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
     });
     program.functions = vec![
         root_function(),
-        unit_function(FunctionId(1), "live.display"),
-        unit_function(FunctionId(2), "dead.display"),
+        unit_method(FunctionId(1), "live.display", Type::Int),
+        unit_method(FunctionId(2), "dead.display", Type::Text),
         unit_function(FunctionId(3), "unreachable.helper"),
     ];
     program.witnesses = vec![
@@ -61,8 +69,9 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
         },
     ];
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    let program = checked(program);
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("analyze graph");
     assert_eq!(
         reachable.functions.into_iter().collect::<Vec<_>>(),
         vec![FunctionId(0), FunctionId(1)]
@@ -107,6 +116,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     };
     let live_view = make_view(
         WitnessId(0),
+        0,
         Expr {
             id: ExprId::UNASSIGNED,
             kind: ExprKind::Constant(Constant::Int(7)),
@@ -117,6 +127,7 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     );
     let independently_live_view = make_view(
         WitnessId(1),
+        1,
         Expr {
             id: ExprId::UNASSIGNED,
             kind: ExprKind::Constant(Constant::Text("unused receiver".into())),
@@ -191,8 +202,8 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
             },
             call_plan: CallPlan::default(),
         },
-        unit_function(FunctionId(1), "int.display"),
-        unit_function(FunctionId(2), "text.display"),
+        unit_method(FunctionId(1), "int.display", Type::Int),
+        unit_method(FunctionId(2), "text.display", Type::Text),
     ];
     program.witnesses = vec![
         Witness {
@@ -215,8 +226,9 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
         },
     ];
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    let program = checked(program);
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("analyze graph");
     assert_eq!(
         reachable.functions.into_iter().collect::<Vec<_>>(),
         vec![FunctionId(0), FunctionId(1)]
@@ -242,111 +254,69 @@ fn object_fingerprint_excludes_unreachable_function_bodies() {
     };
     program.exports.insert("main".into(), FunctionId(0));
     let options = EmitOptions::run("main");
+    let program = checked(program);
     let initial = native_object_fingerprint(&program, &options).expect("initial fingerprint");
 
-    program.functions[1].name = "dead.changed".into();
-    let dead_changed =
-        native_object_fingerprint(&program, &options).expect("dead-body fingerprint");
-    assert_eq!(initial, dead_changed);
+    let mut dead_changed = program.clone().into_program();
+    dead_changed.functions[1].name = "dead.changed".into();
+    let dead_changed = checked(dead_changed);
+    let dead_fingerprint =
+        native_object_fingerprint(&dead_changed, &options).expect("dead-body fingerprint");
+    assert_eq!(initial, dead_fingerprint);
 
-    program.functions[0].name = "main.changed".into();
-    let live_changed =
-        native_object_fingerprint(&program, &options).expect("live-body fingerprint");
-    assert_ne!(initial, live_changed);
+    let mut live_changed = dead_changed.into_program();
+    live_changed.functions[0].name = "main.changed".into();
+    let live_changed = checked(live_changed);
+    let live_fingerprint =
+        native_object_fingerprint(&live_changed, &options).expect("live-body fingerprint");
+    assert_ne!(initial, live_fingerprint);
 }
 
 #[test]
 fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
-    let view_ty = Type::View {
-        mutable: false,
-        concept: ConceptId(0),
-        bindings: BTreeMap::new(),
-    };
-    let mut live = unit_function(FunctionId(0), "main");
-    live.body.statements = vec![
-        Statement {
-            kind: StatementKind::Evaluate(Expr {
-                id: ExprId::UNASSIGNED,
-                kind: ExprKind::Call {
-                    target: CallTarget::Builtin(Builtin::TextMapInsert),
-                    type_arguments: Vec::new(),
-                    arguments: vec![
-                        CallArgument::Value(builtin_call(Builtin::TextMapNew, Vec::new())),
-                        CallArgument::Value(Expr {
-                            id: ExprId::UNASSIGNED,
-                            kind: ExprKind::Constant(Constant::Text("live".into())),
-                            ty: Type::Text,
-                            span: Default::default(),
-                        }),
-                        CallArgument::Value(make_view(
-                            WitnessId(0),
-                            Expr {
-                                id: ExprId::UNASSIGNED,
-                                kind: ExprKind::Constant(Constant::Int(7)),
-                                ty: Type::Int,
-                                span: Default::default(),
-                            },
-                            view_ty.clone(),
-                        )),
-                    ],
-                    witnesses: Vec::new(),
-                },
-                ty: Type::Error,
-                span: Default::default(),
-            }),
-            span: Default::default(),
-        },
-        Statement {
-            kind: StatementKind::Evaluate(builtin_call(
-                Builtin::LogInfo,
-                vec![Expr {
-                    id: ExprId::UNASSIGNED,
-                    kind: ExprKind::Constant(Constant::Text("live".into())),
-                    ty: Type::Text,
-                    span: Default::default(),
-                }],
-            )),
-            span: Default::default(),
-        },
-    ];
-    let mut dead = unit_function(FunctionId(1), "dead");
-    dead.body.statements = vec![
-        Statement {
-            kind: StatementKind::Evaluate(builtin_call(
-                Builtin::JsonParse,
-                vec![Expr {
-                    id: ExprId::UNASSIGNED,
-                    kind: ExprKind::Constant(Constant::Text("null".into())),
-                    ty: Type::Text,
-                    span: Default::default(),
-                }],
-            )),
-            span: Default::default(),
-        },
-        Statement {
-            kind: StatementKind::Evaluate(make_view(
-                WitnessId(1),
-                Expr {
-                    id: ExprId::UNASSIGNED,
-                    kind: ExprKind::Constant(Constant::Text("dead".into())),
-                    ty: Type::Text,
-                    span: Default::default(),
-                },
-                view_ty,
-            )),
-            span: Default::default(),
-        },
-    ];
-    let program = Program {
-        functions: vec![live, dead],
-        witnesses: vec![empty_witness(WitnessId(0)), empty_witness(WitnessId(1))],
-        ..Program::default()
-    };
+    let source = tempfile::tempdir().expect("create structured graph project");
+    fs::write(
+        source.path().join("main.loom"),
+        r#"module structured_graph
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
-    assert_eq!(reachable.functions, BTreeSet::from([FunctionId(0)]));
-    assert_eq!(reachable.witnesses, BTreeSet::from([WitnessId(0)]));
+import standard.json.parse_json
+import standard.log.info
+import standard.log.warn
+
+pub dyn concept Marker {}
+
+impl Marker for Int {}
+impl Marker for Text {}
+
+fn markInt(value Int) dyn Marker { value }
+fn markText(value Text) dyn Marker { value }
+
+pub fn main() Unit {
+    let value = markInt(7)
+    let fields = TextMap[dyn Marker]().insert("live", value)
+    info("live")
+    Unit
+}
+
+fn dead() Unit {
+    let value = markText("dead")
+    let parsed = parse_json("null")
+    warn("dead")
+    Unit
+}
+"#,
+    )
+    .expect("write structured graph source");
+    let snapshot = AnalysisHost::new(source.path())
+        .expect("load structured graph source")
+        .snapshot()
+        .expect("analyze structured graph source");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower structured graph MIR");
+    let roots = SourceRoots::for_entry(program, "main").expect("main root");
+    let reachable = analyze_source_reachability(program, &roots).expect("analyze graph");
+    assert_eq!(reachable.functions.len(), 2);
+    assert_eq!(reachable.witnesses.len(), 1);
     assert_eq!(
         reachable.builtins,
         BTreeSet::from([
@@ -391,8 +361,8 @@ fn dead(text Text) Unit {
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower executable MIR");
     let options = EmitOptions::run("main");
-    let roots = Roots::for_entry(program, "main").expect("main root");
-    let reachable = analyze_reachability(program, &roots).expect("analyze structured graph");
+    let roots = SourceRoots::for_entry(program, "main").expect("main root");
+    let reachable = analyze_source_reachability(program, &roots).expect("analyze structured graph");
     assert_eq!(
         reachable.builtins,
         BTreeSet::from([
@@ -418,13 +388,14 @@ fn dead(text Text) Unit {
     assert!(decoded.prelude.log_level.is_some());
 
     let fingerprint = native_object_fingerprint(program, &options).expect("object identity");
-    let mut dead_changed = program.clone();
+    let mut dead_changed = program.clone().into_program();
     replace_builtin_in_named_function(
         &mut dead_changed,
         "dead",
         Builtin::LogWarn,
         Builtin::LogError,
     );
+    let dead_changed = checked(dead_changed);
     let dead_artifact =
         encode_interpreted_artifact(&dead_changed).expect("encode valid dead mutation");
     assert_ne!(artifact, dead_artifact);
@@ -434,13 +405,14 @@ fn dead(text Text) Unit {
         native_object_fingerprint(&dead_changed, &options).expect("dead-change identity")
     );
 
-    let mut live_changed = program.clone();
+    let mut live_changed = program.clone().into_program();
     replace_builtin_in_named_function(
         &mut live_changed,
         "main",
         Builtin::LogInfo,
         Builtin::LogDebug,
     );
+    let live_changed = checked(live_changed);
     let live_artifact =
         encode_interpreted_artifact(&live_changed).expect("encode valid live mutation");
     assert_ne!(artifact, live_artifact);
@@ -480,7 +452,7 @@ fn root_function() -> Function {
                 requirement: RequirementId(0),
             },
             type_arguments: Vec::new(),
-            arguments: vec![CallArgument::Value(view.clone())],
+            arguments: vec![CallArgument::Value(view)],
             witnesses: Vec::new(),
         },
         ty: Type::Unit,
@@ -506,16 +478,10 @@ fn root_function() -> Function {
         return_ty: Type::Unit,
         receiver: None,
         body: Block {
-            statements: vec![
-                Statement {
-                    kind: StatementKind::Evaluate(view),
-                    span: Default::default(),
-                },
-                Statement {
-                    kind: StatementKind::Evaluate(call),
-                    span: Default::default(),
-                },
-            ],
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(call),
+                span: Default::default(),
+            }],
             tail: Some(Box::new(Expr {
                 id: ExprId::UNASSIGNED,
                 kind: ExprKind::Constant(Constant::Unit),
@@ -532,7 +498,7 @@ fn root_function() -> Function {
     function
 }
 
-fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
+fn make_view(witness: WitnessId, token: u32, value: Expr, ty: Type) -> Expr {
     Expr {
         id: ExprId::UNASSIGNED,
         kind: ExprKind::MakeView {
@@ -540,36 +506,10 @@ fn make_view(witness: WitnessId, value: Expr, ty: Type) -> Expr {
             writeback: None,
             witness: WitnessRef::Concrete(witness),
             mutable: false,
-            token: 0,
+            token,
         },
         ty,
         span: Default::default(),
-    }
-}
-
-fn builtin_call(builtin: Builtin, arguments: Vec<Expr>) -> Expr {
-    Expr {
-        id: ExprId::UNASSIGNED,
-        kind: ExprKind::Call {
-            target: CallTarget::Builtin(builtin),
-            type_arguments: Vec::new(),
-            arguments: arguments.into_iter().map(CallArgument::Value).collect(),
-            witnesses: Vec::new(),
-        },
-        ty: Type::Error,
-        span: Default::default(),
-    }
-}
-
-fn empty_witness(id: WitnessId) -> Witness {
-    Witness {
-        id,
-        concept: ConceptId(0),
-        concrete: Type::Error,
-        methods: BTreeMap::new(),
-        associated: BTreeMap::new(),
-        type_parameters: 0,
-        prerequisites: Vec::new(),
     }
 }
 
@@ -643,5 +583,18 @@ fn unit_function(id: FunctionId, name: &str) -> Function {
     function
         .renumber_expr_ids()
         .expect("renumber unit-function expressions");
+    function
+}
+
+fn unit_method(id: FunctionId, name: &str, receiver_ty: Type) -> Function {
+    let mut function = unit_function(id, name);
+    function.params.push(LocalDecl {
+        id: LocalId(0),
+        name: "self".into(),
+        ty: receiver_ty,
+        mutable: false,
+        span: Default::default(),
+    });
+    function.receiver = Some(Receiver::Readonly);
     function
 }

@@ -1,27 +1,29 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    error::Error,
+    fmt,
+};
 
 use loom_mir::{
-    Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, FunctionId, LocalId, Program,
-    RequirementId, StatementKind, WitnessId, WitnessRef,
+    Block, Builtin, CallArgument, CallTarget, CheckedProgram, Expr, ExprKind, FunctionId, LocalId,
+    Program, RequirementId, StatementKind, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::CodegenError;
-
 /// Root functions selected by a command-line build mode.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Roots {
+pub struct SourceRoots {
     functions: BTreeSet<FunctionId>,
 }
 
-impl Roots {
+impl SourceRoots {
     #[must_use]
-    pub fn for_entry(program: &Program, entry: &str) -> Option<Self> {
+    pub fn for_entry(program: &CheckedProgram, entry: &str) -> Option<Self> {
         program.exports.get(entry).copied().map(Self::one)
     }
 
     #[must_use]
-    pub fn for_tests(program: &Program) -> Self {
+    pub fn for_tests(program: &CheckedProgram) -> Self {
         Self {
             functions: program.tests.iter().copied().collect(),
         }
@@ -42,13 +44,75 @@ impl Roots {
 
 /// The closed-world subset that must be materialized in one native artifact.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReachableProgram {
+pub struct ReachableSourceGraph {
     pub functions: BTreeSet<FunctionId>,
     pub witnesses: BTreeSet<WitnessId>,
     pub builtins: BTreeSet<Builtin>,
     /// Only these witness method slots are emitted as live table edges.
     pub witness_methods: BTreeMap<WitnessId, BTreeSet<RequirementId>>,
 }
+
+/// Stable category for an invalid checked-MIR source graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphErrorCode {
+    InvalidFunctionReference,
+    InvalidWitnessReference,
+    InvalidWitnessTable,
+}
+
+impl GraphErrorCode {
+    /// Stable diagnostic code used at compiler boundaries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidFunctionReference => "InvalidFunctionReference",
+            Self::InvalidWitnessReference => "InvalidWitnessReference",
+            Self::InvalidWitnessTable => "InvalidWitnessTable",
+        }
+    }
+}
+
+impl fmt::Display for GraphErrorCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// A malformed edge discovered while closing the checked-MIR source graph.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphError {
+    code: GraphErrorCode,
+    message: String,
+}
+
+impl GraphError {
+    fn new(code: GraphErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// Structured error category with a stable textual spelling.
+    #[must_use]
+    pub const fn code(&self) -> GraphErrorCode {
+        self.code
+    }
+
+    /// Stable human-readable detail for the invalid graph edge.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for GraphError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl Error for GraphError {}
 
 #[derive(Default)]
 struct FunctionEdges {
@@ -69,25 +133,27 @@ struct WitnessFlow {
 /// Traverses calls from the selected roots and closes dynamic edges through
 /// only witness values that reachable code actually constructs or passes.
 ///
-/// This is deliberately separate from LLVM emission: it becomes the stable
-/// dependency graph used by future per-module compilation cache keys.
+/// This is deliberately separate from LLVM emission. It is the stable source
+/// dependency graph used by native-object identity and future per-module cache
+/// keys.
 ///
 /// # Errors
 ///
 /// Returns an error if checked MIR contains a missing function, witness, or
 /// witness method reference. Such an error is a compiler-boundary defect.
-pub fn analyze_reachability(
-    program: &Program,
-    roots: &Roots,
-) -> Result<ReachableProgram, CodegenError> {
+pub fn analyze_source_reachability(
+    program: &CheckedProgram,
+    roots: &SourceRoots,
+) -> Result<ReachableSourceGraph, GraphError> {
+    let program = program.as_program();
     if roots.functions.is_empty() {
         // An empty test suite is a successful, empty native harness. Entry
         // builds cannot reach this case because root selection reports an
         // unknown export before graph construction.
-        return Ok(ReachableProgram::default());
+        return Ok(ReachableSourceGraph::default());
     }
 
-    let mut result = ReachableProgram::default();
+    let mut result = ReachableSourceGraph::default();
     let mut queue = VecDeque::new();
     for root in &roots.functions {
         require_function(program, *root)?;
@@ -128,8 +194,8 @@ pub fn analyze_reachability(
         let live_witnesses = result.witnesses.iter().copied().collect::<Vec<_>>();
         for witness_id in live_witnesses {
             let witness = program.witness(witness_id).ok_or_else(|| {
-                CodegenError::new(
-                    "InvalidWitnessReference",
+                GraphError::new(
+                    GraphErrorCode::InvalidWitnessReference,
                     format!("reachable witness #{} does not exist", witness_id.0),
                 )
             })?;
@@ -162,20 +228,20 @@ pub fn analyze_reachability(
 
 fn retain_witness_method(
     program: &Program,
-    result: &mut ReachableProgram,
+    result: &mut ReachableSourceGraph,
     witness_id: WitnessId,
     requirement: RequirementId,
     queue: &mut VecDeque<FunctionId>,
-) -> Result<(), CodegenError> {
+) -> Result<(), GraphError> {
     let witness = program.witness(witness_id).ok_or_else(|| {
-        CodegenError::new(
-            "InvalidWitnessReference",
+        GraphError::new(
+            GraphErrorCode::InvalidWitnessReference,
             format!("reachable witness #{} does not exist", witness_id.0),
         )
     })?;
     let function = witness.methods.get(&requirement).copied().ok_or_else(|| {
-        CodegenError::new(
-            "InvalidWitnessTable",
+        GraphError::new(
+            GraphErrorCode::InvalidWitnessTable,
             format!(
                 "witness #{} has no slot for requirement #{}",
                 witness_id.0, requirement.0
@@ -197,10 +263,10 @@ fn retain_witness_method(
 fn require_function(
     program: &Program,
     function: FunctionId,
-) -> Result<&loom_mir::Function, CodegenError> {
+) -> Result<&loom_mir::Function, GraphError> {
     program.function(function).ok_or_else(|| {
-        CodegenError::new(
-            "InvalidFunctionReference",
+        GraphError::new(
+            GraphErrorCode::InvalidFunctionReference,
             format!("reachable function #{} does not exist", function.0),
         )
     })

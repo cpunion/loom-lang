@@ -9,6 +9,10 @@ rust-version.workspace = true
 [dependencies]
 loom-core.workspace = true
 loom-mir.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

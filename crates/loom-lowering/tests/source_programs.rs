@@ -4,7 +4,7 @@ use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
-fn compile(source: &str) -> loom_mir::Program {
+fn compile(source: &str) -> loom_mir::CheckedProgram {
     let parsed = parse_with_file(FileId(0), source);
     assert!(
         parsed.diagnostics().is_empty(),
@@ -30,10 +30,8 @@ fn compile(source: &str) -> loom_mir::Program {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_and_validate(source: &str) -> loom_mir::Program {
-    let program = compile(source);
-    program.validate().expect("lowered MIR validates");
-    program
+fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
+    compile(source)
 }
 
 fn function_has_name(function: &loom_mir::Function, expected: &str) -> bool {

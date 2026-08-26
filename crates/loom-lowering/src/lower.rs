@@ -9,12 +9,13 @@ use loom_hir::{
     Statement as HirStatement, UnaryOp as HirUnaryOp, Visibility,
 };
 use loom_mir::{
-    AssociatedTypeDef, BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef,
-    ConceptId, Constant, ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind,
-    ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MatchArm,
-    Pattern, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    RequirementWitnessParam, Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind,
-    TypeId, UnaryOp, VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
+    AssociatedTypeDef, BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget,
+    CheckedProgram, ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm,
+    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
+    LocalDecl, LocalId, MatchArm, Pattern, PreludeIds, Program, Receiver, RequirementDef,
+    RequirementId, RequirementType, RequirementWitnessParam, Statement, StatementKind,
+    SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, UnaryOp, VariantDef, VariantId, Witness,
+    WitnessId, WitnessParam, WitnessRef,
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
@@ -86,7 +87,10 @@ type LowerResult<T> = Result<T, Diagnostic>;
 /// Returns structured `CompilerDefect` diagnostics if semantic facts are
 /// missing, a checked source form has no MIR representation, or MIR validation
 /// rejects the compiler's output.
-pub fn lower_to_mir(hir: &HirProgram, analysis: &Analysis) -> Result<Program, LoweringFailure> {
+pub fn lower_to_mir(
+    hir: &HirProgram,
+    analysis: &Analysis,
+) -> Result<CheckedProgram, LoweringFailure> {
     if analysis.has_errors() {
         return Err(single_failure(defect(
             "MIR lowering requires an error-free semantic analysis",
@@ -100,8 +104,8 @@ pub fn lower_to_mir(hir: &HirProgram, analysis: &Analysis) -> Result<Program, Lo
 
     let compiler = Compiler::new(hir, analysis).map_err(single_failure)?;
     let program = compiler.run().map_err(single_failure)?;
-    if let Err(errors) = program.validate() {
-        let diagnostics = errors
+    program.into_checked().map_err(|errors| LoweringFailure {
+        diagnostics: errors
             .iter()
             .map(|error| {
                 defect(
@@ -112,10 +116,8 @@ pub fn lower_to_mir(hir: &HirProgram, analysis: &Analysis) -> Result<Program, Lo
                     error.span,
                 )
             })
-            .collect();
-        return Err(LoweringFailure { diagnostics });
-    }
-    Ok(program)
+            .collect(),
+    })
 }
 
 fn single_failure(diagnostic: Diagnostic) -> LoweringFailure {

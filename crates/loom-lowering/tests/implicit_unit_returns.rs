@@ -5,7 +5,7 @@ use loom_mir::{RequirementType, StatementKind, Type};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
-fn compile_and_validate(source: &str) -> loom_mir::Program {
+fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     let parsed = parse_with_file(FileId(0), source);
     assert!(
         parsed.diagnostics().is_empty(),
@@ -27,10 +27,8 @@ fn compile_and_validate(source: &str) -> loom_mir::Program {
         "semantic diagnostics: {:#?}",
         analysis.diagnostics
     );
-    let program = lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR diagnostics: {:#?}", failure.diagnostics()));
-    program.validate().expect("implicit-Unit MIR validates");
-    program
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR diagnostics: {:#?}", failure.diagnostics()))
 }
 
 #[test]

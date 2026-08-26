@@ -11,7 +11,6 @@ mod error;
 mod native_layout;
 mod native_range;
 mod native_storage;
-mod reachability;
 mod requirements;
 mod runtime_bundle;
 mod target;
@@ -21,7 +20,6 @@ pub use codegen::{
     emit_native_object, link_native_object, native_object_fingerprint, validate_native_link_target,
 };
 pub use error::CodegenError;
-pub use reachability::{ReachableProgram, Roots, analyze_reachability};
 pub use runtime_bundle::{
     RUNTIME_BUNDLE_MANIFEST, RUNTIME_BUNDLE_SCHEMA_VERSION, RUNTIME_CPU, RUNTIME_CPU_FEATURES,
     RuntimeBundle, RuntimeBundleExport, RuntimeLinker, export_native_runtime_bundle,
