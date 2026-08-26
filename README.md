@@ -77,7 +77,12 @@ setup.
 ```sh
 git clone https://github.com/cpunion/loom-lang.git
 cd loom-lang
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked --release -p loom-runtime
 cargo +1.88.0 build --locked --release -p loom-cli -p loom-lsp
+target/release/loomc runtime pack \
+  --archive target/release/libloom_runtime.a \
+  --output target/release/runtime
 
 target/release/loomc check examples/core01
 target/release/loomc test examples/core01
@@ -99,7 +104,7 @@ the [language tour](docs/guide/language-tour.md).
 The workspace provides:
 
 - `loomc` for `check`, `build`, `test`, `run`, `debug`, `fmt`, dependency
-  resolution, publishing, runtime-bundle export, and cache inspection;
+  resolution, publishing, runtime-bundle packing, and cache inspection;
 - `loom-lsp` for diagnostics, navigation, rename, completion, hover, and
   document/workspace symbols;
 - an LLVM 19 native backend and an explicit interpreter backend;
@@ -115,12 +120,14 @@ The table describes automated evidence, not a stability promise:
 | --- | --- | --- |
 | Ubuntu 24.04, x86-64 | Full workspace, LLVM/interpreter closure, packages, runtime, and quality gates | Yes |
 | macOS 15, arm64 | Full workspace, LLVM/interpreter closure, packages, and runtime gates | Yes |
-| Windows Server 2025, x86-64 | Platform-independent compiler layers only | No |
+| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | Not published |
 
-Windows LLVM code generation, native linking, runtime I/O, and debugging are
-not yet claimed as supported. Cross-target object emission exists for supported
-64-bit triples, but producing a cross-target executable requires a matching
-Loom runtime bundle and linker.
+The Windows job exercises LLVM code generation, native linking, runtime I/O,
+and CodeView/PDB artifacts, but Loom does not claim Windows support or publish a
+Windows archive until that job has produced successful runner evidence.
+Cross-target object emission exists for supported 64-bit triples; producing a
+cross-target executable still requires a matching Loom runtime bundle and
+linker.
 
 ## Documentation
 

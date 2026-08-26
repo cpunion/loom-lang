@@ -71,8 +71,9 @@ target/release/loomc test examples/core03
 target/release/loomc run examples/core03
 ```
 
-Native asynchronous I/O is supported on the tested Linux and macOS hosts. It is
-not currently supported as a Windows native runtime.
+Native asynchronous I/O is supported on the tested Linux and macOS hosts. A
+complete Windows native gate is configured, but Windows runtime support is not
+claimed until successful runner evidence exists.
 
 ## Work with a manifest project
 

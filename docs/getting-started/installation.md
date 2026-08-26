@@ -12,11 +12,12 @@ The following table describes automated evidence, not a compatibility promise:
 | --- | --- | --- |
 | Ubuntu 24.04, x86-64 | Full workspace, LLVM and interpreter fixtures, packages, runtime, and quality gates | Yes |
 | macOS 15, arm64 | Full workspace, LLVM and interpreter fixtures, packages, and runtime gates | Yes |
-| Windows Server 2025, x86-64 | Platform-independent compiler crates only | No |
+| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | Not published |
 
-Windows native code generation, linking, runtime I/O, and debugging are not yet
-supported. Object emission for another target also does not provide that
-target's runtime or linker.
+The Windows job covers native code generation, linking, runtime I/O, and
+CodeView/PDB inspection, but Windows support is not claimed until successful
+runner evidence exists. Object emission for another target also does not
+provide that target's runtime or linker.
 
 ## Prerequisites
 

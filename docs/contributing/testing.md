@@ -43,7 +43,12 @@ cargo +1.88.0 test --locked -p loom-codegen-llvm --test runtime_bundle
 cargo +1.88.0 test --locked -p loom-cli --test cli
 ```
 
-Run a single Rust test by adding its name and `--exact` when appropriate.
+The `loom-codegen-llvm` and `loom-cli` integration tests that link native
+executables require the explicit `LOOM_TEST_RUNTIME_BUNDLE` or
+`LOOM_RUNTIME_BUNDLE` prepared by the full-workspace recipe above. They never
+search profile directories for an archive, because such a file can be stale or
+belong to another Cargo invocation. Run a single Rust test by adding its name
+and `--exact` when appropriate.
 
 ## End-to-end source loop
 

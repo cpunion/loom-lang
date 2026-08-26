@@ -111,10 +111,11 @@ jobs:
         run: |
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --release --locked -p loom-runtime
           cargo build --release --locked -p loom-cli -p loom-benchmark
+          runtime_bundle="$(mktemp -d "$RUNNER_TEMP/loom-runtime-base.XXXXXX")/runtime"
           if target/release/loomc runtime pack \
             --archive target/release/libloom_runtime.a \
-            --output target/release/runtime; then
-            export LOOM_RUNTIME_BUNDLE="$PWD/target/release/runtime"
+            --output "$runtime_bundle"; then
+            export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           fi
           target/release/loom-benchmark \
             --throughput \
@@ -128,10 +129,11 @@ jobs:
         run: |
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --release --locked -p loom-runtime
           cargo build --release --locked -p loom-cli -p loom-benchmark
+          runtime_bundle="$(mktemp -d "$RUNNER_TEMP/loom-runtime-candidate.XXXXXX")/runtime"
           target/release/loomc runtime pack \
             --archive target/release/libloom_runtime.a \
-            --output target/release/runtime
-          export LOOM_RUNTIME_BUNDLE="$PWD/target/release/runtime"
+            --output "$runtime_bundle"
+          export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           target/release/loom-benchmark \
             --throughput \
             --allow-busy-host \

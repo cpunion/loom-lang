@@ -350,5 +350,6 @@ behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
 legacy route because its root also reaches Text, List, parsing, and matching;
 the direct-product tests are the current closed-workload evidence. The
-platform-independent Windows CI job checks, lints, tests, and builds
-`loom-codegen-ir` without claiming a Windows LLVM backend.
+configured Windows CI job also exercises typed LCIR object generation and
+native execution without making a platform-support claim before successful
+runner evidence exists.

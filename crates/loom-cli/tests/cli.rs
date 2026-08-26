@@ -12,12 +12,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-static TEST_RUNTIME: OnceLock<TestRuntimeBundle> = OnceLock::new();
-
-struct TestRuntimeBundle {
-    _directory: tempfile::TempDir,
-    root: PathBuf,
-}
+static TEST_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -66,24 +61,9 @@ impl Drop for TestProject {
 }
 
 fn loomc() -> Command {
-    let runtime = TEST_RUNTIME.get_or_init(|| {
-        let archive = test_runtime_archive();
-        assert!(
-            archive.is_file(),
-            "loom-runtime dev-dependency did not produce {}",
-            archive.display()
-        );
-        let directory = tempfile::tempdir().expect("create CLI test runtime directory");
-        let root = directory.path().join("runtime");
-        loom_codegen_llvm::pack_native_runtime_bundle(&archive, &root)
-            .expect("pack CLI test runtime");
-        TestRuntimeBundle {
-            _directory: directory,
-            root,
-        }
-    });
+    let runtime = test_runtime_bundle_root();
     let mut command = Command::new(env!("CARGO_BIN_EXE_loomc"));
-    command.env("LOOM_RUNTIME_BUNDLE", &runtime.root);
+    command.env("LOOM_RUNTIME_BUNDLE", runtime);
     command
 }
 
@@ -92,11 +72,30 @@ fn loomc_without_test_runtime() -> Command {
 }
 
 fn test_runtime_archive() -> PathBuf {
-    let compiler = PathBuf::from(env!("CARGO_BIN_EXE_loomc"));
-    let profile = compiler
-        .parent()
-        .expect("loomc test binary is in the Cargo profile directory");
-    profile.join(loom_codegen_llvm::native_runtime_archive_name(None))
+    let target = loom_codegen_llvm::native_target_identity().expect("load host target identity");
+    loom_codegen_llvm::RuntimeBundle::load(test_runtime_bundle_root(), &target)
+        .expect("load explicit CLI test runtime bundle")
+        .archive()
+        .to_path_buf()
+}
+
+fn test_runtime_bundle_root() -> &'static PathBuf {
+    TEST_RUNTIME.get_or_init(|| {
+        let root = std::env::var_os("LOOM_TEST_RUNTIME_BUNDLE")
+            .or_else(|| std::env::var_os("LOOM_RUNTIME_BUNDLE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                panic!(
+                    "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
+                     LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
+                )
+            });
+        let target =
+            loom_codegen_llvm::native_target_identity().expect("load host target identity");
+        loom_codegen_llvm::RuntimeBundle::load(&root, &target)
+            .expect("validate explicit CLI test runtime bundle");
+        root
+    })
 }
 
 fn native_executable(path: impl AsRef<std::path::Path>) -> PathBuf {
@@ -155,9 +154,11 @@ if [ "${{1-}}" = "--version" ]; then
 fi
 log=${{LOOM_FAKE_LINK_LOG:?}}
 object_copy=${{LOOM_FAKE_OBJECT_COPY:?}}
+runtime_copy=${{LOOM_FAKE_RUNTIME_COPY:?}}
 payload=${{LOOM_FAKE_LINK_PAYLOAD:?}}
 : > "$log"
 cp "$1" "$object_copy"
+cp "$2" "$runtime_copy"
 output=
 while [ "$#" -gt 0 ]; do
     argument=$1
@@ -2132,6 +2133,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     let linker = project.0.join("fake-linker");
     let link_log = project.0.join("link-arguments");
     let object_copy = project.0.join("linked-target-object");
+    let runtime_copy = project.0.join("linked-runtime-archive");
     let link_payload = project.0.join("link-payload");
     fs::write(&link_payload, b"payload one\n").expect("first linker payload");
 
@@ -2151,6 +2153,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
             .arg(&project.0)
             .env("LOOM_FAKE_LINK_LOG", &link_log)
             .env("LOOM_FAKE_OBJECT_COPY", &object_copy)
+            .env("LOOM_FAKE_RUNTIME_COPY", &runtime_copy)
             .env("LOOM_FAKE_LINK_PAYLOAD", &link_payload)
             .output()
             .expect("cross link with fake linker")
@@ -2178,11 +2181,22 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     let arguments = arguments.lines().collect::<Vec<_>>();
     assert_eq!(arguments.len(), 9, "{arguments:#?}");
     assert!(arguments[0].ends_with("loom-target.o"), "{arguments:#?}");
+    let staged_runtime = std::path::Path::new(arguments[1]);
+    assert_eq!(staged_runtime.parent(), first_output.parent());
+    assert!(
+        staged_runtime
+            .file_stem()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".loom-runtime-link-")),
+        "{arguments:#?}"
+    );
     assert_eq!(
-        arguments[1],
-        fs::canonicalize(bundle_one.join("runtime.a"))
-            .expect("canonical runtime archive")
-            .to_string_lossy()
+        staged_runtime.extension().and_then(|value| value.to_str()),
+        Some("a")
+    );
+    assert!(!staged_runtime.exists(), "runtime snapshot must be removed");
+    assert_eq!(
+        fs::read(&runtime_copy).expect("copied runtime snapshot"),
+        b"foreign runtime archive one"
     );
     assert_eq!(
         &arguments[2..8],
