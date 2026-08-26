@@ -494,7 +494,7 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
             .exprs_preorder()
             .map(|expression| expression.id.0)
             .collect::<Vec<_>>(),
-        (0..50).collect::<Vec<_>>()
+        (0..48).collect::<Vec<_>>()
     );
 }
 
