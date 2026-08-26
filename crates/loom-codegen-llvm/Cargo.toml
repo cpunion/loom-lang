@@ -13,6 +13,7 @@ loom-core.workspace = true
 loom-mir.workspace = true
 loom-runtime-abi.workspace = true
 llvm-sys.workspace = true
+same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

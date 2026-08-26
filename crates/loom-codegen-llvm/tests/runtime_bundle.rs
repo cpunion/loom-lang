@@ -202,6 +202,11 @@ fn failed_or_invalid_link_preserves_output_and_cleans_adjacent_staging() {
         "RuntimeBundleChecksumMismatch"
     );
     assert_eq!(
+        fs::read(bundle.archive()).expect("read preserved source runtime"),
+        b"bounded test runtime archive",
+        "the linker receives only a private runtime snapshot"
+    );
+    assert_eq!(
         fs::read(&output).expect("preserved output after revalidation failure"),
         b"known-good artifact"
     );
@@ -346,6 +351,7 @@ fn runtime_bundle_rejects_unsafe_paths_tampering_extras_and_symlinks() {
 
     for unsafe_path in [
         "../outside.a",
+        "nested/runtime.a",
         "C:runtime.a",
         "NUL.a",
         "bad\nruntime.a",

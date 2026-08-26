@@ -1,11 +1,16 @@
 //! Validated target-runtime bundles for explicit cross-target linking.
 
-use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, SyncSender};
+use std::thread::{self, JoinHandle};
 
+// Rust 1.88 does not expose Windows volume/file-index metadata on stable Rust.
+// `same-file` supplies the cross-platform opened-handle identity needed to
+// close lstat/open replacement races without adding unsafe code here.
+use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -65,15 +70,7 @@ impl RuntimeBundle {
         expected: &NativeTargetIdentity,
     ) -> Result<Self, CodegenError> {
         let input = input.as_ref();
-        let root_metadata = fs::symlink_metadata(input).map_err(|error| {
-            bundle_error(format!("cannot inspect {}: {error}", input.display()))
-        })?;
-        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
-            return Err(bundle_error("runtime bundle must be a real directory"));
-        }
-        let root = fs::canonicalize(input).map_err(|error| {
-            bundle_error(format!("cannot resolve {}: {error}", input.display()))
-        })?;
+        let root = canonical_real_directory(input, "runtime bundle")?;
         let manifest_path = root.join(RUNTIME_BUNDLE_MANIFEST);
         let manifest_bytes = read_bounded_regular_file(
             &manifest_path,
@@ -84,14 +81,13 @@ impl RuntimeBundle {
             .map_err(|error| bundle_error(format!("invalid manifest: {error}")))?;
         validate_manifest(&manifest, expected)?;
 
-        let archive_relative = safe_relative_path(&manifest.archive).ok_or_else(|| {
-            bundle_error("runtime archive must use one safe portable relative path")
-        })?;
-        if archive_relative == Path::new(RUNTIME_BUNDLE_MANIFEST) {
+        let archive_name = safe_portable_file_name(&manifest.archive)
+            .ok_or_else(|| bundle_error("runtime archive must use one safe portable filename"))?;
+        if archive_name == RUNTIME_BUNDLE_MANIFEST {
             return Err(bundle_error("runtime archive path is reserved"));
         }
-        validate_bundle_tree(&root, &archive_relative)?;
-        let archive = root.join(&archive_relative);
+        validate_bundle_tree(&root, archive_name)?;
+        let archive = root.join(archive_name);
         let actual_archive_sha256 =
             hash_bounded_regular_file(&archive, MAX_ARCHIVE_BYTES, "runtime archive")?;
         if actual_archive_sha256 != manifest.archive_sha256 {
@@ -321,25 +317,21 @@ impl RuntimeLinker {
                 .map_err(|error| {
                     CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned())
                 })?;
-        let output = Command::new(&program)
-            .args(linker_version_arguments(&program))
-            .output()
-            .map_err(|error| {
-                CodegenError::new(
-                    "RuntimeLinkerUnavailable",
-                    format!("{}: {error}", program.display()),
-                )
-            })?;
+        let mut probe = Command::new(&program);
+        probe.args(linker_version_arguments(&program));
+        let output = run_bounded_command(&mut probe, MAX_TOOL_OUTPUT_BYTES).map_err(|error| {
+            command_error(
+                error,
+                "RuntimeLinkerUnavailable",
+                "RuntimeLinkerInvalid",
+                &format!("{}", program.display()),
+                "selected linker returned oversized version output",
+            )
+        })?;
         if !output.status.success() {
             return Err(CodegenError::new(
                 "RuntimeLinkerUnavailable",
                 "selected linker did not accept its version/help probe",
-            ));
-        }
-        if output.stdout.len().saturating_add(output.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
-            return Err(CodegenError::new(
-                "RuntimeLinkerInvalid",
-                "selected linker returned oversized version output",
             ));
         }
         if output
@@ -382,12 +374,11 @@ pub fn link_object_with_runtime_bundle(
     linker: &RuntimeLinker,
 ) -> Result<(), CodegenError> {
     validate_regular_file(object, u64::MAX, "target object")?;
-    verify_link_inputs(bundle, linker)?;
     match fs::symlink_metadata(output) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+        Ok(metadata) if metadata_is_link_like(&metadata) || !metadata.is_file() => {
             return Err(CodegenError::new(
                 "ArtifactWriteFailed",
-                "link output must be a regular path and cannot be a symbolic link",
+                "link output must be a regular path and cannot be a symbolic link or reparse point",
             ));
         }
         Ok(_) => {}
@@ -411,6 +402,8 @@ pub fn link_object_with_runtime_bundle(
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let runtime_snapshot = snapshot_runtime_archive(bundle, parent)?;
+    verify_linker(linker)?;
     let staged = tempfile::Builder::new()
         .prefix(".loom-link-")
         .tempfile_in(parent)
@@ -425,26 +418,22 @@ pub fn link_object_with_runtime_bundle(
         linker.program(),
         bundle.target_triple(),
         object,
-        &[bundle.archive()],
+        &[runtime_snapshot.path()],
         bundle.link_args(),
         &staged,
     );
     let _staged_pdb_cleanup = RemoveFileOnDrop::new(link.pdb.clone());
-    let result = Command::new(linker.program())
-        .args(&link.arguments)
-        .output()
-        .map_err(|error| {
-            CodegenError::new(
-                "RuntimeLinkerUnavailable",
-                format!("{}: {error}", linker.program().display()),
-            )
-        })?;
-    if result.stdout.len().saturating_add(result.stderr.len()) > MAX_TOOL_OUTPUT_BYTES {
-        return Err(CodegenError::new(
+    let mut command = Command::new(linker.program());
+    command.args(&link.arguments);
+    let result = run_bounded_command(&mut command, MAX_TOOL_OUTPUT_BYTES).map_err(|error| {
+        command_error(
+            error,
+            "RuntimeLinkerUnavailable",
             "NativeLinkFailed",
+            &format!("{}", linker.program().display()),
             "selected linker returned oversized output",
-        ));
-    }
+        )
+    })?;
     if !result.status.success() {
         let detail = String::from_utf8_lossy(&result.stderr);
         let detail = detail.trim();
@@ -457,7 +446,8 @@ pub fn link_object_with_runtime_bundle(
             },
         ));
     }
-    verify_link_inputs(bundle, linker)?;
+    verify_runtime_snapshot(&runtime_snapshot, bundle.archive_sha256())?;
+    verify_linker(linker)?;
     validate_regular_file(&staged, MAX_LINK_OUTPUT_BYTES, "linked executable")
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.message().to_owned()))?;
     validate_staged_pdb(link.pdb.as_deref())?;
@@ -505,10 +495,10 @@ fn publish_staged_pdb(
         crate::NativeArtifactKind::DebugDatabase,
     );
     match fs::symlink_metadata(&destination) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+        Ok(metadata) if metadata_is_link_like(&metadata) || !metadata.is_file() => {
             return Err(CodegenError::new(
                 "DebugInfoWriteFailed",
-                "PDB output must be a regular path and cannot be a symbolic link",
+                "PDB output must be a regular path and cannot be a symbolic link or reparse point",
             ));
         }
         Ok(_) => {}
@@ -520,29 +510,94 @@ fn publish_staged_pdb(
             ));
         }
     }
-    fs::copy(pdb, &destination).map_err(|error| {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut publication = tempfile::Builder::new()
+        .prefix(".loom-pdb-publish-")
+        .suffix(".pdb")
+        .tempfile_in(parent)
+        .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.to_string()))?;
+    copy_bounded_regular_file_into(
+        pdb,
+        publication.as_file_mut(),
+        MAX_LINK_OUTPUT_BYTES,
+        "linked PDB",
+    )
+    .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.message().to_owned()))?;
+    publication
+        .as_file()
+        .sync_all()
+        .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.to_string()))?;
+    publication.persist(&destination).map_err(|error| {
         CodegenError::new(
             "DebugInfoWriteFailed",
-            format!("{}: {error}", destination.display()),
+            format!("{}: {}", destination.display(), error.error),
         )
     })?;
-    File::options()
-        .read(true)
-        .write(true)
-        .open(&destination)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| CodegenError::new("DebugInfoWriteFailed", error.to_string()))
+    Ok(())
 }
 
-fn verify_link_inputs(bundle: &RuntimeBundle, linker: &RuntimeLinker) -> Result<(), CodegenError> {
-    let archive_sha256 =
-        hash_bounded_regular_file(bundle.archive(), MAX_ARCHIVE_BYTES, "runtime archive")?;
+fn snapshot_runtime_archive(
+    bundle: &RuntimeBundle,
+    parent: &Path,
+) -> Result<tempfile::NamedTempFile, CodegenError> {
+    let suffix = bundle
+        .archive()
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map_or_else(String::new, |extension| format!(".{extension}"));
+    let mut snapshot = tempfile::Builder::new()
+        .prefix(".loom-runtime-link-")
+        .suffix(&suffix)
+        .tempfile_in(parent)
+        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
+    let archive_sha256 = copy_bounded_regular_file_into(
+        bundle.archive(),
+        snapshot.as_file_mut(),
+        MAX_ARCHIVE_BYTES,
+        "runtime archive",
+    )
+    .map_err(|error| {
+        if error.code() == "RuntimeBundleWriteFailed" {
+            CodegenError::new("ArtifactWriteFailed", error.message().to_owned())
+        } else {
+            error
+        }
+    })?;
     if archive_sha256 != bundle.archive_sha256 {
         return Err(CodegenError::new(
             "RuntimeBundleChecksumMismatch",
             "runtime archive changed after bundle validation",
         ));
     }
+    snapshot
+        .as_file()
+        .sync_all()
+        .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
+    Ok(snapshot)
+}
+
+fn verify_runtime_snapshot(
+    snapshot: &tempfile::NamedTempFile,
+    expected_sha256: &str,
+) -> Result<(), CodegenError> {
+    let actual = hash_bounded_file_handle(
+        snapshot.as_file(),
+        MAX_ARCHIVE_BYTES,
+        "runtime archive snapshot",
+    )?;
+    if actual != expected_sha256 {
+        return Err(CodegenError::new(
+            "RuntimeBundleChecksumMismatch",
+            "private runtime archive snapshot changed during linking",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_linker(linker: &RuntimeLinker) -> Result<(), CodegenError> {
     let linker_sha256 = hash_bounded_regular_file(
         linker.program(),
         MAX_LINKER_BYTES,
@@ -556,6 +611,150 @@ fn verify_link_inputs(bundle: &RuntimeBundle, linker: &RuntimeLinker) -> Result<
         ));
     }
     Ok(())
+}
+
+#[derive(Debug)]
+enum BoundedCommandError {
+    Io(std::io::Error),
+    OutputLimit,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CommandStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug)]
+enum DrainMessage {
+    Bytes(CommandStream, Vec<u8>),
+    Done,
+    Error(std::io::Error),
+}
+
+fn command_error(
+    error: BoundedCommandError,
+    io_code: &'static str,
+    limit_code: &'static str,
+    program: &str,
+    limit_message: &'static str,
+) -> CodegenError {
+    match error {
+        BoundedCommandError::Io(error) => CodegenError::new(io_code, format!("{program}: {error}")),
+        BoundedCommandError::OutputLimit => CodegenError::new(limit_code, limit_message),
+    }
+}
+
+fn run_bounded_command(
+    command: &mut Command,
+    maximum: usize,
+) -> Result<std::process::Output, BoundedCommandError> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(BoundedCommandError::Io)?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_and_wait(&mut child);
+        return Err(BoundedCommandError::Io(std::io::Error::other(
+            "cannot capture linker stdout",
+        )));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        terminate_and_wait(&mut child);
+        return Err(BoundedCommandError::Io(std::io::Error::other(
+            "cannot capture linker stderr",
+        )));
+    };
+
+    // The bounded synchronous queue applies backpressure before either drain
+    // can allocate more than a few fixed-size chunks beyond the result limit.
+    let (sender, receiver) = mpsc::sync_channel(4);
+    let drains = [
+        spawn_command_drain(stdout, CommandStream::Stdout, sender.clone()),
+        spawn_command_drain(stderr, CommandStream::Stderr, sender),
+    ];
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut total = 0_usize;
+    let mut completed = 0_u8;
+    while completed < 2 {
+        match receiver.recv() {
+            Ok(DrainMessage::Bytes(stream, bytes)) => {
+                if bytes.len() > maximum.saturating_sub(total) {
+                    terminate_and_wait(&mut child);
+                    drop(receiver);
+                    drop(drains);
+                    return Err(BoundedCommandError::OutputLimit);
+                }
+                total += bytes.len();
+                match stream {
+                    CommandStream::Stdout => stdout.extend_from_slice(&bytes),
+                    CommandStream::Stderr => stderr.extend_from_slice(&bytes),
+                }
+            }
+            Ok(DrainMessage::Done) => completed += 1,
+            Ok(DrainMessage::Error(error)) => {
+                terminate_and_wait(&mut child);
+                drop(receiver);
+                drop(drains);
+                return Err(BoundedCommandError::Io(error));
+            }
+            Err(error) => {
+                terminate_and_wait(&mut child);
+                drop(drains);
+                return Err(BoundedCommandError::Io(std::io::Error::other(error)));
+            }
+        }
+    }
+    let status = child.wait().map_err(BoundedCommandError::Io)?;
+    for drain in drains {
+        drain.join().map_err(|_| {
+            BoundedCommandError::Io(std::io::Error::other("linker output drain panicked"))
+        })?;
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_command_drain(
+    mut reader: impl Read + Send + 'static,
+    stream: CommandStream,
+    sender: SyncSender<DrainMessage>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut chunk = [0_u8; 16 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => {
+                    let _ = sender.send(DrainMessage::Done);
+                    return;
+                }
+                Ok(count) => {
+                    if sender
+                        .send(DrainMessage::Bytes(stream, chunk[..count].to_vec()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    let _ = sender.send(DrainMessage::Error(error));
+                    return;
+                }
+            }
+        }
+    })
+}
+
+fn terminate_and_wait(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn validate_manifest(
@@ -606,50 +805,34 @@ fn validate_manifest(
     Ok(())
 }
 
-fn validate_bundle_tree(root: &Path, archive: &Path) -> Result<(), CodegenError> {
-    let mut allowed_directories = BTreeSet::new();
-    let mut parent = archive.parent();
-    while let Some(directory) = parent.filter(|path| !path.as_os_str().is_empty()) {
-        allowed_directories.insert(directory.to_path_buf());
-        parent = directory.parent();
-    }
-    let mut pending = vec![root.to_path_buf()];
+fn validate_bundle_tree(root: &Path, archive: &str) -> Result<(), CodegenError> {
     let mut entries = 0_usize;
     let mut seen_manifest = false;
     let mut seen_archive = false;
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| bundle_error(format!("cannot inspect bundle: {error}")))?
-        {
-            let entry = entry.map_err(|error| bundle_error(format!("invalid entry: {error}")))?;
-            entries += 1;
-            if entries > MAX_BUNDLE_ENTRIES {
-                return Err(bundle_error("runtime bundle contains too many entries"));
-            }
-            let metadata = fs::symlink_metadata(entry.path())
-                .map_err(|error| bundle_error(format!("cannot inspect entry: {error}")))?;
-            if metadata.file_type().is_symlink() {
-                return Err(bundle_error("runtime bundle cannot contain symbolic links"));
-            }
-            let relative = entry
-                .path()
-                .strip_prefix(root)
-                .expect("walked runtime bundle path is below root")
-                .to_path_buf();
-            if metadata.is_dir() {
-                if !allowed_directories.contains(&relative) {
-                    return Err(bundle_error(
-                        "runtime bundle contains an unexpected directory",
-                    ));
-                }
-                pending.push(entry.path());
-            } else if metadata.is_file() && relative == Path::new(RUNTIME_BUNDLE_MANIFEST) {
-                seen_manifest = true;
-            } else if metadata.is_file() && relative == archive {
-                seen_archive = true;
-            } else {
-                return Err(bundle_error("runtime bundle contains an unexpected file"));
-            }
+    for entry in fs::read_dir(root)
+        .map_err(|error| bundle_error(format!("cannot inspect bundle: {error}")))?
+    {
+        let entry = entry.map_err(|error| bundle_error(format!("invalid entry: {error}")))?;
+        entries += 1;
+        if entries > MAX_BUNDLE_ENTRIES {
+            return Err(bundle_error("runtime bundle contains too many entries"));
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| bundle_error(format!("cannot inspect entry: {error}")))?;
+        if metadata_is_link_like(&metadata) {
+            return Err(bundle_error(
+                "runtime bundle cannot contain symbolic links or reparse points",
+            ));
+        }
+        let file_name = entry.file_name();
+        if metadata.is_file() && file_name == RUNTIME_BUNDLE_MANIFEST {
+            seen_manifest = true;
+        } else if metadata.is_file() && file_name == archive {
+            seen_archive = true;
+        } else {
+            return Err(bundle_error(
+                "runtime bundle may contain only its root manifest and runtime archive",
+            ));
         }
     }
     if !seen_manifest || !seen_archive {
@@ -660,22 +843,8 @@ fn validate_bundle_tree(root: &Path, archive: &Path) -> Result<(), CodegenError>
     Ok(())
 }
 
-fn safe_relative_path(value: &str) -> Option<PathBuf> {
-    if value.is_empty()
-        || value.len() > 1024
-        || value.contains(['\\', '\0'])
-        || value
-            .split('/')
-            .any(|component| !portable_path_component(component))
-    {
-        return None;
-    }
-    let path = Path::new(value);
-    (!path.is_absolute()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_))))
-    .then(|| path.to_path_buf())
+fn safe_portable_file_name(value: &str) -> Option<&str> {
+    portable_path_component(value).then_some(value)
 }
 
 fn portable_path_component(component: &str) -> bool {
@@ -759,48 +928,39 @@ fn copy_bounded_regular_file(
     maximum: u64,
     label: &str,
 ) -> Result<String, CodegenError> {
-    validate_regular_file(source, maximum, label)?;
-    let mut source_file = File::open(source)
-        .map_err(|error| bundle_error(format!("cannot open {label}: {error}")))?;
-    let opened_metadata = source_file
-        .metadata()
-        .map_err(|error| bundle_error(format!("cannot inspect opened {label}: {error}")))?;
-    if !opened_metadata.is_file() || opened_metadata.len() > maximum {
-        return Err(bundle_error(format!(
-            "{label} must be one bounded regular file"
-        )));
-    }
     let mut destination_file = File::options()
         .write(true)
         .create_new(true)
         .open(destination)
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut chunk = vec![0_u8; 64 * 1024];
-    loop {
-        let count = source_file
-            .read(&mut chunk)
-            .map_err(|error| bundle_error(format!("cannot read {label}: {error}")))?;
-        if count == 0 {
-            break;
-        }
-        let count = u64::try_from(count).unwrap_or(u64::MAX);
-        total = total.saturating_add(count);
-        if total > maximum {
-            return Err(bundle_error(format!(
-                "{label} must be one bounded regular file"
-            )));
-        }
-        let count = usize::try_from(count).expect("read chunk count fits usize");
-        hasher.update(&chunk[..count]);
-        destination_file
-            .write_all(&chunk[..count])
-            .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
-    }
+    let digest = copy_bounded_regular_file_into(source, &mut destination_file, maximum, label)?;
     destination_file
         .sync_all()
         .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    Ok(digest)
+}
+
+fn copy_bounded_regular_file_into(
+    source: &Path,
+    destination: &mut File,
+    maximum: u64,
+    label: &str,
+) -> Result<String, CodegenError> {
+    let mut source_file = open_bounded_regular_file(source, maximum, label)?;
+    destination
+        .set_len(0)
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    destination
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+    let mut hasher = Sha256::new();
+    read_bounded(&mut source_file, maximum, label, |chunk| {
+        hasher.update(chunk);
+        destination
+            .write_all(chunk)
+            .map_err(|error| CodegenError::new("RuntimeBundleWriteFailed", error.to_string()))?;
+        Ok(())
+    })?;
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -809,8 +969,18 @@ fn read_bounded_regular_file(
     maximum: u64,
     label: &str,
 ) -> Result<Vec<u8>, CodegenError> {
-    validate_regular_file(path, maximum, label)?;
-    fs::read(path).map_err(|error| bundle_error(format!("cannot read {label}: {error}")))
+    let mut file = open_bounded_regular_file(path, maximum, label)?;
+    let capacity = file
+        .metadata()
+        .ok()
+        .and_then(|metadata| usize::try_from(metadata.len()).ok())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    read_bounded(&mut file, maximum, label, |chunk| {
+        bytes.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    Ok(bytes)
 }
 
 fn hash_bounded_regular_file(
@@ -818,32 +988,153 @@ fn hash_bounded_regular_file(
     maximum: u64,
     label: &str,
 ) -> Result<String, CodegenError> {
-    validate_regular_file(path, maximum, label)?;
-    let mut file =
-        File::open(path).map_err(|error| bundle_error(format!("cannot open {label}: {error}")))?;
+    let file = open_bounded_regular_file(path, maximum, label)?;
+    hash_bounded_file_handle(&file, maximum, label)
+}
+
+fn hash_bounded_file_handle(
+    file: &File,
+    maximum: u64,
+    label: &str,
+) -> Result<String, CodegenError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| bundle_error(format!("cannot inspect opened {label}: {error}")))?;
+    validate_regular_metadata(&metadata, maximum, label)?;
+    let mut file = file
+        .try_clone()
+        .map_err(|error| bundle_error(format!("cannot clone opened {label}: {error}")))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| bundle_error(format!("cannot rewind opened {label}: {error}")))?;
     let mut hasher = Sha256::new();
-    let mut chunk = vec![0_u8; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut chunk)
-            .map_err(|error| bundle_error(format!("cannot hash {label}: {error}")))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&chunk[..count]);
-    }
+    read_bounded(&mut file, maximum, label, |chunk| {
+        hasher.update(chunk);
+        Ok(())
+    })?;
     Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn validate_regular_file(path: &Path, maximum: u64, label: &str) -> Result<(), CodegenError> {
-    let metadata = fs::symlink_metadata(path)
+    open_bounded_regular_file(path, maximum, label).map(|_| ())
+}
+
+fn open_bounded_regular_file(path: &Path, maximum: u64, label: &str) -> Result<File, CodegenError> {
+    let before = fs::symlink_metadata(path)
         .map_err(|error| bundle_error(format!("cannot inspect {label}: {error}")))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > maximum {
+    validate_regular_metadata(&before, maximum, label)?;
+    let before_handle = Handle::from_path(path)
+        .map_err(|error| bundle_error(format!("cannot identify {label}: {error}")))?;
+    let file =
+        File::open(path).map_err(|error| bundle_error(format!("cannot open {label}: {error}")))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| bundle_error(format!("cannot inspect opened {label}: {error}")))?;
+    validate_regular_metadata(&opened, maximum, label)?;
+    let opened_handle = Handle::from_file(
+        file.try_clone()
+            .map_err(|error| bundle_error(format!("cannot clone opened {label}: {error}")))?,
+    )
+    .map_err(|error| bundle_error(format!("cannot identify opened {label}: {error}")))?;
+    let after = fs::symlink_metadata(path)
+        .map_err(|error| bundle_error(format!("cannot re-inspect {label}: {error}")))?;
+    validate_regular_metadata(&after, maximum, label)?;
+    let after_handle = Handle::from_path(path)
+        .map_err(|error| bundle_error(format!("cannot re-identify {label}: {error}")))?;
+    if before_handle != opened_handle || after_handle != opened_handle {
+        return Err(bundle_error(format!(
+            "{label} changed while it was being opened"
+        )));
+    }
+    Ok(file)
+}
+
+fn validate_regular_metadata(
+    metadata: &fs::Metadata,
+    maximum: u64,
+    label: &str,
+) -> Result<(), CodegenError> {
+    if metadata_is_link_like(metadata) || !metadata.is_file() || metadata.len() > maximum {
         return Err(bundle_error(format!(
             "{label} must be one bounded regular file"
         )));
     }
     Ok(())
+}
+
+fn read_bounded(
+    reader: &mut File,
+    maximum: u64,
+    label: &str,
+    mut consume: impl FnMut(&[u8]) -> Result<(), CodegenError>,
+) -> Result<(), CodegenError> {
+    let mut total = 0_u64;
+    let mut chunk = vec![0_u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut chunk)
+            .map_err(|error| bundle_error(format!("cannot read {label}: {error}")))?;
+        if count == 0 {
+            return Ok(());
+        }
+        total = total.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+        if total > maximum {
+            return Err(bundle_error(format!(
+                "{label} must be one bounded regular file"
+            )));
+        }
+        consume(&chunk[..count])?;
+    }
+}
+
+fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf, CodegenError> {
+    let before = fs::symlink_metadata(path)
+        .map_err(|error| bundle_error(format!("cannot inspect {label}: {error}")))?;
+    validate_real_directory_metadata(&before, label)?;
+    let before_handle = Handle::from_path(path)
+        .map_err(|error| bundle_error(format!("cannot identify {label}: {error}")))?;
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| bundle_error(format!("cannot resolve {}: {error}", path.display())))?;
+    let resolved = fs::symlink_metadata(&canonical)
+        .map_err(|error| bundle_error(format!("cannot inspect resolved {label}: {error}")))?;
+    validate_real_directory_metadata(&resolved, label)?;
+    let after = fs::symlink_metadata(path)
+        .map_err(|error| bundle_error(format!("cannot re-inspect {label}: {error}")))?;
+    validate_real_directory_metadata(&after, label)?;
+    let resolved_handle = Handle::from_path(&canonical)
+        .map_err(|error| bundle_error(format!("cannot identify resolved {label}: {error}")))?;
+    let after_handle = Handle::from_path(path)
+        .map_err(|error| bundle_error(format!("cannot re-identify {label}: {error}")))?;
+    if before_handle != resolved_handle || after_handle != resolved_handle {
+        return Err(bundle_error(format!(
+            "{label} changed while it was being resolved"
+        )));
+    }
+    Ok(canonical)
+}
+
+fn validate_real_directory_metadata(
+    metadata: &fs::Metadata,
+    label: &str,
+) -> Result<(), CodegenError> {
+    if metadata_is_link_like(metadata) || !metadata.is_dir() {
+        return Err(bundle_error(format!("{label} must be a real directory")));
+    }
+    Ok(())
+}
+
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn bundle_error(message: impl Into<String>) -> CodegenError {
@@ -870,15 +1161,60 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let staged = directory.path().join(".loom-link-staged.pdb");
         let output = directory.path().join("program.exe");
+        let destination = directory.path().join("program.pdb");
         fs::write(&staged, b"validated PDB bytes").expect("write staged PDB");
+        fs::write(&destination, b"previous PDB bytes").expect("write previous PDB");
 
         publish_staged_pdb(Some(&staged), &output, Some("x86_64-pc-windows-msvc"))
             .expect("publish PDB");
 
         assert_eq!(
-            fs::read(directory.path().join("program.pdb")).expect("read published PDB"),
+            fs::read(destination).expect("read published PDB"),
             b"validated PDB bytes"
         );
+        assert!(
+            fs::read_dir(directory.path())
+                .expect("read publication directory")
+                .all(|entry| !entry
+                    .expect("valid publication entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".loom-pdb-publish-")),
+            "atomic PDB publication must clean its private staging file"
+        );
+    }
+
+    #[test]
+    fn opened_file_reads_enforce_the_byte_limit_instead_of_trusting_metadata() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("growing-input");
+        fs::write(&path, b"five!").expect("write bounded input");
+        let mut file = File::open(path).expect("open input");
+        let mut observed = Vec::new();
+
+        let error = read_bounded(&mut file, 4, "growing input", |chunk| {
+            observed.extend_from_slice(chunk);
+            Ok(())
+        })
+        .expect_err("enforce the actual stream byte count");
+
+        assert_eq!(error.code(), "RuntimeBundleInvalid");
+        assert!(observed.is_empty(), "oversized chunk is never consumed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_command_stops_an_unending_combined_output_stream() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while :; do printf '12345678'; printf 'abcdefgh' >&2; done",
+        ]);
+
+        let error = run_bounded_command(&mut command, 1024)
+            .expect_err("terminate a process as soon as combined output exceeds the bound");
+
+        assert!(matches!(error, BoundedCommandError::OutputLimit));
     }
 
     #[test]
