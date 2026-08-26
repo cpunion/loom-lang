@@ -1,0 +1,97 @@
+# Caching
+
+Loom uses two separate caches:
+
+- a project-local compiler cache for parse, semantic, MIR, object, and portable
+  artifact work;
+- an HTTP registry cache for downloaded package bundles.
+
+Neither cache is a source of authority. Cached bytes are untrusted and are
+validated before reuse.
+
+## Compiler cache
+
+The default compiler cache is:
+
+```text
+PROJECT/target/loom/cache/v2
+```
+
+Use `--cache-dir DIR` to choose another root or `--no-cache` to disable
+compiler caching for a source command.
+
+The cache is content-addressed. Small reference records point to SHA-256 blobs,
+and every load verifies the reference namespace, schema, key, declared size,
+blob size, and content digest. A corrupt entry becomes a cache miss rather than
+a partially trusted compiler input. Cached checked MIR additionally passes the
+normal artifact decoder and MIR validator.
+
+Current namespaces include:
+
+- source parse results;
+- module interfaces;
+- typed module semantic state;
+- complete checked MIR and stable diagnostics;
+- target-specific LLVM objects;
+- interpreted executable and portable-library artifacts.
+
+Native final executables are deliberately not cached. Linking depends on
+non-hermetic SDK, sysroot, CRT, system-library, linker-child, and debug
+companion inputs. The target object is cacheable because its key includes the
+exact LLVM/codegen, target, optimization, root, reachability, and MIR identity.
+
+Cache writes and materialization are best-effort during compilation. A failure
+falls back to fresh work. Explicit `cache stat` and `cache prune` operations
+report I/O failures because those commands were requested directly.
+
+## Inspecting and pruning
+
+```sh
+loomc cache stat .
+loomc cache prune .
+```
+
+`cache stat` reports schema version, reference and blob counts, bytes, invalid
+references, and reclaimable unreferenced blobs. `cache prune` removes only
+invalid references and blobs unreachable from a valid reference inside the
+exact versioned cache root.
+
+Deleting the compiler cache is semantically safe; the next source command
+rebuilds it. Do not treat cache deletion as a substitute for reporting a
+reproducible compiler defect.
+
+## Cache identities
+
+Frontend keys include normalized project/source identities, Loom language
+version, compiler/frontend build identity, embedded standard-library identity,
+contract mode, stable source paths and bytes, selected features, and resolved
+package graph.
+
+Module caching separates:
+
+- public interface fingerprints;
+- declaration/semantic shape fingerprints;
+- body fingerprints.
+
+That split permits unchanged module bodies to be reused when a body-only edit
+leaves the declaration graph compatible. Any incompatible shape falls back to
+fresh semantic analysis.
+
+LLVM object keys additionally include the exact linked LLVM identity, target
+triple and data layout, CPU policy and features, optimization pipeline,
+selected roots, reachable functions/witness slots, debug sources, and runtime
+ABI-relevant code-generation identity.
+
+## Registry cache
+
+HTTP registry entries live under `target/loom/registry/http`, partitioned by
+registry identity, package, version, and digest. They are independent of
+`--cache-dir` and `--no-cache`.
+
+Every registry cache hit revalidates the raw downloaded bundle digest and all
+materialized files. A sidecar record alone is insufficient. `--offline` can
+use only such a validated entry and never converts a corrupt cache entry into
+trusted package content.
+
+See [Packages and registries](packages-and-registries.md) for transport and
+credential rules.

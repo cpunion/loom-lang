@@ -1,27 +1,40 @@
-# C3 multi-package workload
+# Repository-scale package fixture
 
-This fixture is a committed, non-generated repository workload for the Loom
-compiler. It contains three versioned packages and 24 source modules:
+This committed fixture exercises a multi-package Loom project without generated
+sources. It contains three versioned packages and 24 source modules:
 
-- `foundation`: constrained domain values, records, enums, and a dynamic
+- `foundation` defines constrained domain values, records, enums, and a dynamic
   `Named` concept;
-- `catalog`: a direct path dependency that implements the concept and composes
-  inventory, pricing, shipping, and checkout behavior;
-- `application`: a binary/test package with explicit direct dependencies on
-  every package it imports.
+- `catalog` is a direct path dependency that implements the concept and composes
+  inventory, pricing, shipping, and checkout behavior; and
+- `application` contains binary and test targets with explicit direct
+  dependencies for every imported package.
 
-Run the complete closure from the workspace root:
+From the workspace root, run the native closure:
 
 ```sh
-cargo run -p loom-cli -- check --target app examples/c3/application
-cargo run -p loom-cli -- test --target unit examples/c3/application
-cargo run -p loom-cli -- run --target app examples/c3/application
-cargo run -p loom-cli -- --backend interpreter test --target unit examples/c3/application
-cargo run -p loom-cli -- --backend interpreter run --target app examples/c3/application
+cargo +1.88.0 run --locked -p loom-cli -- check --target app examples/c3/application
+cargo +1.88.0 run --locked -p loom-cli -- test --target unit examples/c3/application
+cargo +1.88.0 run --locked -p loom-cli -- run --target app examples/c3/application
 ```
 
-The quality runner records a canonical digest, package/module counts, checked
-MIR size, reachable native roots, and execution timings for this repository.
-Package-isolation, dependency-write-protection, incremental-cache, and backend
-differential regressions are maintained as deterministic compiler tests rather
-than by mutating this fixture during CI.
+Run the same test and entry point through the interpreter for differential
+evidence:
+
+```sh
+cargo +1.88.0 run --locked -p loom-cli -- \
+  --backend interpreter test --target unit examples/c3/application
+cargo +1.88.0 run --locked -p loom-cli -- \
+  --backend interpreter run --target app examples/c3/application
+```
+
+The quality runner records a canonical digest, package and module counts,
+checked-MIR size, reachable native roots, and execution timing. Package
+isolation, dependency write protection, incremental cache behavior, and backend
+differential checks live in deterministic compiler tests rather than mutations
+of this fixture.
+
+This is a repository-scale controlled fixture, not evidence from an independent
+production project. See [implementation status](../../docs/project/implementation-status.md)
+and the [quality policy](../../docs/project/quality-policy.md) for the exact
+claims it supports.

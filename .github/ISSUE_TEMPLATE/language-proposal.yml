@@ -1,0 +1,67 @@
+name: Language proposal
+description: Propose a change to observable Loom language semantics.
+title: "language: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Language changes are held to a higher evidence bar than ordinary features.
+        A proposal is not accepted merely because an implementation pull request exists.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Give a minimal real program that is unsafe, unclear, or impractical today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Observable semantics
+      description: Define accepted programs, runtime behavior, failures, and evaluation order.
+    validations:
+      required: true
+
+  - type: textarea
+    id: syntax
+    attributes:
+      label: Proposed syntax
+      description: Include positive and negative examples; syntax alone is not a complete proposal.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Static checks and diagnostics
+      description: List invalid cases and the evidence each diagnostic should report.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and non-goals
+      description: Compare library, toolchain, and smaller-language alternatives.
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Compiler and runtime impact
+      description: Cover parsing, typing, MIR, both backends, DCE, artifacts, caching, and tooling.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Specify conformance, differential, negative, fuzz, and performance evidence.
+    validations:
+      required: true

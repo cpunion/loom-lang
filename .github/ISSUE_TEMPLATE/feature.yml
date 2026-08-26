@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a focused toolchain, runtime, library, or documentation improvement.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the concrete user problem without prescribing a solution first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Explain the observable result and how it could be tested.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Describe current workarounds and simpler alternatives considered.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and compatibility
+      description: Identify affected commands, platforms, APIs, artifacts, or documentation.
+    validations:
+      required: true
+
