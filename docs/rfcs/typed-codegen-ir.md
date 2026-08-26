@@ -107,10 +107,13 @@ vocabulary is:
 - a protected `Product(field value types...)` for a closed record whose
   invariant was proved statically;
 - a distinct semantic value type sharing its established base representation
-  for a monomorphic refined type.
+  for a monomorphic refined type;
+- `Sum(variants...)` for a concrete closed enum whose substituted payloads are
+  direct values. One variant is tagless, an all-empty multi-variant sum is tag
+  only, and every other sum has a minimal tag plus an exact aligned carrier.
 
-Products are immutable register aggregates. Tuples and records may recursively
-contain one another when the resulting product graph is acyclic. Each
+Products and sums are immutable register aggregates. Tuples, records, and sums
+may recursively contain one another when the resulting by-value graph is acyclic. Each
 representation plan has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. Managed,
@@ -208,6 +211,9 @@ source function:
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
+| tagless `Sum` | its sole variant payload struct |
+| tag-only `Sum` | its checked minimal integer tag |
+| tagged `Sum` | `{ tag, exact target-aligned carrier }` |
 
 An infallible function without inout parameters returns its typed result
 directly. With ordered writebacks `W...`, it returns `{ T, W... }`. A function
@@ -223,6 +229,10 @@ recursive calls use the same typed ABI. Entry block parameters map to function
 parameters; non-entry block parameters map to phi nodes. The run or test
 harness calls the typed root directly. Product construction and functional
 field replacement use `insertvalue`, while projection uses `extractvalue`.
+Sum construction and exhaustive switching preserve ordered variants and move
+typed payloads through block parameters. `Result[Unit, E]` test roots carry an
+explicit success/failure variant plan; the harness never guesses from a source
+name or an implicit tag convention.
 It creates no runtime for an infallible direct root and creates a runtime, but
 no executor, for a synchronous faulting root.
 
@@ -268,7 +278,7 @@ Legacy implementation is removed by demonstrated semantic coverage:
 | Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, and run/test harnesses with zero eligible fallback. |
 | Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
 | Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
+| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. Direct sums cover closed concrete enum construction, ordered exhaustive match decisions, typed payload edges, nested products/sums, and `Result` test outcomes. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
 | Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
 
 New exact-shape native specializations are not accepted migration work. Range,
