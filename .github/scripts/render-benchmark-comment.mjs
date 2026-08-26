@@ -368,22 +368,17 @@ function runtimeChart(byPlatform, runtimeKeys) {
   const entries = runtimeKeys.map((key) => series[0].comparison.runtime.get(key));
   const labels = entries.map((entry) => JSON.stringify(`${entry.caseName}/${entry.language}`));
   const baseLine = runtimeKeys.map(() => 100);
-  // Mermaid renders a one-value line as a zero-length, invisible path. Add one
-  // unlabeled anchor only for that edge case; bars use zero at the anchor.
-  const needsLineAnchor = runtimeKeys.length === 1;
-  if (needsLineAnchor) {
-    labels.push(JSON.stringify(" "));
-    baseLine.push(100);
+  // Mermaid renders a one-value line as a zero-length, invisible path. Give a
+  // single runtime entry a meaningful base -> candidate layout instead.
+  const needsBaseAnchor = runtimeKeys.length === 1;
+  if (needsBaseAnchor) {
+    labels.unshift(JSON.stringify("base"));
+    baseLine.unshift(100);
   }
   const upperBound = chartUpperBound(series.flatMap((entry) => entry.indices));
   const anchoredSeries = series.map((entry) => ({
     ...entry,
-    indices: needsLineAnchor
-      ? [
-          ...entry.indices,
-          entry.platform.chartPlot === "line" ? entry.indices[0] : 0,
-        ]
-      : entry.indices,
+    indices: needsBaseAnchor ? [100, ...entry.indices] : entry.indices,
   }));
   // Draw the base after bars so it remains visible, then draw platform lines so
   // an unchanged index of 100 is still identified by the platform color.

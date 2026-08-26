@@ -110,9 +110,9 @@ test("renders exactly one horizontal table for macOS, Linux, and unavailable Win
   assert.match(output, /macOS = blue bars; Linux = orange line/);
   assert.match(output, /plotColorPalette: "#0969da, #59636e, #eb670f"/);
   assert.match(output, /title "Runtime index by platform \(base = 100\)"/);
-  assert.match(output, /x-axis \["integer\/loom", " "\]/);
+  assert.match(output, /x-axis \["base", "integer\/loom"\]/);
   assert.match(output, /y-axis "Runtime index" 0 --> 120/);
-  assert.match(output, /bar \[90, 0\]\n  line \[100, 100\]\n  line \[110, 110\]/);
+  assert.match(output, /bar \[100, 90\]\n  line \[100, 100\]\n  line \[100, 110\]/);
   assert.ok(output.indexOf("| Case |") < output.indexOf("### Runtime comparison chart"));
 });
 
@@ -127,7 +127,7 @@ test("renders only the measured platform series", () => {
   assert.match(output, /plotColorPalette: "#59636e, #eb670f"/);
   assert.doesNotMatch(output, /^  bar \[/m);
   assert.equal(output.match(/^  line \[/gm)?.length, 2);
-  assert.match(output, /line \[100, 100\]\n  line \[90, 90\]/);
+  assert.match(output, /line \[100, 100\]\n  line \[100, 90\]/);
 });
 
 test("renders a macOS-only chart with a visible base-line anchor", () => {
@@ -139,7 +139,7 @@ test("renders a macOS-only chart with a visible base-line anchor", () => {
   assert.match(output, /macOS = blue bars/);
   assert.doesNotMatch(output, /Linux = orange line/);
   assert.match(output, /plotColorPalette: "#0969da, #59636e"/);
-  assert.match(output, /bar \[90, 0\]\n  line \[100, 100\]/);
+  assert.match(output, /bar \[100, 90\]\n  line \[100, 100\]/);
 });
 
 test("omits the chart when no chartable platform evidence exists", () => {
@@ -157,8 +157,8 @@ test("uses one runtime-index scale for both measured platform series", () => {
     "0123456789abcdef",
   );
   assert.equal(output.match(/y-axis "Runtime index" 0 --> 160/g)?.length, 1);
-  assert.match(output, /bar \[90, 0\]/);
-  assert.match(output, /line \[150, 150\]/);
+  assert.match(output, /bar \[100, 90\]/);
+  assert.match(output, /line \[100, 150\]/);
 });
 
 test("aligns every platform series to the same runtime keys", () => {
