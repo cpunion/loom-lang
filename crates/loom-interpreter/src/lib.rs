@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use loom_core::Span;
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
@@ -5043,7 +5044,11 @@ impl<'program> Interpreter<'program> {
             (UnaryOp::Negate, Value::Int { value }) => value.checked_neg().map_or_else(
                 || {
                     Err(self
-                        .runtime_fault("IntegerOverflow", "integer negation overflowed", span)
+                        .runtime_fault(
+                            INTEGER_OVERFLOW_FAULT_CODE,
+                            INTEGER_OVERFLOW_FAULT_MESSAGE,
+                            span,
+                        )
                         .into())
                 },
                 |value| Ok(Value::Int { value }),
@@ -5128,7 +5133,11 @@ impl<'program> Interpreter<'program> {
                 result.map_or_else(
                     || {
                         Err(self
-                            .runtime_fault("IntegerOverflow", "integer arithmetic overflowed", span)
+                            .runtime_fault(
+                                INTEGER_OVERFLOW_FAULT_CODE,
+                                INTEGER_OVERFLOW_FAULT_MESSAGE,
+                                span,
+                            )
                             .into())
                     },
                     |value| Ok(Value::Int { value }),

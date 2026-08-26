@@ -24,6 +24,8 @@ use inkwell::values::{
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
+use loom_core::Span;
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
@@ -81,7 +83,7 @@ enum LikelyBranch {
 
 fn native_fault_message(code: &str) -> &str {
     match code {
-        "IntegerOverflow" => "integer arithmetic overflowed",
+        INTEGER_OVERFLOW_FAULT_CODE => INTEGER_OVERFLOW_FAULT_MESSAGE,
         "IntegerDivisionByZero" => "integer division by zero",
         "IntegerDivisionOverflow" => "integer division overflowed",
         "InvalidSleepDuration" => "sleep duration must not be negative",
@@ -6950,6 +6952,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             }
             ExprKind::Unary(operator, value) => self.emit_unary(
                 *operator,
+                expression,
                 value,
                 destination,
                 self.backend
@@ -6958,6 +6961,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ),
             ExprKind::Binary(operator, left, right) => self.emit_binary(
                 *operator,
+                expression,
                 left,
                 right,
                 destination,
@@ -8007,12 +8011,13 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_unary(
         &self,
         operator: UnaryOp,
-        expression: &Expr,
+        operation: &Expr,
+        operand: &Expr,
         destination: PointerValue<'ctx>,
         proven: bool,
     ) -> Result<bool, CodegenError> {
-        let value = self.alloc_typed_value(&expression.ty, "unary");
-        if !self.emit_expr(expression, value)? {
+        let value = self.alloc_typed_value(&operand.ty, "unary");
+        if !self.emit_expr(operand, value)? {
             return Ok(false);
         }
         match operator {
@@ -8036,7 +8041,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     extended,
                 )?;
             }
-            UnaryOp::Negate => match self.numeric_kind(&expression.ty)? {
+            UnaryOp::Negate => match self.numeric_kind(&operand.ty)? {
                 NumericKind::Int => {
                     let scalar = self.int_scalar(value)?;
                     let result = if proven {
@@ -8055,7 +8060,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                                 "negate.overflow",
                             )
                             .map_err(builder_error)?;
-                        self.fail_if(overflow, "IntegerOverflow")?;
+                        self.fail_if_at(overflow, INTEGER_OVERFLOW_FAULT_CODE, operation.span)?;
                         self.backend
                             .builder
                             .build_int_sub(self.backend.i64_type.const_zero(), scalar, "negate")
@@ -8087,6 +8092,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_binary(
         &self,
         operator: BinaryOp,
+        operation: &Expr,
         left: &Expr,
         right: &Expr,
         destination: PointerValue<'ctx>,
@@ -8134,7 +8140,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         let result = if proven {
                             self.emit_proven_integer(operator, left, right)?
                         } else {
-                            self.emit_checked_integer(operator, left, right)?
+                            self.emit_checked_integer(operator, left, right, operation.span)?
                         };
                         self.initialize(destination, VALUE_TAG_INT)?;
                         self.backend.store_i64_field(
@@ -8294,6 +8300,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         operator: BinaryOp,
         left: IntValue<'ctx>,
         right: IntValue<'ctx>,
+        overflow_span: Span,
     ) -> Result<IntValue<'ctx>, CodegenError> {
         if operator == BinaryOp::Divide {
             let zero = self
@@ -8372,7 +8379,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .build_extract_value(aggregate, 1, "integer.overflow")
             .map_err(builder_error)?
             .into_int_value();
-        self.fail_if(overflow, "IntegerOverflow")?;
+        self.fail_if_at(overflow, INTEGER_OVERFLOW_FAULT_CODE, overflow_span)?;
         Ok(result)
     }
 
@@ -8396,6 +8403,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn fail_if(&self, condition: IntValue<'ctx>, code: &str) -> Result<(), CodegenError> {
+        self.fail_if_at(condition, code, self.source.span)
+    }
+
+    fn fail_if_at(
+        &self,
+        condition: IntValue<'ctx>,
+        code: &str,
+        span: Span,
+    ) -> Result<(), CodegenError> {
         let fail = self.append_block("operation.fail");
         let pass = self.append_block("operation.pass");
         build_weighted_conditional_branch(
@@ -8407,25 +8423,26 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             LikelyBranch::Else,
         )?;
         self.backend.builder.position_at_end(fail);
-        self.record_or_print_fault(code, native_fault_message(code), code)?;
+        self.record_or_print_fault_at(code, native_fault_message(code), code, span)?;
         self.emit_all_cleanups()?;
         self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(pass);
         Ok(())
     }
 
-    fn record_or_print_fault(
+    fn record_or_print_fault_at(
         &self,
         code: &str,
         message: &str,
         synchronous_display: &str,
+        span: Span,
     ) -> Result<(), CodegenError> {
         let detail = serde_json::to_string(&serde_json::json!({
             "channel": "runtime",
             "fault": {
                 "code": code,
                 "message": message,
-                "span": self.source.span,
+                "span": span,
             },
         }))
         .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
@@ -12425,7 +12442,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                                         "contract.negate.overflow",
                                     )
                                     .map_err(builder_error)?;
-                                self.fail_if(overflow, "IntegerOverflow")?;
+                                self.fail_if_at(
+                                    overflow,
+                                    INTEGER_OVERFLOW_FAULT_CODE,
+                                    expression.span,
+                                )?;
                                 let value = self
                                     .backend
                                     .builder
@@ -12458,7 +12479,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             ContractExprKind::Binary(operator, left, right) => {
-                self.emit_contract_binary(*operator, left, right, context, destination)
+                self.emit_contract_binary(*operator, expression, left, right, context, destination)
             }
             ContractExprKind::IsFinite(value) => {
                 let temporary = self.alloc_value("contract.finite");
@@ -12514,6 +12535,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     fn emit_contract_binary(
         &self,
         operator: BinaryOp,
+        operation: &ContractExpr,
         left: &ContractExpr,
         right: &ContractExpr,
         context: &ContractContext<'ctx>,
@@ -12585,7 +12607,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     NumericKind::Int => {
                         let left = self.int_scalar(left_value)?;
                         let right = self.int_scalar(right_value)?;
-                        let value = self.emit_checked_integer(operator, left, right)?;
+                        let value =
+                            self.emit_checked_integer(operator, left, right, operation.span)?;
                         self.initialize(destination, VALUE_TAG_INT)?;
                         self.backend.store_i64_field(
                             self.backend.value_type,

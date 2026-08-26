@@ -34,6 +34,7 @@ use loom_codegen_ir::{
     Instruction, InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget,
     ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueId, ValueTypeId,
 };
+use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 
 use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -2782,16 +2783,31 @@ impl<'ctx> Backend<'ctx, '_> {
     ) -> Result<(), CodegenError> {
         let (code, message) = fault_properties(fault);
         let display = format!("{code}: {message}");
-        let detail = serde_json::json!({
-            "channel": "lcir",
-            "code": code,
-            "sourceFunction": origin.source_function.0,
-            "sourceSpan": {
-                "file": origin.span.file.0,
-                "start": origin.span.range.start,
-                "end": origin.span.range.end,
-            },
-        })
+        // Integer overflow is a shared language fault, so expose the same
+        // stable RuntimeFault payload as the interpreter and legacy emitter.
+        // Other LCIR fault families retain their existing private detail until
+        // their language-level diagnostic contracts are specified separately.
+        let detail = if fault == FaultCode::IntegerOverflow {
+            serde_json::json!({
+                "channel": "runtime",
+                "fault": {
+                    "code": code,
+                    "message": message,
+                    "span": origin.span,
+                },
+            })
+        } else {
+            serde_json::json!({
+                "channel": "lcir",
+                "code": code,
+                "sourceFunction": origin.source_function.0,
+                "sourceSpan": {
+                    "file": origin.span.file.0,
+                    "start": origin.span.range.start,
+                    "end": origin.span.range.end,
+                },
+            })
+        }
         .to_string();
         let code_data = self
             .builder
@@ -2911,7 +2927,7 @@ impl<'ctx> Backend<'ctx, '_> {
 
 fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
     match code {
-        FaultCode::IntegerOverflow => ("IntegerOverflow", "integer arithmetic overflowed"),
+        FaultCode::IntegerOverflow => (INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE),
         FaultCode::IntegerDivisionByZero => ("IntegerDivisionByZero", "integer division by zero"),
         FaultCode::IntegerDivisionOverflow => {
             ("IntegerDivisionOverflow", "integer division overflowed")

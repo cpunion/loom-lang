@@ -307,6 +307,7 @@ dependencies = [
  "inkwell",
  "llvm-sys",
  "loom-codegen-ir",
+ "loom-core",
  "loom-driver",
  "loom-interpreter",
  "loom-mir",
