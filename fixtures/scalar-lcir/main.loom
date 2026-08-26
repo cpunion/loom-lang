@@ -1,0 +1,15 @@
+module scalar_lcir
+
+fn double(value Int) Int {
+    value * 2
+}
+
+pub fn main() Unit {
+    let answer = double(21)
+    if answer == 42 {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}

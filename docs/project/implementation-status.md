@@ -38,6 +38,7 @@ The following repository fixtures are run through real compiler stages:
 | `examples/core03` | moving GC, lexical cleanup, stackless async, joins, cancellation/readiness, and the same dual-backend loop |
 | `examples/packages/application` | path dependency, binary/test targets, and dual-backend source/artifact execution |
 | `examples/c3/application` | three-package graph, multiple modules, binary/test targets, dual-backend execution on Linux and macOS |
+| `fixtures/scalar-lcir` | complete typed scalar route, native execution, Linux DWARF inspection, and macOS dSYM inspection |
 | `fixtures/standard-library` | differential interpreter/native checks for structured values, text, maps, JSON, typed file/socket I/O, logging, GC, and async behavior |
 
 The workspace also has focused parser, semantic, MIR-validator, interpreter,
