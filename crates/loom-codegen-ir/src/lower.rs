@@ -381,7 +381,6 @@ pub fn lower_scalar_artifact(
             format!("checked-MIR reachability failed: {error}"),
         )
     })?;
-
     let mut classifier = Classifier::new();
     for function in &graph.functions {
         let source = mir.function(*function).ok_or_else(|| {
@@ -397,7 +396,6 @@ pub fn lower_scalar_artifact(
             items: classifier.items,
         }));
     }
-
     let summaries = graph
         .functions
         .iter()
@@ -412,7 +410,6 @@ pub fn lower_scalar_artifact(
         })
         .collect::<Result<BTreeMap<_, _>, LoweringError>>()?;
     let effects = solve_effects(&summaries)?;
-
     let mut builder = ProgramBuilder::new(target);
     let mut instances = BTreeMap::new();
     for function_id in &graph.functions {
@@ -443,7 +440,6 @@ pub fn lower_scalar_artifact(
             .map_err(LoweringError::from)?;
         instances.insert(*function_id, instance);
     }
-
     for function_id in &graph.functions {
         let source = mir.function(*function_id).ok_or_else(|| {
             LoweringError::defect(
@@ -460,7 +456,6 @@ pub fn lower_scalar_artifact(
         let function_builder = builder.function(instance).map_err(LoweringError::from)?;
         FunctionLowerer::new(source, function_builder, &instances, &effects).lower()?;
     }
-
     let checked = builder.finish_checked().map_err(|errors| {
         LoweringError::defect(
             LoweringDefectCode::GeneratedProgram,
@@ -1548,10 +1543,201 @@ fn effect_for(effects: &[Option<Effects>], function: FunctionId) -> Result<Effec
         })
 }
 
-#[derive(Clone)]
+type EnvironmentRoot = u32;
+
+const EMPTY_ENVIRONMENT: EnvironmentRoot = 0;
+
+#[derive(Clone, Copy)]
+enum EnvironmentNode {
+    Branch {
+        zero: EnvironmentRoot,
+        one: EnvironmentRoot,
+    },
+    Leaf(ValueId),
+}
+
+/// Function-local persistent map from MIR locals to their current SSA values.
+///
+/// A flow carries only a root id. Updating one local copies at most one 32-node
+/// radix path, while branch fan-out shares the rest of the map. Comparing two
+/// roots skips pointer-identical subtries, so an identity branch does not scan
+/// every live local at its join.
+struct EnvironmentArena {
+    nodes: Vec<EnvironmentNode>,
+}
+
+impl EnvironmentArena {
+    fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    fn get(&self, mut root: EnvironmentRoot, local: LocalId) -> Option<ValueId> {
+        for depth in 0..u32::BITS {
+            let EnvironmentNode::Branch { zero, one } = self.node(root)? else {
+                return None;
+            };
+            let bit = u32::BITS - depth - 1;
+            root = if local.0 & (1_u32 << bit) == 0 {
+                zero
+            } else {
+                one
+            };
+        }
+        match self.node(root) {
+            Some(EnvironmentNode::Leaf(value)) => Some(value),
+            Some(EnvironmentNode::Branch { .. }) | None => None,
+        }
+    }
+
+    fn set(
+        &mut self,
+        root: EnvironmentRoot,
+        local: LocalId,
+        value: ValueId,
+    ) -> Result<EnvironmentRoot, LoweringError> {
+        self.set_at(root, local.0, Some(value), 0)
+    }
+
+    fn remove(
+        &mut self,
+        root: EnvironmentRoot,
+        local: LocalId,
+    ) -> Result<EnvironmentRoot, LoweringError> {
+        self.set_at(root, local.0, None, 0)
+    }
+
+    fn set_at(
+        &mut self,
+        root: EnvironmentRoot,
+        key: u32,
+        value: Option<ValueId>,
+        depth: u32,
+    ) -> Result<EnvironmentRoot, LoweringError> {
+        if depth == u32::BITS {
+            return match value {
+                None => Ok(EMPTY_ENVIRONMENT),
+                Some(value) if matches!(self.node(root), Some(EnvironmentNode::Leaf(current)) if current == value) => {
+                    Ok(root)
+                }
+                Some(value) => self.push_node(EnvironmentNode::Leaf(value)),
+            };
+        }
+
+        let (zero, one) = self.children(root);
+        let bit = u32::BITS - depth - 1;
+        let (next_zero, next_one) = if key & (1_u32 << bit) == 0 {
+            (self.set_at(zero, key, value, depth + 1)?, one)
+        } else {
+            (zero, self.set_at(one, key, value, depth + 1)?)
+        };
+        if next_zero == EMPTY_ENVIRONMENT && next_one == EMPTY_ENVIRONMENT {
+            return Ok(EMPTY_ENVIRONMENT);
+        }
+        if self.children(root) == (next_zero, next_one) {
+            return Ok(root);
+        }
+        self.push_node(EnvironmentNode::Branch {
+            zero: next_zero,
+            one: next_one,
+        })
+    }
+
+    fn changed_locals(
+        &self,
+        base: EnvironmentRoot,
+        alternatives: &[EnvironmentRoot],
+    ) -> Vec<LocalId> {
+        let mut locals = Vec::new();
+        for alternative in alternatives {
+            self.collect_differences(base, *alternative, 0, 0, &mut locals);
+        }
+        locals.sort_unstable_by_key(|local| local.0);
+        locals.dedup();
+        locals
+    }
+
+    fn collect_differences(
+        &self,
+        left: EnvironmentRoot,
+        right: EnvironmentRoot,
+        depth: u32,
+        prefix: u32,
+        locals: &mut Vec<LocalId>,
+    ) -> usize {
+        if left == right {
+            return 0;
+        }
+        if depth == u32::BITS {
+            if self.leaf_value(left) != self.leaf_value(right) {
+                locals.push(LocalId(prefix));
+            }
+            return 1;
+        }
+
+        let (left_zero, left_one) = self.children(left);
+        let (right_zero, right_one) = self.children(right);
+        let zero_visits =
+            self.collect_differences(left_zero, right_zero, depth + 1, prefix, locals);
+        let bit = u32::BITS - depth - 1;
+        let one_visits = self.collect_differences(
+            left_one,
+            right_one,
+            depth + 1,
+            prefix | (1_u32 << bit),
+            locals,
+        );
+        1 + zero_visits + one_visits
+    }
+
+    fn push_node(&mut self, node: EnvironmentNode) -> Result<EnvironmentRoot, LoweringError> {
+        let raw = self
+            .nodes
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: "SSA environment exhausted the host address space".into(),
+            })?;
+        let id = u32::try_from(raw).map_err(|_| LoweringError::ResourceLimit {
+            code: ResourceLimitCode::ProgramTooLarge,
+            message: "SSA environment exhausted its u32 node-id domain".into(),
+        })?;
+        self.nodes
+            .try_reserve(1)
+            .map_err(|error| LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: format!("cannot grow the SSA environment: {error}"),
+            })?;
+        self.nodes.push(node);
+        Ok(id)
+    }
+
+    fn node(&self, root: EnvironmentRoot) -> Option<EnvironmentNode> {
+        root.checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.nodes.get(index))
+            .copied()
+    }
+
+    fn children(&self, root: EnvironmentRoot) -> (EnvironmentRoot, EnvironmentRoot) {
+        match self.node(root) {
+            Some(EnvironmentNode::Branch { zero, one }) => (zero, one),
+            Some(EnvironmentNode::Leaf(_)) | None => (EMPTY_ENVIRONMENT, EMPTY_ENVIRONMENT),
+        }
+    }
+
+    fn leaf_value(&self, root: EnvironmentRoot) -> Option<ValueId> {
+        match self.node(root) {
+            Some(EnvironmentNode::Leaf(value)) => Some(value),
+            Some(EnvironmentNode::Branch { .. }) | None => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct Flow {
     block: BlockId,
-    env: BTreeMap<LocalId, ValueId>,
+    env: EnvironmentRoot,
 }
 
 enum EvalFlow {
@@ -1570,6 +1756,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     instances: &'plan BTreeMap<FunctionId, InstanceId>,
     effects: &'plan [Option<Effects>],
     local_types: BTreeMap<LocalId, Type>,
+    environments: EnvironmentArena,
     fault_block: Option<BlockId>,
 }
 
@@ -1592,6 +1779,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             instances,
             effects,
             local_types,
+            environments: EnvironmentArena::new(),
             fault_block: None,
         }
     }
@@ -1599,14 +1787,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower(mut self) -> Result<(), LoweringError> {
         let entry = self.create_block()?;
         self.builder.set_entry(entry).map_err(LoweringError::from)?;
-        let mut env = BTreeMap::new();
+        let mut env = EMPTY_ENVIRONMENT;
         for parameter in &self.source.params {
             let ty = self.type_id(&parameter.ty)?;
             let value = self
                 .builder
                 .append_block_parameter(entry, ty)
                 .map_err(LoweringError::from)?;
-            env.insert(parameter.id, value);
+            env = self.environments.set(env, parameter.id, value)?;
         }
         let flow = Flow { block: entry, env };
         match self.lower_scoped_block(flow, &self.source.body)? {
@@ -1764,7 +1952,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         match &statement.kind {
             StatementKind::Let { local, value } => match self.lower_expr(flow, value)? {
                 EvalFlow::Continue { mut flow, value } => {
-                    flow.env.insert(*local, value);
+                    flow.env = self.environments.set(flow.env, *local, value)?;
                     Ok(StatementFlow::Continue(flow))
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
@@ -1780,7 +1968,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     if !place.projection.is_empty() {
                         return Err(self.unsupported_reached("projected assignment"));
                     }
-                    flow.env.insert(place.local, value);
+                    flow.env = self.environments.set(flow.env, place.local, value)?;
                     Ok(StatementFlow::Continue(flow))
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
@@ -1841,17 +2029,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     return Err(self.unsupported_reached("projected place read"));
                 }
                 let mut flow = flow;
-                let value = flow.env.get(&place.local).copied().ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        format!(
-                            "function #{} reads unavailable local #{} at expression #{}",
-                            self.source.id.0, place.local.0, expression.id.0
-                        ),
-                    )
-                })?;
+                let value = self
+                    .environments
+                    .get(flow.env, place.local)
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "function #{} reads unavailable local #{} at expression #{}",
+                                self.source.id.0, place.local.0, expression.id.0
+                            ),
+                        )
+                    })?;
                 if matches!(expression.kind, ExprKind::Move(_)) {
-                    flow.env.remove(&place.local);
+                    flow.env = self.environments.remove(flow.env, place.local)?;
                 }
                 Ok(EvalFlow::Continue { flow, value })
             }
@@ -2140,6 +2331,50 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         })
     }
 
+    fn merge_environments(
+        &mut self,
+        base: EnvironmentRoot,
+        alternatives: &[EnvironmentRoot],
+        join: BlockId,
+    ) -> Result<(EnvironmentRoot, Vec<LocalId>), LoweringError> {
+        let Some(first_alternative) = alternatives.first().copied() else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "cannot merge an empty set of SSA environments",
+            ));
+        };
+        let locals = self.environments.changed_locals(base, alternatives);
+        let mut merged = base;
+        let mut varying = Vec::new();
+        for local in locals {
+            let Some(first) = self.environments.get(first_alternative, local) else {
+                merged = self.environments.remove(merged, local)?;
+                continue;
+            };
+            if alternatives
+                .iter()
+                .any(|environment| self.environments.get(*environment, local).is_none())
+            {
+                // A move on any incoming path makes the local unavailable
+                // after the join. Checked MIR prevents a subsequent read.
+                merged = self.environments.remove(merged, local)?;
+            } else if alternatives
+                .iter()
+                .all(|environment| self.environments.get(*environment, local) == Some(first))
+            {
+                merged = self.environments.set(merged, local, first)?;
+            } else {
+                let parameter = self
+                    .builder
+                    .append_block_parameter(join, self.local_type(local)?)
+                    .map_err(LoweringError::from)?;
+                merged = self.environments.set(merged, local, parameter)?;
+                varying.push(local);
+            }
+        }
+        Ok((merged, varying))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn lower_short_circuit(
         &mut self,
@@ -2160,7 +2395,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let evaluate_flow = self.lower_expr(
             Flow {
                 block: evaluate,
-                env: flow.env.clone(),
+                env: flow.env,
             },
             right,
         )?;
@@ -2196,12 +2431,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             });
         };
 
-        let locals = flow
-            .env
-            .keys()
-            .copied()
-            .filter(|local| right_flow.env.contains_key(local))
-            .collect::<Vec<_>>();
         let join = self.create_block()?;
         let result_varies = condition != right_value;
         let result = if result_varies {
@@ -2211,32 +2440,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         } else {
             condition
         };
-        let mut env = BTreeMap::new();
-        let mut varying_locals = Vec::new();
-        for local in locals {
-            let skipped = *flow.env.get(&local).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("short-circuit skip path lost local #{}", local.0),
-                )
-            })?;
-            let evaluated = *right_flow.env.get(&local).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("short-circuit RHS lost local #{}", local.0),
-                )
-            })?;
-            if skipped == evaluated {
-                env.insert(local, skipped);
-            } else {
-                let parameter = self
-                    .builder
-                    .append_block_parameter(join, self.local_type(local)?)
-                    .map_err(LoweringError::from)?;
-                env.insert(local, parameter);
-                varying_locals.push(local);
-            }
-        }
+        let incoming_environments = [flow.env, right_flow.env];
+        let (env, varying_locals) =
+            self.merge_environments(flow.env, &incoming_environments, join)?;
 
         let mut skip_arguments =
             Vec::with_capacity(usize::from(result_varies) + varying_locals.len());
@@ -2247,18 +2453,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             right_arguments.push(right_value);
         }
         for local in &varying_locals {
-            skip_arguments.push(*flow.env.get(local).ok_or_else(|| {
+            skip_arguments.push(self.environments.get(flow.env, *local).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
                     format!("short-circuit skip argument lost local #{}", local.0),
                 )
             })?);
-            right_arguments.push(*right_flow.env.get(local).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("short-circuit RHS argument lost local #{}", local.0),
-                )
-            })?);
+            right_arguments.push(self.environments.get(right_flow.env, *local).ok_or_else(
+                || {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("short-circuit RHS argument lost local #{}", local.0),
+                    )
+                },
+            )?);
         }
         let skip = BlockTarget::new(join, skip_arguments);
         let evaluate_target = BlockTarget::new(evaluate, []);
@@ -2302,6 +2510,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         else {
             return Ok(EvalFlow::Terminated);
         };
+        let base_environment = flow.env;
         let then_block = self.create_block()?;
         let else_block = self.create_block()?;
         self.terminate(
@@ -2316,7 +2525,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let then_flow = self.lower_scoped_block(
             Flow {
                 block: then_block,
-                env: flow.env.clone(),
+                env: flow.env,
             },
             then_branch,
         )?;
@@ -2329,6 +2538,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )?;
         self.merge_evaluations(
             [then_flow, else_flow],
+            base_environment,
             &expression.ty,
             self.expression_origin(expression),
         )
@@ -2337,6 +2547,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn merge_evaluations<const N: usize>(
         &mut self,
         alternatives: [EvalFlow; N],
+        base_environment: EnvironmentRoot,
         result_type: &Type,
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
@@ -2347,7 +2558,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 EvalFlow::Terminated => None,
             })
             .collect::<Vec<_>>();
-        let Some((first_flow, first_value)) = continuing.first() else {
+        let Some((_, first_value)) = continuing.first() else {
             return Ok(EvalFlow::Terminated);
         };
         if continuing.len() == 1 {
@@ -2360,21 +2571,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return Ok(EvalFlow::Continue { flow, value });
         }
 
-        // A move on only one incoming path makes that local unavailable after
-        // the join. Checked MIR prevents a later read of such a local, so the
-        // SSA environment carries precisely the intersection of available
-        // locals instead of inventing a value for the moved path.
-        let locals = first_flow
-            .env
-            .keys()
-            .copied()
-            .filter(|local| {
-                continuing
-                    .iter()
-                    .all(|(flow, _)| flow.env.contains_key(local))
-            })
-            .collect::<Vec<_>>();
-
         let join = self.create_block()?;
         let result_varies = continuing.iter().any(|(_, value)| value != first_value);
         let result = if result_varies {
@@ -2384,31 +2580,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         } else {
             *first_value
         };
-        let mut env = BTreeMap::new();
-        let mut varying_locals = Vec::new();
-        for local in &locals {
-            let first = *first_flow.env.get(local).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("first join alternative has no local #{}", local.0),
-                )
-            })?;
-            if continuing
-                .iter()
-                .all(|(flow, _)| flow.env.get(local) == Some(&first))
-            {
-                // A value defined before the branch already dominates the
-                // join and does not need an identity block parameter.
-                env.insert(*local, first);
-            } else {
-                let parameter = self
-                    .builder
-                    .append_block_parameter(join, self.local_type(*local)?)
-                    .map_err(LoweringError::from)?;
-                env.insert(*local, parameter);
-                varying_locals.push(*local);
-            }
-        }
+        let incoming_environments = continuing
+            .iter()
+            .map(|(flow, _)| flow.env)
+            .collect::<Vec<_>>();
+        let (env, varying_locals) =
+            self.merge_environments(base_environment, &incoming_environments, join)?;
         for (flow, value) in continuing {
             let mut arguments =
                 Vec::with_capacity(usize::from(result_varies) + varying_locals.len());
@@ -2416,7 +2593,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 arguments.push(value);
             }
             for local in &varying_locals {
-                arguments.push(*flow.env.get(local).ok_or_else(|| {
+                arguments.push(self.environments.get(flow.env, *local).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!("local #{} disappeared while building a join", local.0),
@@ -2451,17 +2628,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let EvalFlow::Continue { flow, value: end } = self.lower_expr(flow, end)? else {
             return Ok(StatementFlow::Terminated);
         };
-        let outer = flow
-            .env
-            .keys()
-            .copied()
-            .filter(|candidate| *candidate != local)
-            .collect::<Vec<_>>();
         let mutations = continuing_mutations(body).unwrap_or_default();
-        let carried = outer
+        let carried = mutations
             .iter()
             .copied()
-            .filter(|candidate| mutations.contains(candidate))
+            .filter(|candidate| {
+                *candidate != local && self.environments.get(flow.env, *candidate).is_some()
+            })
             .collect::<Vec<_>>();
         let header = self.create_block()?;
         let body_block = self.create_block()?;
@@ -2471,27 +2644,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .builder
             .append_block_parameter(header, integer)
             .map_err(LoweringError::from)?;
-        let mut header_env = BTreeMap::new();
+        let mut header_env = self.environments.remove(flow.env, local)?;
         let mut preheader_arguments = vec![start];
-        for outer_local in &outer {
-            let incoming = *flow.env.get(outer_local).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("range lost outer local #{}", outer_local.0),
-                )
-            })?;
-            if mutations.contains(outer_local) {
-                let parameter = self
-                    .builder
-                    .append_block_parameter(header, self.local_type(*outer_local)?)
-                    .map_err(LoweringError::from)?;
-                header_env.insert(*outer_local, parameter);
-                preheader_arguments.push(incoming);
-            } else {
-                // Values defined before the loop dominate its header and do
-                // not need identity backedge arguments.
-                header_env.insert(*outer_local, incoming);
-            }
+        for outer_local in &carried {
+            let incoming = self
+                .environments
+                .get(flow.env, *outer_local)
+                .ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("range lost outer local #{}", outer_local.0),
+                    )
+                })?;
+            let parameter = self
+                .builder
+                .append_block_parameter(header, self.local_type(*outer_local)?)
+                .map_err(LoweringError::from)?;
+            header_env = self.environments.set(header_env, *outer_local, parameter)?;
+            preheader_arguments.push(incoming);
         }
         let origin = self.statement_origin(statement);
         self.terminate(
@@ -2502,7 +2672,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let condition = match self.one_instruction(
             Flow {
                 block: header,
-                env: header_env.clone(),
+                env: header_env,
             },
             InstructionKind::IntCompare {
                 predicate: IntPredicate::Less,
@@ -2530,8 +2700,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             origin,
         )?;
 
-        let mut body_env = header_env.clone();
-        body_env.insert(local, current);
+        let body_env = self.environments.set(header_env, local, current)?;
         let lowered_body = self.lower_scoped_block(
             Flow {
                 block: body_block,
@@ -2570,12 +2739,16 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             };
             let mut backedge_arguments = vec![next];
             for outer_local in &carried {
-                backedge_arguments.push(*next_flow.env.get(outer_local).ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        format!("range body lost outer local #{}", outer_local.0),
-                    )
-                })?);
+                backedge_arguments.push(
+                    self.environments
+                        .get(next_flow.env, *outer_local)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                format!("range body lost outer local #{}", outer_local.0),
+                            )
+                        })?,
+                );
             }
             self.terminate(
                 next_flow.block,
@@ -2714,6 +2887,59 @@ const fn float_predicate(operator: BinaryOp) -> Option<FloatPredicate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::ProgramBrand;
+
+    #[test]
+    fn persistent_environment_identity_joins_are_independent_of_live_local_count() {
+        const LOCAL_COUNT: u32 = 8_192;
+        const IDENTITY_JOIN_COUNT: usize = 8_192;
+
+        let brand = ProgramBrand::fresh();
+        let owner = InstanceId::from_index(brand, 0).expect("test instance");
+        let value = |raw| ValueId::from_index(owner, raw).expect("test value");
+        let mut environments = EnvironmentArena::new();
+        let mut root = EMPTY_ENVIRONMENT;
+        for raw in 0..LOCAL_COUNT {
+            root = environments
+                .set(root, LocalId(raw), value(raw as usize))
+                .expect("populate persistent environment");
+        }
+
+        // One insertion copies no more than its leaf and one branch per key
+        // bit. This guards the persistent representation's linear arena bound.
+        assert!(environments.nodes.len() <= LOCAL_COUNT as usize * 33);
+        let populated_nodes = environments.nodes.len();
+        let identity_alternatives = [root, root];
+        let mut divergent_nodes_visited = 0;
+        for _ in 0..IDENTITY_JOIN_COUNT {
+            let mut differences = Vec::new();
+            divergent_nodes_visited +=
+                environments.collect_differences(root, root, 0, 0, &mut differences);
+            assert!(differences.is_empty());
+            assert!(
+                environments
+                    .changed_locals(root, &identity_alternatives)
+                    .is_empty()
+            );
+        }
+        assert_eq!(divergent_nodes_visited, 0);
+        assert_eq!(environments.nodes.len(), populated_nodes);
+
+        // A real one-local change traverses just its radix path even when the
+        // environment contains thousands of unrelated live locals.
+        let changed_local = LocalId(LOCAL_COUNT / 2);
+        let changed = environments
+            .set(root, changed_local, value(LOCAL_COUNT as usize))
+            .expect("update one local");
+        assert!(environments.nodes.len() <= populated_nodes + 33);
+        let mut differences = Vec::new();
+        let visits = environments.collect_differences(root, changed, 0, 0, &mut differences);
+        assert_eq!(differences, [changed_local]);
+        assert!(
+            visits <= 33,
+            "one changed radix path visited {visits} nodes"
+        );
+    }
 
     #[test]
     fn direct_never_call_stops_effect_scanning_before_a_dead_callee() {
