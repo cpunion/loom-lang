@@ -13,7 +13,10 @@ use loom_codegen_llvm::{
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
-use loom_mir::{CheckedProgram, ContractExprKind, ExprKind, Function, StatementKind, UnaryOp};
+use loom_mir::{
+    CheckedProgram, Constant as MirConstant, ContractExprKind, ExprKind, Function, Pattern,
+    StatementKind, UnaryOp,
+};
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 mod support;
@@ -411,6 +414,62 @@ fn source_function<'program>(
         .unwrap_or_else(|| panic!("source function ending in `{suffix}`"))
 }
 
+fn checked_float_pattern_fixture() -> CheckedProgram {
+    let source = r"module lcir_float_patterns
+
+fn classify(value Float) Int {
+    match value {
+        0.0 => 10
+        1.0 => 20
+        42.0 => 21
+        _ => 30
+    }
+}
+
+fn requireEqual(actual Int, expected Int) Unit {
+    if actual == expected {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    requireEqual(classify(0.0), 10)
+    requireEqual(classify(-0.0), 10)
+    requireEqual(classify(1.0), 20)
+    requireEqual(classify(42.0), 30)
+    requireEqual(classify(0.0 / 0.0), 30)
+    Unit
+}
+";
+    let mut program = compile_source(source).into_program();
+    let classify = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with(".classify"))
+        .expect("manual classify MIR");
+    let ExprKind::Match { arms, .. } = &mut classify
+        .body
+        .tail
+        .as_deref_mut()
+        .expect("classify tail")
+        .kind
+    else {
+        panic!("classify tail must remain a MIR match")
+    };
+    for (replacement, index) in [(-0.0, 0_usize), (f64::from_bits(0x7ff8_0000_0000_0042), 2)] {
+        let Pattern::Constant(MirConstant::Float(value)) =
+            &mut arms.get_mut(index).expect("manual float pattern").pattern
+        else {
+            panic!("edited pattern must be a float constant")
+        };
+        *value = replacement;
+    }
+    CheckedProgram::new(program).expect("manually edited IEEE-pattern MIR must validate")
+}
+
 fn assert_no_legacy_surface(ir: &str) {
     for forbidden in [
         "loom.Value",
@@ -459,6 +518,58 @@ fn assert_fallible_surface(ir: &str) {
     assert!(ir.contains("loom_context_raise_fault_v1"), "{ir}");
     assert!(!ir.contains("loom_executor_"), "{ir}");
     assert!(!ir.contains("loom_gc_"), "{ir}");
+}
+
+const LIVE_SUM_CARRIER_SOURCE: &str = r"module lcir_live_sum_carrier
+
+enum Packet {
+    Empty
+    Wide(Int)
+    Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+}
+
+enum Problem { WrongCarrier }
+
+test fn carriesAcrossLoop() Result[Unit, Problem] {
+    var packet = Packet.Empty
+    for index in 0..1000 {
+        packet = match packet {
+            Empty => Packet.Wide(index)
+            Wide(_) => Packet.Bytes(false, false, false, false, false, false, false, false, true)
+            Bytes(_, _, _, _, _, _, _, _, _) => Packet.Empty
+        }
+        Unit
+    }
+    match packet {
+        Wide(value) => if value == 999 { Ok(Unit) } else { Err(Problem.WrongCarrier) }
+        _ => Err(Problem.WrongCarrier)
+    }
+}
+";
+
+#[test]
+fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
+    let program = checked_float_pattern_fixture();
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = loom_codegen_ir::dump_program(artifact.program());
+    assert_eq!(
+        dump.matches("float.compare.ordered_equal").count(),
+        2,
+        "+0 must match a -0 pattern, while a NaN pattern is impossible:\n{dump}"
+    );
+
+    let lcir = emit_and_run_lcir(&artifact, "float-patterns");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-float-patterns");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
 }
 
 #[test]
@@ -1644,45 +1755,46 @@ pub fn main() Unit {
 }
 
 #[test]
-fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
-    let source = r"module lcir_msvc_sums
-
-enum Packet {
-    Empty
-    Wide(Int)
-    Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
-}
-
-fn score(input Packet) Int {
-    match input {
-        Empty => 0
-        Wide(value) => value
-        Bytes(a, b, c, d, e, f, g, h, i) => {
-            discard a
-            discard b
-            discard c
-            discard d
-            discard e
-            discard f
-            discard g
-            discard h
-            if i { 9 } else { 8 }
-        }
-    }
-}
-
-pub fn main() Unit {
-    discard score(Packet.Wide(7))
-    Unit
-}
-";
-    let program = compile_source(source);
-    let artifact = lower_source_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
+fn release_keeps_a_live_sum_carrier_in_register_ssa() {
+    let program = compile_source(LIVE_SUM_CARRIER_SOURCE);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1);
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
     );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let release = emit_and_run_lcir_with_options(
+        &artifact,
+        "release-live-sum",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+
+    assert!(release.output.status.success(), "{:?}", release.output);
+    assert!(release.ir.contains("switch i8"), "{}", release.ir);
+    assert!(release.ir.contains(" = phi { i8, {"), "{}", release.ir);
+    assert!(release.ir.contains(" phi i64 "), "{}", release.ir);
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(
+            !release.ir.contains(forbidden),
+            "unexpected `{forbidden}` in live release carrier IR:\n{}",
+            release.ir
+        );
+    }
+    assert_no_indirect_calls(&release.ir);
+}
+
+#[test]
+fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
+    let program = compile_source(LIVE_SUM_CARRIER_SOURCE);
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let directory = tempfile::tempdir().expect("create MSVC sum output directory");
     let object = directory.path().join("sum.obj");
     let ir_path = directory.path().join("sum-msvc.ll");
@@ -1698,6 +1810,12 @@ pub fn main() Unit {
     )
     .expect("emit direct closed-sum MSVC object");
     assert!(object.is_file());
+    let object_bytes = std::fs::read(&object).expect("read MSVC object");
+    assert_eq!(
+        object_bytes.get(..2),
+        Some([0x64, 0x86].as_slice()),
+        "x86_64 MSVC output must be a real AMD64 COFF object"
+    );
     let ir = std::fs::read_to_string(ir_path).expect("read MSVC sum IR");
     for forbidden in [
         "alloca",
@@ -1709,6 +1827,9 @@ pub fn main() Unit {
     ] {
         assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
     }
+    assert!(ir.contains("switch i8"), "{ir}");
+    assert!(ir.contains(" = phi { i8, {"), "{ir}");
+    assert!(ir.contains(" phi i64 "), "{ir}");
     assert_no_indirect_calls(&ir);
     assert_pure_surface(&ir);
 }

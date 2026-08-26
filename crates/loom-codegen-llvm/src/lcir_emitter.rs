@@ -7,6 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use inkwell::AddressSpace;
@@ -20,7 +21,7 @@ use inkwell::debug_info::{
 };
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{FileType, TargetData};
+use inkwell::targets::{ByteOrdering, FileType, TargetData};
 use inkwell::types::{
     AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, IntType, StructType,
 };
@@ -2027,24 +2028,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     }
                     return Ok(tag.into());
                 };
-                let carrier_pointer = self
-                    .backend
-                    .builder
-                    .build_alloca(carrier_type, "sum.construct.carrier")
-                    .map_err(builder_error)?;
-                self.backend
-                    .builder
-                    .build_store(carrier_pointer, carrier_type.const_zero())
-                    .map_err(builder_error)?;
-                self.backend
-                    .builder
-                    .build_store(carrier_pointer, payload_value)
-                    .map_err(builder_error)?;
-                let carrier = self
-                    .backend
-                    .builder
-                    .build_load(carrier_type, carrier_pointer, "sum.construct.carrier.value")
-                    .map_err(builder_error)?;
+                let carrier = self.pack_sum_carrier(payload_value, payload_type, carrier_type)?;
                 let physical = layout.physical.into_struct_type();
                 let tagged = self
                     .backend
@@ -2060,6 +2044,369 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .into_struct_value()
                     .into())
             }
+        }
+    }
+
+    fn pack_sum_carrier(
+        &self,
+        payload: inkwell::values::StructValue<'ctx>,
+        payload_type: StructType<'ctx>,
+        carrier_type: StructType<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if self.carrier_byte_len(carrier_type)? == 0 {
+            return Ok(carrier_type.const_zero().into());
+        }
+        let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
+        let bits = self.pack_value_bits(
+            wide_type.const_zero(),
+            wide_type,
+            payload.into(),
+            payload_type.into(),
+            0,
+        )?;
+        let byte_array_type = carrier_type
+            .get_field_type_at_index(1)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum carrier has no byte array"))?
+            .into_array_type();
+        let mut byte_array = byte_array_type.const_zero();
+        for index in 0..bytes {
+            let shift = wide_type.const_int(u64::from(index).saturating_mul(8), false);
+            let shifted = if index == 0 {
+                bits
+            } else {
+                self.backend
+                    .builder
+                    .build_right_shift(bits, shift, false, "sum.pack.byte.shift")
+                    .map_err(builder_error)?
+            };
+            let byte = self
+                .backend
+                .builder
+                .build_int_truncate(shifted, self.backend.context.i8_type(), "sum.pack.byte")
+                .map_err(builder_error)?;
+            byte_array = self
+                .backend
+                .builder
+                .build_insert_value(byte_array, byte, index, "sum.pack.carrier.byte")
+                .map_err(builder_error)?
+                .into_array_value();
+        }
+        Ok(self
+            .backend
+            .builder
+            .build_insert_value(carrier_type.const_zero(), byte_array, 1, "sum.pack.carrier")
+            .map_err(builder_error)?
+            .into_struct_value()
+            .into())
+    }
+
+    fn unpack_sum_carrier(
+        &self,
+        carrier: BasicValueEnum<'ctx>,
+        carrier_type: StructType<'ctx>,
+        payload_type: StructType<'ctx>,
+    ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
+        if self.carrier_byte_len(carrier_type)? == 0 {
+            return Ok(payload_type.const_zero());
+        }
+        let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
+        let byte_array = self
+            .backend
+            .builder
+            .build_extract_value(carrier.into_struct_value(), 1, "sum.unpack.carrier.bytes")
+            .map_err(builder_error)?
+            .into_array_value();
+        let mut bits = wide_type.const_zero();
+        for index in 0..bytes {
+            let byte = self
+                .backend
+                .builder
+                .build_extract_value(byte_array, index, "sum.unpack.carrier.byte")
+                .map_err(builder_error)?
+                .into_int_value();
+            let extended = self
+                .backend
+                .builder
+                .build_int_z_extend(byte, wide_type, "sum.unpack.byte.extend")
+                .map_err(builder_error)?;
+            let shifted = if index == 0 {
+                extended
+            } else {
+                self.backend
+                    .builder
+                    .build_left_shift(
+                        extended,
+                        wide_type.const_int(u64::from(index).saturating_mul(8), false),
+                        "sum.unpack.byte.shift",
+                    )
+                    .map_err(builder_error)?
+            };
+            bits = self
+                .backend
+                .builder
+                .build_or(bits, shifted, "sum.unpack.byte.merge")
+                .map_err(builder_error)?;
+        }
+        Ok(self
+            .unpack_value_bits(bits, wide_type, payload_type.into(), 0)?
+            .into_struct_value())
+    }
+
+    fn carrier_bits_type(
+        &self,
+        carrier_type: StructType<'ctx>,
+    ) -> Result<(u32, IntType<'ctx>), CodegenError> {
+        if self.backend.target_data.get_byte_ordering() != ByteOrdering::LittleEndian {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "direct LCIR sum carriers currently require a little-endian target",
+            ));
+        }
+        let bytes = self.carrier_byte_len(carrier_type)?;
+        let width = bytes
+            .checked_mul(8)
+            .and_then(NonZeroU32::new)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "sum carrier has no addressable payload bits",
+                )
+            })?;
+        let wide_type = self
+            .backend
+            .context
+            .custom_width_int_type(width)
+            .map_err(|message| CodegenError::new("ProgramTooLarge", message))?;
+        Ok((bytes, wide_type))
+    }
+
+    fn carrier_byte_len(&self, carrier_type: StructType<'ctx>) -> Result<u32, CodegenError> {
+        Ok(carrier_type
+            .get_field_type_at_index(1)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum carrier has no byte array"))?
+            .into_array_type()
+            .len())
+    }
+
+    fn pack_value_bits(
+        &self,
+        accumulator: IntValue<'ctx>,
+        wide_type: IntType<'ctx>,
+        value: BasicValueEnum<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+        byte_offset: u64,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        match ty {
+            BasicTypeEnum::IntType(ty) => {
+                let value = value.into_int_value();
+                let value = match ty.get_bit_width().cmp(&wide_type.get_bit_width()) {
+                    std::cmp::Ordering::Less => self
+                        .backend
+                        .builder
+                        .build_int_z_extend(value, wide_type, "sum.pack.extend")
+                        .map_err(builder_error)?,
+                    std::cmp::Ordering::Equal => value,
+                    std::cmp::Ordering::Greater => {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            "sum payload scalar is wider than its carrier",
+                        ));
+                    }
+                };
+                let shifted = if byte_offset == 0 {
+                    value
+                } else {
+                    self.backend
+                        .builder
+                        .build_left_shift(
+                            value,
+                            wide_type.const_int(byte_offset.saturating_mul(8), false),
+                            "sum.pack.shift",
+                        )
+                        .map_err(builder_error)?
+                };
+                self.backend
+                    .builder
+                    .build_or(accumulator, shifted, "sum.pack.merge")
+                    .map_err(builder_error)
+            }
+            BasicTypeEnum::FloatType(ty) => {
+                let width =
+                    u32::try_from(self.backend.target_data.get_bit_size(&ty)).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "sum float payload is too wide")
+                    })?;
+                let int_type = self
+                    .backend
+                    .context
+                    .custom_width_int_type(NonZeroU32::new(width).ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "sum float payload has zero width")
+                    })?)
+                    .map_err(|message| CodegenError::new("ProgramTooLarge", message))?;
+                let bits = self
+                    .backend
+                    .builder
+                    .build_bit_cast(value.into_float_value(), int_type, "sum.pack.float")
+                    .map_err(builder_error)?;
+                self.pack_value_bits(accumulator, wide_type, bits, int_type.into(), byte_offset)
+            }
+            BasicTypeEnum::StructType(ty) => {
+                let value = value.into_struct_value();
+                let mut packed = accumulator;
+                for (index, field_type) in ty.get_field_types().into_iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many nested sum fields")
+                    })?;
+                    let field = self
+                        .backend
+                        .builder
+                        .build_extract_value(value, index, "sum.pack.field")
+                        .map_err(builder_error)?;
+                    let offset = self
+                        .backend
+                        .target_data
+                        .offset_of_element(&ty, index)
+                        .and_then(|offset| byte_offset.checked_add(offset))
+                        .ok_or_else(|| {
+                            CodegenError::new("LlvmAbiDefect", "missing nested sum field offset")
+                        })?;
+                    packed = self.pack_value_bits(packed, wide_type, field, field_type, offset)?;
+                }
+                Ok(packed)
+            }
+            BasicTypeEnum::ArrayType(ty) => {
+                let value = value.into_array_value();
+                let element_type = ty.get_element_type();
+                let stride = self.backend.target_data.get_abi_size(&element_type);
+                let mut packed = accumulator;
+                for index in 0..ty.len() {
+                    let element = self
+                        .backend
+                        .builder
+                        .build_extract_value(value, index, "sum.pack.element")
+                        .map_err(builder_error)?;
+                    let offset = u64::from(index)
+                        .checked_mul(stride)
+                        .and_then(|offset| byte_offset.checked_add(offset))
+                        .ok_or_else(|| {
+                            CodegenError::new("ProgramTooLarge", "sum array offset overflowed")
+                        })?;
+                    packed =
+                        self.pack_value_bits(packed, wide_type, element, element_type, offset)?;
+                }
+                Ok(packed)
+            }
+            BasicTypeEnum::PointerType(_)
+            | BasicTypeEnum::VectorType(_)
+            | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "unsupported physical value in a direct LCIR sum carrier",
+            )),
+        }
+    }
+
+    fn unpack_value_bits(
+        &self,
+        bits: IntValue<'ctx>,
+        wide_type: IntType<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+        byte_offset: u64,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match ty {
+            BasicTypeEnum::IntType(ty) => {
+                let shifted = if byte_offset == 0 {
+                    bits
+                } else {
+                    self.backend
+                        .builder
+                        .build_right_shift(
+                            bits,
+                            wide_type.const_int(byte_offset.saturating_mul(8), false),
+                            false,
+                            "sum.unpack.shift",
+                        )
+                        .map_err(builder_error)?
+                };
+                Ok(if ty.get_bit_width() == wide_type.get_bit_width() {
+                    shifted.into()
+                } else {
+                    self.backend
+                        .builder
+                        .build_int_truncate(shifted, ty, "sum.unpack.int")
+                        .map(Into::into)
+                        .map_err(builder_error)?
+                })
+            }
+            BasicTypeEnum::FloatType(ty) => {
+                let width =
+                    u32::try_from(self.backend.target_data.get_bit_size(&ty)).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "sum float payload is too wide")
+                    })?;
+                let int_type = self
+                    .backend
+                    .context
+                    .custom_width_int_type(NonZeroU32::new(width).ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "sum float payload has zero width")
+                    })?)
+                    .map_err(|message| CodegenError::new("ProgramTooLarge", message))?;
+                let value = self
+                    .unpack_value_bits(bits, wide_type, int_type.into(), byte_offset)?
+                    .into_int_value();
+                self.backend
+                    .builder
+                    .build_bit_cast(value, ty, "sum.unpack.float")
+                    .map_err(builder_error)
+            }
+            BasicTypeEnum::StructType(ty) => {
+                let mut value = ty.get_undef();
+                for (index, field_type) in ty.get_field_types().into_iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "too many nested sum fields")
+                    })?;
+                    let offset = self
+                        .backend
+                        .target_data
+                        .offset_of_element(&ty, index)
+                        .and_then(|offset| byte_offset.checked_add(offset))
+                        .ok_or_else(|| {
+                            CodegenError::new("LlvmAbiDefect", "missing nested sum field offset")
+                        })?;
+                    let field = self.unpack_value_bits(bits, wide_type, field_type, offset)?;
+                    value = self
+                        .backend
+                        .builder
+                        .build_insert_value(value, field, index, "sum.unpack.field")
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                }
+                Ok(value.into())
+            }
+            BasicTypeEnum::ArrayType(ty) => {
+                let element_type = ty.get_element_type();
+                let stride = self.backend.target_data.get_abi_size(&element_type);
+                let mut value = ty.const_zero();
+                for index in 0..ty.len() {
+                    let offset = u64::from(index)
+                        .checked_mul(stride)
+                        .and_then(|offset| byte_offset.checked_add(offset))
+                        .ok_or_else(|| {
+                            CodegenError::new("ProgramTooLarge", "sum array offset overflowed")
+                        })?;
+                    let element = self.unpack_value_bits(bits, wide_type, element_type, offset)?;
+                    value = self
+                        .backend
+                        .builder
+                        .build_insert_value(value, element, index, "sum.unpack.element")
+                        .map_err(builder_error)?
+                        .into_array_value();
+                }
+                Ok(value.into())
+            }
+            BasicTypeEnum::PointerType(_)
+            | BasicTypeEnum::VectorType(_)
+            | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "unsupported physical value in a direct LCIR sum carrier",
+            )),
         }
     }
 
@@ -2313,28 +2660,16 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 SumTagRepr::Tagless => value.into_struct_value(),
                 SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
                     if let Some(carrier_type) = layout.carrier {
-                        let pointer = self
-                            .backend
-                            .builder
-                            .build_alloca(carrier_type, "sum.switch.carrier.payload")
-                            .map_err(builder_error)?;
-                        self.backend
-                            .builder
-                            .build_store(
-                                pointer,
-                                carrier.ok_or_else(|| {
-                                    CodegenError::new(
-                                        "LlvmAbiDefect",
-                                        "tagged sum switch has no carrier value",
-                                    )
-                                })?,
-                            )
-                            .map_err(builder_error)?;
-                        self.backend
-                            .builder
-                            .build_load(*payload_type, pointer, "sum.switch.payload")
-                            .map_err(builder_error)?
-                            .into_struct_value()
+                        self.unpack_sum_carrier(
+                            carrier.ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "tagged sum switch has no carrier value",
+                                )
+                            })?,
+                            carrier_type,
+                            *payload_type,
+                        )?
                     } else {
                         payload_type.const_zero()
                     }
