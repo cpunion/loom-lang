@@ -21,7 +21,8 @@ pub struct Range {
     pub end: Position,
 }
 
-/// Stable compiler JSON span from `docs/06-executable-contract.md`.
+/// Stable compiler JSON span documented in
+/// `docs/reference/language/diagnostics.md`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SpanRecord {
     pub path: String,
