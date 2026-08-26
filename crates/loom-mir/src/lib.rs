@@ -500,13 +500,17 @@ pub enum StatementKind {
 /// Checked-construction disposition fixed by semantic analysis.
 ///
 /// `Plain` is valid only for records without an invariant. `Proven` carries a
-/// compiler proof and directly establishes the nominal value. `Runtime`
-/// evaluates the predicate/invariant and returns `Result`.
+/// process-local compiler proof and directly establishes the nominal value;
+/// artifact decoding never trusts this wire spelling. `Recheck` preserves the
+/// direct nominal shape while replaying a serialized construction's predicate
+/// or invariant and raising `ArtifactProofRejected` if it no longer holds.
+/// `Runtime` evaluates the predicate/invariant and returns `Result`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstructionMode {
     Plain,
     Proven,
+    Recheck,
     Runtime,
 }
 

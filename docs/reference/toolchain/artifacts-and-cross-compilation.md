@@ -15,9 +15,18 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`18`. Portable libraries have format version `1`. The compiler does not append
+`19`. Portable libraries have format version `1`; their nested checked-MIR
+payload uses version `19`. The compiler does not append
 the `.loomlib` extension automatically. Both formats also record the Loom
 language version and are fully decoded and MIR-validated before use.
+
+Source-local construction proofs are not portable certificates. `.loomi` and
+`.loomlib` encode them as mandatory predicate/invariant rechecks. A successful
+recheck publishes the original nominal value; a failed one raises the canonical
+`ArtifactProofRejected` runtime fault instead of producing a source `Result`.
+The disposition cannot by itself bypass the embedded condition. Artifact
+authenticity still depends on the trusted registry or distribution channel,
+not on the MIR envelope.
 
 These are internal toolchain formats, not long-term archival formats. Preserve
 the compiler version needed to reproduce important artifacts.

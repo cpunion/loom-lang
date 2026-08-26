@@ -57,10 +57,19 @@ payload records them per module. This lets a later process load the compatible
 graph and retain unchanged modules after one body edit. Cached semantic state
 containing error diagnostics is rejected.
 
+Proof-elision dispositions are process-local. Typed states containing them are
+not written to disk, and persisted bodies that could eliminate a construction,
+assertion, or contract check are conservatively reanalyzed from source rather
+than trusted for that disposition. This restriction does not apply to reuse
+inside one `AnalysisHost` process.
+
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
 and contract mode. A checked-MIR cache hit still runs the artifact decoder and
-MIR validator before execution or code generation.
+MIR validator before execution or code generation. Proof-bearing checked MIR is
+not published; a forged or legacy proof-bearing payload loads as a miss. Source
+reanalysis reconstructs the same fresh `Proven` MIR as a cold build instead of
+permanently degrading a warm build to `Recheck` and the legacy route.
 
 ## Native object reuse
 
@@ -81,6 +90,10 @@ unknown schema, wrong namespace/key/size, missing blob, digest mismatch,
 malformed diagnostics, malformed semantic state, or invalid MIR produces a
 miss. Cache stores are atomic and compilation treats ordinary cache I/O
 failure as non-fatal.
+
+The CAS digest is an integrity check, not an authenticity mechanism against a
+same-permission local attacker. Portable package authenticity is a separate
+registry/distribution concern.
 
 The HTTP package cache is separate and has its own bundle and materialized-file
 validation. See [Toolchain caching](../reference/toolchain/caching.md).

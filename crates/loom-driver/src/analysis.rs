@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use loom_core::{Diagnostic, FileId, Severity, Span};
-use loom_hir::{BodyId, LoweringResult, PackageSourceUnit, lower_package_files};
+use loom_hir::{
+    BodyId, BodyKind, Expr as HirExpr, LoweringResult, PackageSourceUnit,
+    Statement as HirStatement, lower_package_files,
+};
 use loom_interpreter::{Interpreter, TestResult};
 use loom_lowering::lower_to_mir;
 use loom_mir::CheckedProgram as CheckedMirProgram;
@@ -565,6 +568,7 @@ impl AnalysisHost {
             .semantic_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut loaded_persistent_state = false;
         if state.is_none()
             && !source_has_errors
             && let Some((cache, compiler_version)) = persistent
@@ -575,6 +579,7 @@ impl AnalysisHost {
                     keys: cached.keys,
                     analysis: cached.analysis,
                 });
+                loaded_persistent_state = true;
             }
         }
         let total_bodies = hir.bodies.iter().count();
@@ -605,6 +610,11 @@ impl AnalysisHost {
             hir.bodies
                 .iter()
                 .filter_map(|(body, definition)| {
+                    if loaded_persistent_state
+                        && body_may_elide_runtime_validation(&hir.bodies[body])
+                    {
+                        return None;
+                    }
                     let owner = &hir.definitions[definition.owner];
                     let source_module = &hir.modules[owner.module];
                     let module = if source_module.package.name() == "<legacy>" {
@@ -665,6 +675,24 @@ impl AnalysisHost {
         }
         (analysis, semantic_stats)
     }
+}
+
+fn body_may_elide_runtime_validation(body: &loom_hir::Body) -> bool {
+    if !matches!(body.kind, BodyKind::Function | BodyKind::Method) {
+        return true;
+    }
+    body.expressions
+        .iter()
+        .any(|(_, expression)| match expression {
+            HirExpr::Call { .. }
+            | HirExpr::MethodCall { .. }
+            | HirExpr::QualifiedMethodCall { .. }
+            | HirExpr::RecordLiteral { .. } => true,
+            HirExpr::Block { statements, .. } => statements
+                .iter()
+                .any(|statement| matches!(statement, HirStatement::Assert(_))),
+            _ => false,
+        })
 }
 
 fn validate_package_module(

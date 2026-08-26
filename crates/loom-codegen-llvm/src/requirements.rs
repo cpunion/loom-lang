@@ -712,10 +712,17 @@ impl RequirementScanner<'_> {
                     self.scan_expr(&arm.value, output)?;
                 }
             }
-            ExprKind::Record { fields, .. } => {
+            ExprKind::Record {
+                fields,
+                construction,
+                ..
+            } => {
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_COLLECT);
+                if *construction == loom_mir::ConstructionMode::Recheck {
+                    output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                }
                 for field in fields {
                     self.scan_expr(field, output)?;
                 }
@@ -728,9 +735,20 @@ impl RequirementScanner<'_> {
                     self.scan_expr(value, output)?;
                 }
             }
-            ExprKind::Refine { value, .. }
-            | ExprKind::Unrefine(value)
-            | ExprKind::MakeView { value, .. } => {
+            ExprKind::Refine {
+                value,
+                construction,
+                ..
+            } => {
+                output
+                    .requirements
+                    .include(RuntimeRequirements::MAY_COLLECT);
+                if *construction == loom_mir::ConstructionMode::Recheck {
+                    output.requirements.include(RuntimeRequirements::MAY_FAULT);
+                }
+                self.scan_expr(value, output)?;
+            }
+            ExprKind::Unrefine(value) | ExprKind::MakeView { value, .. } => {
                 output
                     .requirements
                     .include(RuntimeRequirements::MAY_COLLECT);

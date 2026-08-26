@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use loom_core::Span;
-use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_core::runtime_fault::{
+    ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
@@ -2381,10 +2384,14 @@ impl<'program> Interpreter<'program> {
                     .map(|field| self.eval_expr(frame, field))
                     .collect::<Result<Vec<_>, _>>()?;
                 let value = Value::Record { ty: *ty, fields };
-                if *construction == ConstructionMode::Runtime {
-                    Ok(self.checked_record(*ty, value, expression.span)?)
-                } else {
-                    Ok(value)
+                match construction {
+                    ConstructionMode::Runtime => {
+                        Ok(self.checked_record(*ty, value, expression.span)?)
+                    }
+                    ConstructionMode::Recheck => {
+                        Ok(self.rechecked_record(*ty, value, expression.span)?)
+                    }
+                    ConstructionMode::Plain | ConstructionMode::Proven => Ok(value),
                 }
             }
             ExprKind::Variant {
@@ -2406,13 +2413,17 @@ impl<'program> Interpreter<'program> {
                 construction,
             } => {
                 let value = self.eval_expr(frame, value)?;
-                if *construction == ConstructionMode::Runtime {
-                    Ok(self.checked_refine(*ty, value, expression.span)?)
-                } else {
-                    Ok(Value::Refined {
+                match construction {
+                    ConstructionMode::Runtime => {
+                        Ok(self.checked_refine(*ty, value, expression.span)?)
+                    }
+                    ConstructionMode::Recheck => {
+                        Ok(self.rechecked_refine(*ty, value, expression.span)?)
+                    }
+                    ConstructionMode::Plain | ConstructionMode::Proven => Ok(Value::Refined {
                         ty: *ty,
                         value: Box::new(value),
-                    })
+                    }),
                 }
             }
             ExprKind::Unrefine(value) => {
@@ -4739,6 +4750,53 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn rechecked_refine(
+        &mut self,
+        ty: TypeId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self.program.type_def(ty).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "refined type does not exist",
+                span,
+            ))
+        })?;
+        let TypeDefKind::Refined { predicate, .. } = &definition.kind else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "proof recheck targets a non-refined type",
+                    span,
+                )
+                .into());
+        };
+        let context = ContractContext {
+            receiver: Some(&value),
+            result: None,
+            arguments: &[],
+            old_receiver: None,
+            old_arguments: &[],
+            bindings: &[],
+        };
+        let predicate_value = self.eval_contract(&predicate.expression, &context)?;
+        if expect_bool(&predicate_value, span)? {
+            Ok(Value::Refined {
+                ty,
+                value: Box::new(value),
+            })
+        } else {
+            Err(self
+                .runtime_fault(
+                    ARTIFACT_PROOF_REJECTED_FAULT_CODE,
+                    ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+                    span,
+                )
+                .into())
+        }
+    }
+
     fn checked_record(
         &mut self,
         ty: TypeId,
@@ -4792,6 +4850,54 @@ impl<'program> Interpreter<'program> {
                 },
                 span,
             )
+        }
+    }
+
+    fn rechecked_record(
+        &mut self,
+        ty: TypeId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let definition = self.program.type_def(ty).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "record type does not exist",
+                span,
+            ))
+        })?;
+        let TypeDefKind::Record {
+            invariant: Some(invariant),
+            ..
+        } = &definition.kind
+        else {
+            return Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "proof recheck targets a record without an invariant",
+                    span,
+                )
+                .into());
+        };
+        let context = ContractContext {
+            receiver: Some(&value),
+            result: None,
+            arguments: &[],
+            old_receiver: None,
+            old_arguments: &[],
+            bindings: &[],
+        };
+        let invariant_value = self.eval_contract(&invariant.expression, &context)?;
+        if expect_bool(&invariant_value, span)? {
+            Ok(value)
+        } else {
+            Err(self
+                .runtime_fault(
+                    ARTIFACT_PROOF_REJECTED_FAULT_CODE,
+                    ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+                    span,
+                )
+                .into())
         }
     }
 

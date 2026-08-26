@@ -26,6 +26,15 @@ blob size, and content digest. A corrupt entry becomes a cache miss rather than
 a partially trusted compiler input. Cached checked MIR additionally passes the
 normal artifact decoder and MIR validator.
 
+Construction proofs are process-local analysis conclusions, not cache
+certificates. The compiler therefore does not publish proof-bearing typed state
+or checked MIR to the persistent cache. Loads also reject a forged proof
+disposition. Such a layer is reported as a miss and rebuilt from source, so a
+warm command does not silently change from a proof-eliminated direct route to a
+runtime-recheck route. Parse, interface and other proof-free layers can still
+hit normally. Long-lived in-process analysis reuse has not crossed this disk
+boundary and remains available.
+
 Current namespaces include:
 
 - source parse results;
@@ -88,6 +97,9 @@ the run/test harness kind, selected roots, source reachability, reachable
 functions and witness slots, and the semantic tables consumed by legacy
 lowering. Fingerprint errors disable neither validation nor correctness; they
 are reported instead of being converted into a cache miss.
+
+These digests provide content integrity and deterministic identity. They do not
+authenticate a cache against an actor with the same filesystem permissions.
 
 ## Registry cache
 

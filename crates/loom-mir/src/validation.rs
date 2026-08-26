@@ -178,6 +178,7 @@ impl Error for MirValidationErrors {}
 #[derive(Clone, Debug)]
 pub struct CheckedProgram {
     program: Program,
+    serialized_construction_proofs_distrusted: bool,
 }
 
 impl CheckedProgram {
@@ -198,6 +199,20 @@ impl CheckedProgram {
     #[must_use]
     pub fn into_program(self) -> Program {
         self.program
+    }
+
+    /// Reports whether artifact decoding replaced at least one serialized
+    /// construction proof with a mandatory replay.
+    ///
+    /// A compiler cache uses this provenance bit to rebuild from its exact
+    /// source input instead of turning a warm build into a `Recheck` build.
+    #[must_use]
+    pub const fn serialized_construction_proofs_were_distrusted(&self) -> bool {
+        self.serialized_construction_proofs_distrusted
+    }
+
+    pub(crate) fn mark_serialized_construction_proofs_distrusted(&mut self) {
+        self.serialized_construction_proofs_distrusted = true;
     }
 }
 
@@ -236,7 +251,10 @@ pub fn validate_program(program: &Program) -> Result<(), MirValidationErrors> {
 /// Returns every independently discoverable structural error.
 pub fn check_program(program: Program) -> Result<CheckedProgram, MirValidationErrors> {
     validate_program(&program)?;
-    Ok(CheckedProgram { program })
+    Ok(CheckedProgram {
+        program,
+        serialized_construction_proofs_distrusted: false,
+    })
 }
 
 #[derive(Clone)]
@@ -4402,7 +4420,12 @@ impl<'program> Validator<'program> {
         let valid_construction = matches!(
             (invariant.is_some(), construction),
             (false, ConstructionMode::Plain)
-                | (true, ConstructionMode::Proven | ConstructionMode::Runtime)
+                | (
+                    true,
+                    ConstructionMode::Proven
+                        | ConstructionMode::Recheck
+                        | ConstructionMode::Runtime
+                )
         );
         if !valid_construction {
             self.push(
@@ -4563,7 +4586,9 @@ impl<'program> Validator<'program> {
                 );
                 None
             }
-            ConstructionMode::Proven => Some(Type::Nominal(type_id, Vec::new())),
+            ConstructionMode::Proven | ConstructionMode::Recheck => {
+                Some(Type::Nominal(type_id, Vec::new()))
+            }
             ConstructionMode::Runtime => self.expected_result_type(
                 Type::Nominal(type_id, Vec::new()),
                 self.program.prelude.constraint_error,
@@ -8550,7 +8575,10 @@ impl<'program> Validator<'program> {
                         return no_value(true);
                     }
                 }
-                if *construction == ConstructionMode::Runtime {
+                if matches!(
+                    construction,
+                    ConstructionMode::Recheck | ConstructionMode::Runtime
+                ) {
                     self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(expression.ty == Type::Never)
@@ -8577,7 +8605,12 @@ impl<'program> Validator<'program> {
             } => {
                 let flow =
                     self.dataflow_expr(function, value, state, &format!("{path}.value"), depth + 1);
-                if !flow.diverges && *construction == ConstructionMode::Runtime {
+                if !flow.diverges
+                    && matches!(
+                        construction,
+                        ConstructionMode::Recheck | ConstructionMode::Runtime
+                    )
+                {
                     self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 no_value(flow.diverges || expression.ty == Type::Never)

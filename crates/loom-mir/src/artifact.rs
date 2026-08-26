@@ -9,10 +9,22 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 18;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 19;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
+
+impl CheckedProgram {
+    /// Reports whether serialization would have to replace a process-local
+    /// construction proof with an executable replay boundary.
+    ///
+    /// Persistent compiler layers use this to avoid publishing an entry which
+    /// cannot be reused without changing the fresh-source optimization route.
+    #[must_use]
+    pub fn requires_serialized_construction_replay(&self) -> bool {
+        contains_nonportable_construction_proofs(self.as_program())
+    }
+}
 
 #[derive(Debug)]
 pub enum ArtifactError {
@@ -142,6 +154,7 @@ fn encode_interpreted_artifact_envelope(
     let program = checked.as_program();
     validate_entry(program, entry)?;
     let mut normalized = program.clone();
+    distrust_serialized_construction_proofs(&mut normalized);
     let mut float_bits = Vec::new();
     visit_program_constants(&mut normalized, &mut |constant| {
         if let Constant::Float(value) = constant {
@@ -203,6 +216,14 @@ fn decode_interpreted_artifact_envelope(
     let mut envelope: Envelope = serde_json::from_value(value)
         .map_err(|error| ArtifactError::Malformed(error.to_string()))?;
 
+    // `Proven` is a process-local compiler conclusion, not a portable proof
+    // certificate. Normalize even forged wire spellings before ordinary MIR
+    // validation so no decoded artifact can acquire a direct nominal value by
+    // asserting that boolean disposition. `Recheck` keeps the direct result
+    // shape while requiring every execution backend to replay the predicate.
+    let construction_proofs_distrusted =
+        distrust_serialized_construction_proofs(&mut envelope.program);
+
     let slots = count_program_floats(&envelope.program);
     if slots != envelope.float_bits.len() {
         return Err(ArtifactError::FloatTableMismatch {
@@ -223,7 +244,10 @@ fn decode_interpreted_artifact_envelope(
             *value = f64::from_bits(next);
         }
     });
-    let program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
+    let mut program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
+    if construction_proofs_distrusted {
+        program.mark_serialized_construction_proofs_distrusted();
+    }
     validate_entry(program.as_program(), envelope.entry.as_deref())?;
     Ok((program, envelope.entry))
 }
@@ -313,6 +337,248 @@ fn canonical_float_bits(value: f64) -> u64 {
         CANONICAL_NAN_BITS
     } else {
         value.to_bits()
+    }
+}
+
+fn contains_nonportable_construction_proofs(program: &Program) -> bool {
+    program
+        .functions
+        .iter()
+        .any(|function| block_contains_nonportable_construction_proofs(&function.body))
+}
+
+fn block_contains_nonportable_construction_proofs(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. }
+            | StatementKind::Assert { condition: value }
+            | StatementKind::Evaluate(value) => {
+                expr_contains_nonportable_construction_proofs(value)
+            }
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                expr_contains_nonportable_construction_proofs(start)
+                    || expr_contains_nonportable_construction_proofs(end)
+                    || block_contains_nonportable_construction_proofs(body)
+            }
+            StatementKind::Defer(cleanup) => {
+                block_contains_nonportable_construction_proofs(cleanup)
+            }
+            StatementKind::Return(value) => value
+                .as_ref()
+                .is_some_and(expr_contains_nonportable_construction_proofs),
+        })
+        || block
+            .tail
+            .as_ref()
+            .is_some_and(|tail| expr_contains_nonportable_construction_proofs(tail))
+}
+
+fn expr_contains_nonportable_construction_proofs(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Record {
+            fields,
+            construction,
+            ..
+        } => {
+            matches!(
+                construction,
+                crate::ConstructionMode::Proven | crate::ConstructionMode::Recheck
+            ) || fields
+                .iter()
+                .any(expr_contains_nonportable_construction_proofs)
+        }
+        ExprKind::Refine {
+            value,
+            construction,
+            ..
+        } => {
+            matches!(
+                construction,
+                crate::ConstructionMode::Proven | crate::ConstructionMode::Recheck
+            ) || expr_contains_nonportable_construction_proofs(value)
+        }
+        ExprKind::Unary(_, value)
+        | ExprKind::Unrefine(value)
+        | ExprKind::Await { task: value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        }
+        | ExprKind::MakeView { value, .. } => expr_contains_nonportable_construction_proofs(value),
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::Variant {
+            payload: values, ..
+        }
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => values
+            .iter()
+            .any(expr_contains_nonportable_construction_proofs),
+        ExprKind::Binary(_, left, right) => {
+            expr_contains_nonportable_construction_proofs(left)
+                || expr_contains_nonportable_construction_proofs(right)
+        }
+        ExprKind::Block(block) => block_contains_nonportable_construction_proofs(block),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_contains_nonportable_construction_proofs(condition)
+                || block_contains_nonportable_construction_proofs(then_branch)
+                || block_contains_nonportable_construction_proofs(else_branch)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expr_contains_nonportable_construction_proofs(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_contains_nonportable_construction_proofs(&arm.value))
+        }
+        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| match argument {
+            CallArgument::Value(value) => expr_contains_nonportable_construction_proofs(value),
+            CallArgument::InOut(_) => false,
+        }),
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => false,
+    }
+}
+
+fn distrust_serialized_construction_proofs(program: &mut Program) -> bool {
+    let mut distrusted = false;
+    for function in &mut program.functions {
+        distrust_block_construction_proofs(&mut function.body, &mut distrusted);
+    }
+    distrusted
+}
+
+fn distrust_block_construction_proofs(block: &mut Block, distrusted: &mut bool) {
+    for statement in &mut block.statements {
+        match &mut statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. }
+            | StatementKind::Assert { condition: value }
+            | StatementKind::Evaluate(value) => {
+                distrust_expr_construction_proofs(value, distrusted);
+            }
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                distrust_expr_construction_proofs(start, distrusted);
+                distrust_expr_construction_proofs(end, distrusted);
+                distrust_block_construction_proofs(body, distrusted);
+            }
+            StatementKind::Defer(cleanup) => {
+                distrust_block_construction_proofs(cleanup, distrusted);
+            }
+            StatementKind::Return(value) => {
+                if let Some(value) = value {
+                    distrust_expr_construction_proofs(value, distrusted);
+                }
+            }
+        }
+    }
+    if let Some(tail) = &mut block.tail {
+        distrust_expr_construction_proofs(tail, distrusted);
+    }
+}
+
+fn distrust_expr_construction_proofs(expression: &mut Expr, distrusted: &mut bool) {
+    match &mut expression.kind {
+        ExprKind::Record {
+            fields,
+            construction,
+            ..
+        } => {
+            if matches!(
+                *construction,
+                crate::ConstructionMode::Proven | crate::ConstructionMode::Recheck
+            ) {
+                *distrusted = true;
+            }
+            if *construction == crate::ConstructionMode::Proven {
+                *construction = crate::ConstructionMode::Recheck;
+            }
+            for field in fields {
+                distrust_expr_construction_proofs(field, distrusted);
+            }
+        }
+        ExprKind::Refine {
+            value,
+            construction,
+            ..
+        } => {
+            if matches!(
+                *construction,
+                crate::ConstructionMode::Proven | crate::ConstructionMode::Recheck
+            ) {
+                *distrusted = true;
+            }
+            if *construction == crate::ConstructionMode::Proven {
+                *construction = crate::ConstructionMode::Recheck;
+            }
+            distrust_expr_construction_proofs(value, distrusted);
+        }
+        ExprKind::Unary(_, value)
+        | ExprKind::Unrefine(value)
+        | ExprKind::Await { task: value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        }
+        | ExprKind::MakeView { value, .. } => {
+            distrust_expr_construction_proofs(value, distrusted);
+        }
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::Variant {
+            payload: values, ..
+        }
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => {
+            for value in values {
+                distrust_expr_construction_proofs(value, distrusted);
+            }
+        }
+        ExprKind::Binary(_, left, right) => {
+            distrust_expr_construction_proofs(left, distrusted);
+            distrust_expr_construction_proofs(right, distrusted);
+        }
+        ExprKind::Block(block) => distrust_block_construction_proofs(block, distrusted),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            distrust_expr_construction_proofs(condition, distrusted);
+            distrust_block_construction_proofs(then_branch, distrusted);
+            distrust_block_construction_proofs(else_branch, distrusted);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            distrust_expr_construction_proofs(scrutinee, distrusted);
+            for arm in arms {
+                distrust_expr_construction_proofs(&mut arm.value, distrusted);
+            }
+        }
+        ExprKind::Call { arguments, .. } => {
+            for argument in arguments {
+                if let CallArgument::Value(value) = argument {
+                    distrust_expr_construction_proofs(value, distrusted);
+                }
+            }
+        }
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => {}
     }
 }
 
