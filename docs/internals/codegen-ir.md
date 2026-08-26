@@ -69,6 +69,19 @@ and exact direct/invoke callable closure. It then returns a `CheckedArtifact`
 which owns both the checked program and privately checked roots. This artifact
 boundary is not connected to the production emitter yet.
 
+`artifact_identity` and `write_artifact_identity` expose a deterministic,
+compiler-private identity for that complete checked artifact. Schema 1 carries
+the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
+roots, and the canonical LCIR dump with origins enabled. The payload therefore
+includes the target and representation plan, checked functions and control
+flow, operations, and complete function, instruction, and terminator origins.
+The dump uses explicit enum spellings and string escaping rather than Rust
+`Debug`. Dense numeric IDs are content, but the process-local generative
+`ProgramBrand` is deliberately excluded, so independently built isomorphic
+artifacts have the same identity. A future LLVM object route can hash this
+value together with its backend, target-machine, optimization, and runtime
+identities; the production fingerprint does not consume it yet.
+
 A function contains:
 
 - an `InstanceId`, stable name, source MIR function origin, signature, and
@@ -163,8 +176,9 @@ compiler-private and has no compatibility or serialization guarantee.
 
 The crate's focused tests cover source-root selection, recursive graph closure,
 stable source-graph serialization and errors, branded artifact roots and root
-signatures, the scalar representation catalog, target pointer-width
-validation, block-parameter joins, loop backedges, pure scalar operations,
+signatures, artifact identity and invalidation inputs, the scalar
+representation catalog, target pointer-width validation, block-parameter
+joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
 origins, and malformed SSA programs. The

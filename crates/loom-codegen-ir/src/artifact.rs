@@ -204,6 +204,13 @@ impl CheckedArtifact {
         }
     }
 
+    pub(crate) fn roots(&self) -> &[InstanceId] {
+        match &self.roots {
+            CheckedRoots::Run(root) => std::slice::from_ref(root),
+            CheckedRoots::Tests(roots) => roots,
+        }
+    }
+
     /// Returns the checked representation plan needed by a target emitter.
     #[must_use]
     pub const fn representations(&self) -> &RepresentationPlan {
