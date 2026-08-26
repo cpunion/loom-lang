@@ -1202,10 +1202,11 @@ pub fn main() Unit {
     assert!(dump.contains("transparent(t4)"), "{dump}");
     assert!(dump.contains("invariant_product"), "{dump}");
 
-    let mut refined_options =
-        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release);
-    refined_options.debug_sources = vec![DebugSource::new(0, "main.loom", source)];
-    let lcir = emit_and_run_lcir_with_options(&artifact, "source-refined", refined_options);
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-refined",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
     let legacy = emit_and_run_legacy(&program, "main", "legacy-refined");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert!(legacy.status.success(), "{legacy:?}");
@@ -1225,17 +1226,28 @@ pub fn main() Unit {
             "unexpected `{forbidden}` in proven refined LCIR:\n{lowered_functions}"
         );
     }
+    let debug = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-refined-debug",
+        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
+            0,
+            "main.loom",
+            source,
+        )]),
+    );
+    assert!(debug.output.status.success(), "{:?}", debug.output);
+    assert_eq!(debug.output.stdout, legacy.stdout);
     assert!(
-        lcir.ir.contains("!DIBasicType(name: \"Float\", size: 64"),
+        debug.ir.contains("!DIBasicType(name: \"Float\", size: 64"),
         "transparent scalar debug metadata must use its physical base type:\n{}",
-        lcir.ir
+        debug.ir
     );
     assert!(
-        !lcir.ir.contains("name: \"Money\"")
-            && !lcir.ir.contains("name: \"Range\"")
-            && !lcir.ir.contains("LoomTransparent"),
+        !debug.ir.contains("name: \"Money\"")
+            && !debug.ir.contains("name: \"Range\"")
+            && !debug.ir.contains("LoomTransparent"),
         "the current physical debug boundary must not pretend to preserve nominal wrappers:\n{}",
-        lcir.ir
+        debug.ir
     );
 }
 
