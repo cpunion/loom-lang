@@ -1,12 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use loom_mir::{self as mir, Type};
+use loom_mir::{self as mir, Type, TypeId};
 
 use crate::{BuildError, ProgramBuilder, ValueTypeId};
 
 pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
     matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
 }
+
+/// Upper bound for every semantic-type tree copied into the direct aggregate
+/// plan. This is deliberately independent from the representation-node budget:
+/// a generic schema can have few payload fields while substituting a very large
+/// type tree into each field.
+pub(crate) const DIRECT_AGGREGATE_MAX_TYPE_NODES: usize =
+    crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
 
 pub(crate) fn closed_record_fields<'program>(
     program: &'program mir::Program,
@@ -40,7 +47,9 @@ pub(crate) fn closed_enum_variants(
     };
     let definition = program.type_def(*id)?;
     if usize::try_from(definition.type_parameters).ok()? != arguments.len()
-        || arguments.iter().any(|argument| !is_concrete(argument))
+        || arguments
+            .iter()
+            .any(|argument| concrete_type_node_count(argument).is_none())
     {
         return None;
     }
@@ -50,62 +59,162 @@ pub(crate) fn closed_enum_variants(
     if variants.is_empty() {
         return None;
     }
-    variants
-        .iter()
-        .enumerate()
-        .map(|(index, variant)| {
-            if variant.id.0 as usize != index {
-                return None;
-            }
-            variant
-                .payload
-                .iter()
-                .map(|payload| substitute_type(payload, arguments))
-                .collect::<Option<Vec<_>>>()
-                .map(Vec::into_boxed_slice)
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(Vec::into_boxed_slice)
+    let mut type_nodes = 0_usize;
+    let mut planned = Vec::new();
+    for (index, variant) in variants.iter().enumerate() {
+        if variant.id.0 as usize != index {
+            return None;
+        }
+        let mut payloads = Vec::new();
+        for payload in &variant.payload {
+            let remaining = DIRECT_AGGREGATE_MAX_TYPE_NODES.checked_sub(type_nodes)?;
+            let cost = substituted_type_node_count(payload, arguments, remaining)?;
+            type_nodes = type_nodes.checked_add(cost)?;
+            payloads.push(substitute_type(payload, arguments, 1)?);
+        }
+        planned.push(payloads.into_boxed_slice());
+    }
+    Some(planned.into_boxed_slice())
 }
 
-fn is_concrete(root: &Type) -> bool {
+fn concrete_type_node_count(root: &Type) -> Option<usize> {
     let mut pending = vec![root];
+    let mut nodes = 0_usize;
     while let Some(ty) = pending.pop() {
+        nodes = nodes.checked_add(1)?;
+        if nodes > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+            return None;
+        }
         match ty {
-            Type::Tuple(elements) => pending.extend(elements),
+            Type::Tuple(elements) => push_bounded(&mut pending, elements, nodes)?,
             Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
-                pending.push(element);
+                push_bounded(&mut pending, std::slice::from_ref(element.as_ref()), nodes)?;
             }
-            Type::Nominal(_, arguments) => pending.extend(arguments),
-            Type::View { bindings, .. } => pending.extend(bindings.values()),
-            Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => return false,
+            Type::Nominal(_, arguments) => push_bounded(&mut pending, arguments, nodes)?,
+            Type::View { bindings, .. } => {
+                if nodes
+                    .checked_add(pending.len())?
+                    .checked_add(bindings.len())?
+                    > DIRECT_AGGREGATE_MAX_TYPE_NODES
+                {
+                    return None;
+                }
+                pending.extend(bindings.values());
+            }
+            Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => return None,
             Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
         }
     }
-    true
+    Some(nodes)
 }
 
-fn substitute_type(ty: &Type, arguments: &[Type]) -> Option<Type> {
+fn push_bounded<'a>(
+    pending: &mut Vec<&'a Type>,
+    children: &'a [Type],
+    visited: usize,
+) -> Option<()> {
+    if visited
+        .checked_add(pending.len())?
+        .checked_add(children.len())?
+        > DIRECT_AGGREGATE_MAX_TYPE_NODES
+    {
+        return None;
+    }
+    pending.extend(children);
+    Some(())
+}
+
+fn substituted_type_node_count(ty: &Type, arguments: &[Type], limit: usize) -> Option<usize> {
+    let mut pending = vec![ty];
+    let mut nodes = 0_usize;
+    while let Some(current) = pending.pop() {
+        if let Type::Parameter(index) = current {
+            let argument = arguments.get(*index as usize)?;
+            if nodes.checked_add(pending.len())? >= limit {
+                return None;
+            }
+            pending.push(argument);
+            continue;
+        }
+        nodes = nodes.checked_add(1)?;
+        if nodes > limit {
+            return None;
+        }
+        match current {
+            Type::Tuple(elements) | Type::Nominal(_, elements) => {
+                for child in elements {
+                    push_substituted_bounded(&mut pending, child, nodes, limit)?;
+                }
+            }
+            Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
+                push_substituted_bounded(&mut pending, element, nodes, limit)?;
+            }
+            Type::View { bindings, .. } => {
+                for child in bindings.values() {
+                    push_substituted_bounded(&mut pending, child, nodes, limit)?;
+                }
+            }
+            Type::Parameter(_) => unreachable!("parameters are handled before charging a node"),
+            Type::Never
+            | Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Text
+            | Type::AssociatedProjection { .. }
+            | Type::Error => {}
+        }
+    }
+    Some(nodes)
+}
+
+fn push_substituted_bounded<'a>(
+    pending: &mut Vec<&'a Type>,
+    child: &'a Type,
+    visited: usize,
+    limit: usize,
+) -> Option<()> {
+    if visited.checked_add(pending.len())?.checked_add(1)? > limit {
+        return None;
+    }
+    pending.push(child);
+    Some(())
+}
+
+fn substitute_type(ty: &Type, arguments: &[Type], depth: usize) -> Option<Type> {
+    if depth > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+        return None;
+    }
     Some(match ty {
         Type::Parameter(index) => arguments.get(*index as usize)?.clone(),
         Type::Tuple(elements) => Type::Tuple(
             elements
                 .iter()
-                .map(|element| substitute_type(element, arguments))
+                .map(|element| substitute_type(element, arguments, depth.saturating_add(1)))
                 .collect::<Option<Vec<_>>>()?,
         ),
-        Type::List(element) => Type::List(Box::new(substitute_type(element, arguments)?)),
+        Type::List(element) => Type::List(Box::new(substitute_type(
+            element,
+            arguments,
+            depth.saturating_add(1),
+        )?)),
         Type::Nominal(id, nested) => Type::Nominal(
             *id,
             nested
                 .iter()
-                .map(|nested| substitute_type(nested, arguments))
+                .map(|nested| substitute_type(nested, arguments, depth.saturating_add(1)))
                 .collect::<Option<Vec<_>>>()?,
         ),
-        Type::Task(output) => Type::Task(Box::new(substitute_type(output, arguments)?)),
-        Type::TaskOutcome(output) => {
-            Type::TaskOutcome(Box::new(substitute_type(output, arguments)?))
-        }
+        Type::Task(output) => Type::Task(Box::new(substitute_type(
+            output,
+            arguments,
+            depth.saturating_add(1),
+        )?)),
+        Type::TaskOutcome(output) => Type::TaskOutcome(Box::new(substitute_type(
+            output,
+            arguments,
+            depth.saturating_add(1),
+        )?)),
         Type::View {
             mutable,
             concept,
@@ -115,7 +224,12 @@ fn substitute_type(ty: &Type, arguments: &[Type]) -> Option<Type> {
             concept: *concept,
             bindings: bindings
                 .iter()
-                .map(|(name, ty)| Some((name.clone(), substitute_type(ty, arguments)?)))
+                .map(|(name, ty)| {
+                    Some((
+                        name.clone(),
+                        substitute_type(ty, arguments, depth.saturating_add(1))?,
+                    ))
+                })
                 .collect::<Option<_>>()?,
         },
         Type::Never => Type::Never,
@@ -168,6 +282,7 @@ impl AggregateShape {
 }
 
 fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<AggregateShape> {
+    concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
         Type::Nominal(id, arguments) => {
@@ -179,6 +294,13 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
                 mir::TypeDefKind::Record { fields, invariant }
                     if arguments.is_empty() && definition.type_parameters == 0 =>
                 {
+                    let mut nodes = 0_usize;
+                    for field in fields {
+                        nodes = nodes.checked_add(concrete_type_node_count(&field.ty)?)?;
+                        if nodes > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+                            return None;
+                        }
+                    }
                     let fields = fields
                         .iter()
                         .map(|field| field.ty.clone())
@@ -193,6 +315,7 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
                 mir::TypeDefKind::Refined { base, .. }
                     if arguments.is_empty() && definition.type_parameters == 0 =>
                 {
+                    concrete_type_node_count(base)?;
                     Some(AggregateShape::Transparent(base.clone()))
                 }
                 mir::TypeDefKind::Record { .. } | mir::TypeDefKind::Refined { .. } => None,
@@ -212,6 +335,110 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
         | Type::View { .. }
         | Type::Error => None,
     }
+}
+
+/// Detects a by-value nominal cycle from borrowed declaration schemas. This
+/// runs before any concrete type is cloned or a generic payload is
+/// substituted, so non-regular recursions such as `Spiral[(T, T)]` cannot
+/// grow their argument tree while the planner is still discovering the cycle.
+fn has_by_value_nominal_cycle(program: &mir::Program, root: TypeId) -> Option<bool> {
+    let mut pending = vec![(root, false)];
+    let mut visiting = BTreeSet::new();
+    let mut complete = BTreeSet::new();
+    let mut inspected = 0_usize;
+    while let Some((id, exiting)) = pending.pop() {
+        if exiting {
+            visiting.remove(&id);
+            complete.insert(id);
+            continue;
+        }
+        if complete.contains(&id) {
+            continue;
+        }
+        if !visiting.insert(id) {
+            return Some(true);
+        }
+        inspected = inspected.checked_add(1)?;
+        if inspected > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+            return None;
+        }
+        let definition = program.type_def(id)?;
+        let root_count = match &definition.kind {
+            mir::TypeDefKind::Record { fields, .. } => fields.len(),
+            mir::TypeDefKind::Enum { variants } => {
+                variants.iter().try_fold(0_usize, |count, variant| {
+                    count.checked_add(variant.payload.len())
+                })?
+            }
+            mir::TypeDefKind::Refined { .. } => 1,
+        };
+        if inspected.checked_add(root_count)? > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+            return None;
+        }
+        let mut types = Vec::with_capacity(root_count);
+        match &definition.kind {
+            mir::TypeDefKind::Record { fields, .. } => {
+                types.extend(fields.iter().map(|field| &field.ty));
+            }
+            mir::TypeDefKind::Enum { variants } => {
+                types.extend(variants.iter().flat_map(|variant| &variant.payload));
+            }
+            mir::TypeDefKind::Refined { base, .. } => types.push(base),
+        }
+        let mut dependencies = BTreeSet::new();
+        while let Some(ty) = types.pop() {
+            inspected = inspected.checked_add(1)?;
+            if inspected > DIRECT_AGGREGATE_MAX_TYPE_NODES {
+                return None;
+            }
+            match ty {
+                Type::Tuple(elements) => {
+                    push_schema_types(&mut types, elements, inspected)?;
+                }
+                Type::Nominal(dependency, arguments) => {
+                    dependencies.insert(*dependency);
+                    push_schema_types(&mut types, arguments, inspected)?;
+                }
+                Type::Parameter(_) => {}
+                Type::Never
+                | Type::Unit
+                | Type::Bool
+                | Type::Int
+                | Type::Float
+                | Type::Text
+                | Type::List(_)
+                | Type::AssociatedProjection { .. }
+                | Type::Task(_)
+                | Type::TaskOutcome(_)
+                | Type::View { .. }
+                | Type::Error => {}
+            }
+        }
+        pending.push((id, true));
+        pending.extend(
+            dependencies
+                .into_iter()
+                .rev()
+                .map(|dependency| (dependency, false)),
+        );
+    }
+    Some(false)
+}
+
+fn push_schema_types<'a>(
+    pending: &mut Vec<&'a Type>,
+    children: &'a [Type],
+    inspected: usize,
+) -> Option<()> {
+    if inspected
+        .checked_add(pending.len())?
+        .checked_add(children.len())?
+        > DIRECT_AGGREGATE_MAX_TYPE_NODES
+    {
+        return None;
+    }
+    pending.extend(children);
+    Some(())
 }
 
 /// Classifies concrete immutable products and closed sums without constructing
@@ -243,20 +470,41 @@ impl<'program> AggregatePlanner<'program> {
             return false;
         }
 
+        if let Type::Nominal(id, _) = ty
+            && has_by_value_nominal_cycle(self.program, *id) != Some(false)
+        {
+            return false;
+        }
+
+        // Do not clone an attacker-controlled semantic tree into planner maps
+        // until its complete structure is known to fit the direct-type budget.
+        if concrete_type_node_count(ty).is_none() {
+            return false;
+        }
+
         // Exit frames keep cycle detection path-local. Repeated children are
         // expanded because validator budgets count occurrences, not identities.
         let mut pending = vec![(ty.clone(), 1_usize, false)];
         let mut visiting = BTreeSet::new();
+        let mut visiting_nominals = BTreeSet::<TypeId>::new();
         let mut discovered = BTreeMap::new();
         let mut structural_nodes = 0_usize;
         let mut supported = true;
         while let Some((semantic, depth, exiting)) = pending.pop() {
             if exiting {
                 visiting.remove(&semantic);
+                if let Type::Nominal(id, _) = semantic {
+                    visiting_nominals.remove(&id);
+                }
                 continue;
             }
+            let nominal = match &semantic {
+                Type::Nominal(id, _) => Some(*id),
+                _ => None,
+            };
             if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
                 || !visiting.insert(semantic.clone())
+                || nominal.is_some_and(|id| !visiting_nominals.insert(id))
             {
                 supported = false;
                 break;
@@ -282,13 +530,6 @@ impl<'program> AggregatePlanner<'program> {
                 .filter(|field| !is_direct_scalar(field))
                 .cloned()
                 .collect::<Vec<_>>();
-            if children
-                .iter()
-                .any(|child| direct_aggregate_shape(self.program, child).is_none())
-            {
-                supported = false;
-                break;
-            }
             discovered.entry(semantic.clone()).or_insert(shape);
             pending.push((semantic, depth, true));
             pending.extend(
@@ -423,5 +664,67 @@ impl AggregatePlan {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loom_core::Span;
+    use loom_mir::{Program, TypeDef, TypeDefKind, VariantDef, VariantId};
+
+    use super::*;
+
+    #[test]
+    fn non_regular_generic_recursion_is_rejected_before_substitution_growth() {
+        let spiral = TypeId(0);
+        let program = Program {
+            types: vec![TypeDef {
+                id: spiral,
+                name: "Spiral".into(),
+                span: Span::default(),
+                type_parameters: 1,
+                kind: TypeDefKind::Enum {
+                    variants: vec![
+                        VariantDef {
+                            id: VariantId(0),
+                            name: "Done".into(),
+                            payload: vec![Type::Parameter(0)],
+                            span: Span::default(),
+                        },
+                        VariantDef {
+                            id: VariantId(1),
+                            name: "Next".into(),
+                            payload: vec![Type::Nominal(
+                                spiral,
+                                vec![Type::Tuple(vec![Type::Parameter(0), Type::Parameter(0)])],
+                            )],
+                            span: Span::default(),
+                        },
+                    ],
+                },
+            }],
+            ..Program::default()
+        };
+        let root = Type::Nominal(spiral, vec![Type::Int]);
+
+        let mut planner = AggregatePlanner::new(&program);
+        assert!(
+            !planner.supports_value_type(&root),
+            "a by-value nominal recursion must be rejected by identity before its generic argument doubles repeatedly"
+        );
+        assert!(
+            !planner.supports_value_type(&root),
+            "the rejected root must remain an atomic cached fallback"
+        );
+    }
+
+    #[test]
+    fn oversized_semantic_types_are_rejected_before_the_first_planner_clone() {
+        let oversized = Type::Tuple(
+            std::iter::repeat_n(Type::Int, DIRECT_AGGREGATE_MAX_TYPE_NODES).collect::<Vec<_>>(),
+        );
+        let program = Program::default();
+        let mut planner = AggregatePlanner::new(&program);
+        assert!(!planner.supports_value_type(&oversized));
     }
 }
