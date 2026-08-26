@@ -153,6 +153,63 @@ fn ordinary_product_construction_cannot_forge_an_invariant_record() {
 }
 
 #[test]
+fn product_insertion_cannot_mutate_an_invariant_record() {
+    let protected = Type::Nominal(TypeId(15), Vec::new());
+    let mut builder = ProgramBuilder::new(target());
+    let integer = builder.type_id(&Type::Int).expect("Int type");
+    let protected_id = builder
+        .add_invariant_record_type(protected, &[Type::Int])
+        .expect("protected record");
+    let function = builder
+        .declare_function(
+            Origin::synthetic(FunctionId(2)),
+            "mutate_invariant",
+            Signature::new([protected_id, integer], protected_id),
+            Effects::NONE,
+        )
+        .expect("declare function");
+    {
+        let mut function_builder = builder.function(function).expect("function builder");
+        let entry = function_builder.create_block().expect("entry");
+        function_builder.set_entry(entry).expect("set entry");
+        let record = function_builder
+            .append_block_parameter(entry, protected_id)
+            .expect("record parameter");
+        let replacement = function_builder
+            .append_block_parameter(entry, integer)
+            .expect("replacement parameter");
+        let mutated = function_builder
+            .append_instruction(
+                entry,
+                InstructionKind::ProductInsert {
+                    aggregate: record,
+                    field: 0,
+                    value: replacement,
+                },
+                &[protected_id],
+                Origin::synthetic(FunctionId(2)),
+            )
+            .expect("unchecked invariant mutation")[0];
+        function_builder
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Return(mutated),
+                    Origin::synthetic(FunctionId(2)),
+                ),
+            )
+            .expect("return");
+    }
+    let errors = validate_program(&builder.finish()).expect_err("mutation must be rejected");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch
+            && error
+                .message()
+                .contains("invariant-protected semantic value")
+    }));
+}
+
+#[test]
 fn transparent_semantic_chains_obey_the_direct_value_structure_budget() {
     let mut builder = ProgramBuilder::new(target());
     let mut base = Type::Float;

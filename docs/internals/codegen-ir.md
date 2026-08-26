@@ -147,7 +147,9 @@ change alters the machine ABI. Transparent value provenance and its explicit
 proof operations advance the identity to schema 6 and the dump to `lcir 5`.
 They do not change the machine ABI: a transparent value reuses its base
 representation, while a protected invariant record uses the same product ABI
-as its fields.
+as its fields. The native-object domain therefore remains
+`loom-lcir-native-object-v2`, and the independently versioned compiler cache
+remains schema 2 with object domain `loom-llvm-object-cache-v7`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -168,7 +170,10 @@ returns, and loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown refined
 predicates and record invariants remain normal `Result[..., ConstraintError]`
-constructions and select whole-artifact fallback. A mutable inherent
+constructions and select whole-artifact fallback. A portable MIR proof replay
+(`ConstructionMode::Recheck`) also selects one explicit
+`SerializedProofRecheck` fallback for the complete artifact; it can never be
+translated to `RefineProven` or `InvariantRecordProven`. A mutable inherent
 receiver is a functional inout parameter:
 the callee returns its current product on both normal and fault exits. Only a
 whole local may cross that boundary; projected inout selects atomic fallback.
@@ -294,16 +299,19 @@ provenance model yet.
 
 ## Validation boundary
 
-Checked MIR carries the frontend's `ConstructionMode::Proven` certificate for
-a predicate or record invariant already established during semantic analysis.
+Fresh checked MIR carries the frontend's process-local
+`ConstructionMode::Proven` conclusion for a predicate or record invariant
+already established during semantic analysis.
 The public raw LCIR builder rejects `RefineProven` and
 `InvariantRecordProven`; only the crate-private checked-MIR lowerer can append
 them. LCIR deliberately does not encode or re-evaluate the arbitrary source
 predicate. Its independent validator checks the certificate's structural
 boundary: exact base/result types, protected construction kind, protection on
 every representation alternative, representation identity, and the usual SSA
-rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting the
-checked-MIR frontend certificate for predicate truth.
+rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
+fresh frontend conclusion for predicate truth. Portable MIR decoding replaces
+it with `Recheck`; support classification rejects that mode before allocating
+LCIR, and the complete artifact uses the checking legacy route.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:

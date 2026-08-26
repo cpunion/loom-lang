@@ -33,11 +33,12 @@ may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proof-boundary shapes, and exact fault
 effects have already crossed independent validation. Predicate truth itself is
-a certificate supplied by checked MIR; LCIR does not re-prove an omitted source
-predicate. The emitter declares every source function
-with its typed LCIR ABI, keeps source symbols internal, emits a run or ordered
-test harness, verifies before and after optimization, and writes a relocatable
-object.
+a process-local conclusion supplied by fresh checked MIR; LCIR does not
+re-prove an omitted source predicate. A decoded `Recheck` is outside LCIR
+coverage and selects the complete legacy route. The emitter declares every
+source function with its typed LCIR ABI, keeps source symbols internal, emits a
+run or ordered test harness, verifies before and after optimization, and writes
+a relocatable object.
 
 Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
 preparation creates one target machine and attempts the complete direct
@@ -155,12 +156,15 @@ to the caller. Only whole-local inout arguments are in this slice; projected
 inout, contracts, managed fields, and runtime-checked construction select
 atomic whole-artifact fallback.
 
-Proven record invariants and refined predicates do not add an LLVM wrapper or
-check. LCIR retains their distinct semantic types and proof opcodes, while the
-emitter forwards the already established physical SSA value. A refined scalar
-therefore uses the base scalar ABI; a refined product uses the base product
-ABI; and an invariant record uses its field product ABI. Unknown construction
-proofs still return language `Result` values on the legacy route.
+Fresh-source proven record invariants and refined predicates do not add an LLVM
+wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
+while the emitter forwards the already established physical SSA value. A
+refined scalar therefore uses the base scalar ABI; a refined product uses the
+base product ABI; and an invariant record uses its field product ABI. Unknown
+construction proofs still return language `Result` values on the legacy route.
+Serialized proof rechecks retain their nominal result shape but also use the
+legacy route, where failure is the canonical `ArtifactProofRejected` runtime
+fault.
 
 The current debug-info boundary describes that physical ABI as well. A
 transparent scalar is reported as its base scalar debug type, and transparent

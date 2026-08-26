@@ -228,6 +228,7 @@ pub enum UnsupportedFeature {
     PatternMatch,
     NominalValue,
     RefinedValue,
+    SerializedProofRecheck,
     StaticDispatch,
     DynamicDispatch,
     BuiltinCall,
@@ -259,6 +260,7 @@ impl UnsupportedFeature {
             Self::PatternMatch => "PatternMatch",
             Self::NominalValue => "NominalValue",
             Self::RefinedValue => "RefinedValue",
+            Self::SerializedProofRecheck => "SerializedProofRecheck",
             Self::StaticDispatch => "StaticDispatch",
             Self::DynamicDispatch => "DynamicDispatch",
             Self::BuiltinCall => "BuiltinCall",
@@ -1033,6 +1035,15 @@ impl<'program> Classifier<'program> {
                 if !self.visit_exprs(function, fields, &format!("{path}.fields")) {
                     return false;
                 }
+                if *construction == mir::ConstructionMode::Recheck {
+                    self.expression_item(
+                        UnsupportedFeature::SerializedProofRecheck,
+                        function,
+                        expression,
+                        path,
+                    );
+                    return expression.ty != Type::Never;
+                }
                 let direct_product = type_arguments.is_empty()
                     && expression.ty == Type::Nominal(*ty, Vec::new())
                     && self.supported_value_type(&expression.ty)
@@ -1079,6 +1090,15 @@ impl<'program> Classifier<'program> {
             } => {
                 if !self.visit_expr(function, value, &format!("{path}.value")) {
                     return false;
+                }
+                if *construction == mir::ConstructionMode::Recheck {
+                    self.expression_item(
+                        UnsupportedFeature::SerializedProofRecheck,
+                        function,
+                        expression,
+                        path,
+                    );
+                    return expression.ty != Type::Never;
                 }
                 let proven = *construction == mir::ConstructionMode::Proven
                     && expression.ty == Type::Nominal(*ty, Vec::new())
@@ -2705,6 +2725,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     mir::ConstructionMode::Runtime => {
                         return Err(self.unsupported_reached("runtime record constraint"));
                     }
+                    mir::ConstructionMode::Recheck => {
+                        return Err(self.unsupported_reached("serialized record proof recheck"));
+                    }
                 };
                 self.lower_product_values(flow, fields, expression, instruction)
             }
@@ -2716,12 +2739,25 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 construction,
                 ..
             } => {
-                if *construction != mir::ConstructionMode::Proven {
-                    return self.lower_unsupported_operand(
-                        flow,
-                        value,
-                        "runtime refinement constraint",
-                    );
+                match construction {
+                    mir::ConstructionMode::Proven => {}
+                    mir::ConstructionMode::Runtime => {
+                        return self.lower_unsupported_operand(
+                            flow,
+                            value,
+                            "runtime refinement constraint",
+                        );
+                    }
+                    mir::ConstructionMode::Recheck => {
+                        return self.lower_unsupported_operand(
+                            flow,
+                            value,
+                            "serialized refinement proof recheck",
+                        );
+                    }
+                    mir::ConstructionMode::Plain => {
+                        return Err(self.unsupported_reached("plain refinement construction"));
+                    }
                 }
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
                     return Ok(EvalFlow::Terminated);

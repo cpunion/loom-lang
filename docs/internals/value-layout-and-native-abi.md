@@ -10,7 +10,9 @@ entire reachable artifact. A completely supported direct artifact uses typed
 LCIR for primitive values, structural tuples, closed records, and
 compile-time-established refined values. Any
 reachable feature outside current LCIR coverage selects the complete legacy
-layout below; the two callable ABIs are never mixed in one object.
+layout below; the two callable ABIs are never mixed in one object. In
+particular, portable MIR `Recheck` constructions use the legacy checker and
+cannot enter the zero-check transparent LCIR representation.
 
 ## Universal value envelope
 

@@ -138,12 +138,9 @@ proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project
 decoder and validator rather than constructing JSON that happens to match the
-current wire shape.
-
-The wire format is also not an authenticated proof interchange. A `.loomi` or
-`.loomlib` input is executable code and its publisher/provenance must be trusted
-for any embedded `ConstructionMode::Proven` certificate. The decoder remains
-responsible for bounded parsing and complete structural validation.
+current wire shape. The wire format is not an authenticated proof interchange:
+even a wire spelling of `Proven` is normalized to `Recheck`, while trust in the
+artifact's source and publisher remains a separate distribution concern.
 
 ## Failure policy
 
