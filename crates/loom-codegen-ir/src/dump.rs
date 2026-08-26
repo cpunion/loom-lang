@@ -175,6 +175,14 @@ fn write_instruction(output: &mut impl Write, instruction: &Instruction) -> fmt:
             "int.compare.{} %{left}, %{right}",
             int_predicate_name(*predicate)
         ),
+        InstructionKind::IntSuccessorBelow {
+            value,
+            upper_bound,
+            proof,
+        } => write!(
+            output,
+            "int.successor_below %{value}, upper %{upper_bound}, proof %{proof}"
+        ),
         InstructionKind::FloatCompare {
             predicate,
             left,

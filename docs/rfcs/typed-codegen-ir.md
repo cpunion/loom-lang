@@ -188,9 +188,15 @@ edge block gives each phi input a unique LLVM predecessor. Ordinary scalar
 function bodies do not allocate universal stack slots.
 
 Proved integer add, subtract, and multiply may use LLVM's `nsw` operations.
-Checked operations use signed overflow intrinsics. Float operations do not use
-fast-math flags. Branch likelihood is explicit LCIR metadata or part of a
-specific checked/invoke terminator; the emitter does not infer it from a body
+The first such primitive is an integer successor carrying the exact comparison
+fact `value < upper_bound`. Validation requires that comparison's unique true
+edge to dominate the successor. Because every signed `Int` upper bound is at
+most `MAX`, the fact implies `value <= MAX - 1`; `value + 1` is therefore
+representable. A false edge, bypass edge, or control-flow join loses the fact.
+This is a general LCIR theorem, not recognition of a source range or Fibonacci
+shape. Checked operations use signed overflow intrinsics. Float operations do
+not use fast-math flags. Branch likelihood is explicit LCIR metadata or part of
+a specific checked/invoke terminator; the emitter does not infer it from a body
 shape.
 
 Target-machine creation, module triple and data layout, debug-source mapping,

@@ -372,6 +372,19 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
+    /// Computes the signed mathematical successor of `value` without a
+    /// runtime overflow edge.
+    ///
+    /// Checked LCIR validation requires `proof` to be the exact result of
+    /// `value < upper_bound` and requires the comparison's true edge to
+    /// dominate this instruction. Since `upper_bound` is an `Int`, that fact
+    /// proves `value + 1` is representable. Backends may therefore emit a
+    /// signed no-overflow add.
+    IntSuccessorBelow {
+        value: ValueId,
+        upper_bound: ValueId,
+        proof: ValueId,
+    },
     FloatCompare {
         predicate: FloatPredicate,
         left: ValueId,
@@ -395,6 +408,11 @@ impl InstructionKind {
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],
+            Self::IntSuccessorBelow {
+                value,
+                upper_bound,
+                proof,
+            } => vec![*value, *upper_bound, *proof],
             Self::DirectCall { arguments, .. } => arguments.to_vec(),
         }
     }
