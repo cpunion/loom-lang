@@ -20,6 +20,8 @@ const OBJECT_CRATES: &[&str] = &[
 ];
 
 fn main() {
+    let compiler_target = env::var("TARGET").expect("Cargo target triple");
+    println!("cargo:rustc-env=LOOM_COMPILER_TARGET={compiler_target}");
     emit_object_build_fingerprint();
 }
 

@@ -82,10 +82,13 @@ matching diagnostic strings.
 
 ## Target-machine policy
 
-For an implicit host target, the backend uses LLVM's normalized host triple and
-the actual host CPU name/features. For any explicit `--target-triple`,
-including one equal to the host triple, it uses `generic` CPU, an empty feature
-set, PIC relocation, and the target's LLVM data layout.
+For an implicit host target, the backend normalizes the standard target triple
+that the compiler itself was built for and uses the actual host CPU
+name/features. It does not use LLVM's OS-version-qualified runtime default;
+otherwise a macOS bundle could become tied to the packer's Darwin point
+version. For any explicit `--target-triple`, including one equal to the host
+triple, it uses `generic` CPU, an empty feature set, PIC relocation, and the
+target's LLVM data layout.
 
 The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete

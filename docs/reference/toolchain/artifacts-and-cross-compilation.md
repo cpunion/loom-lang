@@ -83,6 +83,11 @@ archive digest, target, ABI, and linker input both before and around linking.
 The bundle must be a real directory containing bounded regular files; symlinks
 and extra entries are rejected.
 
+An implicit host bundle uses the normalized target triple that `loomc` was
+built for, such as `aarch64-apple-darwin`. LLVM defaults which embed the current
+Darwin point version are not bundle identities. An explicitly requested triple
+remains exact and is not rewritten to the implicit host identity.
+
 `loomc runtime pack --archive FILE --output DIR` packages a separately built
 host runtime archive. The input must be one bounded regular file rather than a
 directory or symlink. Its bytes are copied to the target's canonical archive
