@@ -158,6 +158,74 @@ pub fn main() Unit {
 }
 
 #[test]
+fn source_ranges_emit_proved_nsw_successors_without_fault_abi() {
+    let source = r"module lcir_source_proved_ranges
+
+fn highBit() Int {
+    var seen = 0
+    for index in 9223372036854775806..9223372036854775807 {
+        seen = index
+        Unit
+    }
+    seen
+}
+
+fn nested(outer Int, inner Int) Int {
+    var seen = 0
+    for first in 0..outer {
+        for second in 0..inner {
+            seen = second
+            Unit
+        }
+        seen = first
+        Unit
+    }
+    seen
+}
+
+pub fn main() Unit {
+    discard highBit()
+    discard nested(3, 4)
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| function.effects().is_empty()),
+        "pure ranges must not acquire MAY_FAULT"
+    );
+
+    let native = emit_and_run_lcir(&artifact, "source-proved-ranges");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert_eq!(native.ir.matches("add nsw i64").count(), 3, "{}", native.ir);
+    for forbidden in [
+        "with.overflow",
+        "invoke.status",
+        "fault.status",
+        "loom_runtime_",
+        "loom_context_raise_fault_v1",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected fallible surface `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_pure_surface(&native.ir);
+}
+
+#[test]
 fn recursive_and_iterative_source_computation_agree_across_backends() {
     let source = r"module lcir_source_fibonacci
 
@@ -181,6 +249,15 @@ fn iterative(limit Int) Int {
     previous
 }
 
+fn highBit() Int {
+    var seen = 0
+    for index in 9223372036854775806..9223372036854775807 {
+        seen = index
+        Unit
+    }
+    seen
+}
+
 fn requireEqual(actual Int, expected Int) Unit {
     if actual == expected {
         Unit
@@ -193,6 +270,7 @@ fn requireEqual(actual Int, expected Int) Unit {
 pub fn main() Unit {
     requireEqual(recursive(10), 55)
     requireEqual(iterative(10), 55)
+    requireEqual(highBit(), 9223372036854775806)
     Unit
 }
 ";

@@ -1,10 +1,10 @@
 use std::fmt;
 
 use loom_codegen_ir::{
-    ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, CheckedArtifact,
-    CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind, Origin, ProgramBuilder,
-    Signature, TargetLayout, Terminator, TerminatorKind, artifact_identity,
-    write_artifact_identity,
+    ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget,
+    CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind,
+    IntPredicate, Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
+    artifact_identity, write_artifact_identity,
 };
 use loom_core::{FileId, Span};
 use loom_mir::{ExprId, FunctionId as MirFunctionId, Type};
@@ -102,6 +102,126 @@ fn scalar_artifact(
     builder
         .finish_checked()
         .expect("valid scalar LCIR")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed run artifact")
+}
+
+#[derive(Clone, Copy)]
+enum IntegerProofIdentityAxis {
+    Value,
+    UpperBound,
+    Proof,
+}
+
+#[allow(clippy::too_many_lines)]
+fn integer_proof_artifact(axis: IntegerProofIdentityAxis, second: bool) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
+    let bool_ty = builder.type_id(&Type::Bool).expect("Bool type");
+    let int_ty = builder.type_id(&Type::Int).expect("Int type");
+    let function_origin = Origin::synthetic(MirFunctionId(42));
+    let root = builder
+        .declare_function(
+            function_origin,
+            "identity.integer_proof",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("declare root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        let below = function.create_block().expect("below");
+        let not_below = function.create_block().expect("not below");
+        function.set_entry(entry).expect("set entry");
+        let constants = [1_i64, 2, 3, 4]
+            .into_iter()
+            .map(|constant| {
+                function
+                    .append_instruction(
+                        entry,
+                        InstructionKind::Constant(Constant::Int(constant)),
+                        &[int_ty],
+                        function_origin,
+                    )
+                    .expect("integer constant")[0]
+            })
+            .collect::<Vec<_>>();
+        let pairs = match axis {
+            IntegerProofIdentityAxis::Value => {
+                [(constants[0], constants[2]), (constants[1], constants[2])]
+            }
+            IntegerProofIdentityAxis::UpperBound => {
+                [(constants[0], constants[2]), (constants[0], constants[3])]
+            }
+            IntegerProofIdentityAxis::Proof => {
+                [(constants[0], constants[2]), (constants[0], constants[2])]
+            }
+        };
+        let proofs = pairs.map(|(value, upper_bound)| {
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::IntCompare {
+                        predicate: IntPredicate::Less,
+                        left: value,
+                        right: upper_bound,
+                    },
+                    &[bool_ty],
+                    function_origin,
+                )
+                .expect("proof comparison")[0]
+        });
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                function_origin,
+            )
+            .expect("Unit constant")[0];
+        let selected = usize::from(second);
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition: proofs[selected],
+                        then_target: BlockTarget::new(below, []),
+                        else_target: BlockTarget::new(not_below, []),
+                    },
+                    function_origin,
+                ),
+            )
+            .expect("proof branch");
+        function
+            .append_instruction(
+                below,
+                InstructionKind::IntSuccessorBelow {
+                    value: pairs[selected].0,
+                    upper_bound: pairs[selected].1,
+                    proof: proofs[selected],
+                },
+                &[int_ty],
+                function_origin,
+            )
+            .expect("proved successor");
+        function
+            .terminate(
+                below,
+                Terminator::new(TerminatorKind::Return(unit), function_origin),
+            )
+            .expect("true return");
+        function
+            .terminate(
+                not_below,
+                Terminator::new(TerminatorKind::Return(unit), function_origin),
+            )
+            .expect("false return");
+    }
+    builder
+        .finish_checked()
+        .expect("valid integer proof artifact")
         .into_artifact(ArtifactRootRequest::Run(root))
         .expect("closed run artifact")
 }
@@ -218,6 +338,20 @@ fn target_body_and_operation_changes_invalidate_identity() {
         base,
         identity(64, FloatBinaryOp::Subtract, 1.0_f64.to_bits())
     );
+}
+
+#[test]
+fn integer_proof_operands_are_artifact_identity_inputs() {
+    for axis in [
+        IntegerProofIdentityAxis::Value,
+        IntegerProofIdentityAxis::UpperBound,
+        IntegerProofIdentityAxis::Proof,
+    ] {
+        assert_ne!(
+            artifact_identity(&integer_proof_artifact(axis, false)),
+            artifact_identity(&integer_proof_artifact(axis, true)),
+        );
+    }
 }
 
 #[test]

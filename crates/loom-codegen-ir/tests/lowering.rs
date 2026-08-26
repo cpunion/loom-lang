@@ -1285,6 +1285,50 @@ pub fn main() Unit {
     for jump in jumps {
         assert_eq!(jump.matches('%').count(), 2, "{function}");
     }
+    assert!(function.contains("int.successor_below"), "{function}");
+}
+
+#[test]
+fn pure_and_nested_ranges_use_proved_successors_without_fault_effects() {
+    let dump = complete_dump(
+        r"module pure_ranges
+
+fn lastBelow(limit Int) Int {
+    var last = 0
+    for index in 0..limit {
+        last = index
+        Unit
+    }
+    last
+}
+
+fn nested(outer Int, inner Int) Int {
+    var last = 0
+    for first in 0..outer {
+        for second in 0..inner {
+            last = second
+            Unit
+        }
+        last = first
+        Unit
+    }
+    last
+}
+
+pub fn main() Unit {
+    discard lastBelow(8)
+    discard nested(3, 4)
+    Unit
+}
+",
+    );
+
+    assert_eq!(dump.matches("effects=none").count(), 3, "{dump}");
+    assert_eq!(dump.matches("int.successor_below").count(), 3, "{dump}");
+    assert!(!dump.contains("checked_int.add"), "{dump}");
+    assert!(!dump.contains("invoke"), "{dump}");
+    assert!(!dump.contains("resume_fault"), "{dump}");
+    assert_eq!(dump.matches("call i").count(), 2, "{dump}");
 }
 
 #[test]
@@ -1472,7 +1516,8 @@ pub fn main() Unit {
 ",
     );
     assert!(dump.contains("int.compare.less"), "{dump}");
-    assert!(dump.matches("checked_int.add").count() >= 2, "{dump}");
+    assert!(dump.contains("checked_int.add"), "{dump}");
+    assert!(dump.contains("int.successor_below"), "{dump}");
     assert!(dump.contains("jump b"), "{dump}");
     assert!(dump.contains("invoke i0"), "{dump}");
     assert!(dump.contains("resume_fault"), "{dump}");

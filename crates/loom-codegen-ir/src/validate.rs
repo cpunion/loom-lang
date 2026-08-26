@@ -37,6 +37,7 @@ pub enum ValidationCode {
     UninhabitedValue,
     UnreachableBlock,
     Dominance,
+    InvalidIntegerProof,
 }
 
 impl ValidationCode {
@@ -68,6 +69,7 @@ impl ValidationCode {
             Self::UninhabitedValue => "LcirUninhabitedValue",
             Self::UnreachableBlock => "LcirUnreachableBlock",
             Self::Dominance => "LcirDominance",
+            Self::InvalidIntegerProof => "LcirInvalidIntegerProof",
         }
     }
 }
@@ -404,6 +406,7 @@ impl<'a> Validator<'a> {
         }
         let dominators = compute_dominators(entry.index(), &reachable, &successors, &predecessors);
         self.validate_dominance(function, &base, &schedule, &reachable, &dominators);
+        self.validate_integer_proofs(function, &base, &reachable, &predecessors, &dominators);
     }
 
     fn validate_signature(&mut self, function: &Function, base: &str) {
@@ -734,6 +737,34 @@ impl<'a> Validator<'a> {
                     format!("{path}.operand[1]"),
                 );
                 self.require_results(function, instruction, &[boolean], &path);
+            }
+            InstructionKind::IntSuccessorBelow {
+                value,
+                upper_bound,
+                proof,
+            } => {
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[0]"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *upper_bound,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[1]"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *proof,
+                    boolean,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.operand[2]"),
+                );
+                self.require_results(function, instruction, &[integer], &path);
             }
             InstructionKind::FloatCompare { left, right, .. } => {
                 self.require_known_value_type(
@@ -1148,6 +1179,118 @@ impl<'a> Validator<'a> {
         (function.brand() == self.program.brand)
             .then(|| self.exact_effects.get(function.index()).copied())
             .flatten()
+    }
+
+    /// Validates the edge-sensitive fact consumed by `int.successor_below`.
+    ///
+    /// A proof value must drive exactly one reachable branch. Its true target
+    /// must have that branch as its only reachable predecessor and dominate
+    /// every proof use. The unique-entry rule turns ordinary block dominance
+    /// into true-edge dominance without materializing path facts per block.
+    fn validate_integer_proofs(
+        &mut self,
+        function: &Function,
+        base: &str,
+        reachable: &[bool],
+        predecessors: &[Vec<usize>],
+        dominators: &DominatorTree,
+    ) {
+        let facts = IntegerProofFacts::collect(function, reachable, predecessors);
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            if !reachable.get(block_index).copied().unwrap_or(false) {
+                continue;
+            }
+            for instruction_id in &block.instructions {
+                let Some(instruction) = function.instruction(*instruction_id) else {
+                    continue;
+                };
+                let InstructionKind::IntSuccessorBelow {
+                    value,
+                    upper_bound,
+                    proof,
+                } = &instruction.kind
+                else {
+                    continue;
+                };
+                let (value, upper_bound, proof) = (*value, *upper_bound, *proof);
+                self.validate_integer_successor(
+                    function,
+                    instruction,
+                    block_index,
+                    value,
+                    upper_bound,
+                    proof,
+                    &facts,
+                    dominators,
+                    base,
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_integer_successor(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        block_index: usize,
+        value: ValueId,
+        upper_bound: ValueId,
+        proof: ValueId,
+        facts: &IntegerProofFacts,
+        dominators: &DominatorTree,
+        base: &str,
+    ) {
+        let path = format!("{base}.instruction[{}].proof", instruction.id.index());
+        if !is_exact_successor_proof(function, value, upper_bound, proof) {
+            self.error(
+                ValidationCode::InvalidIntegerProof,
+                path,
+                "integer successor proof must be the exact result of value < upper_bound",
+            );
+            return;
+        }
+        let branch = (proof.owner() == function.id)
+            .then(|| facts.branches.get(proof.index()).copied())
+            .flatten()
+            .unwrap_or(ProofBranch::None);
+        let (source, true_target) = match branch {
+            ProofBranch::Unique {
+                source,
+                true_target,
+            } => (source, true_target),
+            ProofBranch::None => {
+                self.error(
+                    ValidationCode::InvalidIntegerProof,
+                    path,
+                    "integer successor proof must condition a reachable branch",
+                );
+                return;
+            }
+            ProofBranch::Ambiguous => {
+                self.error(
+                    ValidationCode::InvalidIntegerProof,
+                    path,
+                    "integer successor proof cannot condition multiple reachable branches",
+                );
+                return;
+            }
+        };
+        if facts.predecessors.get(true_target) != Some(&UniquePredecessor::One(source)) {
+            self.error(
+                ValidationCode::InvalidIntegerProof,
+                path,
+                "comparison true target must have only the proving branch as a reachable predecessor",
+            );
+            return;
+        }
+        if !dominators.dominates(true_target, block_index) {
+            self.error(
+                ValidationCode::InvalidIntegerProof,
+                path,
+                "comparison true edge does not dominate the integer successor",
+            );
+        }
     }
 
     fn validate_dominance(
@@ -1575,6 +1718,105 @@ const fn effects_name(effects: Effects) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+#[derive(Clone, Copy)]
+enum ProofBranch {
+    None,
+    Unique { source: usize, true_target: usize },
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum UniquePredecessor {
+    None,
+    One(usize),
+    Multiple,
+}
+
+struct IntegerProofFacts {
+    branches: Vec<ProofBranch>,
+    predecessors: Vec<UniquePredecessor>,
+}
+
+impl IntegerProofFacts {
+    fn collect(function: &Function, reachable: &[bool], predecessors: &[Vec<usize>]) -> Self {
+        let predecessors = predecessors
+            .iter()
+            .map(|incoming| {
+                let mut incoming = incoming
+                    .iter()
+                    .copied()
+                    .filter(|source| reachable.get(*source).copied().unwrap_or(false));
+                let Some(first) = incoming.next() else {
+                    return UniquePredecessor::None;
+                };
+                if incoming.next().is_some() {
+                    UniquePredecessor::Multiple
+                } else {
+                    UniquePredecessor::One(first)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut branches = vec![ProofBranch::None; function.values.len()];
+        for (source, block) in function.blocks.iter().enumerate() {
+            if !reachable.get(source).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(TerminatorKind::Branch {
+                condition,
+                then_target,
+                ..
+            }) = block.terminator.as_ref().map(Terminator::kind)
+            else {
+                continue;
+            };
+            if condition.owner() != function.id {
+                continue;
+            }
+            let Some(slot) = branches.get_mut(condition.index()) else {
+                continue;
+            };
+            *slot = match *slot {
+                ProofBranch::None => ProofBranch::Unique {
+                    source,
+                    true_target: then_target.block.index(),
+                },
+                ProofBranch::Unique { .. } | ProofBranch::Ambiguous => ProofBranch::Ambiguous,
+            };
+        }
+        Self {
+            branches,
+            predecessors,
+        }
+    }
+}
+
+fn is_exact_successor_proof(
+    function: &Function,
+    value: ValueId,
+    upper_bound: ValueId,
+    proof: ValueId,
+) -> bool {
+    function.value(proof).is_some_and(|proof_value| {
+        let ValueDefinition::InstructionResult {
+            instruction: producer,
+            index: 0,
+        } = proof_value.definition
+        else {
+            return false;
+        };
+        function.instruction(producer).is_some_and(|producer| {
+            matches!(
+                &producer.kind,
+                InstructionKind::IntCompare {
+                    predicate: crate::IntPredicate::Less,
+                    left,
+                    right,
+                } if *left == value && *right == upper_bound
+            )
+        })
+    })
 }
 
 #[derive(Clone, Copy)]
