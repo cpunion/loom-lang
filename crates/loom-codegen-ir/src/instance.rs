@@ -205,7 +205,7 @@ impl fmt::Display for InstanceKey {
             if index != 0 {
                 formatter.write_char(',')?;
             }
-            write_type(formatter, ty)?;
+            write_type_identity(formatter, ty)?;
         }
         formatter.write_str("] witnesses=[")?;
         for (index, witness) in self.witness_arguments.iter().enumerate() {
@@ -224,7 +224,12 @@ enum TypeWrite<'a> {
     Name(&'a str),
 }
 
-fn write_type(output: &mut impl Write, root: &Type) -> fmt::Result {
+/// Writes the complete, unambiguous identity of one MIR type.
+///
+/// Instance keys and the canonical LCIR dump share this encoder so adding a
+/// type to the direct representation catalog cannot silently collapse two
+/// artifact identities into an `<unsupported>` placeholder.
+pub(crate) fn write_type_identity(output: &mut impl Write, root: &Type) -> fmt::Result {
     let mut work = vec![TypeWrite::Type(root)];
     while let Some(item) = work.pop() {
         match item {
@@ -337,6 +342,63 @@ fn write_witness(output: &mut impl Write, root: &InstanceWitnessArgument) -> fmt
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use loom_mir::{ConceptId, Type, TypeId};
+
+    use super::write_type_identity;
+
+    #[test]
+    fn type_identity_encodes_every_mir_type_without_placeholders() {
+        let bindings = BTreeMap::from([
+            ("Item".to_owned(), Type::List(Box::new(Type::Text))),
+            (
+                "Output".to_owned(),
+                Type::TaskOutcome(Box::new(Type::Error)),
+            ),
+        ]);
+        let types = [
+            Type::Never,
+            Type::Unit,
+            Type::Bool,
+            Type::Int,
+            Type::Float,
+            Type::Text,
+            Type::Tuple(vec![Type::Int, Type::Float]),
+            Type::List(Box::new(Type::Bool)),
+            Type::Nominal(TypeId(7), vec![Type::Parameter(2)]),
+            Type::Parameter(3),
+            Type::AssociatedProjection {
+                witness: 4,
+                associated: "Part".to_owned(),
+            },
+            Type::Task(Box::new(Type::Unit)),
+            Type::TaskOutcome(Box::new(Type::Int)),
+            Type::View {
+                mutable: true,
+                concept: ConceptId(5),
+                bindings,
+            },
+            Type::Error,
+        ];
+        let mut output = String::new();
+        for (index, ty) in types.iter().enumerate() {
+            if index != 0 {
+                output.push('|');
+            }
+            write_type_identity(&mut output, ty).expect("String formatting is infallible");
+        }
+
+        assert_eq!(
+            output,
+            "Never|Unit|Bool|Int|Float|Text|Tuple[Int,Float]|List[Bool]|Nominal#7[Parameter#2]|Parameter#3|Projection#4(4:Part)|Task[Unit]|TaskOutcome[Int]|View(mut,concept#5,{4:Item=List[Text],6:Output=TaskOutcome[Error]})|Error"
+        );
+        assert!(!output.contains("unsupported"));
+    }
 }
 
 /// Dense entry in an [`InstancePlan`].

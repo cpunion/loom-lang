@@ -119,7 +119,11 @@ ABI, so the independent native-object format advanced to
 `loom-lcir-native-object-v2` and the CLI object-cache domain to
 `loom-llvm-object-cache-v7`. Explicit function entries and checked types on
 every instruction result advance the identity to schema 4 and the text dump to
-`lcir 3`; this closes identity ambiguities without changing the machine ABI.
+`lcir 3`. Reusing the instance-key type encoder for every representation and
+registration advances the identity to schema 5 and the text dump to `lcir 4`;
+future direct tuple, nominal-argument, task, view, and other type entries can no
+longer collapse to a shared placeholder. Neither identity-only change alters
+the machine ABI.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -304,11 +308,13 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 3` text includes
+text even when the graphs are otherwise equivalent. The `lcir 4` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block, and the checked value
-type of every block parameter and instruction result. It is compiler-private
-and has no compatibility or serialization guarantee.
+type of every block parameter and instruction result. Representation semantic
+types and instance-key arguments use the same complete, iterative type
+encoder; no type is represented by a catch-all placeholder. It is
+compiler-private and has no compatibility or serialization guarantee.
 
 ## Repository evidence
 

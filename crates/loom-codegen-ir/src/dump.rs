@@ -1,7 +1,6 @@
 use std::fmt::{self, Write};
 
-use loom_mir::Type;
-
+use crate::instance::write_type_identity;
 use crate::{
     BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
@@ -53,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 3")?;
+    writeln!(output, "lcir 4")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -67,21 +66,15 @@ pub fn write_program_with_options(
     }
     writeln!(output)?;
     for (index, value_type) in representations.value_types().iter().enumerate() {
-        writeln!(
-            output,
-            "type t{index} = {} => {}",
-            type_name(value_type.semantic()),
-            value_type.repr()
-        )?;
+        write!(output, "type t{index} = ")?;
+        write_type_identity(output, value_type.semantic())?;
+        writeln!(output, " => {}", value_type.repr())?;
     }
     writeln!(output)?;
     for (index, registration) in representations.registrations().iter().enumerate() {
-        writeln!(
-            output,
-            "registration k{index} = {} => {}",
-            type_name(registration.semantic()),
-            registration.value_type()
-        )?;
+        write!(output, "registration k{index} = ")?;
+        write_type_identity(output, registration.semantic())?;
+        writeln!(output, " => {}", registration.value_type())?;
     }
 
     for instance in program.instances().entries() {
@@ -464,27 +457,6 @@ fn write_repr(
             }
             output.write_char(')')
         }
-    }
-}
-
-fn type_name(ty: &Type) -> String {
-    match ty {
-        Type::Never => "Never".to_owned(),
-        Type::Unit => "Unit".to_owned(),
-        Type::Bool => "Bool".to_owned(),
-        Type::Int => "Int".to_owned(),
-        Type::Float => "Float".to_owned(),
-        Type::Nominal(id, arguments) if arguments.is_empty() => format!("Nominal#{}", id.0),
-        Type::Text
-        | Type::Tuple(_)
-        | Type::List(_)
-        | Type::Nominal(_, _)
-        | Type::Parameter(_)
-        | Type::AssociatedProjection { .. }
-        | Type::Task(_)
-        | Type::TaskOutcome(_)
-        | Type::View { .. }
-        | Type::Error => "<unsupported>".to_owned(),
     }
 }
 
