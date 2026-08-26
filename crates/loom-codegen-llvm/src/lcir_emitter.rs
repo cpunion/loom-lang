@@ -6,6 +6,7 @@
 //! signature and effects.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use inkwell::AddressSpace;
@@ -13,7 +14,10 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
-use inkwell::debug_info::{DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder};
+use inkwell::debug_info::{
+    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DIType, DWARFEmissionKind,
+    DWARFSourceLanguage, DebugInfoBuilder,
+};
 use inkwell::module::{FlagBehavior, Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::FileType;
@@ -129,10 +133,23 @@ fn create_parent_directory(path: &Path) -> Result<(), CodegenError> {
 
 struct DebugState<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
+    unit: DICompileUnit<'ctx>,
+    files: BTreeMap<u32, DIFile<'ctx>>,
+    sources: BTreeMap<u32, DebugSource>,
+    unit_type: DIType<'ctx>,
+    bool_type: DIType<'ctx>,
+    int_type: DIType<'ctx>,
+    float_type: DIType<'ctx>,
+    optimized: bool,
 }
 
 impl<'ctx> DebugState<'ctx> {
-    fn new(context: &'ctx Context, module: &Module<'ctx>, sources: &[DebugSource]) -> Self {
+    fn new(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        sources: &[DebugSource],
+        optimized: bool,
+    ) -> Result<Self, CodegenError> {
         let primary = sources
             .first()
             .map_or("<loom-generated>.loom", |source| source.path.as_str());
@@ -153,7 +170,7 @@ impl<'ctx> DebugState<'ctx> {
             primary,
             ".",
             concat!("loomc lcir ", env!("CARGO_PKG_VERSION")),
-            true,
+            optimized,
             "",
             0,
             "",
@@ -164,19 +181,172 @@ impl<'ctx> DebugState<'ctx> {
             "",
             "",
         );
+        let mut files = BTreeMap::new();
+        let mut source_map = BTreeMap::new();
         for (index, source) in sources.iter().enumerate() {
-            if index == 0 {
-                let _ = unit.get_file();
+            let file = if index == 0 {
+                unit.get_file()
             } else {
-                let _ = builder.create_file(&source.path, ".");
-            }
+                builder.create_file(&source.path, ".")
+            };
+            files.insert(source.file, file);
+            source_map.insert(source.file, source.clone());
         }
-        // LCIR has exact LLVM scalar signatures but not yet an agreed source
-        // debug type contract for the fallible status aggregate and hidden
-        // context. Keep the compile-unit/file metadata and deliberately omit
-        // DISubprogram metadata instead of publishing a false signature.
-        Self { builder }
+        let file = unit.get_file();
+        let unit_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "Unit",
+                file,
+                0,
+                0,
+                8,
+                DIFlags::PUBLIC,
+                None,
+                &[],
+                0,
+                None,
+                "loom.Unit",
+            )
+            .as_type();
+        let bool_type = builder
+            .create_basic_type("Bool", 1, 0x02, DIFlags::PUBLIC)
+            .map_err(|error| debug_info_error(&error))?
+            .as_type();
+        let int_type = builder
+            .create_basic_type("Int", 64, 0x05, DIFlags::PUBLIC)
+            .map_err(|error| debug_info_error(&error))?
+            .as_type();
+        let float_type = builder
+            .create_basic_type("Float", 64, 0x04, DIFlags::PUBLIC)
+            .map_err(|error| debug_info_error(&error))?
+            .as_type();
+        Ok(Self {
+            builder,
+            unit,
+            files,
+            sources: source_map,
+            unit_type,
+            bool_type,
+            int_type,
+            float_type,
+            optimized,
+        })
     }
+
+    fn file(&self, id: u32) -> DIFile<'ctx> {
+        self.files
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| self.unit.get_file())
+    }
+
+    fn line_column(&self, file: u32, offset: u32) -> (u32, u32) {
+        let Some(source) = self.sources.get(&file) else {
+            return (1, 1);
+        };
+        let line = source
+            .line_starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        let start = source.line_starts.get(line).copied().unwrap_or(0);
+        (
+            u32::try_from(line).unwrap_or(u32::MAX).saturating_add(1),
+            offset.saturating_sub(start).saturating_add(1),
+        )
+    }
+
+    fn value_type(
+        &self,
+        artifact: &CheckedArtifact,
+        ty: ValueTypeId,
+    ) -> Result<DIType<'ctx>, CodegenError> {
+        let value_type = artifact.representations().value_type(ty).ok_or_else(|| {
+            CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+        })?;
+        match artifact.representations().repr(value_type.repr()).copied() {
+            Some(Repr::Zst) => Ok(self.unit_type),
+            Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.bool_type),
+            Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
+            Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
+            Some(Repr::Uninhabited) => Err(CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("uninhabited LCIR type {ty} reached a debug signature"),
+            )),
+            None => Err(CodegenError::new(
+                "LlvmDebugInfoFailed",
+                format!("missing representation for LCIR type {ty}"),
+            )),
+        }
+    }
+
+    fn attach_function(
+        &self,
+        artifact: &CheckedArtifact,
+        source: &Function,
+        function: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let origin = source.origin();
+        let file_id = origin.span.file.0;
+        let file = self.file(file_id);
+        let (line, _) = self.line_column(file_id, origin.span.range.start);
+        let result = self.value_type(artifact, source.signature().result())?;
+        let parameters = source
+            .signature()
+            .params()
+            .iter()
+            .copied()
+            .map(|ty| self.value_type(artifact, ty))
+            .collect::<Result<Vec<_>, _>>()?;
+        // DWARF describes the Loom source signature. The fallible status
+        // aggregate and fault-context pointer are compiler ABI details, just
+        // like an sret pointer, and therefore do not appear as source values.
+        let signature =
+            self.builder
+                .create_subroutine_type(file, Some(result), &parameters, DIFlags::PUBLIC);
+        let linkage = function.get_name().to_string_lossy();
+        let subprogram = self.builder.create_function(
+            file.as_debug_info_scope(),
+            source.name(),
+            Some(linkage.as_ref()),
+            file,
+            line,
+            signature,
+            true,
+            true,
+            line,
+            DIFlags::PUBLIC,
+            self.optimized,
+        );
+        function.set_subprogram(subprogram);
+        Ok(())
+    }
+
+    fn set_location(
+        &self,
+        context: &'ctx Context,
+        ir_builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        origin: Origin,
+    ) {
+        let Some(scope) = function.get_subprogram() else {
+            return;
+        };
+        let file = origin.span.file.0;
+        let (line, column) = self.line_column(file, origin.span.range.start);
+        let location = self.builder.create_debug_location(
+            context,
+            line,
+            column,
+            scope.as_debug_info_scope(),
+            None,
+        );
+        ir_builder.set_current_debug_location(location);
+    }
+}
+
+fn debug_info_error(error: &inkwell::error::Error) -> CodegenError {
+    CodegenError::new("LlvmDebugInfoFailed", error.to_string())
 }
 
 struct Backend<'ctx, 'artifact> {
@@ -205,7 +375,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let fault_context_type = context.opaque_struct_type("loom.lcir.FaultContext");
         fault_context_type.set_body(&[ptr_type.into(), context.bool_type().into()], false);
         let debug = (!options.debug_sources.is_empty())
-            .then(|| DebugState::new(context, &module, &options.debug_sources));
+            .then(|| {
+                DebugState::new(
+                    context,
+                    &module,
+                    &options.debug_sources,
+                    options.optimization == crate::OptimizationProfile::Release,
+                )
+            })
+            .transpose()?;
         let mut backend = Self {
             context,
             artifact,
@@ -247,6 +425,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 function_type,
                 Some(Linkage::Internal),
             );
+            if let Some(debug) = &self.debug {
+                debug.attach_function(self.artifact, source, function)?;
+            }
             self.functions.push(function);
         }
         Ok(())
@@ -461,6 +642,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         format!("missing LCIR instruction {instruction_id}"),
                     )
                 })?;
+                self.set_debug_location(instruction.origin());
                 self.emit_instruction(instruction)?;
             }
             let terminator = block.terminator().ok_or_else(|| {
@@ -469,10 +651,22 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("LCIR block {} is unterminated", block.id()),
                 )
             })?;
+            self.set_debug_location(terminator.origin());
             self.emit_terminator(terminator)?;
         }
         self.backend.builder.unset_current_debug_location();
         Ok(())
+    }
+
+    fn set_debug_location(&self, origin: Origin) {
+        if let Some(debug) = &self.backend.debug {
+            debug.set_location(
+                self.backend.context,
+                &self.backend.builder,
+                self.function,
+                origin,
+            );
+        }
     }
 
     /// Returns a deterministic CFG preorder rooted at the function entry.

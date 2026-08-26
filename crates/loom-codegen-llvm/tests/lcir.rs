@@ -1593,7 +1593,7 @@ fn release_pipeline_emits_a_verified_optimized_object() {
 }
 
 #[test]
-fn debug_sources_emit_only_safe_compile_unit_metadata_for_now() {
+fn debug_sources_emit_function_signatures_and_expression_locations() {
     let artifact = unit_run(64);
     let directory = tempfile::tempdir().expect("temp directory");
     let object = directory.path().join("debug.o");
@@ -1611,8 +1611,8 @@ fn debug_sources_emit_only_safe_compile_unit_metadata_for_now() {
     let ir = std::fs::read_to_string(ir_path).expect("read debug IR");
     assert!(ir.contains("!DICompileUnit"), "{ir}");
     assert!(ir.contains("src/main.loom"), "{ir}");
-    assert!(
-        !ir.contains("!DISubprogram"),
-        "inexact function type metadata must stay disabled:\n{ir}"
-    );
+    assert!(ir.contains("!DISubprogram"), "{ir}");
+    assert!(ir.contains("name: \"main\""), "{ir}");
+    assert!(ir.contains("!DISubroutineType"), "{ir}");
+    assert!(ir.contains("!DILocation"), "{ir}");
 }

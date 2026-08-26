@@ -1671,8 +1671,8 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
     );
     assert!(stdout.contains("Unit"), "{stdout}");
     let debug_image = fs::read(debug_copy).expect("debug wrapper copied executable");
-    assert!(contains_bytes(&debug_image, b"loom.fn."));
-    assert!(!contains_bytes(&debug_image, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&debug_image, b"loom.fn."));
+    assert!(contains_bytes(&debug_image, b"loom.lcir.fn"));
     assert!(contains_bytes(&debug_image, b"main.loom"));
 }
 

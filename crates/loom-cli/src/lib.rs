@@ -1233,7 +1233,7 @@ fn run_debug(
             program,
             &executable,
             &emit_options,
-            loom_codegen_llvm::NativeRoutePolicy::LegacyOnly,
+            loom_codegen_llvm::NativeRoutePolicy::Automatic,
             options,
             stdout,
         )? {
