@@ -41,6 +41,11 @@ Straight-line witness flow through locals and tuple construction can keep a
 concrete witness set. When control flow, projection, or mutation loses that
 proof, analysis conservatively treats the value as unknown. Conservatism may
 retain extra live witness methods but cannot remove a possible target.
+Scanning follows executable evaluation order: a return or diverging operand
+stops its dead suffix, conditional and short-circuit paths merge only their
+continuing witness states, and a range retains its zero-iteration path. A call
+mentioned only in unreachable MIR therefore cannot enlarge the artifact
+closure.
 
 The traversal repeats until neither functions nor witnesses grow, because a
 newly retained witness method can itself make more calls and witnesses live.

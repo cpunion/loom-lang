@@ -7,7 +7,7 @@ use loom_codegen_ir::{
 };
 use loom_mir::{
     Block, CallPlan, CallTarget, CheckedProgram, Constant, Expr, ExprId, ExprKind, Function,
-    FunctionId, Program, Type,
+    FunctionId, Program, Statement, StatementKind, Type,
 };
 
 fn checked(program: Program) -> CheckedProgram {
@@ -67,6 +67,32 @@ fn direct_closure_and_serialization_are_deterministic() {
         serde_json::to_string(&reachable).expect("serialize source graph"),
         r#"{"functions":[0,1],"witnesses":[],"builtins":[],"witness_methods":{}}"#
     );
+}
+
+#[test]
+fn direct_call_after_return_is_not_in_the_executable_closure() {
+    let mut main = unit_function(FunctionId(0), "main", unit());
+    main.body.statements = vec![
+        Statement {
+            kind: StatementKind::Return(Some(unit())),
+            span: Default::default(),
+        },
+        Statement {
+            kind: StatementKind::Evaluate(direct_call(FunctionId(1))),
+            span: Default::default(),
+        },
+    ];
+    main.renumber_expr_ids()
+        .expect("renumber root expressions after adding statements");
+    let program = checked(Program {
+        functions: vec![main, unit_function(FunctionId(1), "dead", unit())],
+        ..Program::default()
+    });
+
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("close executable source graph");
+
+    assert_eq!(reachable.functions, [FunctionId(0)].into_iter().collect());
 }
 
 #[test]

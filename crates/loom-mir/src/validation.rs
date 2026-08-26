@@ -7758,12 +7758,28 @@ impl<'program> Validator<'program> {
                 }
 
                 // The loop may execute zero times. Model one iteration and
-                // join it with the entry state; source scoping prevents use of
-                // the potentially uninitialized iteration binding afterward.
+                // require every continuing backedge to restore the available
+                // locals/resources present at the loop entry. Without this
+                // invariant, a body that moves an outer value could pass the
+                // one-iteration analysis even though its second iteration is
+                // invalid. Locals uninitialized at entry are body-scoped and
+                // intentionally need not be carried.
                 let entry = state.clone();
+                let induction_index = local.0 as usize;
+                if entry.slots.get(induction_index) != Some(&SlotState::Uninitialized) {
+                    self.push(
+                        MirValidationCode::LocalState,
+                        format!(
+                            "ForRange induction local #{} must be uninitialized at loop entry",
+                            local.0
+                        ),
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                }
                 let mut iteration = state.clone();
-                Self::dataflow_store(local.0 as usize, Vec::new(), &mut iteration);
-                let _ = self.dataflow_block(
+                Self::dataflow_store(induction_index, Vec::new(), &mut iteration);
+                let body_flow = self.dataflow_block(
                     function,
                     body,
                     &mut iteration,
@@ -7771,7 +7787,19 @@ impl<'program> Validator<'program> {
                     &format!("{path}.body"),
                     depth + 1,
                 );
-                *state = join_dataflow_states(&[entry, iteration]);
+                if body_flow.diverges {
+                    // Only the zero-iteration path reaches the successor.
+                    *state = entry;
+                } else {
+                    self.validate_for_range_backedge(
+                        &entry,
+                        &iteration,
+                        *local,
+                        statement.span,
+                        path,
+                    );
+                    *state = join_dataflow_states(&[entry, iteration]);
+                }
                 false
             }
             StatementKind::Assign { place, value } => {
@@ -7948,7 +7976,7 @@ impl<'program> Validator<'program> {
                 );
                 no_value(flow.diverges || expression.ty == Type::Never)
             }
-            ExprKind::Binary(_, left, right) => {
+            ExprKind::Binary(operator, left, right) => {
                 let left = self.dataflow_expr(
                     function,
                     left,
@@ -7960,15 +7988,38 @@ impl<'program> Validator<'program> {
                 if left.diverges {
                     return no_value(true);
                 }
-                let right = self.dataflow_expr(
-                    function,
-                    right,
-                    state,
-                    tokens,
-                    &format!("{path}.right"),
-                    depth + 1,
-                );
-                no_value(right.diverges || expression.ty == Type::Never)
+                if matches!(operator, BinaryOp::And | BinaryOp::Or) {
+                    // The RHS is conditional. Preserve the short-circuit
+                    // state and merge it with the RHS only when that path
+                    // continues; a diverging RHS still leaves the
+                    // short-circuit path executable.
+                    let short_circuit = state.clone();
+                    let mut right_state = short_circuit.clone();
+                    let right = self.dataflow_expr(
+                        function,
+                        right,
+                        &mut right_state,
+                        tokens,
+                        &format!("{path}.right"),
+                        depth + 1,
+                    );
+                    *state = if right.diverges {
+                        short_circuit
+                    } else {
+                        join_dataflow_states(&[short_circuit, right_state])
+                    };
+                    no_value(expression.ty == Type::Never)
+                } else {
+                    let right = self.dataflow_expr(
+                        function,
+                        right,
+                        state,
+                        tokens,
+                        &format!("{path}.right"),
+                        depth + 1,
+                    );
+                    no_value(right.diverges || expression.ty == Type::Never)
+                }
             }
             ExprKind::Block(block) => self.dataflow_block(
                 function,
@@ -8329,6 +8380,49 @@ impl<'program> Validator<'program> {
         }
         if let Some(carried) = state.view_loans.get_mut(index) {
             *carried = loans;
+        }
+    }
+
+    fn validate_for_range_backedge(
+        &mut self,
+        entry: &DataflowState,
+        iteration: &DataflowState,
+        induction: LocalId,
+        span: Span,
+        path: &str,
+    ) {
+        for (index, entry_slot) in entry.slots.iter().enumerate() {
+            if index == induction.0 as usize || *entry_slot != SlotState::Available {
+                continue;
+            }
+            if iteration.slots.get(index) != Some(&SlotState::Available) {
+                self.push(
+                    MirValidationCode::LocalState,
+                    format!(
+                        "continuing ForRange body does not preserve available loop-entry local #{index}"
+                    ),
+                    span,
+                    format!("{path}.body.backedge.locals[{index}]"),
+                );
+            }
+            if entry.view_loans.get(index) != iteration.view_loans.get(index) {
+                self.push(
+                    MirValidationCode::BorrowShape,
+                    format!(
+                        "continuing ForRange body changes loans carried by loop-entry local #{index}"
+                    ),
+                    span,
+                    format!("{path}.body.backedge.loans[{index}]"),
+                );
+            }
+        }
+        if entry.temporary_loans != iteration.temporary_loans {
+            self.push(
+                MirValidationCode::BorrowShape,
+                "continuing ForRange body does not restore temporary call-scoped accesses",
+                span,
+                format!("{path}.body.backedge.temporary_loans"),
+            );
         }
     }
 
@@ -8768,9 +8862,10 @@ fn expr_definitely_diverges(expression: &Expr, depth: u16) -> bool {
         } => {
             expr_definitely_diverges(value, depth + 1)
         }
-        ExprKind::Binary(_, left, right) => {
+        ExprKind::Binary(operator, left, right) => {
             expr_definitely_diverges(left, depth + 1)
-                || expr_definitely_diverges(right, depth + 1)
+                || (!matches!(operator, BinaryOp::And | BinaryOp::Or)
+                    && expr_definitely_diverges(right, depth + 1))
         }
         ExprKind::Block(block) => block_definitely_diverges(block, depth + 1),
         ExprKind::If {
@@ -9134,5 +9229,50 @@ fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
                 .collect(),
         },
         _ => ty.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExprId;
+
+    #[test]
+    fn diverging_short_circuit_rhs_does_not_make_the_binary_unconditional() {
+        let span = Span::default();
+        let expression = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Binary(
+                BinaryOp::And,
+                Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(Constant::Bool(false)),
+                    ty: Type::Bool,
+                    span,
+                }),
+                Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Block(Block {
+                        statements: vec![Statement {
+                            kind: StatementKind::Return(Some(Expr {
+                                id: ExprId::UNASSIGNED,
+                                kind: ExprKind::Constant(Constant::Bool(false)),
+                                ty: Type::Bool,
+                                span,
+                            })),
+                            span,
+                        }],
+                        tail: None,
+                        span,
+                    }),
+                    ty: Type::Never,
+                    span,
+                }),
+            ),
+            ty: Type::Bool,
+            span,
+        };
+
+        assert!(!expr_definitely_diverges(&expression, 0));
     }
 }

@@ -3,11 +3,11 @@ use std::process::Command;
 
 use loom_core::Span;
 use loom_mir::{
-    ArtifactError, AssociatedTypeDef, Block, CallArgument, CallPlan, CallTarget, CheckedProgram,
-    ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm, ContractExpr,
-    ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
-    INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode, Pattern, Place,
-    PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
+    ArtifactError, AssociatedTypeDef, BinaryOp, Block, CallArgument, CallPlan, CallTarget,
+    CheckedProgram, ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm,
+    ContractExpr, ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function,
+    FunctionId, INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode,
+    Pattern, Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
     RequirementWitnessParam, Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind,
     TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
     decode_interpreted_artifact, decode_interpreted_executable_artifact,
@@ -2024,6 +2024,362 @@ fn for_range_induction_binding_is_immutable_at_the_checked_boundary() {
         error.code == MirValidationCode::ImmutablePlace
             && error.message.contains("induction binding")
     }));
+}
+
+#[test]
+fn for_range_induction_binding_must_be_uninitialized_at_loop_entry() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(9), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::ForRange {
+                        local: LocalId(0),
+                        start: Box::new(constant(Constant::Int(0), Type::Int)),
+                        end: Box::new(constant(Constant::Int(1), Type::Int)),
+                        body: Box::new(Block {
+                            statements: Vec::new(),
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error
+                .message
+                .contains("must be uninitialized at loop entry")
+    }));
+}
+
+fn range_body_that_moves_outer_local(end: i64) -> Function {
+    function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, false), local(1, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::ForRange {
+                        local: LocalId(1),
+                        start: Box::new(constant(Constant::Int(0), Type::Int)),
+                        end: Box::new(constant(Constant::Int(end), Type::Int)),
+                        body: Box::new(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Evaluate(expr(
+                                    ExprKind::Move(Place::local(LocalId(0))),
+                                    Type::Int,
+                                )),
+                                span: span(),
+                            }],
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    )
+}
+
+#[test]
+fn continuing_for_range_backedge_must_preserve_loop_entry_locals() {
+    // Checked MIR deliberately does not prove exact trip counts from constant
+    // syntax. Zero-, one-, and multi-iteration-looking ranges all need a
+    // valid continuing backedge because later lowering is shape-independent.
+    for end in [0, 1, 2] {
+        let errors = validation_errors(&Program {
+            functions: vec![range_body_that_moves_outer_local(end)],
+            ..Program::default()
+        });
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code == MirValidationCode::LocalState
+                && error.message.contains("continuing ForRange body")
+        }));
+    }
+}
+
+#[test]
+fn diverging_for_range_body_preserves_only_the_zero_iteration_state() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, false), local(1, Type::Int, false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::ForRange {
+                        local: LocalId(1),
+                        start: Box::new(constant(Constant::Int(0), Type::Int)),
+                        end: Box::new(constant(Constant::Int(2), Type::Int)),
+                        body: Box::new(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Return(Some(constant(
+                                    Constant::Unit,
+                                    Type::Unit,
+                                ))),
+                                span: span(),
+                            }],
+                            tail: None,
+                            span: span(),
+                        }),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(copy(0, Type::Int)),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("only the zero-iteration path continues after a diverging body");
+}
+
+#[test]
+fn continuing_for_range_body_may_restore_a_moved_loop_entry_local() {
+    let function = function(
+        0,
+        Vec::new(),
+        vec![local(0, Type::Int, true), local(1, Type::Int, false)],
+        Type::Int,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::ForRange {
+                        local: LocalId(1),
+                        start: Box::new(constant(Constant::Int(0), Type::Int)),
+                        end: Box::new(constant(Constant::Int(2), Type::Int)),
+                        body: Box::new(Block {
+                            statements: vec![
+                                Statement {
+                                    kind: StatementKind::Evaluate(expr(
+                                        ExprKind::Move(Place::local(LocalId(0))),
+                                        Type::Int,
+                                    )),
+                                    span: span(),
+                                },
+                                Statement {
+                                    kind: StatementKind::Assign {
+                                        place: Place::local(LocalId(0)),
+                                        value: constant(Constant::Int(2), Type::Int),
+                                    },
+                                    span: span(),
+                                },
+                            ],
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(copy(0, Type::Int))),
+            span: span(),
+        },
+    );
+
+    validate_program(&Program {
+        functions: vec![function],
+        ..Program::default()
+    })
+    .expect("a continuing backedge that restores its outer local is valid");
+}
+
+fn short_circuit_with_rhs(
+    mutable_value: bool,
+    before: Vec<Statement>,
+    right: Expr,
+    tail: Expr,
+) -> Function {
+    let mut statements = before;
+    statements.push(Statement {
+        kind: StatementKind::Evaluate(expr(
+            ExprKind::Binary(
+                BinaryOp::And,
+                Box::new(copy(0, Type::Bool)),
+                Box::new(right),
+            ),
+            Type::Bool,
+        )),
+        span: span(),
+    });
+    function(
+        0,
+        vec![local(0, Type::Bool, false)],
+        vec![local(1, Type::Bool, mutable_value)],
+        tail.ty.clone(),
+        Block {
+            statements,
+            tail: Some(Box::new(tail)),
+            span: span(),
+        },
+    )
+}
+
+#[test]
+fn short_circuit_rhs_only_initialization_is_not_unconditional() {
+    let right = expr(
+        ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Let {
+                    local: LocalId(1),
+                    value: constant(Constant::Bool(true), Type::Bool),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Bool(true), Type::Bool))),
+            span: span(),
+        }),
+        Type::Bool,
+    );
+    let invalid = short_circuit_with_rhs(false, Vec::new(), right, copy(1, Type::Bool));
+    let errors = validation_errors(&Program {
+        functions: vec![invalid],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::LocalState));
+}
+
+#[test]
+fn short_circuit_rhs_assignment_preserves_an_available_local() {
+    let initialize = Statement {
+        kind: StatementKind::Let {
+            local: LocalId(1),
+            value: constant(Constant::Bool(false), Type::Bool),
+        },
+        span: span(),
+    };
+    let right = expr(
+        ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Assign {
+                    place: Place::local(LocalId(1)),
+                    value: constant(Constant::Bool(true), Type::Bool),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Bool(true), Type::Bool))),
+            span: span(),
+        }),
+        Type::Bool,
+    );
+    let valid = short_circuit_with_rhs(true, vec![initialize], right, copy(1, Type::Bool));
+
+    validate_program(&Program {
+        functions: vec![valid],
+        ..Program::default()
+    })
+    .expect("RHS assignment leaves an already-available local available on both paths");
+}
+
+#[test]
+fn short_circuit_rhs_move_is_maybe_unavailable_after_the_join() {
+    let initialize = Statement {
+        kind: StatementKind::Let {
+            local: LocalId(1),
+            value: constant(Constant::Bool(true), Type::Bool),
+        },
+        span: span(),
+    };
+    let invalid = short_circuit_with_rhs(
+        false,
+        vec![initialize],
+        expr(ExprKind::Move(Place::local(LocalId(1))), Type::Bool),
+        copy(1, Type::Bool),
+    );
+    let errors = validation_errors(&Program {
+        functions: vec![invalid],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::LocalState));
+}
+
+#[test]
+fn diverging_short_circuit_rhs_leaves_the_short_path_available() {
+    let initialize = Statement {
+        kind: StatementKind::Let {
+            local: LocalId(1),
+            value: constant(Constant::Bool(true), Type::Bool),
+        },
+        span: span(),
+    };
+    let divergent_right = expr(
+        ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Return(Some(constant(Constant::Bool(false), Type::Bool))),
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        }),
+        Type::Never,
+    );
+    let valid = short_circuit_with_rhs(
+        false,
+        vec![initialize],
+        divergent_right,
+        copy(1, Type::Bool),
+    );
+
+    validate_program(&Program {
+        functions: vec![valid],
+        ..Program::default()
+    })
+    .expect("a diverging RHS cannot consume the short-circuit continuation state");
 }
 
 #[test]
