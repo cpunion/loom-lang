@@ -216,31 +216,59 @@ jobs:
           cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
           cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
 
-  platform-independent-compiler-layers:
-    name: Platform-independent compiler layers (Windows x86-64)
+  windows-llvm19:
+    name: Windows x86-64 native closure (LLVM 19)
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install LLVM 19.1.7
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 19.1.7
+          arch: x64
+          directory: ${{ runner.temp }}/llvm-19
+          env: false
+      - name: Configure LLVM and Clang
+        shell: pwsh
+        run: |
+          "LLVM_SYS_191_PREFIX=$env:LLVM_PATH" >> $env:GITHUB_ENV
+          "LOOM_CC=$env:LLVM_PATH\bin\clang.exe" >> $env:GITHUB_ENV
+          & "$env:LLVM_PATH\bin\llvm-config.exe" --version
+          & "$env:LLVM_PATH\bin\clang.exe" --version
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Test platform-independent compiler layers
+      - name: Check, lint, test, and build complete workspace
         shell: bash
         run: |
-          package_args=()
-          for package in \
-            loom-core loom-syntax loom-hir loom-sema loom-mir loom-codegen-ir loom-lowering \
-            loom-runtime-abi loom-benchmark; do
-            package_args+=(-p "$package")
-          done
           cargo fmt --all -- --check
-          cargo check --locked "${package_args[@]}" --all-targets
-          cargo clippy --locked "${package_args[@]}" --all-targets -- -D warnings
-          cargo test --locked "${package_args[@]}" --all-targets
-          cargo build --locked "${package_args[@]}" --all-targets
+          cargo check --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace --all-targets
+          cargo build --locked --workspace --all-targets
+      - name: Core native and interpreter check/build/test/run closure
+        shell: bash
+        run: |
+          for version in core01 core02 core03; do
+            source="examples/$version"
+            native="target/ci-$version"
+            interpreted="target/ci-$version.loomi"
+            cargo run --locked -p loom-cli -- --no-cache check "$source"
+            cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
+            test -f "$native.exe"
+            test -f "$native.pdb"
+            cargo run --locked -p loom-cli -- --no-cache test "$source"
+            cargo run --locked -p loom-cli -- --no-cache run "$source"
+            cargo run --locked -p loom-cli -- run --artifact "$native.exe"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache check "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache test "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter --no-cache run "$source"
+            cargo run --locked -p loom-cli -- --backend interpreter run --artifact "$interpreted"
+          done

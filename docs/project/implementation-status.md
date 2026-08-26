@@ -11,20 +11,20 @@ long-term compatibility guarantee.
 | --- | --- | --- | --- | --- | --- |
 | Linux x86-64 (Ubuntu 24.04) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
 | macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
-| Windows x86-64 (Windows 2025) | yes, limited job | selected platform-independent crates only | no | not a CI claim | no |
+| Windows x86-64 (Windows 2025) | configured native job | complete workspace | LLVM 19 native closure configured | host object path | no |
 | Other LLVM 64-bit triples | no general CI claim | host-dependent | only with a matching validated runtime bundle and linker | possible when LLVM provides the target | no |
 | 32-bit triples | no | not a native claim | no runtime/executable support | complete direct LCIR object only when LLVM provides the target; legacy route rejects | no |
 
-The Windows job checks, lints, tests, and builds `loom-core`, `loom-syntax`,
-`loom-hir`, `loom-sema`, `loom-mir`, `loom-codegen-ir`, `loom-lowering`,
-`loom-runtime-abi`, and `loom-benchmark`. It does not build `loomc`, the LLVM
-backend, interpreter, native runtime, driver, or LSP. Therefore it is evidence
-for selected platform-independent compiler layers, not a Windows Loom
-toolchain claim.
+The Windows job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
+builds the complete workspace, and runs the Core 0.1-0.3 check/build/test/run
+loops on both backends. Native builds additionally require the expected `.exe`
+and `.pdb` outputs before executing the artifact. This configuration becomes a
+Windows toolchain claim only when that job passes; source-level cross-checks on
+another host are not described as Windows execution.
 
-Linux and macOS build the complete Cargo workspace with Rust 1.88 and LLVM 19.
-They also execute native/runtime integration gates. Linux additionally runs
-the complete Core example loop and controlled quality runner; macOS runs the C3
+Linux, macOS, and the configured Windows job build the complete Cargo workspace
+with Rust 1.88 and LLVM 19 and execute native/runtime integration gates. Linux
+additionally runs the controlled quality runner; macOS runs the C3
 multi-package loop and standard-library differential gates.
 
 ## Tested vertical slices
@@ -52,13 +52,13 @@ input tests.
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
 | Code generation IR foundation | Production native preparation attempts one atomic whole-artifact direct MIR-to-LCIR lowering. The current slice covers primitives plus recursive closed POD records, including construction, copy/move, nested projection and functional mutation, aggregate phis/loops, direct parameters/results, and whole-local mutable-receiver writeback on normal and fault edges. Complete artifacts use independently checked LCIR and its typed LLVM emitter; only reachable `Unsupported` input selects the complete legacy source graph. Managed/refined records, contracts, runtime construction, and projected inout remain atomic fallback. |
-| Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64. |
+| Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64; a complete Windows x86-64 native CI gate is configured and must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; native final link intentionally uncached. |
-| Debug source info | Linux DWARF and macOS dSYM metadata are checked in CI. Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations; macOS LLDB verifies a fallible parameter and physical step-out result. Unsupported reachable artifacts use the complete legacy route. |
+| Debug source info | Linux DWARF and macOS dSYM metadata are checked in CI; the configured Windows native job requests and gates a PDB. Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations; macOS LLDB verifies a fallible parameter and physical step-out result. Unsupported reachable artifacts use the complete legacy route. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |
