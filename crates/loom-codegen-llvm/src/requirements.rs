@@ -516,12 +516,25 @@ impl RequirementScanner<'_> {
     fn private_record_local(&self, local: loom_mir::LocalId) -> bool {
         self.stack_records.contains(local)
             || (self.native_result
-                && self.function.receiver == Some(loom_mir::Receiver::Mutable)
-                && self
-                    .function
-                    .params
-                    .first()
-                    .is_some_and(|parameter| parameter.id == local))
+                && NativeSignatureShape::for_supported_function(self.program, self.function)
+                    .is_some_and(|shape| {
+                        self.function.params.iter().zip(shape.parameters()).any(
+                            |(parameter, layout)| {
+                                parameter.id == local
+                                    && matches!(layout.layout(), NativeLayout::PodRecord(_))
+                            },
+                        )
+                    }))
+    }
+
+    fn private_record_value_argument(&self, argument: &CallArgument) -> bool {
+        matches!(
+            argument,
+            CallArgument::Value(Expr {
+                kind: ExprKind::Copy(place),
+                ..
+            }) if place.projection.is_empty() && self.private_record_local(place.local)
+        )
     }
 
     fn native_call_compatible(
@@ -553,6 +566,9 @@ impl RequirementScanner<'_> {
                     (CallArgument::Value(_), NativeLayout::Scalar(_), NativePassMode::Value) => {
                         true
                     }
+                    (argument, NativeLayout::PodRecord(_), NativePassMode::Value) => {
+                        self.private_record_value_argument(argument)
+                    }
                     (
                         CallArgument::InOut(place),
                         NativeLayout::PodRecord(_),
@@ -571,11 +587,6 @@ impl RequirementScanner<'_> {
         private_result: bool,
         assumed: bool,
     ) -> Result<(), CodegenError> {
-        for argument in arguments {
-            if let CallArgument::Value(value) = argument {
-                self.scan_expr(value, output)?;
-            }
-        }
         let (CallTarget::Direct(callee) | CallTarget::Inherent(callee)) = target else {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -587,6 +598,25 @@ impl RequirementScanner<'_> {
                 "LlvmAbiDefect",
                 "private native call scanner disagrees with ABI selection",
             ));
+        }
+        let shape = self
+            .program
+            .function(*callee)
+            .and_then(|function| {
+                NativeSignatureShape::for_supported_function(self.program, function)
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "private native call scanner lost its selected ABI",
+                )
+            })?;
+        for (argument, parameter) in arguments.iter().zip(shape.parameters()) {
+            if let CallArgument::Value(value) = argument
+                && !matches!(parameter.layout(), NativeLayout::PodRecord(_))
+            {
+                self.scan_expr(value, output)?;
+            }
         }
         output.callees.insert(if assumed {
             RequirementCallee::Assumed(*callee)
@@ -983,8 +1013,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use loom_mir::{
-        BinaryOp, Block, CallArgument, CallPlan, CallTarget, Constant, Expr, ExprKind, Function,
-        FunctionId, LocalDecl, LocalId, Program, Type,
+        BinaryOp, Block, CallArgument, CallPlan, CallTarget, Constant, Expr, ExprKind, FieldDef,
+        Function, FunctionId, LocalDecl, LocalId, Program, Type, TypeDef, TypeDefKind, TypeId,
     };
 
     use super::{RuntimeRequirementGraph, builtin_requirements};
@@ -1056,6 +1086,52 @@ mod tests {
         )
     }
 
+    fn pod_record_type() -> TypeDef {
+        TypeDef {
+            id: TypeId(0),
+            name: "Pair".into(),
+            span: Default::default(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".into(),
+                    ty: Type::Int,
+                    span: Default::default(),
+                }],
+                invariant: None,
+            },
+        }
+    }
+
+    fn pod_function(id: u32, body: Expr) -> Function {
+        Function {
+            id: FunctionId(id),
+            name: format!("pod_function_{id}"),
+            span: Default::default(),
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![LocalDecl {
+                id: LocalId(0),
+                name: "pair".into(),
+                ty: Type::Nominal(TypeId(0), Vec::new()),
+                mutable: false,
+                span: Default::default(),
+            }],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Nominal(TypeId(0), Vec::new()),
+            receiver: None,
+            body: Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(body)),
+                span: Default::default(),
+            },
+            call_plan: CallPlan::default(),
+        }
+    }
+
     #[test]
     fn recursive_int_checked_and_assumed_bodies_have_isolated_requirements() {
         let body = expression(
@@ -1108,6 +1184,58 @@ mod tests {
             Some(super::RuntimeRequirements::NONE)
         );
         assert!(requirements.invocation.may_fault());
+    }
+
+    #[test]
+    fn pod_value_parameters_and_result_forwarding_stay_private_in_native_bodies() {
+        let record = Type::Nominal(TypeId(0), Vec::new());
+        let copy_parameter = || {
+            expression(
+                ExprKind::Copy(loom_mir::Place::local(LocalId(0))),
+                record.clone(),
+            )
+        };
+        let mut identity = pod_function(0, copy_parameter());
+        let mut forward = pod_function(
+            1,
+            expression(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(0)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(copy_parameter())],
+                    witnesses: Vec::new(),
+                },
+                record,
+            ),
+        );
+        identity
+            .renumber_expr_ids()
+            .expect("renumber POD identity expressions");
+        forward
+            .renumber_expr_ids()
+            .expect("renumber POD forwarding expressions");
+        let program = Program {
+            types: vec![pod_record_type()],
+            functions: vec![identity, forward],
+            ..Program::default()
+        };
+        let reachable = crate::ReachableProgram {
+            functions: BTreeSet::from([FunctionId(0), FunctionId(1)]),
+            ..crate::ReachableProgram::default()
+        };
+        let graph = RuntimeRequirementGraph::analyze(
+            &program,
+            &reachable,
+            &crate::native_range::NativeIntRangePlan::default(),
+            &BTreeMap::new(),
+        )
+        .expect("POD value requirements");
+
+        for id in [FunctionId(0), FunctionId(1)] {
+            let requirements = graph.function(id).expect("POD function summary");
+            assert!(requirements.native_body.is_pure_no_fault());
+            assert!(requirements.body.may_collect());
+        }
     }
 
     #[test]

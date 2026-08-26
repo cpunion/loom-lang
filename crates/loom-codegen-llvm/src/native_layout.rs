@@ -152,8 +152,8 @@ pub(crate) struct NativeSignature {
 
 impl NativeSignatureShape {
     /// Selects only functions which the production LLVM emitter fully lowers through a private
-    /// native ABI. POD records are deliberately restricted to a mutable receiver and/or result:
-    /// every other aggregate boundary keeps using the universal `Value` ABI.
+    /// native ABI. POD records cross ordinary and readonly-receiver boundaries as aggregate
+    /// values. A mutable receiver alone uses an in-out pointer so mutations can be written back.
     #[must_use]
     pub(crate) fn for_supported_function(program: &Program, function: &Function) -> Option<Self> {
         if function.is_async || function.type_parameters != 0 || !function.witness_params.is_empty()
@@ -163,26 +163,41 @@ impl NativeSignatureShape {
 
         let mut parameters = Vec::with_capacity(function.params.len());
         for (index, parameter) in function.params.iter().enumerate() {
-            let (layout, mode) =
-                if index == 0 && function.receiver == Some(loom_mir::Receiver::Mutable) {
-                    let layout = NativeLayout::classify(program, &parameter.ty)?;
-                    if !matches!(layout, NativeLayout::PodRecord(_)) {
-                        return None;
-                    }
-                    (layout, NativePassMode::InOut)
-                } else {
-                    (
-                        NativeLayout::Scalar(NativeScalar::for_type(&parameter.ty)?),
-                        NativePassMode::Value,
-                    )
-                };
+            let layout = NativeLayout::classify(program, &parameter.ty)?;
+            let mode = if index == 0 && function.receiver == Some(loom_mir::Receiver::Mutable) {
+                if !matches!(layout, NativeLayout::PodRecord(_)) {
+                    return None;
+                }
+                NativePassMode::InOut
+            } else {
+                NativePassMode::Value
+            };
             parameters.push(NativeParameterLayout { layout, mode });
         }
-        if function.receiver == Some(loom_mir::Receiver::Readonly)
-            || (function.receiver.is_some()
-                && !matches!(parameters.first(), Some(parameter) if parameter.mode == NativePassMode::InOut))
-        {
-            return None;
+        match function.receiver {
+            Some(loom_mir::Receiver::Mutable)
+                if !matches!(
+                    parameters.first(),
+                    Some(NativeParameterLayout {
+                        layout: NativeLayout::PodRecord(_),
+                        mode: NativePassMode::InOut,
+                    })
+                ) =>
+            {
+                return None;
+            }
+            Some(loom_mir::Receiver::Readonly)
+                if !matches!(
+                    parameters.first(),
+                    Some(NativeParameterLayout {
+                        layout: NativeLayout::PodRecord(_),
+                        mode: NativePassMode::Value,
+                    })
+                ) =>
+            {
+                return None;
+            }
+            _ => {}
         }
 
         let result = NativeLayout::classify(program, &function.return_ty)?;
@@ -426,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_only_representation_safe_pod_receiver_and_result_boundaries() {
+    fn selects_representation_safe_pod_value_inout_and_result_boundaries() {
         let mut program = Program {
             types: vec![record_type(0, 0, vec![Type::Int, Type::Bool], None)],
             ..Program::default()
@@ -464,13 +479,28 @@ mod tests {
         assert!(matches!(shape.result(), NativeLayout::PodRecord(_)));
 
         method.receiver = Some(Receiver::Readonly);
-        assert!(NativeSignatureShape::for_supported_function(&program, &method).is_none());
-        method.receiver = Some(Receiver::Mutable);
+        let shape = NativeSignatureShape::for_supported_function(&program, &method)
+            .expect("readonly POD receiver should use the aggregate value ABI");
+        assert!(matches!(
+            shape.parameters()[0].layout(),
+            NativeLayout::PodRecord(_)
+        ));
+        assert_eq!(shape.parameters()[0].mode(), NativePassMode::Value);
+
         method.call_plan.requires.push(true_contract());
         assert!(NativeSignatureShape::for_supported_function(&program, &method).is_none());
 
         let mut ordinary_parameter = scalar_int_function();
-        ordinary_parameter.params[0].ty = record;
+        ordinary_parameter.params[0].ty = record.clone();
+        let shape = NativeSignatureShape::for_supported_function(&program, &ordinary_parameter)
+            .expect("ordinary POD parameter should use the aggregate value ABI");
+        assert!(matches!(
+            shape.parameters()[0].layout(),
+            NativeLayout::PodRecord(_)
+        ));
+        assert_eq!(shape.parameters()[0].mode(), NativePassMode::Value);
+
+        ordinary_parameter.call_plan.ensures.push(true_contract());
         assert!(
             NativeSignatureShape::for_supported_function(&program, &ordinary_parameter).is_none()
         );
