@@ -488,8 +488,8 @@ impl PersistentCache {
             ));
         }
         if typed_program_contains_process_local_proofs(&analysis.typed) {
-            // A digest authenticates bytes against their reference, not the
-            // compiler conclusion inside those bytes. Proof-bearing bodies
+            // A digest checks bytes against their reference; it does not prove
+            // the compiler conclusion inside those bytes. Proof-bearing bodies
             // are deliberately rebuilt from source instead of publishing a
             // semantic entry which a later process must reject.
             return Ok(());

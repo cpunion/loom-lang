@@ -3,20 +3,23 @@
 use std::process::Command;
 
 use loom_codegen_llvm::{
-    EmitOptions, NativeRouteKind, NativeRoutePolicy, OptimizationProfile, emit_native,
-    prepare_native_object,
+    EmitOptions, NativeRouteKind, NativeRoutePolicy, OptimizationProfile,
+    emit_prepared_native_object, prepare_native_object,
 };
 use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
 };
-use loom_driver::AnalysisHost;
+use loom_driver::{AnalysisHost, PersistentCache};
 use loom_interpreter::{ExecutionFailure, Interpreter, Value};
 use loom_mir::{
     CheckedProgram, StatementKind, decode_interpreted_executable_artifact,
     encode_interpreted_executable_artifact,
 };
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
+
+mod support;
+use support::emit_native;
 
 fn compile_source(source: &str) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create proof source project");
@@ -341,6 +344,69 @@ pub fn main() Unit {
         .output()
         .expect("run generic invariant recheck");
     assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn proof_bearing_disk_cache_reanalysis_preserves_native_route_and_ir() {
+    let source = r"module proof_cache_parity
+
+type Positive = Float where self >= 0.0
+
+pub fn main() Unit {
+    discard Positive(10.0)
+    Unit
+}
+";
+    let project = tempfile::tempdir().expect("create proof cache parity project");
+    std::fs::write(project.path().join("main.loom"), source).expect("write proof cache source");
+    let cache = PersistentCache::new(project.path().join("compiler-cache"));
+
+    let cold_host = AnalysisHost::new(project.path()).expect("load cold proof project");
+    let cold_sources = cold_host.load_sources().expect("load cold proof sources");
+    let (cold, cold_parse) = cold_host.snapshot_from_sources_with_parse_cache(
+        cold_sources,
+        &cache,
+        "proof-cache-parity-v1",
+    );
+    assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
+    assert_eq!(cold_parse.misses, 1);
+    let cold_program = cold.executable().expect("lower cold proof MIR");
+
+    let warm_host = AnalysisHost::new(project.path()).expect("load warm proof project");
+    let warm_sources = warm_host.load_sources().expect("load warm proof sources");
+    let (warm, warm_parse) = warm_host.snapshot_from_sources_with_parse_cache(
+        warm_sources,
+        &cache,
+        "proof-cache-parity-v1",
+    );
+    assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
+    assert!(warm_parse.is_full_hit());
+    assert_eq!(warm.semantic_query_stats().modules_reused, 0);
+    let warm_program = warm.executable().expect("lower rebuilt warm proof MIR");
+    assert_eq!(format!("{cold_program:#?}"), format!("{warm_program:#?}"));
+
+    let output = tempfile::tempdir().expect("create proof cache parity output");
+    let cold_ir = output.path().join("cold.ll");
+    let warm_ir = output.path().join("warm.ll");
+    let mut cold_options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    cold_options.emit_ir = Some(cold_ir.clone());
+    let mut warm_options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    warm_options.emit_ir = Some(warm_ir.clone());
+    let cold_prepared =
+        prepare_native_object(cold_program, cold_options, NativeRoutePolicy::Automatic)
+            .expect("prepare cold proof object");
+    let warm_prepared =
+        prepare_native_object(warm_program, warm_options, NativeRoutePolicy::Automatic)
+            .expect("prepare rebuilt warm proof object");
+    assert_eq!(cold_prepared.route_kind(), warm_prepared.route_kind());
+    emit_prepared_native_object(&cold_prepared, &output.path().join("cold.o"))
+        .expect("emit cold proof object");
+    emit_prepared_native_object(&warm_prepared, &output.path().join("warm.o"))
+        .expect("emit warm proof object");
+    let cold_llvm = std::fs::read_to_string(cold_ir).expect("read cold proof IR");
+    let warm_llvm = std::fs::read_to_string(warm_ir).expect("read warm proof IR");
+    assert_eq!(cold_llvm, warm_llvm);
+    assert!(!cold_llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE));
 }
 
 #[test]
