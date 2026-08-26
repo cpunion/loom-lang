@@ -1505,6 +1505,47 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
         "{ir}"
     );
     assert!(ir.contains("define internal {} @loom.lcir.fn.2()"), "{ir}");
+    for setup_failure in [
+        "test.runtime.create.failed:",
+        "test.runtime.activation.failed:",
+        "RuntimeFault: runtime creation failed",
+        "RuntimeFault: runtime activation failed",
+    ] {
+        assert!(
+            ir.contains(setup_failure),
+            "missing `{setup_failure}`:\n{ir}"
+        );
+    }
+    assert_eq!(
+        ir.matches("ret i32 6").count(),
+        2,
+        "runtime setup failures must terminate the harness:\n{ir}"
+    );
+    assert!(!ir.contains("test.runtime.setup.failed"), "{ir}");
+    let activation_failure = ir
+        .find("test.runtime.activation.failed:")
+        .expect("activation-failure block");
+    let activation_failure = &ir[activation_failure..];
+    let destroy = activation_failure
+        .find("call i32 @loom_runtime_destroy_v1")
+        .expect("activation failure destroys the inactive runtime");
+    let diagnostic = activation_failure
+        .find("call i32 @puts")
+        .expect("activation failure reports a RuntimeFault");
+    assert!(
+        destroy < diagnostic,
+        "activation failure must destroy before reporting:\n{activation_failure}"
+    );
+    let deactivate = ir
+        .find("runtime.root.deactivate")
+        .expect("successful test deactivates its runtime");
+    let normal_destroy = ir
+        .find("runtime.root.destroy")
+        .expect("successful test destroys its runtime");
+    assert!(
+        deactivate < normal_destroy,
+        "normal test cleanup must deactivate before destroy:\n{ir}"
+    );
     assert_no_legacy_ir(&ir);
 }
 

@@ -1566,15 +1566,21 @@ impl<'ctx> Backend<'ctx, '_> {
     ) -> Result<(), CodegenError> {
         let runtime = call_pointer(&self.builder, self.runtime_create(), &[], "test.runtime")?;
         let ready = self.context.append_basic_block(main, "test.runtime.ready");
-        let setup_failed = self
+        let create_failed = self
             .context
-            .append_basic_block(main, "test.runtime.setup.failed");
+            .append_basic_block(main, "test.runtime.create.failed");
         let exists = self
             .builder
             .build_is_not_null(runtime, "test.runtime.exists")
             .map_err(builder_error)?;
         self.builder
-            .build_conditional_branch(exists, ready, setup_failed)
+            .build_conditional_branch(exists, ready, create_failed)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(create_failed);
+        self.puts("RuntimeFault: runtime creation failed")?;
+        self.builder
+            .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
 
         self.builder.position_at_end(ready);
@@ -1611,20 +1617,12 @@ impl<'ctx> Backend<'ctx, '_> {
                 "test.runtime.activation.destroy",
             )
             .map_err(builder_error)?;
+        self.puts("RuntimeFault: runtime activation failed")?;
         self.builder
-            .build_unconditional_branch(setup_failed)
+            .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
 
         let next = self.context.append_basic_block(main, "test.next");
-        self.builder.position_at_end(setup_failed);
-        self.puts(&format!("failed {name}"))?;
-        self.builder
-            .build_store(failed, self.context.i32_type().const_int(1, false))
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(next)
-            .map_err(builder_error)?;
-
         self.builder.position_at_end(activated);
         let fault_context = self.initialize_fault_context(runtime)?;
         let status = self.call_fallible_root(root, fault_context, "test")?;
