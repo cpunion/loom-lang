@@ -24,6 +24,7 @@ mod artifact_identity;
 mod builder;
 mod dump;
 mod ids;
+mod instance;
 mod ir;
 mod lower;
 mod repr;
@@ -40,6 +41,10 @@ pub use artifact_identity::{
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
 pub use ids::{BlockId, InstanceId, InstructionId, ReprId, ValueId, ValueTypeId};
+pub use instance::{
+    INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceWitnessArgument,
+    PlannedInstance,
+};
 pub use ir::{
     Block, BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, Effects, FaultCode,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
