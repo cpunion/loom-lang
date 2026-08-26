@@ -264,7 +264,7 @@ jobs:
             throw "unexpected llvm-config version: $version"
           }
           & "$llvmRoot\bin\clang.exe" --version
-          $llvmLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-shared --libfiles).Trim()
+          $llvmLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-static --libfiles).Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($llvmLibraries) -or -not (Test-Path "$llvmRoot\include\llvm-c\Core.h" -PathType Leaf)) {
             throw "LLVM development libraries are incomplete"
           }
@@ -310,15 +310,24 @@ jobs:
       - name: Verify Windows CodeView object and PDB containers
         shell: pwsh
         run: |
-          cargo run --locked -p loom-cli -- --no-cache build --emit object --output target/ci-codeview examples/core01
-          if (-not (Test-Path target/ci-codeview.obj -PathType Leaf)) {
+          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-codeview fixtures/scalar-lcir
+          & target/ci-lcir-codeview.exe
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path target/ci-lcir-codeview.pdb -PathType Leaf)) {
+            throw "typed LCIR executable/PDB closure failed"
+          }
+          cargo run --locked -p loom-cli -- --no-cache build --emit object --output target/ci-lcir-codeview-object fixtures/scalar-lcir
+          if (-not (Test-Path target/ci-lcir-codeview-object.obj -PathType Leaf)) {
             throw "native object did not use the MSVC .obj convention"
           }
-          $sections = & "$env:LLVM_PATH/bin/llvm-readobj.exe" --sections target/ci-codeview.obj | Out-String
+          $sections = & "$env:LLVM_PATH/bin/llvm-readobj.exe" --sections target/ci-lcir-codeview-object.obj | Out-String
           if ($LASTEXITCODE -ne 0 -or $sections -notmatch '\.debug\$S') {
             throw "compiler-emitted COFF object has no CodeView .debug`$S section"
           }
-          & "$env:LLVM_PATH/bin/llvm-pdbutil.exe" dump -summary target/ci-core01.pdb
+          $symbols = & "$env:LLVM_PATH/bin/llvm-nm.exe" --format=posix target/ci-lcir-codeview-object.obj | Out-String
+          if ($LASTEXITCODE -ne 0 -or $symbols -notmatch 'loom\.lcir\.fn') {
+            throw "CodeView object did not use the typed LCIR route"
+          }
+          & "$env:LLVM_PATH/bin/llvm-pdbutil.exe" dump -summary target/ci-lcir-codeview.pdb
           if ($LASTEXITCODE -ne 0) {
-            throw "linked PDB is not readable by llvm-pdbutil"
+            throw "MSVC linker did not produce a readable PDB"
           }
