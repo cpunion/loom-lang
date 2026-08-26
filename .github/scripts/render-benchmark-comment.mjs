@@ -353,7 +353,7 @@ function runtimeChartBlock(panel, runtimeKeys, upperBound) {
   if (runtimeKeys.length === 1) {
     labels.unshift(JSON.stringify("base"));
     baseLine.unshift(100);
-    indices.unshift(100);
+    indices.unshift(0);
   }
   return [
     "```mermaid",

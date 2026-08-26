@@ -115,8 +115,8 @@ test("renders exactly one horizontal table for macOS, Linux, and unavailable Win
   assert.match(output, /title "Linux runtime index \(base = 100\)"/);
   assert.equal(output.match(/x-axis \["base", "integer\/loom"\]/g)?.length, 2);
   assert.equal(output.match(/y-axis "Runtime index" 0 --> 120/g)?.length, 2);
-  assert.match(output, /bar \[100, 90\]\n  line \[100, 100\]/);
-  assert.match(output, /bar \[100, 110\]\n  line \[100, 100\]/);
+  assert.match(output, /bar \[0, 90\]\n  line \[100, 100\]/);
+  assert.match(output, /bar \[0, 110\]\n  line \[100, 100\]/);
   assert.match(output, /```\n\n```mermaid/);
   assert.ok(output.indexOf("| Case |") < output.indexOf("### Runtime comparison charts"));
 });
@@ -132,7 +132,7 @@ test("renders only the measured platform series", () => {
   assert.doesNotMatch(output, /<table/);
   assert.match(output, /plotColorPalette: "#eb670f, #59636e"/);
   assert.match(output, /title "Linux runtime index \(base = 100\)"/);
-  assert.match(output, /bar \[100, 90\]\n  line \[100, 100\]/);
+  assert.match(output, /bar \[0, 90\]\n  line \[100, 100\]/);
 });
 
 test("renders a macOS-only chart with a visible base-line anchor", () => {
@@ -146,7 +146,7 @@ test("renders a macOS-only chart with a visible base-line anchor", () => {
   assert.doesNotMatch(output, /<table/);
   assert.match(output, /plotColorPalette: "#0969da, #59636e"/);
   assert.match(output, /title "macOS runtime index \(base = 100\)"/);
-  assert.match(output, /bar \[100, 90\]\n  line \[100, 100\]/);
+  assert.match(output, /bar \[0, 90\]\n  line \[100, 100\]/);
 });
 
 test("omits the chart when no chartable platform evidence exists", () => {
@@ -164,8 +164,8 @@ test("uses one runtime-index scale for both independent platform charts", () => 
     "0123456789abcdef",
   );
   assert.equal(output.match(/y-axis "Runtime index" 0 --> 160/g)?.length, 2);
-  assert.match(output, /bar \[100, 90\]/);
-  assert.match(output, /bar \[100, 150\]/);
+  assert.match(output, /bar \[0, 90\]/);
+  assert.match(output, /bar \[0, 150\]/);
 });
 
 test("aligns every platform series to the same runtime keys", () => {
