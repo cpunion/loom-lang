@@ -7,9 +7,14 @@ use loom_mir::CheckedProgram;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CodegenError, OptimizationProfile, emitter::Emitter, lcir_emitter::LcirEmitter};
+use crate::{
+    CodegenError, NATIVE_RUNTIME_ABI, OptimizationProfile,
+    emitter::Emitter,
+    lcir_emitter::LcirEmitter,
+    target::{NativeTargetMachine, create_target_machine},
+};
 
-const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v4";
+const NATIVE_OBJECT_FORMAT: &str = "loom-legacy-native-object-v5";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,12 +84,15 @@ pub struct DebugSource {
 #[derive(Serialize)]
 struct ObjectFingerprint<'a> {
     format: &'static str,
+    harness: &'static str,
     backend_version: &'static str,
     backend_build: &'static str,
     llvm_version: (u32, u32, u32),
+    runtime_abi: &'static str,
     mir_format: &'static str,
     mir_version: u32,
     target: crate::NativeTargetIdentity,
+    target_selection: &'static str,
     roots: &'a SourceRoots,
     reachable: &'a ReachableSourceGraph,
     types: &'a [loom_mir::TypeDef],
@@ -185,7 +193,7 @@ pub struct NativeObjectArtifact {
     pub witnesses: usize,
 }
 
-fn select_roots(
+pub(crate) fn select_roots(
     program: &CheckedProgram,
     options: &EmitOptions,
 ) -> Result<(SourceRoots, ReachableSourceGraph), CodegenError> {
@@ -213,6 +221,17 @@ pub fn native_object_fingerprint(
     options: &EmitOptions,
 ) -> Result<String, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
+    let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
+    legacy_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
+}
+
+pub(crate) fn legacy_object_fingerprint_with_target(
+    program: &CheckedProgram,
+    options: &EmitOptions,
+    roots: &SourceRoots,
+    reachable: &ReachableSourceGraph,
+    target: &NativeTargetMachine,
+) -> Result<String, CodegenError> {
     let functions = reachable
         .functions
         .iter()
@@ -261,14 +280,20 @@ pub fn native_object_fingerprint(
         .collect::<Result<Vec<_>, CodegenError>>()?;
     let identity = ObjectFingerprint {
         format: NATIVE_OBJECT_FORMAT,
+        harness: match options.kind {
+            EmitKind::Run { .. } => "run",
+            EmitKind::Tests => "tests",
+        },
         backend_version: crate::BACKEND_VERSION,
         backend_build: crate::LLVM_OBJECT_BUILD_FINGERPRINT,
         llvm_version: inkwell::support::get_llvm_version(),
+        runtime_abi: NATIVE_RUNTIME_ABI,
         mir_format: loom_mir::INTERPRETED_ARTIFACT_FORMAT,
         mir_version: loom_mir::INTERPRETED_ARTIFACT_VERSION,
-        target: crate::target_identity(options.target_triple.as_deref(), options.optimization)?,
-        roots: &roots,
-        reachable: &reachable,
+        target: target.identity(),
+        target_selection: target.target_selection(),
+        roots,
+        reachable,
         types: &program.types,
         concepts: &program.concepts,
         requirements: &program.requirements,
@@ -378,7 +403,7 @@ pub fn emit_native(
 mod tests {
     #[test]
     fn native_object_fingerprint_domain_is_pinned() {
-        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-native-object-v4");
+        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-legacy-native-object-v5");
     }
 
     #[test]

@@ -47,9 +47,11 @@ loomc build --emit object \
 ```
 
 This succeeds only when the linked LLVM installation provides the requested
-target and its data layout uses 64-bit pointers. Object emission does not prove
-that a target operating system, C runtime, system linker, or Loom runtime
-bundle is available.
+target. The complete legacy value route requires 64-bit pointers. A completely
+supported scalar LCIR artifact may emit a matching 32-bit relocatable object,
+but that is not evidence of a supported 32-bit Loom runtime or executable
+toolchain. Object emission does not prove that a target operating system, C
+runtime, system linker, or Loom runtime bundle is available.
 
 ## Cross-target executables
 

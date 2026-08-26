@@ -15,18 +15,22 @@ project input
   -> MIR validation
   -> interpreter
      or
-     root selection -> reachability -> LLVM IR -> object -> linker
+     native route preparation
+       -> exact LLVM target machine and target layout
+       -> whole-artifact scalar classification/lowering
+          -> complete checked LCIR -> typed LLVM emitter
+          or
+          -> unsupported -> checked-MIR reachability -> legacy LLVM emitter
+       -> object cache -> linker
 ```
 
-This diagram is the current production pipeline. `loom-codegen-ir` owns the
-checked-MIR root and reachability graph used by that pipeline. Separately, it
-can classify and lower a complete reachable scalar artifact, and
-`loom-codegen-llvm` can emit that checked artifact directly to a verified
-native object. The production driver route and LCIR object-cache fingerprint
-are not connected yet. See [Code generation IR](codegen-ir.md) for the
-implemented boundaries and the
-[typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
-migration design.
+This diagram is the current production pipeline. `loom-codegen-ir` owns both
+checked-MIR source reachability and whole-artifact scalar MIR-to-LCIR
+lowering. `loom-codegen-llvm` prepares one opaque route, target machine, and
+route-specific object identity for the cache and emitter. See
+[Code generation IR](codegen-ir.md) for the implemented boundary and the
+[typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the remaining
+migration gates.
 
 ## Project and source discovery
 
@@ -104,20 +108,21 @@ descriptors all contribute edges. See
 ## Backend boundaries
 
 The interpreter executes MIR deterministically and provides an independent
-semantic oracle for end-to-end tests. The production LLVM backend receives the
-source graph computed by `loom-codegen-ir`, computes the target identity, and
-lowers only reachable checked MIR through its legacy
-universal-value implementation and private native specializations, verifies
-LLVM IR, optimizes it, verifies again, and emits a relocatable object. Linking
-is a separate step.
+semantic oracle for end-to-end tests. The production LLVM path prepares one
+representation-neutral target machine, derives LCIR's pointer-width layout
+from its target data, and attempts one atomic whole-artifact scalar lowering.
+A complete result retains only the independently validated `CheckedArtifact`
+and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
+legacy source graph and universal-value emitter for the complete artifact.
+Invalid roots, resource exhaustion, compiler defects, and LCIR emission
+failures never select fallback.
 
-`loom-codegen-ir::CheckedProgram` and `CheckedArtifact` form an independent
-LCIR library boundary produced by the whole-artifact scalar lowerer. The LLVM
-crate can translate that checked artifact mechanically to an object, but the
-production driver does not select the route. It continues to pass
-`loom_mir::CheckedProgram` through the checked-MIR source graph and legacy LLVM
-emitter. The atomic production router and its cache fingerprint remain
-migration work tracked by the [accepted RFC](../rfcs/typed-codegen-ir.md).
+The prepared plan owns its `EmitOptions` and exact target machine. Cache
+identity, runtime-bundle validation, optimization, and object emission reuse
+that plan instead of reconstructing target or reachability state. Ordinary
+`build`, `run`, and `test` use automatic selection. `debug` deliberately uses
+the legacy route until LCIR carries truthful function-level source debug
+metadata. Linking remains a separate step.
 
 Source diagnostics exit before either backend executes. Errors discovered
 after checked MIR—missing MIR references, LLVM verifier failures, or malformed

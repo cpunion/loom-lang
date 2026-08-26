@@ -73,6 +73,61 @@ pub(crate) struct NativeTargetMachine {
     pub(crate) machine: TargetMachine,
     cpu: String,
     features: String,
+    optimization: OptimizationProfile,
+    explicit: bool,
+}
+
+impl NativeTargetMachine {
+    pub(crate) fn identity(&self) -> NativeTargetIdentity {
+        let data_layout = self.machine.get_target_data().get_data_layout();
+        NativeTargetIdentity {
+            triple: self.triple.as_str().to_string_lossy().into_owned(),
+            data_layout: data_layout.as_str().to_string_lossy().into_owned(),
+            cpu_policy: self.cpu.clone(),
+            cpu_features: self.features.clone(),
+            optimization: self.optimization.pipeline().to_owned(),
+            relocation: RELOCATION_MODE.to_owned(),
+        }
+    }
+
+    pub(crate) const fn optimization(&self) -> OptimizationProfile {
+        self.optimization
+    }
+
+    pub(crate) const fn target_selection(&self) -> &'static str {
+        if self.explicit {
+            "explicit"
+        } else {
+            "implicit-host"
+        }
+    }
+
+    pub(crate) fn pointer_bits(&self) -> Result<u32, CodegenError> {
+        self.machine
+            .get_target_data()
+            .get_pointer_byte_size(None)
+            .checked_mul(8)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "NativePointerWidthOverflow",
+                    format!("target {} pointer width does not fit u32 bits", self.triple),
+                )
+            })
+    }
+
+    pub(crate) fn validate_legacy_value_abi(&self) -> Result<(), CodegenError> {
+        let pointer_bits = self.pointer_bits()?;
+        if pointer_bits == 64 {
+            return Ok(());
+        }
+        Err(CodegenError::new(
+            "UnsupportedNativePointerWidth",
+            format!(
+                "target {} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers",
+                self.triple
+            ),
+        ))
+    }
 }
 
 /// Returns the identity of the exact target-machine policy used for emission.
@@ -94,15 +149,7 @@ pub fn target_identity(
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetIdentity, CodegenError> {
     let target = create_target_machine(triple, optimization)?;
-    let data_layout = target.machine.get_target_data().get_data_layout();
-    Ok(NativeTargetIdentity {
-        triple: target.triple.as_str().to_string_lossy().into_owned(),
-        data_layout: data_layout.as_str().to_string_lossy().into_owned(),
-        cpu_policy: target.cpu,
-        cpu_features: target.features,
-        optimization: optimization.pipeline().to_owned(),
-        relocation: RELOCATION_MODE.to_owned(),
-    })
+    Ok(target.identity())
 }
 
 /// Returns the exact embedded Rust runtime archive identity used by linking.
@@ -188,20 +235,7 @@ pub(crate) fn create_target_machine(
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetMachine, CodegenError> {
     let target = create_llvm_target_machine(requested, optimization)?;
-    let pointer_bits = target
-        .machine
-        .get_target_data()
-        .get_pointer_byte_size(None)
-        .saturating_mul(8);
-    if pointer_bits != 64 {
-        return Err(CodegenError::new(
-            "UnsupportedNativePointerWidth",
-            format!(
-                "target {} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers",
-                target.triple
-            ),
-        ));
-    }
+    target.validate_legacy_value_abi()?;
     Ok(target)
 }
 
@@ -248,6 +282,8 @@ pub(crate) fn create_llvm_target_machine(
         machine,
         cpu,
         features,
+        optimization,
+        explicit: requested.is_some(),
     })
 }
 

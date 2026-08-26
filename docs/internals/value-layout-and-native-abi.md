@@ -5,10 +5,11 @@ LLVM and the Rust runtime agree within one toolchain build. Source code cannot
 inspect tags, pointers, allocation addresses, witness descriptors, or calling
 conventions, and external code must not depend on them.
 
-Production native compilation currently lowers checked MIR through the legacy
-layouts below. The scalar whole-artifact lowerer and checked-LCIR object
-emitter use a separate typed boundary, but the production driver does not yet
-select that route.
+Production native compilation selects one representation boundary for an
+entire reachable artifact. A completely supported scalar artifact uses typed
+LCIR directly. Any reachable feature outside current LCIR coverage selects the
+complete legacy layout below; the two callable ABIs are never mixed in one
+object.
 
 ## Universal value envelope
 
@@ -46,7 +47,7 @@ use GC-managed nodes. Logical copy is independent: mutating one value cannot
 write through an earlier copy merely because the runtime shares an allocation
 internally.
 
-## Standalone LCIR representations
+## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
 as `I1`, `Int` as `I64`, and `Float` as `F64`. Its checked-artifact LLVM API
@@ -56,9 +57,11 @@ context pointer. Source symbols are internal, so this is a compiler-private
 object ABI rather than a native library ABI.
 
 The whole-artifact scalar lowerer constructs programs using the same catalog,
-and focused object tests exercise the typed ABI. These boundaries do not
-change the production universal value envelope or runtime ABI because the
-production route is not connected yet.
+and the production automatic route emits that typed ABI for eligible build,
+run, and test artifacts. Unsupported aggregates, managed values, concepts,
+contracts, cleanup, and async operations still select the complete universal
+route. Typed LCIR does not change the legacy runtime ABI or make either object
+ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted

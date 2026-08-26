@@ -1,10 +1,11 @@
 # LLVM backend
 
-`loom-codegen-llvm` is the default native backend. Its object fingerprint,
-object emission, and executable emission APIs require
-`loom_mir::CheckedProgram`. It computes the closed-world source graph through
-`loom-codegen-ir`, emits LLVM IR, verifies and optimizes it, and writes a
-relocatable object. Linking is a separate driver operation.
+`loom-codegen-llvm` is the default native backend. Its production API prepares
+one opaque object plan from `loom_mir::CheckedProgram`, owned emission options,
+and an atomic route policy. The plan owns the exact LLVM target machine and
+either a complete checked LCIR artifact or the checked-MIR roots and reachable
+graph for one legacy object. Fingerprinting and emission consume that same
+plan. Linking is a separate driver operation.
 
 ## LLVM integration
 
@@ -25,22 +26,21 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a scalar typed-SSA foundation in `loom-codegen-ir`.
-`emit_lcir_native_object` accepts only a closed `CheckedArtifact`: its roots,
-callable closure, representations, CFG, types, and exact fault effects have
-already crossed independent validation. The emitter declares every source
-function with its typed LCIR ABI, keeps source symbols internal, emits a run or
-ordered-test harness, verifies before and after optimization, and writes a
-relocatable object. Its tests emit, link, and run pure and faulting artifacts on
-the LLVM CI hosts. The whole-artifact scalar lowerer can construct that wrapper
-from checked MIR.
+The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
+closure, representations, CFG, types, proofs, and exact fault effects have
+already crossed independent validation. It declares every source function
+with its typed LCIR ABI, keeps source symbols internal, emits a run or ordered
+test harness, verifies before and after optimization, and writes a relocatable
+object.
 
-This object boundary is not the production compiler route. The driver still
-passes `loom_mir::CheckedProgram` through checked-MIR `SourceRoots` and
-`ReachableSourceGraph` into the legacy emitter. Atomic whole-artifact route
-selection and an LCIR object-cache fingerprint are not connected yet. Valid
-MIR outside the supported scalar slice produces one whole-artifact
-`Unsupported` result; a production router must never mix the two
-source-function ABIs in one object.
+Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
+preparation creates one target machine and attempts the complete scalar
+lowering exactly once. `Complete` retains only the checked artifact and selects
+LCIR. Only `Unsupported` constructs and stores `SourceRoots` plus
+`ReachableSourceGraph` for a complete legacy object. Unsupported unreachable
+code cannot change the route; one unsupported reachable test changes the
+whole ordered-test artifact. Invalid roots, resource limits, compiler defects,
+and LCIR emitter failures never fall back.
 
 Source contracts are outside that routing slice. Hand-built LCIR can carry the
 generic `ContractFailed` fault code, but LCIR does not yet preserve the contract
@@ -53,6 +53,30 @@ The implemented crate boundary is documented in
 whole-artifact migration rule, typed ABI, and deletion gates are in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
+## Prepared object boundary
+
+The production facade consists of:
+
+- `prepare_native_object`, which owns `EmitOptions`, creates the target, and
+  selects one immutable route;
+- `prepared_native_object_fingerprint`, which hashes the stored route without
+  repeating lowering or reachability;
+- `prepared_native_target_identity`, which exposes the exact read-only target
+  identity to runtime-bundle validation;
+- `emit_prepared_native_object`, which borrows the same target machine and
+  selected representation.
+
+`PreparedNativeObject` is opaque and remains on the thread that prepared it;
+the contained Inkwell target machine is not made artificially sendable. The
+legacy and LCIR emitters retain low-level direct APIs for focused tests and
+library clients, but each is a thin create-target-then-emit wrapper. Production
+CLI paths use only the prepared facade.
+
+Preparation failures have four structured classes: invalid root, resource,
+target/configuration, and compiler defect. The CLI maps them respectively to
+failure, failure, usage, and defect exits. Classification never depends on
+matching diagnostic strings.
+
 ## Target-machine policy
 
 For an implicit host target, the backend uses LLVM's normalized host triple and
@@ -60,12 +84,12 @@ the actual host CPU name/features. For any explicit `--target-triple`,
 including one equal to the host triple, it uses `generic` CPU, an empty feature
 set, PIC relocation, and the target's LLVM data layout.
 
-The production universal native representation requires 64-bit pointers. Its
-32-bit data-layout request fails before object emission. The scalar LCIR emitter
-instead requires the checked artifact's pointer width to equal the selected
-LLVM target data, without treating that match as runtime, linker, CI, or release
-support. An LLVM target being available establishes only that a compatible
-object can be emitted.
+The target machine is created before representation selection. Its pointer
+width is converted with checked arithmetic into `TargetLayout`. A complete
+scalar LCIR object can therefore be emitted for a matching 32-bit LLVM target.
+The legacy universal representation's 64-bit restriction is applied only
+after that route is selected. Neither case establishes 32-bit runtime, linker,
+CI, or release support; LLVM target availability proves only object emission.
 
 ## Verification and optimization
 
@@ -129,18 +153,21 @@ is correct.
 
 ## Object identity and linking
 
-The native object fingerprint is format `loom-native-object-v4` and includes:
+Object identities are route-separated:
 
-- compiler/backend build fingerprint and linked LLVM version;
-- MIR format/version;
-- exact target-machine identity and optimization;
-- roots and reachability;
-- complete type, concept, requirement, and prelude metadata;
-- reachable function and live witness-slot data;
-- stable debug source metadata.
+- `loom-lcir-native-object-v1` streams the canonical checked-artifact identity;
+- `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
+  format, exact roots and source reachability, reachable functions, live
+  witness slots, and the semantic type/concept/prelude tables used by legacy
+  lowering.
 
-The compiler build fingerprint includes the `loom-codegen-ir` crate sources.
-There is no LCIR-specific object format or route-selection cache key yet.
+Both include the compiler/backend build fingerprint, linked LLVM version,
+native runtime ABI, exact normalized triple and data layout, CPU and feature
+policy, implicit-versus-explicit target selection, optimization pipeline, PIC
+relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
+paths are excluded. A requested IR side artifact bypasses the object cache so
+the file is always produced. The CLI object-cache domain is independently
+versioned and never suppresses fingerprint errors.
 
 Host linking uses the Rust runtime archive embedded in the compiler build.
 Cross-target linking accepts only a validated matching runtime bundle and an
@@ -153,10 +180,12 @@ The production checked-MIR backend emits source line information from stable
 project-relative paths. Linux executables retain DWARF in the ELF output. On
 macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loomc debug`
 keeps temporary executable and debug data alive for the debugger session and
-launches in the project root. The independent LCIR emitter currently publishes
-only compile-unit and file metadata; it withholds `DISubprogram` metadata until
-the source-level debug signature for fallible status returns and the hidden
-fault context is specified.
+launches in the project root. It uses `NativeRoutePolicy::LegacyOnly` because
+LCIR currently publishes only compile-unit and file metadata; LCIR withholds
+`DISubprogram` metadata until the source-level debug signature for fallible
+status returns and the hidden fault context is specified. Development
+optimization alone is not a debugger contract and does not otherwise disable
+LCIR.
 
 There is no stable native library, debugger pretty-printer, plugin, or FFI ABI
 in the current implementation.
