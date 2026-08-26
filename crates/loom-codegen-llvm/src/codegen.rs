@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use loom_codegen_ir::{ReachableSourceGraph, SourceRoots, analyze_source_reachability};
 use loom_mir::Program;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CodegenError, OptimizationProfile, ReachableProgram, Roots, emitter::Emitter};
+use crate::{CodegenError, OptimizationProfile, emitter::Emitter};
 
 const NATIVE_OBJECT_FORMAT: &str = "loom-native-object-v4";
 
@@ -44,8 +45,8 @@ struct ObjectFingerprint<'a> {
     mir_format: &'static str,
     mir_version: u32,
     target: crate::NativeTargetIdentity,
-    roots: &'a Roots,
-    reachable: &'a ReachableProgram,
+    roots: &'a SourceRoots,
+    reachable: &'a ReachableSourceGraph,
     types: &'a [loom_mir::TypeDef],
     concepts: &'a [loom_mir::ConceptDef],
     requirements: &'a [loom_mir::RequirementDef],
@@ -147,14 +148,14 @@ pub struct NativeObjectArtifact {
 fn select_roots(
     program: &Program,
     options: &EmitOptions,
-) -> Result<(Roots, ReachableProgram), CodegenError> {
+) -> Result<(SourceRoots, ReachableSourceGraph), CodegenError> {
     let roots = match &options.kind {
-        EmitKind::Run { entry } => Roots::for_entry(program, entry).ok_or_else(|| {
+        EmitKind::Run { entry } => SourceRoots::for_entry(program, entry).ok_or_else(|| {
             CodegenError::new("UnknownEntry", format!("no exported entry named `{entry}`"))
         })?,
-        EmitKind::Tests => Roots::for_tests(program),
+        EmitKind::Tests => SourceRoots::for_tests(program),
     };
-    let reachable = crate::analyze_reachability(program, &roots)?;
+    let reachable = analyze_source_reachability(program, &roots)?;
     Ok((roots, reachable))
 }
 

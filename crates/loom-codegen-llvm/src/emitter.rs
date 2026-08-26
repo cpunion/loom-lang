@@ -23,6 +23,7 @@ use inkwell::values::{
     UnnamedAddress,
 };
 use inkwell::{FloatPredicate, IntPredicate};
+use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
@@ -34,6 +35,7 @@ use loom_runtime_abi::{
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
 };
 
+use crate::CodegenError;
 use crate::abi::{
     ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_ABI_VERSION, COROUTINE_FRAME_FIELD_RESULT,
     COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, GC_ROOT_FRAME_FIELD_ABI_VERSION,
@@ -66,7 +68,6 @@ use crate::native_storage::{
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
 use crate::target::create_target_machine;
-use crate::{CodegenError, ReachableProgram, Roots};
 
 pub(crate) struct Emitter;
 
@@ -180,8 +181,8 @@ const INT_LIST_FIELD_CAPACITY: u32 = 2;
 impl Emitter {
     pub(crate) fn emit_object(
         program: &Program,
-        reachable: &ReachableProgram,
-        roots: &Roots,
+        reachable: &ReachableSourceGraph,
+        roots: &SourceRoots,
         output: &Path,
         options: &EmitOptions,
     ) -> Result<NativeObjectArtifact, CodegenError> {
@@ -354,8 +355,8 @@ struct NativeFunctionDecl<'ctx> {
 struct Backend<'ctx, 'program> {
     context: &'ctx Context,
     program: &'program Program,
-    reachable: &'program ReachableProgram,
-    roots: &'program Roots,
+    reachable: &'program ReachableSourceGraph,
+    roots: &'program SourceRoots,
     options: &'program EmitOptions,
     requirements: RuntimeRequirementGraph,
     int_ranges: NativeIntRangePlan,
@@ -536,8 +537,8 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
     fn new(
         context: &'ctx Context,
         program: &'program Program,
-        reachable: &'program ReachableProgram,
-        roots: &'program Roots,
+        reachable: &'program ReachableSourceGraph,
+        roots: &'program SourceRoots,
         options: &'program EmitOptions,
         requirements: RuntimeRequirementGraph,
         int_ranges: NativeIntRangePlan,

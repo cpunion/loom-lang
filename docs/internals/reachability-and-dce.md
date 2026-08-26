@@ -4,6 +4,12 @@ Native artifacts are closed-world. The frontend checks the complete resolved
 source graph, then LLVM code generation retains only code and conformance data
 reachable from the selected command roots.
 
+The implementation lives in the `source_graph` module of `loom-codegen-ir`,
+before LLVM emission. `SourceRoots` and `ReachableSourceGraph` contain
+checked-MIR identities; they are intentionally distinct from future LCIR
+instance roots. The LLVM boundary maps structured `GraphError` values into
+native-backend diagnostics.
+
 ## Roots
 
 - A binary build/run/debug has the selected exported function as its root.

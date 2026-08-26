@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use loom_codegen_llvm::{EmitOptions, Roots, analyze_reachability, native_object_fingerprint};
+use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
+use loom_codegen_llvm::{EmitOptions, native_object_fingerprint};
 use loom_driver::AnalysisHost;
 use loom_mir::{
     Block, Builtin, CallArgument, CallPlan, CallTarget, ConceptDef, ConceptId, Constant, Expr,
@@ -61,8 +62,8 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
         },
     ];
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("analyze graph");
     assert_eq!(
         reachable.functions.into_iter().collect::<Vec<_>>(),
         vec![FunctionId(0), FunctionId(1)]
@@ -215,8 +216,8 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
         },
     ];
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("analyze graph");
     assert_eq!(
         reachable.functions.into_iter().collect::<Vec<_>>(),
         vec![FunctionId(0), FunctionId(1)]
@@ -343,8 +344,8 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
         ..Program::default()
     };
 
-    let reachable =
-        analyze_reachability(&program, &Roots::one(FunctionId(0))).expect("analyze graph");
+    let reachable = analyze_source_reachability(&program, &SourceRoots::one(FunctionId(0)))
+        .expect("analyze graph");
     assert_eq!(reachable.functions, BTreeSet::from([FunctionId(0)]));
     assert_eq!(reachable.witnesses, BTreeSet::from([WitnessId(0)]));
     assert_eq!(
@@ -391,8 +392,8 @@ fn dead(text Text) Unit {
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower executable MIR");
     let options = EmitOptions::run("main");
-    let roots = Roots::for_entry(program, "main").expect("main root");
-    let reachable = analyze_reachability(program, &roots).expect("analyze structured graph");
+    let roots = SourceRoots::for_entry(program, "main").expect("main root");
+    let reachable = analyze_source_reachability(program, &roots).expect("analyze structured graph");
     assert_eq!(
         reachable.builtins,
         BTreeSet::from([

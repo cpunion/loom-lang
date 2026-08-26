@@ -1,18 +1,34 @@
 # Code generation IR
 
-`loom-codegen-ir` is a standalone foundation for Loom Codegen IR (LCIR). It
-currently provides target-aware scalar representations, typed SSA data
-structures, builders, an independent validator, and a textual dump for tests
-and review.
+`loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
+selects checked-MIR function roots and computes the closed-world source graph
+used by production native compilation. Separately, its LCIR foundation
+provides target-aware scalar representations, typed SSA data structures,
+builders, an independent validator, and a textual dump for tests and review.
 
-The crate is not connected to MIR lowering, root selection, reachability, the
-production LLVM emitter, object emission, or the runtime. Production native
-compilation still lowers checked MIR directly through `loom-codegen-llvm`'s
-legacy implementation. The accepted integration and migration design is in
-the [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
+The typed LCIR boundary is not connected to MIR lowering, the production LLVM
+emitter, object emission, or the runtime. Production native compilation uses
+the source graph from this crate but still lowers its reachable checked MIR
+directly through `loom-codegen-llvm`'s legacy implementation. The accepted
+LCIR integration and migration design is in the
+[typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 LCIR is compiler-private and target-specific. It is not a source IR, a public
 artifact format, or a stable native ABI.
+
+## Checked-MIR source graph
+
+`SourceRoots` contains MIR `FunctionId` values selected for one command.
+`analyze_source_reachability` closes direct calls, constructed witnesses,
+dynamic requirement slots, and builtins into a deterministic
+`ReachableSourceGraph`. These names deliberately include “source”: future
+lowered artifact roots use LCIR `InstanceId` values and are a different graph.
+
+The graph records only ordered maps and sets and retains its existing Serde
+field order because it participates in native-object fingerprints. Invalid
+MIR references produce a structured `GraphError`; the LLVM boundary maps that
+error into its backend diagnostic without making source-graph analysis depend
+on LLVM.
 
 ## Current scalar representation catalog
 
@@ -113,8 +129,10 @@ compiler-private and has no compatibility or serialization guarantee.
 
 ## Repository evidence
 
-The crate's focused tests cover the scalar representation catalog, target
-pointer-width validation, block-parameter joins, loop backedges, infallible
-direct calls, float comparison spelling, optional origins, and malformed SSA
-programs. The platform-independent Windows CI job checks, lints, tests, and
-builds this crate without claiming a Windows LLVM backend.
+The crate's focused tests cover source-root selection, recursive graph closure,
+stable source-graph serialization and errors, the scalar representation
+catalog, target pointer-width validation, block-parameter joins, loop
+backedges, infallible direct calls, float comparison spelling, optional
+origins, and malformed SSA programs. The platform-independent Windows CI job
+checks, lints, tests, and builds this crate without claiming a Windows LLVM
+backend.

@@ -292,6 +292,8 @@ version = "0.1.0"
 dependencies = [
  "loom-core",
  "loom-mir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -300,6 +302,7 @@ version = "0.1.0"
 dependencies = [
  "inkwell",
  "llvm-sys",
+ "loom-codegen-ir",
  "loom-driver",
  "loom-interpreter",
  "loom-mir",

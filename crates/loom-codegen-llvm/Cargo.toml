@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 inkwell.workspace = true
+loom-codegen-ir.workspace = true
 loom-mir.workspace = true
 loom-runtime-abi.workspace = true
 llvm-sys.workspace = true

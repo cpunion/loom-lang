@@ -1,12 +1,15 @@
-//! Target-typed SSA code-generation IR for Loom.
+//! Source-graph planning and target-typed SSA code-generation IR for Loom.
 //!
-//! LCIR sits after checked, target-independent MIR and before an object-code
-//! backend. Its job is to make physical value representations and control-flow
-//! dataflow explicit before LLVM sees the program. It is compiler-private,
-//! target-dependent, deliberately not serialized, and carries no compatibility
-//! promise across compiler builds. Global IDs carry a private generative
-//! program identity: equal raw table numbers from different programs are not
-//! interchangeable, while the private identity stays out of textual output.
+//! [`SourceRoots`] and [`ReachableSourceGraph`] close checked-MIR identities
+//! before target-specific lowering. They are deterministic and serialized into
+//! native object fingerprints. LCIR then sits between checked,
+//! target-independent MIR and an object-code backend. Its job is to make
+//! physical value representations and control-flow dataflow explicit before
+//! LLVM sees the program. LCIR is compiler-private, target-dependent,
+//! deliberately not serialized, and carries no compatibility promise across
+//! compiler builds. Global IDs carry a private generative program identity:
+//! equal raw table numbers from different programs are not interchangeable,
+//! while the private identity stays out of textual output.
 //!
 //! This foundation intentionally supports only canonical scalar
 //! representations and hand-built SSA graphs. MIR lowering and production
@@ -21,6 +24,7 @@ mod dump;
 mod ids;
 mod ir;
 mod repr;
+mod source_graph;
 mod validate;
 
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
@@ -32,6 +36,9 @@ pub use ir::{
     TerminatorKind, Value, ValueDefinition,
 };
 pub use repr::{Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError, ValueType};
+pub use source_graph::{
+    GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
+};
 pub use validate::{
     CheckedProgram, ValidationCode, ValidationError, ValidationErrors, check_program,
     validate_program,

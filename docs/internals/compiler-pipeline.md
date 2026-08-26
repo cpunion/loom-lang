@@ -18,9 +18,10 @@ project input
      root selection -> reachability -> LLVM IR -> object -> linker
 ```
 
-This diagram is the current production pipeline. The standalone
-`loom-codegen-ir` crate can build, validate, and dump hand-built scalar LCIR,
-but no MIR lowering or production target emitter consumes it yet. See
+This diagram is the current production pipeline. `loom-codegen-ir` owns the
+checked-MIR root and reachability graph used by that pipeline. The same crate
+can build, validate, and dump hand-built scalar LCIR, but no MIR lowering or
+production target emitter consumes its `CheckedProgram` yet. See
 [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
 migration design.
@@ -97,14 +98,16 @@ descriptors all contribute edges. See
 ## Backend boundaries
 
 The interpreter executes MIR deterministically and provides an independent
-semantic oracle for end-to-end tests. The production LLVM backend computes the
-target identity, lowers only reachable checked MIR through its legacy
+semantic oracle for end-to-end tests. The production LLVM backend receives the
+source graph computed by `loom-codegen-ir`, computes the target identity, and
+lowers only reachable checked MIR through its legacy
 universal-value implementation and private native specializations, verifies
 LLVM IR, optimizes it, verifies again, and emits a relocatable object. Linking
 is a separate step.
 
 `loom-codegen-ir::CheckedProgram` is currently an independent library boundary,
-not part of either terminal backend. Whole-artifact LCIR selection and an
+not part of either terminal backend. This is distinct from the crate's
+production-used checked-MIR source graph. Whole-artifact LCIR selection and an
 LCIR-to-LLVM emitter remain implementation work tracked by the
 [accepted RFC](../rfcs/typed-codegen-ir.md).
 

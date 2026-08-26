@@ -18,10 +18,10 @@ The workspace is split into narrow crates:
 | `loom-mir` | Typed executable IR, artifact encoding, liveness, and validation. |
 | `loom-lowering` | Total lowering from typed HIR to MIR. |
 | `loom-interpreter` | Deterministic execution of validated MIR. |
-| `loom-codegen-ir` | Standalone target-aware scalar typed-SSA builders, validation, and insertion-order dumps; not yet connected to production lowering. |
+| `loom-codegen-ir` | Checked-MIR source roots/reachability plus target-aware scalar typed-SSA builders, validation, and insertion-order dumps; typed SSA is not yet connected to production lowering. |
 | `loom-runtime-abi` | Shared compiler-private native ABI constants and C-shaped records. |
 | `loom-runtime` | Moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
-| `loom-codegen-llvm` | Reachability, native layouts, checked-MIR-to-LLVM emission, objects, linking, and runtime bundles. |
+| `loom-codegen-llvm` | Native layouts, checked-MIR-to-LLVM emission, objects, linking, and runtime bundles. |
 | `loom-driver` | Projects, resolution, source snapshots, diagnostics, and persistent cache. |
 | `loom-cli` | `loomc` host boundary and process execution. |
 | `loom-lsp` | Language-server integration over driver snapshots. |
@@ -48,9 +48,10 @@ malformed IR. A MIR validation failure after successful source analysis is a
 compiler defect; malformed artifact or cache input is rejected at the
 boundary.
 
-Separately, `loom-codegen-ir` exposes an independently validated
-`CheckedProgram` for its standalone scalar foundation. No production emitter
-consumes that boundary yet. Its accepted integration design is tracked in the
+`loom-codegen-ir` also exposes an independently validated `CheckedProgram` for
+its scalar LCIR foundation. Production native compilation uses the crate's
+checked-MIR source graph, but no production emitter consumes `CheckedProgram`
+yet. Its accepted integration design is tracked in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 Implementation status and platform support are maintained separately in
