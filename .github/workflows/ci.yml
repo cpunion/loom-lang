@@ -220,24 +220,59 @@ jobs:
     name: Windows x86-64 native closure (LLVM 19)
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      LLVM_ARCHIVE_SHA256: b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM 19.1.7
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+      - name: Restore official LLVM 19.1.7 development archive
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          version: 19.1.7
-          arch: x64
-          directory: ${{ runner.temp }}/llvm-19
-          env: false
-      - name: Configure LLVM and Clang
+          path: ${{ runner.temp }}/clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
+          key: windows-llvm-19.1.7-b4557b4f012161f5
+      - name: Verify and unpack LLVM development toolchain
         shell: pwsh
         run: |
-          "LLVM_SYS_191_PREFIX=$env:LLVM_PATH" >> $env:GITHUB_ENV
-          "LOOM_CC=$env:LLVM_PATH\bin\clang.exe" >> $env:GITHUB_ENV
-          & "$env:LLVM_PATH\bin\llvm-config.exe" --version
-          & "$env:LLVM_PATH\bin\clang.exe" --version
+          $archive = Join-Path $env:RUNNER_TEMP "clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
+          if ((Test-Path $archive -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $env:LLVM_ARCHIVE_SHA256) {
+            Remove-Item -Force $archive
+          }
+          if (-not (Test-Path $archive -PathType Leaf)) {
+            & curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --continue-at - --output $archive $url
+            if ($LASTEXITCODE -ne 0) {
+              throw "could not download the official LLVM development archive"
+            }
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
+            throw "LLVM archive SHA-256 mismatch: $actual"
+          }
+          $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-19.1.7"
+          New-Item -ItemType Directory -Force -Path $llvmRoot | Out-Null
+          & tar.exe -xf $archive -C $llvmRoot --strip-components=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "could not unpack the official LLVM development archive"
+          }
+          "LLVM_PATH=$llvmRoot" >> $env:GITHUB_ENV
+          "LLVM_SYS_191_PREFIX=$llvmRoot" >> $env:GITHUB_ENV
+          "LOOM_CC=$llvmRoot\bin\clang.exe" >> $env:GITHUB_ENV
+          "$llvmRoot\bin" >> $env:GITHUB_PATH
+          $version = (& "$llvmRoot\bin\llvm-config.exe" --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne "19.1.7") {
+            throw "unexpected llvm-config version: $version"
+          }
+          & "$llvmRoot\bin\clang.exe" --version
+          $llvmLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-shared --libfiles).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($llvmLibraries) -or -not (Test-Path "$llvmRoot\include\llvm-c\Core.h" -PathType Leaf)) {
+            throw "LLVM development libraries are incomplete"
+          }
+          foreach ($library in ($llvmLibraries -split '\s+')) {
+            if (-not (Test-Path $library -PathType Leaf)) {
+              throw "llvm-config reported a missing library: $library"
+            }
+          }
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
@@ -272,3 +307,18 @@ jobs:
             cargo run --locked -p loom-cli -- --backend interpreter --no-cache run "$source"
             cargo run --locked -p loom-cli -- --backend interpreter run --artifact "$interpreted"
           done
+      - name: Verify Windows CodeView object and PDB containers
+        shell: pwsh
+        run: |
+          cargo run --locked -p loom-cli -- --no-cache build --emit object --output target/ci-codeview examples/core01
+          if (-not (Test-Path target/ci-codeview.obj -PathType Leaf)) {
+            throw "native object did not use the MSVC .obj convention"
+          }
+          $sections = & "$env:LLVM_PATH/bin/llvm-readobj.exe" --sections target/ci-codeview.obj | Out-String
+          if ($LASTEXITCODE -ne 0 -or $sections -notmatch '\.debug\$S') {
+            throw "compiler-emitted COFF object has no CodeView .debug`$S section"
+          }
+          & "$env:LLVM_PATH/bin/llvm-pdbutil.exe" dump -summary target/ci-core01.pdb
+          if ($LASTEXITCODE -ne 0) {
+            throw "linked PDB is not readable by llvm-pdbutil"
+          }
