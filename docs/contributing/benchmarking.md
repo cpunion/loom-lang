@@ -114,13 +114,14 @@ checks out the trusted default branch renderer, validates both artifacts, and
 updates one sticky PR comment.
 
 The comment contains one exact `base | candidate | delta` table across both
-measured platforms, followed by one visible combined runtime-index chart. Each
-`case/language` position contains both platform series: macOS uses blue bars,
-Linux uses an orange line, and a gray line marks the base revision at 100. Lower
-values are faster and higher values are slower. The table remains the exact and
-accessible source of truth. The mixed shapes are intentional because the
-Mermaid renderer used by GitHub does not reliably place multiple bar series
-side by side. Windows remains explicitly unavailable until its native backend,
+measured platforms, followed by separate macOS and Linux runtime-index charts.
+The charts are stacked so every category remains readable in GitHub comments.
+Each chart contains only its own platform: macOS uses blue candidate bars,
+Linux uses orange candidate bars, and a gray line marks that platform's base
+revision at 100. The panels use the same numeric scale, but every index is
+normalized only against its same-platform base. Lower values are faster and
+higher values are slower. The table remains the exact and accessible source of
+truth. Windows remains explicitly unavailable until its native backend,
 runtime, and I/O reactor are implemented.
 
 The comment is informational. Each shared runner passes
