@@ -284,6 +284,7 @@ pub fn pack_native_runtime_bundle(
 #[derive(Clone, Debug)]
 pub struct RuntimeLinker {
     program: PathBuf,
+    program_identity: PathBuf,
     program_sha256: String,
 }
 
@@ -311,12 +312,13 @@ impl RuntimeLinker {
     /// Returns a stable error if the program cannot be resolved to a bounded
     /// regular file or does not return a bounded successful `--version` result.
     pub fn load(program: impl AsRef<Path>) -> Result<Self, CodegenError> {
-        let program = resolve_program(program.as_ref())?;
-        let program_sha256 =
-            hash_bounded_regular_file(&program, MAX_LINKER_BYTES, "runtime linker executable")
-                .map_err(|error| {
-                    CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned())
-                })?;
+        let (program, program_identity) = resolve_program(program.as_ref())?;
+        let program_sha256 = hash_bounded_regular_file(
+            &program_identity,
+            MAX_LINKER_BYTES,
+            "runtime linker executable",
+        )
+        .map_err(|error| CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned()))?;
         let mut probe = Command::new(&program);
         probe.args(linker_version_arguments(&program));
         let output = run_bounded_command(&mut probe, MAX_TOOL_OUTPUT_BYTES).map_err(|error| {
@@ -347,6 +349,7 @@ impl RuntimeLinker {
         }
         Ok(Self {
             program,
+            program_identity,
             program_sha256,
         })
     }
@@ -598,8 +601,20 @@ fn verify_runtime_snapshot(
 }
 
 fn verify_linker(linker: &RuntimeLinker) -> Result<(), CodegenError> {
+    let current_identity = fs::canonicalize(linker.program()).map_err(|error| {
+        CodegenError::new(
+            "RuntimeLinkerInvalid",
+            format!("{}: {error}", linker.program().display()),
+        )
+    })?;
+    if current_identity != linker.program_identity {
+        return Err(CodegenError::new(
+            "RuntimeLinkerInvalid",
+            "selected linker alias changed after identity validation",
+        ));
+    }
     let linker_sha256 = hash_bounded_regular_file(
-        linker.program(),
+        &linker.program_identity,
         MAX_LINKER_BYTES,
         "runtime linker executable",
     )
@@ -868,7 +883,7 @@ fn portable_path_component(component: &str) -> bool {
             && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
-fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
+fn resolve_program(program: &Path) -> Result<(PathBuf, PathBuf), CodegenError> {
     let candidates = if program.components().count() > 1 || program.is_absolute() {
         program_path_candidates(program.to_path_buf())
     } else {
@@ -889,18 +904,35 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
                 format!("cannot resolve selected linker `{}`", program.display()),
             )
         })?;
-    let resolved = fs::canonicalize(&requested).map_err(|error| {
+    let file_name = requested.file_name().ok_or_else(|| {
         CodegenError::new(
             "RuntimeLinkerUnavailable",
-            format!("{}: {error}", requested.display()),
+            format!("cannot resolve selected linker `{}`", program.display()),
         )
     })?;
-    validate_regular_file(&resolved, MAX_LINKER_BYTES, "runtime linker executable")
+    let parent = requested
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let invocation_parent = fs::canonicalize(parent).map_err(|error| {
+        CodegenError::new(
+            "RuntimeLinkerUnavailable",
+            format!("{}: {error}", parent.display()),
+        )
+    })?;
+    let invocation = invocation_parent.join(file_name);
+    let identity = fs::canonicalize(&invocation).map_err(|error| {
+        CodegenError::new(
+            "RuntimeLinkerUnavailable",
+            format!("{}: {error}", invocation.display()),
+        )
+    })?;
+    validate_regular_file(&identity, MAX_LINKER_BYTES, "runtime linker executable")
         .map_err(|error| CodegenError::new("RuntimeLinkerInvalid", error.message().to_owned()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let metadata = fs::metadata(&resolved)
+        let metadata = fs::metadata(&identity)
             .map_err(|error| CodegenError::new("RuntimeLinkerInvalid", error.to_string()))?;
         if metadata.permissions().mode() & 0o111 == 0 {
             return Err(CodegenError::new(
@@ -909,7 +941,7 @@ fn resolve_program(program: &Path) -> Result<PathBuf, CodegenError> {
             ));
         }
     }
-    Ok(resolved)
+    Ok((invocation, identity))
 }
 
 fn program_path_candidates(program: PathBuf) -> Vec<PathBuf> {
@@ -1215,6 +1247,114 @@ mod tests {
             .expect_err("terminate a process as soon as combined output exceeds the bound");
 
         assert!(matches!(error, BoundedCommandError::OutputLimit));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clang_cl_symlink_alias_preserves_its_driver_flavor() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let driver = directory.path().join("clang-19");
+        let alias = directory.path().join("clang-cl");
+        fs::write(&driver, "#!/bin/sh\nprintf 'test clang driver v1\\n'\n")
+            .expect("write test driver");
+        let mut permissions = fs::metadata(&driver)
+            .expect("driver metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&driver, permissions).expect("make driver executable");
+        symlink(&driver, &alias).expect("create clang-cl alias");
+
+        let linker = RuntimeLinker::load(&alias).expect("load clang-cl alias");
+        let command = native_link_command(
+            linker.program(),
+            "x86_64-pc-windows-msvc",
+            Path::new("program.obj"),
+            &[Path::new("loom_runtime.lib")],
+            &[],
+            Path::new("program.exe"),
+        );
+
+        assert_eq!(
+            linker.program().file_name(),
+            Some(std::ffi::OsStr::new("clang-cl"))
+        );
+        assert!(
+            command
+                .arguments
+                .iter()
+                .any(|argument| argument == "/Feprogram.exe"),
+            "the invocation alias must select clang-cl argument syntax"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_prefixed_symlink_alias_is_used_for_probe_and_link_execution() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let driver = directory.path().join("clang-19");
+        let alias = directory.path().join("aarch64-linux-gnu-clang");
+        fs::write(
+            &driver,
+            r#"#!/bin/sh
+set -eu
+directory=$(dirname "$0")
+invocation=$(basename "$0")
+if [ "${1-}" = "--version" ]; then
+    printf '%s' "$invocation" > "$directory/probe-marker"
+    printf 'test target-prefixed driver v1\n'
+    exit 0
+fi
+printf '%s' "$invocation" > "$directory/link-marker"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+        shift
+        printf 'linked output' > "$1"
+        exit 0
+    fi
+    shift
+done
+exit 9
+"#,
+        )
+        .expect("write test driver");
+        let mut permissions = fs::metadata(&driver)
+            .expect("driver metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&driver, permissions).expect("make driver executable");
+        symlink(&driver, &alias).expect("create target-prefixed alias");
+
+        let linker = RuntimeLinker::load(&alias).expect("load target-prefixed alias");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("probe-marker")).expect("read probe marker"),
+            "aarch64-linux-gnu-clang"
+        );
+
+        let bundle_path = directory.path().join("runtime");
+        let archive = directory.path().join("input-runtime.a");
+        fs::write(&archive, b"test runtime archive").expect("write runtime archive");
+        pack_native_runtime_bundle(&archive, &bundle_path).expect("pack runtime bundle");
+        let target = native_target_identity().expect("host target identity");
+        let bundle = RuntimeBundle::load(&bundle_path, &target).expect("load runtime bundle");
+        let object = directory.path().join("program.o");
+        let output = directory.path().join("program");
+        fs::write(&object, b"test object").expect("write object");
+
+        link_object_with_runtime_bundle(&object, &output, &bundle, &linker)
+            .expect("link through target-prefixed alias");
+
+        assert_eq!(
+            fs::read_to_string(directory.path().join("link-marker")).expect("read link marker"),
+            "aarch64-linux-gnu-clang"
+        );
+        assert_eq!(
+            fs::read(output).expect("read linked output"),
+            b"linked output"
+        );
     }
 
     #[test]
