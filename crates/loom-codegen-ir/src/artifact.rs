@@ -1,12 +1,13 @@
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 
 use loom_mir::Type;
 
+use crate::ids::ProgramBrand;
 use crate::{
-    CheckedProgram, Function, InstanceId, InstructionKind, RepresentationPlan, TerminatorKind,
+    CheckedProgram, Function, InstanceId, InstructionKind, Program, RepresentationPlan,
+    TerminatorKind,
 };
 
 /// Unchecked LCIR roots requested for one complete native artifact.
@@ -287,8 +288,46 @@ struct ArtifactValidator<'a> {
     errors: Vec<ArtifactValidationError>,
 }
 
+/// A function-table-sized vector which rejects identities from another table.
+///
+/// Keeping the brand next to the dense storage is important: a raw index alone
+/// is not an LCIR identity, and malformed roots must not be allowed to grow or
+/// index the vector.
+struct BrandedInstanceVec<T> {
+    brand: ProgramBrand,
+    entries: Vec<T>,
+}
+
+impl<T: Clone> BrandedInstanceVec<T> {
+    fn filled(program: &Program, value: T) -> Self {
+        Self {
+            brand: program.brand,
+            entries: vec![value; program.functions().len()],
+        }
+    }
+}
+
+impl<T> BrandedInstanceVec<T> {
+    fn get(&self, instance: InstanceId) -> Option<&T> {
+        if instance.brand() == self.brand {
+            self.entries.get(instance.index())
+        } else {
+            None
+        }
+    }
+
+    fn get_mut(&mut self, instance: InstanceId) -> Option<&mut T> {
+        if instance.brand() == self.brand {
+            self.entries.get_mut(instance.index())
+        } else {
+            None
+        }
+    }
+}
+
 impl ArtifactValidator<'_> {
     fn validate(&mut self, roots: &ArtifactRootRequest) {
+        let program = self.program.as_program();
         let mut root_ids = Vec::new();
         match roots {
             ArtifactRootRequest::Run(root) => {
@@ -296,20 +335,18 @@ impl ArtifactValidator<'_> {
                 root_ids.push(*root);
             }
             ArtifactRootRequest::Tests(roots) => {
-                let mut first_indices = BTreeMap::new();
+                let mut first_indices = BrandedInstanceVec::filled(program, None);
                 for (index, root) in roots.iter().copied().enumerate() {
                     let path = format!("roots.tests[{index}]");
-                    match first_indices.entry(root) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(index);
-                        }
-                        Entry::Occupied(entry) => {
-                            let first_index = entry.get();
+                    if let Some(first_index) = first_indices.get_mut(root) {
+                        if let Some(first_index) = *first_index {
                             self.error(
                                 ArtifactValidationCode::DuplicateTestRoot,
                                 path.clone(),
                                 format!("test root {root} duplicates roots.tests[{first_index}]"),
                             );
+                        } else {
+                            *first_index = Some(index);
                         }
                     }
                     self.validate_root(root, ArtifactKind::Tests, path);
@@ -358,10 +395,13 @@ impl ArtifactValidator<'_> {
 
     fn validate_closed_graph(&mut self, roots: &[InstanceId]) {
         let program = self.program.as_program();
-        let mut reachable = BTreeSet::new();
+        let mut reachable = BrandedInstanceVec::filled(program, false);
         let mut pending = VecDeque::new();
         for root in roots.iter().copied() {
-            if reachable.insert(root) {
+            if let Some(is_reachable) = reachable.get_mut(root)
+                && !*is_reachable
+            {
+                *is_reachable = true;
                 pending.push_back(root);
             }
         }
@@ -371,22 +411,26 @@ impl ArtifactValidator<'_> {
             };
             for instruction in function.instructions() {
                 if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
-                    && reachable.insert(*callee)
+                    && let Some(is_reachable) = reachable.get_mut(*callee)
+                    && !*is_reachable
                 {
+                    *is_reachable = true;
                     pending.push_back(*callee);
                 }
             }
             for block in function.blocks() {
                 if let Some(terminator) = block.terminator()
                     && let TerminatorKind::Invoke { callee, .. } = terminator.kind()
-                    && reachable.insert(*callee)
+                    && let Some(is_reachable) = reachable.get_mut(*callee)
+                    && !*is_reachable
                 {
+                    *is_reachable = true;
                     pending.push_back(*callee);
                 }
             }
         }
         for (index, function) in program.functions().iter().enumerate() {
-            if !reachable.contains(&function.id()) {
+            if !reachable.get(function.id()).copied().unwrap_or(false) {
                 self.error(
                     ArtifactValidationCode::UnreachableFunction,
                     format!("program.function[{index}]"),
@@ -496,6 +540,41 @@ mod tests {
                 path: "roots.run".to_owned(),
                 message: "run root i9 does not name an LCIR function".to_owned(),
             }]
+        );
+    }
+
+    #[test]
+    fn malformed_test_roots_cannot_index_dense_validation_state() {
+        let (program, _) = checked_program(&[("test", Vec::new(), Type::Unit)]);
+        let huge_index = usize::try_from(u32::MAX).expect("u32 must fit usize");
+        let missing = InstanceId::from_index(program.as_program().brand, huge_index)
+            .expect("maximum raw identity");
+        let (_foreign_program, foreign_ids) =
+            checked_program(&[("foreign", Vec::new(), Type::Unit)]);
+
+        let errors = validate_artifact_roots(
+            &program,
+            &ArtifactRootRequest::tests([missing, foreign_ids[0]]),
+        )
+        .expect_err("out-of-range and foreign roots must fail safely");
+
+        assert_eq!(errors.len(), 2);
+        assert_eq!(
+            errors
+                .as_slice()
+                .iter()
+                .map(|error| (error.code(), error.path()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    ArtifactValidationCode::InvalidRootReference,
+                    "roots.tests[0]"
+                ),
+                (
+                    ArtifactValidationCode::RootProgramMismatch,
+                    "roots.tests[1]"
+                ),
+            ]
         );
     }
 
