@@ -429,6 +429,15 @@ the existing join-step entry without changing its wire signature, so the native
 runtime advances to component 18 with `typed-task-any-finalize-v1` and
 `runtime-v12`; typed-task v1 and coroutine v2 remain unchanged.
 
+Static `settled` and `race`, literal-List specialization, and explicit
+`TaskOutcomeTake` then advance the artifact identity to schema 30, the dump to
+`lcir 29`, the LCIR native-object domain to `loom-lcir-native-object-v26`, and
+the CLI object-cache domain to `loom-llvm-object-cache-v31`. Generalizing typed
+winner finalization and adding the exact outcome-transfer boundary advance the
+native runtime to component 19 with `typed-task-winner-finalize-v1`,
+`typed-task-outcome-v1`, and `runtime-v13`. Typed-task v1 and coroutine v2
+remain unchanged.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -639,7 +648,8 @@ resume-state sequence `1..n`. Each row records an `AwaitMode` and one ordered
 exact output type for every child, followed by, in deterministic MIR-local
 order, the exact LCIR types forwarded across that suspension. The child-output
 row always retains its full arity: `all` derives one normal result per child,
-whereas `any` derives one result of the common child type. Independent
+`any` derives one result of the common child type, `settled` derives every
+terminal child handle, and `race` derives the terminal winner handle. Independent
 validation matches every row to exactly one mode-identical `AwaitTasks`
 terminator, checks all child Tasks, continuation parameters, and forwarded
 values, rejects duplicate child handles, and rejects a Task edge without an
@@ -657,9 +667,12 @@ coroutine callback or the async root harness. `AwaitTasks` stores all ordered
 children and the row's live values, prepares one structured mode-specific join,
 publishes the frame/root state, and exposes explicit normal, child-fault, and
 cancellation edges: `normal` is a `ResultTarget`, `fault` is an `UnwindTarget`,
-and `cancel` is a `BlockTarget`. Exact mode-derived results exist only on the
-normal resume edge; all three edges receive the same exact live row. An ordinary
-single-child await is the same operation as one-child `all`.
+and `cancel` is a `BlockTarget`. Exact mode-derived values exist only on the
+normal resume edge; all three edges receive the same exact live row. `all`
+injects every exact child result, `any` injects one successful result,
+`settled` injects every terminal child handle, and `race` injects only the
+terminal winner handle. An ordinary single-child await is the same operation
+as one-child `all`.
 A join-suspend status of one returns `pending`; zero means the child was already
 terminal, so the runtime removes the redundant wake-up, keeps the active parent
 `Running`, and enters the same checked result/reload edge in the current
@@ -695,6 +708,24 @@ the result. A loser-disposal fault enters the await fault edge with that fault
 active; if no child succeeds, generated code raises canonical `TaskAnyFailed` at
 the await origin before static coroutine cleanup.
 
+Immediately awaited fixed `Task.settled` and `Task.race` calls use the same
+`AwaitTasks` terminator. Their normal edges receive terminal affine handles,
+not hidden universal outcomes. Lowering emits `TaskOutcomeTake` immediately for
+each handle and constructs the canonical `TaskOutcome[T]` sum explicitly.
+Independent validation requires an exact `Task[T]` handle from the leading
+implicit parameter of a dedicated matching `settled` or `race` normal block,
+checks the canonical `TaskFault` and `TaskOutcome` shapes, and enforces one
+consumption. The instruction is `MAY_COLLECT | NEEDS_EXECUTOR`: completed values
+move directly, fault code and message become managed Text, cancelled values have
+no payload, and existing live outcomes are rooted across later captures.
+
+A sole nonempty List literal is flattened to the same static child row without
+constructing the input List. `all` and `settled` build a fresh result List from
+the ordered resumed values; `any` and `race` retain their scalar result. This is
+a compiler specialization of standard-library calls, not a source-level join
+operator. Empty, stored, computed, and runtime-sized Lists are deliberately not
+classified as fixed rows.
+
 LLVM derives a target-laid-out frame containing state, parameters, one ordered
 child-pointer row plus one live-value row per suspension, and the typed result.
 The coroutine result must use the semantic type's canonical LCIR
@@ -707,7 +738,8 @@ cancel-request bit before dispatching by frame state: ordinary state zero enters
 the LCIR entry, ordinary nonzero states use the existing join-step ABI, and a
 cancel request enters the corresponding checked cancellation state. A normal
 `all` join takes every exact child result in source order; a normal `any` join
-takes only its selected exact result. A fault activates source fault state;
+takes only its selected exact result; `settled` and `race` forward the terminal
+handles consumed by `TaskOutcomeTake`. A fault activates source fault state;
 cancellation leaves source fault inactive. Every nonzero path reloads the same
 exact live row before entering LCIR. Normal return publishes the exact typed
 result and completion; cleanup-expanded child-fault and cancel paths end in
@@ -732,11 +764,12 @@ witness is recursively physicalized to its concrete representation in those
 locations. The recursive frame walk consumes one shared bounded structural
 budget, so cyclic or non-regular generic expansion fails closed instead of
 growing the compiler stack. List, TextMap, finite-catalog or open
-dynamic-concept frame values, raw readiness, dynamic Task collections,
-`Task.any` whose result is stored or otherwise used first-class,
-`Task.settled`, `Task.race`, and cancellation sources remain atomic
-whole-artifact fallback. Fixed `Task.any` is admitted only in the nonempty
-homogeneous form immediately consumed by `.await`.
+dynamic-concept frame values, raw readiness, stored or computed dynamic Task
+collections, first-class `Task.any`, `Task.settled`, or `Task.race` results, and
+cancellation sources remain atomic whole-artifact fallback. Fixed arguments
+and a sole nonempty List literal are admitted when the join is consumed
+immediately by `.await`; `any` and `race` additionally require one homogeneous
+output type.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
@@ -1075,12 +1108,13 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 28` text includes
+text even when the graphs are otherwise equivalent. The `lcir 29` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
 typed coroutine plans and Task control flow, including fallible `task.sleep`,
-explicit await modes and normal/fault/cancel targets, and `task.cancelled`,
+explicit await modes and normal/fault/cancel targets, `task.outcome_take`, and
+`task.cancelled`,
 typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,

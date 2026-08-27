@@ -12,6 +12,7 @@ the prelude.
 
 - [Text, Bytes, and Path](text-bytes-and-paths.md)
 - [Collections and JSON](collections-and-json.md)
+- [Task composition](task-composition.md)
 - [I/O and logging](io-and-logging.md)
 
 The language behavior of `scoped`, `defer`, and `Task` is defined in the

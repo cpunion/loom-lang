@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `28` |
-| LCIR artifact identity | schema `29` |
-| LCIR native-object domain | `loom-lcir-native-object-v25` |
+| LCIR textual dump | version `29` |
+| LCIR artifact identity | schema `30` |
+| LCIR native-object domain | `loom-lcir-native-object-v26` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v30` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v31` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `18` |
+| Native runtime ABI component | `19` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -247,6 +247,25 @@ symbol or descriptor wire is required. That semantic boundary advances the
 native runtime component to 18 and adds `typed-task-any-finalize-v1` plus
 `runtime-v12` to the exact identity. Coroutine v2, typed-task v1, wait v1, and GC
 v9 remain unchanged.
+
+Static `Task.settled` and `Task.race`, specialization of a sole nonempty Task
+List literal, and explicit terminal outcome transfer advance the LCIR dump to
+29, artifact schema to 30, native-object domain to v26, and LLVM object-cache
+domain to v31. `AwaitTasks` now distinguishes all four private join modes;
+`settled` and `race` inject affine terminal handles that a validated
+`TaskOutcomeTake` consumes into canonical `TaskOutcome[T]` values. The exact
+artifact records those mode-specific continuation types and the collecting
+outcome operations.
+
+The additive `loom_typed_task_take_outcome_v1` boundary moves an exact completed
+value, publishes independently rooted managed Text for the primary fault code
+and message, or reports payload-free cancellation before retiring the child.
+Winner finalization is generalized across `any` and `race`. These changes
+advance the native runtime component to 19 and replace the previous specialized
+identity with `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and
+`runtime-v13`. Typed-task v1, coroutine v2, wait v1, Text v3, and GC v9 remain
+unchanged. No universal value, source-visible runtime tag, or language syntax is
+added; the public join policies remain standard-library APIs.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

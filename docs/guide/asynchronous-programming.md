@@ -9,6 +9,16 @@ promise type, coroutine trait, or poll protocol.
 and `Async` are not aliases, and Core does not expose a manually completed
 promise primitive.
 
+The language surface stops at `Task[T]`, `async fn`, postfix `.await`, and the
+structured task obligation. `Task.all`, `Task.any`, `Task.settled`, and
+`Task.race` are standard-library source APIs. Version 0.3 recognizes their
+qualified calls in the frontend and specializes closed fixed-arity forms to a
+private compiler/runtime join primitive. Moving that recognition behind
+ordinary library declarations is a future implementation cleanup; it does not
+add keywords, a source-level polling protocol, or runtime type erasure.
+See the normative [Task composition](../reference/standard-library/task-composition.md)
+reference for the complete signatures.
+
 The executable companion is
 [`examples/core03/tasks.loom`](../../examples/core03/tasks.loom).
 
@@ -61,7 +71,7 @@ Core has no detached tasks and no user-callable cancellation API. A parent owns
 its children. Parent failure, join-loser cancellation, or executor teardown
 propagates cancellation and drains child cleanup before the operation finishes.
 
-## Fixed joins return tuples
+## Fixed standard-library joins return tuples
 
 Use separate arguments for a fixed number of tasks. `Task.all` preserves the
 individual result types and returns a tuple:
@@ -79,7 +89,7 @@ created before the parent waits. Results remain in input order, not completion
 order. Parallel binding is ordinary tuple destructuring; it is not a second
 multiple-return ABI.
 
-## Dynamic joins return lists
+## Dynamic standard-library joins return lists
 
 Use a homogeneous list when the task count is known only at runtime:
 
@@ -105,7 +115,7 @@ homogeneous; use an explicit enum or a common `dyn C` chosen at construction if
 different concrete result shapes must share one list. Loom does not erase them
 through a universal `any`.
 
-## Join modes
+## Join policies
 
 All join functions construct a new task; they do not wait until the returned
 task is explicitly awaited.

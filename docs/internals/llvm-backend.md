@@ -381,8 +381,10 @@ mode-specific join, and adds each child in source order. The terminator has
 explicit normal, fault, and cancellation targets with one identical exact live
 row. On normal `all` completion LLVM takes every result using that child's exact
 size and alignment. On normal `any` completion it takes only the selected
-winner. Both reload the live row and enter the normal target with the
-mode-derived results first. A child fault activates the source fault before
+winner. `settled` forwards every terminal child handle, while `race` forwards
+only the terminal winner handle; explicit `TaskOutcomeTake` instructions then
+construct the canonical outcomes. Every mode reloads the live row and enters
+the normal target with the mode-derived values first. A child fault activates the source fault before
 entering its target; a cancel path forwards only the same live row and preserves
 inactive source-fault state. A normal one-child await is the `all` path with an
 arity of one.
@@ -427,10 +429,23 @@ step to faulted before coroutine cleanup; with no winner, LLVM raises
 Source-coroutine cancellation dispatch bypasses this ordinary resume operation
 and cannot manufacture `TaskAnyFailed`.
 
-This direct slice is deliberately static and nonempty. A list-sized `Task.all`,
-every `Task.settled` and `Task.race`, and List-sized `Task.any` or one whose
-result is stored or otherwise used first-class remain reachable `Unsupported`
-input and select the complete legacy object.
+Fixed `Task.settled` and `Task.race` use the same direct suspension rows.
+Generated `TaskOutcomeTake` code calls
+`loom_typed_task_take_outcome_v1(task, value_out, size, align, code_out,
+message_out)`, switches over its terminal status, and constructs the exact
+`Completed(T)`, `Faulted(TaskFault)`, or `Cancelled` sum. Fault Text allocation
+is a visible safepoint; the LCIR root plan therefore protects outcomes already
+constructed across subsequent captures. `race` shares generalized winner
+finalization with `any`, retaining the original winner while disposing and
+retiring losers in reverse source order.
+
+This direct slice is deliberately static and nonempty. A sole nonempty List
+literal is flattened into the same child row without an input List allocation;
+`all` and `settled` build their List result after resume. Empty, stored,
+computed, or runtime-sized List joins and first-class `any`, `settled`, or
+`race` results remain reachable `Unsupported` input and select the complete
+legacy object. These are specializations of standard-library calls over a
+private join primitive, not language operators.
 
 ## Direct lexical cleanup
 
@@ -521,10 +536,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 28`, and the checked artifact identity uses
-schema 29. Object identities are route-separated:
+The canonical textual dump is `lcir 29`, and the checked artifact identity uses
+schema 30. Object identities are route-separated:
 
-- `loom-lcir-native-object-v25` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v26` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -536,7 +551,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v30` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v31` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -547,9 +562,10 @@ monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, fallible timer construction, ordered multi-child
-suspension edges, exact stored `Task.all` composites, direct homogeneous fixed
-`Task.any`, and exact frame-root rows, including explicit join modes,
-normal/fault/cancel await targets, and static cleanup across suspension, plus
+suspension edges, exact stored `Task.all` composites, direct static forms of
+all four standard Task join policies, explicit terminal-outcome capture, and
+exact frame-root rows, including explicit join modes, normal/fault/cancel await
+targets, and static cleanup across suspension, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -604,6 +620,16 @@ Direct fixed `Task.any` adds no new runtime symbol, but it makes the existing
 join-step entry finalize typed losers before returning the observable step. That
 semantic boundary advances the native component to 18 with
 `typed-task-any-finalize-v1` and `runtime-v12`; `typed-task-v1`, coroutine v2,
+`typed-timer-v1`, `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
+
+Static `Task.settled` and `Task.race` add the exact
+`loom_typed_task_take_outcome_v1` transfer boundary and generalize winner
+finalization for `any` and `race`. The current native component is 19 with
+`typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
+The outcome helper validates the terminal child and exact completed layout,
+publishes fault code/message Text through caller-provided rooted cells, and
+retires the child only after a successful transfer. It does not add a universal
+value or source-visible runtime type tag. `typed-task-v1`, coroutine v2,
 `typed-timer-v1`, `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
 
 They also encode closed static-witness method selection and normalized

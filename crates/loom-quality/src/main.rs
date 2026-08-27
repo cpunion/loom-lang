@@ -41,19 +41,12 @@ const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
 const TYPED_TASK_ALL_FIXTURE: &str = "fixtures/lcir-typed-task-all";
 const TYPED_TASK_ANY_FIXTURE: &str = "fixtures/lcir-typed-task-any";
+const TYPED_TASK_OUTCOMES_FIXTURE: &str = "fixtures/lcir-typed-task-outcomes";
 const TYPED_ASYNC_CLEANUP_FIXTURE: &str = "fixtures/lcir-async-cleanup";
 const TYPED_ASYNC_WRITEBACK_FIXTURE: &str = "fixtures/lcir-async-writeback";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
-const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
-    name: "core03-async-tasks",
-    reason: "List-backed joins plus Task.settled and Task.race are not yet represented in typed LCIR",
-};
-const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
-    name: "async-generic-contract-runtime",
-    reason: "Task.settled, first-class or List-backed Task.any, and TaskFault inspection are not yet represented in typed LCIR",
-};
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
         name: "standard-library-managed-runtime",
@@ -82,8 +75,8 @@ const TASKS: &[TaskSpec] = &[
         path: "examples/core03",
         source: "examples/core03/tasks.loom",
         sha256: "4f24a49bdb93d5813ddd0d7d827d88d59af79cfed58635ca91d72c67aa57d50f",
-        main_native_route: CORE03_LEGACY_ROUTE,
-        test_native_route: CORE03_LEGACY_ROUTE,
+        main_native_route: NativeRouteExpectation::Lcir,
+        test_native_route: NativeRouteExpectation::Lcir,
     },
 ];
 
@@ -421,6 +414,18 @@ fn main() {
         "typed-task-any",
     ) {
         report.failures.push(format!("typed-task-any: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        TYPED_TASK_OUTCOMES_FIXTURE,
+        "typed-task-outcomes",
+    ) {
+        report
+            .failures
+            .push(format!("typed-task-outcomes: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,
@@ -1045,7 +1050,7 @@ fn async_generic_contract_gate(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "async-generic-contracts.tests",
-        ASYNC_GENERIC_LEGACY_ROUTE,
+        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
