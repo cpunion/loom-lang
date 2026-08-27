@@ -252,7 +252,7 @@ task.create coroutine(arguments...) -> Task[T]
 
 task.join_all(tasks...) -> Task[(T0, ..., Tn)]
 
-await_tasks state, (task0, ..., taskN)
+await_tasks all state, (task0, ..., taskN)
     normal target(result0, ..., resultN; exact_live_values...)
     fault target(exact_live_values...)
     cancel target(exact_live_values...)

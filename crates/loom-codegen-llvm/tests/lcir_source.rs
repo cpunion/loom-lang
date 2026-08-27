@@ -99,7 +99,7 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     );
     let dump = dump_program(artifact.program());
     for required in [
-        "await_tasks state",
+        "await_tasks all state",
         " fault b",
         " cancel b",
         "task.cancelled",
@@ -7254,7 +7254,7 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
         "contract PreconditionFault",
         "contract PostconditionFault",
         "resume_fault",
-        "await_tasks state",
+        "await_tasks all state",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
