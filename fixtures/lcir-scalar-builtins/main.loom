@@ -22,27 +22,35 @@ fn parsedFloatEquals(input Text, expected Float) Bool {
 
 fn scalarBuiltins() Unit {
     let managedDigits = "9".concat("223372036854775807")
-    assert parsedIntEquals(managedDigits, 9223372036854775807)
-    assert match parse_int("17x") {
+    let parsedMaximum = parsedIntEquals(managedDigits, 9223372036854775807)
+    let invalidInt = match parse_int("17x") {
         Err(ParseIntError.InvalidSyntax) => true
         _ => false
     }
-    assert match parse_int("9223372036854775808") {
+    let largeInt = match parse_int("9223372036854775808") {
         Err(ParseIntError.OutOfRange) => true
         _ => false
     }
+    assert parsedMaximum
+    assert invalidInt
+    assert largeInt
 
-    assert parsedFloatEquals("1.25e2", 125.0)
-    assert match parse_float("1") {
+    let parsedFinite = parsedFloatEquals("1.25e2", 125.0)
+    let invalidFloat = match parse_float("1") {
         Err(standard.float.ParseFloatError.InvalidSyntax) => true
         _ => false
     }
-    assert match parse_float("1e999") {
+    let largeFloat = match parse_float("1e999") {
         Err(standard.float.ParseFloatError.OutOfRange) => true
         _ => false
     }
-    assert is_finite(1.25)
-    assert !is_finite(1.0 / 0.0)
+    let finite = is_finite(1.25)
+    let infinite = is_finite(1.0 / 0.0)
+    assert parsedFinite
+    assert invalidFloat
+    assert largeFloat
+    assert finite
+    assert !infinite
 
     let kept = "K".concat("eep")
     let rendered = format_float(1.25)
@@ -50,7 +58,8 @@ fn scalarBuiltins() Unit {
     assert rendered == "1.25"
 
     let delay = milliseconds(42)
-    assert delay.as_milliseconds() == 42
+    let observedDelay = delay.as_milliseconds()
+    assert observedDelay == 42
     Unit
 }
 
