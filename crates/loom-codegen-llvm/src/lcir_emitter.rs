@@ -3555,6 +3555,10 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one constructor must establish the coroutine callback, exact root plan, reachable LLVM blocks, and SSA storage before emission"
+    )]
     fn new(
         backend: &'backend Backend<'ctx, 'artifact>,
         source: &'artifact Function,
@@ -4905,6 +4909,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "resume-state dispatch keeps the checked frame row, child terminal state, exact typed result, live-slot reloads, and LCIR continuation edge together"
+    )]
     fn emit_coroutine_resume_blocks(&self) -> Result<(), CodegenError> {
         let Some(coroutine) = &self.coroutine else {
             return Ok(());
@@ -5152,7 +5160,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .backend
                     .context
                     .i32_type()
-                    .const_int(step as u64, false),
+                    .const_int(u64::from(step.cast_unsigned()), false),
             ))
             .map_err(builder_error)?;
         Ok(())
@@ -8015,6 +8023,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one await edge atomically stores its child and exact live row, registers the structured join, publishes the frame state, and returns pending"
+    )]
     fn emit_await_task(
         &self,
         state: u32,
@@ -9313,6 +9325,10 @@ impl<'ctx> Backend<'ctx, '_> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the async root harness keeps executor lifetime, exact result storage, terminal-state dispatch, fault reporting, and typed result merge in one auditable boundary"
+    )]
     fn call_typed_async_root(
         &self,
         runtime: PointerValue<'ctx>,

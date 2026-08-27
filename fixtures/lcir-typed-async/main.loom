@@ -9,8 +9,13 @@ fn impossible() {
     impossible()
 }
 
-async fn echo(value Bool) Bool {
-    value
+async fn allocationPressure() Bool {
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
 }
 
 async fn echoText(value Text) Text {
@@ -23,7 +28,7 @@ async fn echoEnvelope(value Envelope) Envelope {
 
 pub async fn main() {
     let marker = "typed ".concat("root")
-    let observed = echo(true).await
+    let observed = allocationPressure().await
     let echoed = echoText(marker).await
     let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
     if envelope.flag && envelope.text == "typed root" {
@@ -35,7 +40,7 @@ pub async fn main() {
 
 test async fn awaitsScalar() {
     let marker = "typed ".concat("root")
-    let observed = echo(true).await
+    let observed = allocationPressure().await
     let echoed = echoText(marker).await
     let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
     if envelope.flag && envelope.text == "typed root" {

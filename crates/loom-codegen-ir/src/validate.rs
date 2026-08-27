@@ -4765,10 +4765,10 @@ fn transfer_list_ownership(
                 }
             }
         }
-        TerminatorKind::Return(value) => {
-            if list_values.get(value.index()).copied().unwrap_or(false) {
-                states[value.index()] = ListOwnership::Shared;
-            }
+        TerminatorKind::Return(value)
+            if list_values.get(value.index()).copied().unwrap_or(false) =>
+        {
+            states[value.index()] = ListOwnership::Shared;
         }
         _ => {}
     }

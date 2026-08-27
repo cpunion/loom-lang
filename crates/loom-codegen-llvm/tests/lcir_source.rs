@@ -5419,7 +5419,11 @@ pub fn main() Unit {
 }
 
 #[test]
-fn typed_async_state_machines_run_and_keep_exact_text_roots_on_all_targets() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps typed coroutine planning, forced parent-root relocation, run/test harnesses, ABI shape, and cross-target object emission together"
+)]
+fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     let source = include_str!("../../../fixtures/lcir-typed-async/main.loom");
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -5442,6 +5446,13 @@ fn typed_async_state_machines_run_and_keep_exact_text_roots_on_all_targets() {
         .iter()
         .find(|function| function.name().ends_with("main"))
         .expect("typed async main instance");
+    let pressure = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("allocationPressure"))
+        .expect("typed allocation-pressure child instance");
+    assert!(pressure.coroutine().is_some());
+    assert!(pressure.effects().contains(Effects::MAY_COLLECT));
     let plan = main.coroutine().expect("typed async main coroutine plan");
     assert_eq!(
         plan.suspensions()
