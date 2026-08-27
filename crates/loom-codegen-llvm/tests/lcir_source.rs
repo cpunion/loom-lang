@@ -1361,6 +1361,10 @@ pub fn main() Unit {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end fixture keeps transparent, invariant-product, direct-sum, three-backend, release, and debug evidence together"
+)]
 fn proven_refinements_and_invariant_records_are_zero_cost_typed_lcir_values() {
     let source = r"module lcir_source_refined
 
@@ -1444,7 +1448,6 @@ pub fn main() Unit {
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert!(legacy.status.success(), "{legacy:?}");
     assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert!(lcir.ir.contains("switch i8"), "{}", lcir.ir);
     let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
     for forbidden in [
         "alloca",
@@ -1471,6 +1474,7 @@ pub fn main() Unit {
     );
     assert!(debug.output.status.success(), "{:?}", debug.output);
     assert_eq!(debug.output.stdout, legacy.stdout);
+    assert!(debug.ir.contains("switch i8"), "{}", debug.ir);
     assert!(
         debug.ir.contains("!DIBasicType(name: \"Float\", size: 64"),
         "transparent scalar debug metadata must use its physical base type:\n{}",
