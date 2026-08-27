@@ -3316,6 +3316,33 @@ pub fn main() Unit {
 }
 
 #[test]
+fn recursive_text_map_backed_structural_equality_remains_one_atomic_fallback() {
+    let outcome = lower_run(
+        r"module recursive_text_map_equality
+
+record Node {
+    children TextMap[Node]
+}
+
+pub fn main() Unit {
+    let left = Node { children = TextMap[Node]() }
+    let right = Node { children = TextMap[Node]() }
+    discard left == right
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("recursive TextMap structural equality must not clone an unbounded LCIR CFG")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::NominalValue
+    );
+}
+
+#[test]
 fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
     let dump = complete_dump(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
     for required in [
