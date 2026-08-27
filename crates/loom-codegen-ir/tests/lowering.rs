@@ -352,6 +352,33 @@ pub fn main() Unit {
 }
 
 #[test]
+fn generic_sum_construction_and_matches_plan_each_concrete_instance() {
+    let dump = complete_dump(
+        r"module generic_sums
+
+fn unwrap[T](value Option[T], fallback T) T {
+    match value {
+        Some(found) => found
+        None => fallback
+    }
+}
+
+pub fn main() Unit {
+    discard unwrap(Some(7), 0)
+    discard unwrap(Some(true), false)
+    Unit
+}
+",
+    );
+
+    assert_eq!(dump.matches("source=f0 types=[Int]").count(), 1, "{dump}");
+    assert_eq!(dump.matches("source=f0 types=[Bool]").count(), 1, "{dump}");
+    assert!(dump.contains("Nominal#0[Int]"), "{dump}");
+    assert!(dump.contains("Nominal#0[Bool]"), "{dump}");
+    assert!(dump.matches("sum.switch").count() >= 2, "{dump}");
+}
+
+#[test]
 fn regular_generic_recursion_deduplicates_each_exact_instantiation() {
     let source = r"module generic_recursion
 

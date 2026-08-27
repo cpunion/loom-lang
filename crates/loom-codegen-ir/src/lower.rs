@@ -782,7 +782,7 @@ struct Classifier<'program> {
     program: &'program mir::Program,
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program>,
-    match_plans: BTreeMap<(FunctionId, ExprId), MatchPlan>,
+    match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
 }
 
 impl<'program> Classifier<'program> {
@@ -1252,11 +1252,28 @@ impl<'program> Classifier<'program> {
                         &format!("{path}.arms[{index}].value"),
                     );
                 }
-                if self.supported_value_type(&scrutinee.ty) {
-                    if let Some(plan) = plan_match(self.program, &scrutinee.ty, arms) {
+                let scrutinee_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(scrutinee),
+                    &scrutinee.ty,
+                    scrutinee.span,
+                    &format!("{path}.scrutinee.ty"),
+                );
+                if scrutinee_ty
+                    .as_ref()
+                    .is_some_and(|ty| self.supported_value_type(ty))
+                {
+                    if let Some(plan) = plan_match(
+                        self.program,
+                        scrutinee_ty.as_ref().expect("checked Some"),
+                        arms,
+                    ) {
                         if self
                             .match_plans
-                            .insert((function.id, expression.id), plan)
+                            .entry(key.canonical_identity())
+                            .or_default()
+                            .insert(expression.id, plan)
                             .is_some()
                         {
                             self.expression_item(
@@ -2398,7 +2415,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     builder: FunctionBuilder<'builder>,
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
-    match_plans: &'plan BTreeMap<(FunctionId, ExprId), MatchPlan>,
+    match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan>>,
     local_types: BTreeMap<LocalId, Type>,
     inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
@@ -2413,7 +2430,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         builder: FunctionBuilder<'builder>,
         instances: &'plan InstanceLookup,
         effects: &'plan [Effects],
-        match_plans: &'plan BTreeMap<(FunctionId, ExprId), MatchPlan>,
+        match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
     ) -> Self {
         let local_types = source
             .params
@@ -2437,7 +2454,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             builder,
             instances,
             effects,
-            match_plans,
+            match_plans: match_plans.get(&key.canonical_identity()),
             local_types,
             inout_locals,
             environments: EnvironmentArena::new(),
@@ -3268,7 +3285,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         };
         let plan = self
             .match_plans
-            .get(&(self.source.id, expression.id))
+            .and_then(|plans| plans.get(&expression.id))
             .cloned()
             .ok_or_else(|| self.unsupported_reached("unplanned pattern match"))?;
         let mut values = vec![None; plan.value_count()];
