@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 26")?;
+    writeln!(output, "lcir 27")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -518,11 +518,17 @@ fn write_terminator(
             state,
             tasks,
             normal,
+            fault,
+            cancel,
         } => {
             write!(output, "await_tasks state {state}, (")?;
             write_arguments(output, tasks)?;
             write!(output, "), normal ")?;
-            write_await_result_target(output, normal, tasks.len())
+            write_await_result_target(output, normal, tasks.len())?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 0)?;
+            write!(output, ", cancel ")?;
+            write_target(output, cancel)
         }
         TerminatorKind::CheckedIntNegate {
             value,
@@ -600,6 +606,7 @@ fn write_terminator(
             write_fault_metadata(output, metadata)
         }
         TerminatorKind::ResumeFault => write!(output, "resume_fault"),
+        TerminatorKind::TaskCancelled => write!(output, "task.cancelled"),
     }?;
     if !terminator.writebacks().is_empty() {
         write!(output, " writebacks(")?;

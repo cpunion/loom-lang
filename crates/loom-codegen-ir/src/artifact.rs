@@ -725,7 +725,13 @@ impl ArtifactValidator<'_> {
                             implicit_writebacks,
                         );
                     }
-                    TerminatorKind::AwaitTasks { tasks, normal, .. } => {
+                    TerminatorKind::AwaitTasks {
+                        tasks,
+                        normal,
+                        fault,
+                        cancel,
+                        ..
+                    } => {
                         for (index, task) in tasks.iter().enumerate() {
                             let output_is_text = function
                                 .value(*task)
@@ -748,6 +754,22 @@ impl ArtifactValidator<'_> {
                             normal.block,
                             &normal.arguments,
                             tasks.len(),
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            fault.block,
+                            &fault.arguments,
+                            0,
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            cancel.block,
+                            &cancel.arguments,
+                            0,
                         );
                     }
                     TerminatorKind::ResourceClose { normal, fault, .. } => {
@@ -788,7 +810,8 @@ impl ArtifactValidator<'_> {
                     }
                     TerminatorKind::Return(_)
                     | TerminatorKind::Fault { .. }
-                    | TerminatorKind::ResumeFault => {}
+                    | TerminatorKind::ResumeFault
+                    | TerminatorKind::TaskCancelled => {}
                 }
             }
         }

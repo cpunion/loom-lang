@@ -1304,75 +1304,6 @@ fn runtime_constraint_result_type(program: &mir::Program, success: Type) -> Opti
     ))
 }
 
-fn block_contains_async_cleanup(block: &mir::Block) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| match &statement.kind {
-            StatementKind::Scoped { .. } | StatementKind::Defer(_) => true,
-            StatementKind::ForRange { body, .. } => block_contains_async_cleanup(body),
-            StatementKind::Let { value, .. }
-            | StatementKind::LetTuple { value, .. }
-            | StatementKind::Assign { value, .. }
-            | StatementKind::Assert { condition: value }
-            | StatementKind::Evaluate(value) => expr_contains_async_cleanup(value),
-            StatementKind::Return(value) => value.as_ref().is_some_and(expr_contains_async_cleanup),
-        })
-        || block
-            .tail
-            .as_deref()
-            .is_some_and(expr_contains_async_cleanup)
-}
-
-fn expr_contains_async_cleanup(expression: &mir::Expr) -> bool {
-    match &expression.kind {
-        ExprKind::Block(block) => block_contains_async_cleanup(block),
-        ExprKind::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            expr_contains_async_cleanup(condition)
-                || block_contains_async_cleanup(then_branch)
-                || block_contains_async_cleanup(else_branch)
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            expr_contains_async_cleanup(scrutinee)
-                || arms
-                    .iter()
-                    .any(|arm| expr_contains_async_cleanup(&arm.value))
-        }
-        ExprKind::Tuple(values)
-        | ExprKind::List(values)
-        | ExprKind::TaskJoin {
-            arguments: values, ..
-        }
-        | ExprKind::Record { fields: values, .. }
-        | ExprKind::Variant {
-            payload: values, ..
-        } => values.iter().any(expr_contains_async_cleanup),
-        ExprKind::Unary(_, value)
-        | ExprKind::Refine { value, .. }
-        | ExprKind::Unrefine(value)
-        | ExprKind::MakeView { value, .. }
-        | ExprKind::Await { task: value, .. }
-        | ExprKind::Sleep {
-            milliseconds: value,
-        } => expr_contains_async_cleanup(value),
-        ExprKind::Binary(_, left, right) => {
-            expr_contains_async_cleanup(left) || expr_contains_async_cleanup(right)
-        }
-        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| match argument {
-            CallArgument::Value(value) => expr_contains_async_cleanup(value),
-            CallArgument::InOut(_) => false,
-        }),
-        ExprKind::Constant(_)
-        | ExprKind::Copy(_)
-        | ExprKind::Move(_)
-        | ExprKind::ReborrowView { .. } => false,
-    }
-}
-
 struct Classifier<'program, 'plan> {
     program: &'program mir::Program,
     dyn_concepts: &'plan DynConceptPlan,
@@ -1633,13 +1564,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             self.function_item(UnsupportedFeature::AsyncFunction, function, &base);
         }
         if function.is_async {
-            if block_contains_async_cleanup(&function.body) {
-                self.function_item(
-                    UnsupportedFeature::AsyncFunction,
-                    function,
-                    &format!("{base}.cleanup"),
-                );
-            }
             for (index, point) in function.suspension_points.iter().enumerate() {
                 if point.state == 0 {
                     self.item(
@@ -3730,7 +3654,11 @@ fn scan_effect_expr(
         ExprKind::Await { task: value, .. } => {
             let continues = scan_effect_expr(program, value, summary);
             if continues {
-                summary.include(Effects::MAY_SUSPEND);
+                // Every awaited Task may complete with a scheduler-owned
+                // fault independently of its source result type. LCIR models
+                // that propagation explicitly so an active lexical cleanup
+                // suffix can run before the coroutine reports the fault.
+                summary.include(Effects::MAY_FAULT.union(Effects::MAY_SUSPEND));
             }
             continues
         }
@@ -6203,6 +6131,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Ok(UnwindTarget::new(self.fault_block()?, arguments))
     }
 
+    /// Rebuilds the exact MIR-local environment injected from one coroutine
+    /// frame row. Await result parameters, when present, are appended before
+    /// this method is called; the live locals themselves always retain their
+    /// deterministic MIR order on normal, fault, and cancellation edges.
+    fn append_suspension_environment(
+        &mut self,
+        block: BlockId,
+        live_locals: &[LocalId],
+    ) -> Result<EnvironmentRoot, LoweringError> {
+        let mut env = EMPTY_ENVIRONMENT;
+        for local in live_locals {
+            let parameter = self
+                .builder
+                .append_block_parameter(block, self.local_type(*local)?)
+                .map_err(LoweringError::from)?;
+            env = self.environments.set(env, *local, parameter)?;
+        }
+        Ok(env)
+    }
+
     fn one_instruction(
         &mut self,
         flow: Flow,
@@ -7175,6 +7123,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             ),
                         )
                     })?;
+                let live_locals = suspension.live_locals.clone();
                 let normal = self.create_block()?;
                 let mut results = Vec::with_capacity(output_types.len());
                 for output in &output_types {
@@ -7184,9 +7133,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             .map_err(LoweringError::from)?,
                     );
                 }
-                let mut arguments = Vec::with_capacity(suspension.live_locals.len());
-                let mut env = EMPTY_ENVIRONMENT;
-                for local in &suspension.live_locals {
+                let mut arguments = Vec::with_capacity(live_locals.len());
+                for local in &live_locals {
                     let value = self.environments.get(flow.env, *local).ok_or_else(|| {
                         LoweringError::defect(
                             LoweringDefectCode::InconsistentPlan,
@@ -7197,22 +7145,50 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         )
                     })?;
                     arguments.push(value);
-                    let parameter = self
-                        .builder
-                        .append_block_parameter(normal, self.local_type(*local)?)
-                        .map_err(LoweringError::from)?;
-                    env = self.environments.set(env, *local, parameter)?;
                 }
+                let normal_env = self.append_suspension_environment(normal, &live_locals)?;
+
+                // A parked coroutine can leave the suspension through a child
+                // fault or cancellation without producing any child result.
+                // Rebuild the same exact live-local row on both exits, then
+                // statically expand the cleanup suffix which was active at
+                // this source point. No runtime cleanup stack is introduced.
+                let fault = self.create_block()?;
+                let fault_env = self.append_suspension_environment(fault, &live_locals)?;
+                let fault_flow = self.lower_cleanup_suffix(
+                    Flow {
+                        block: fault,
+                        env: fault_env,
+                    },
+                    0,
+                )?;
+                self.terminate_exit(fault_flow, TerminatorKind::ResumeFault, origin)?;
+
+                let cancel = self.create_block()?;
+                let cancel_env = self.append_suspension_environment(cancel, &live_locals)?;
+                let cancel_flow = self.lower_cleanup_suffix(
+                    Flow {
+                        block: cancel,
+                        env: cancel_env,
+                    },
+                    0,
+                )?;
+                self.terminate_exit(cancel_flow, TerminatorKind::TaskCancelled, origin)?;
                 self.terminate(
                     flow.block,
                     TerminatorKind::AwaitTasks {
                         state: *state,
                         tasks: tasks.into_boxed_slice(),
-                        normal: ResultTarget::new(normal, arguments),
+                        normal: ResultTarget::new(normal, arguments.clone()),
+                        fault: UnwindTarget::new(fault, arguments.clone()),
+                        cancel: BlockTarget::new(cancel, arguments),
                     },
                     origin,
                 )?;
-                let resumed = Flow { block: normal, env };
+                let resumed = Flow {
+                    block: normal,
+                    env: normal_env,
+                };
                 if direct_results {
                     self.one_instruction(
                         resumed,
