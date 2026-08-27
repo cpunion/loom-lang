@@ -1215,12 +1215,15 @@ pub enum TerminatorKind {
     /// invocation stores `normal.arguments`, attaches all children to one
     /// exact `all` join, and returns pending when needed. Resume state `state`
     /// injects each exact child result into the leading normal parameters in
-    /// task order before the forwarded values. A child fault or cancellation
-    /// terminates the current Task with the scheduler-propagated outcome.
+    /// task order before the forwarded values. `fault` and `cancel` receive
+    /// the same forwarded live row without child results, allowing lexical
+    /// cleanup to run before the scheduler-propagated terminal outcome.
     AwaitTasks {
         state: u32,
         tasks: Box<[ValueId]>,
         normal: ResultTarget,
+        fault: UnwindTarget,
+        cancel: BlockTarget,
     },
     /// Negates a signed integer, producing its value only on `normal` and
     /// activating [`FaultCode::IntegerOverflow`] on `fault`.
@@ -1272,6 +1275,10 @@ pub enum TerminatorKind {
     /// terminal fault, or transitively faulting invoke which made the path
     /// active supplies that effect.
     ResumeFault,
+    /// Completes an active coroutine cancellation after its non-suspending
+    /// lexical cleanup suffix has run. This terminal is invalid in ordinary
+    /// synchronous functions and while a source fault is active.
+    TaskCancelled,
 }
 
 impl TerminatorKind {
@@ -1315,10 +1322,23 @@ impl TerminatorKind {
                 operands.extend_from_slice(&fault.arguments);
                 operands
             }
-            Self::AwaitTasks { tasks, normal, .. } => {
-                let mut operands = Vec::with_capacity(tasks.len() + normal.arguments.len());
+            Self::AwaitTasks {
+                tasks,
+                normal,
+                fault,
+                cancel,
+                ..
+            } => {
+                let mut operands = Vec::with_capacity(
+                    tasks.len()
+                        + normal.arguments.len()
+                        + fault.arguments.len()
+                        + cancel.arguments.len(),
+                );
                 operands.extend_from_slice(tasks);
                 operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands.extend_from_slice(&cancel.arguments);
                 operands
             }
             Self::CheckedIntNegate {
@@ -1388,7 +1408,7 @@ impl TerminatorKind {
                 operands.extend_from_slice(&fault.arguments);
                 operands
             }
-            Self::Fault { .. } | Self::ResumeFault => Vec::new(),
+            Self::Fault { .. } | Self::ResumeFault | Self::TaskCancelled => Vec::new(),
         }
     }
 
@@ -1411,7 +1431,16 @@ impl TerminatorKind {
             Self::SumSwitch { cases, .. } | Self::DynSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
-            Self::AwaitTasks { normal, .. } => vec![preserve(normal.block)],
+            Self::AwaitTasks {
+                normal,
+                fault,
+                cancel,
+                ..
+            } => vec![
+                preserve(normal.block),
+                activate(fault.block),
+                preserve(cancel.block),
+            ],
             Self::TaskSleep { normal, fault, .. }
             | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
@@ -1424,7 +1453,9 @@ impl TerminatorKind {
             Self::Assert { success, fault, .. } => {
                 vec![preserve(success.block), activate(fault.block)]
             }
-            Self::Return(_) | Self::Fault { .. } | Self::ResumeFault => Vec::new(),
+            Self::Return(_) | Self::Fault { .. } | Self::ResumeFault | Self::TaskCancelled => {
+                Vec::new()
+            }
         }
     }
 }

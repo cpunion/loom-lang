@@ -83,6 +83,7 @@ const TYPED_TASK_SET_ROOT_STATE_SYMBOL: &str = "loom_typed_task_set_root_state_v
 const TYPED_TASK_PUBLISH_RESULT_SYMBOL: &str = "loom_typed_task_publish_result_v1";
 const TYPED_TASK_TAKE_RESULT_SYMBOL: &str = "loom_typed_task_take_result_v1";
 const TYPED_TASK_ABORT_UNPUBLISHED_SYMBOL: &str = "loom_typed_task_abort_unpublished_v1";
+const TYPED_TASK_IS_CANCEL_REQUESTED_SYMBOL: &str = "loom_typed_task_is_cancel_requested_v1";
 
 impl LcirEmitter {
     pub(crate) fn emit_object(
@@ -1851,13 +1852,11 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     self.ptr_type.fn_type(&params, false),
                     Some(Linkage::Internal),
                 );
-                let cancel = self.coroutine_cancel.ok_or_else(|| {
-                    CodegenError::new(
-                        "LlvmAbiDefect",
-                        "typed coroutine cancel callback is missing",
-                    )
-                })?;
-                let layout = self.build_coroutine_layout(source, callback, cancel)?;
+                // The same checked callback owns both ordinary resume and
+                // descriptor-driven cancellation dispatch. Its prologue
+                // selects the explicit LCIR cancellation CFG before any
+                // operation which could suspend or mutate task topology.
+                let layout = self.build_coroutine_layout(source, callback, callback)?;
                 self.functions.push(constructor);
                 self.coroutine_callbacks.push(Some(callback));
                 self.coroutine_layouts.push(Some(layout));
@@ -4480,6 +4479,10 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.task_status_function(TYPED_TASK_PUBLISH_RESULT_SYMBOL)
     }
 
+    fn typed_task_is_cancel_requested(&self) -> FunctionValue<'ctx> {
+        self.task_status_function(TYPED_TASK_IS_CANCEL_REQUESTED_SYMBOL)
+    }
+
     fn typed_task_take_result(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_TASK_TAKE_RESULT_SYMBOL)
@@ -4946,11 +4949,20 @@ struct CoroutineEmission<'ctx> {
     layout: CoroutineLayout<'ctx>,
     prologue: BasicBlock<'ctx>,
     dispatch: BasicBlock<'ctx>,
+    cancel_dispatch: BasicBlock<'ctx>,
+    cancel_start: BasicBlock<'ctx>,
     invalid_state: BasicBlock<'ctx>,
     resume_blocks: Vec<BasicBlock<'ctx>>,
+    cancel_blocks: Vec<BasicBlock<'ctx>>,
     task: PointerValue<'ctx>,
     executor: PointerValue<'ctx>,
     frame: PointerValue<'ctx>,
+}
+
+struct AwaitExitTargets {
+    normal: ResultTarget,
+    fault: UnwindTarget,
+    cancel: BlockTarget,
 }
 
 struct FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -5012,6 +5024,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             let dispatch = backend
                 .context
                 .append_basic_block(function, "coroutine.dispatch");
+            let cancel_dispatch = backend
+                .context
+                .append_basic_block(function, "coroutine.cancel.dispatch");
+            let cancel_start = backend
+                .context
+                .append_basic_block(function, "coroutine.cancel.start");
             let invalid_state = backend
                 .context
                 .append_basic_block(function, "coroutine.invalid_state");
@@ -5025,14 +5043,27 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     )
                 })
                 .collect();
+            let cancel_blocks = layout
+                .suspensions
+                .iter()
+                .map(|suspension| {
+                    backend.context.append_basic_block(
+                        function,
+                        &format!("coroutine.cancel.{}", suspension.state),
+                    )
+                })
+                .collect();
             (
                 function,
                 Some(CoroutineEmission {
                     layout,
                     prologue,
                     dispatch,
+                    cancel_dispatch,
+                    cancel_start,
                     invalid_state,
                     resume_blocks,
+                    cancel_blocks,
                     task,
                     executor,
                     frame,
@@ -5324,6 +5355,63 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.backend
             .builder
             .build_unconditional_branch(self.blocks[entry.index()])
+            .map_err(builder_error)?;
+
+        self.prepare_coroutine_cancel_dispatch()
+    }
+
+    fn prepare_coroutine_cancel_dispatch(&self) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "coroutine cancellation dispatch has no frame plan",
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(coroutine.cancel_dispatch);
+        let cancel_state_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                coroutine.layout.frame,
+                coroutine.frame,
+                0,
+                "coroutine.cancel.state.pointer",
+            )
+            .map_err(builder_error)?;
+        let cancel_state = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                cancel_state_pointer,
+                "coroutine.cancel.state",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let mut cancel_cases = Vec::with_capacity(1 + coroutine.layout.suspensions.len());
+        cancel_cases.push((
+            self.backend.context.i64_type().const_zero(),
+            coroutine.cancel_start,
+        ));
+        for (suspension, block) in coroutine
+            .layout
+            .suspensions
+            .iter()
+            .zip(&coroutine.cancel_blocks)
+        {
+            cancel_cases.push((
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(u64::from(suspension.state), false),
+                *block,
+            ));
+        }
+        self.backend
+            .builder
+            .build_switch(cancel_state, coroutine.invalid_state, &cancel_cases)
             .map_err(builder_error)?;
         Ok(())
     }
@@ -6377,9 +6465,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if self.root_frame.is_none() {
             self.backend.builder.position_at_end(coroutine.prologue);
         }
+        let requested = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_is_cancel_requested(),
+            &[coroutine.task.into()],
+            "coroutine.cancel.requested",
+        )?;
+        let cancelling = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                requested,
+                self.backend.context.i32_type().const_zero(),
+                "coroutine.cancelling",
+            )
+            .map_err(builder_error)?;
         self.backend
             .builder
-            .build_unconditional_branch(coroutine.dispatch)
+            .build_conditional_branch(cancelling, coroutine.cancel_dispatch, coroutine.dispatch)
             .map_err(builder_error)?;
         Ok(())
     }
@@ -6393,20 +6497,22 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         })?;
         if plan.suspensions().len() != coroutine.layout.suspensions.len()
             || plan.suspensions().len() != coroutine.resume_blocks.len()
+            || plan.suspensions().len() != coroutine.cancel_blocks.len()
         {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "coroutine plan, frame layout, and resume dispatch disagree",
+                "coroutine plan, frame layout, resume dispatch, and cancellation dispatch disagree",
             ));
         }
 
-        for ((plan_row, layout_row), resume) in plan
+        for (((plan_row, layout_row), resume), cancel_resume) in plan
             .suspensions()
             .iter()
             .zip(&coroutine.layout.suspensions)
             .zip(&coroutine.resume_blocks)
+            .zip(&coroutine.cancel_blocks)
         {
-            let (_tasks, normal) = self.await_for_state(plan_row.state())?;
+            let targets = self.await_for_state(plan_row.state())?;
             if layout_row.state != plan_row.state()
                 || layout_row.child_fields.len() != plan_row.awaited().len()
                 || layout_row.live_fields.len() != plan_row.live().len()
@@ -6420,9 +6526,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 ));
             }
             self.backend.builder.position_at_end(*resume);
-            self.emit_coroutine_resume_state(plan_row, layout_row, &normal)?;
+            self.emit_coroutine_resume_state(
+                plan_row,
+                layout_row,
+                &targets.normal,
+                &targets.fault,
+                &targets.cancel,
+            )?;
+
+            self.backend.builder.position_at_end(*cancel_resume);
+            self.emit_coroutine_live_branch(
+                plan_row,
+                layout_row,
+                targets.cancel.block,
+                "coroutine.cancel.live",
+            )?;
         }
 
+        self.backend.builder.position_at_end(coroutine.cancel_start);
+        self.emit_coroutine_step_return(TASK_CANCELLED)?;
         self.backend
             .builder
             .position_at_end(coroutine.invalid_state);
@@ -6438,6 +6560,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         plan_row: &CoroutineSuspension,
         layout_row: &CoroutineSuspensionLayout,
         normal: &ResultTarget,
+        fault: &UnwindTarget,
+        cancel: &BlockTarget,
     ) -> Result<(), CodegenError> {
         let coroutine = self.coroutine.as_ref().ok_or_else(|| {
             CodegenError::new("LlvmAbiDefect", "coroutine resume has no active frame")
@@ -6508,9 +6632,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.backend.builder.position_at_end(faulted);
-        self.emit_coroutine_step_return(TASK_FAULTED)?;
+        self.activate_coroutine_fault()?;
+        self.emit_coroutine_live_branch(
+            plan_row,
+            layout_row,
+            fault.block,
+            "task.await.fault.live",
+        )?;
         self.backend.builder.position_at_end(cancelled);
-        self.emit_coroutine_step_return(TASK_CANCELLED)?;
+        self.emit_coroutine_live_branch(
+            plan_row,
+            layout_row,
+            cancel.block,
+            "task.await.cancel.live",
+        )?;
         self.backend.builder.position_at_end(invalid);
         self.emit_coroutine_step_return(TASK_FAULTED)?;
 
@@ -6554,34 +6689,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 &format!("task.await.result.{index}"),
             )?);
         }
-        for ((ty, field), index) in plan_row
-            .live()
-            .iter()
-            .copied()
-            .zip(layout_row.live_fields.iter().copied())
-            .zip(0_u32..)
-        {
-            let pointer = self
-                .backend
-                .builder
-                .build_struct_gep(
-                    coroutine.layout.frame,
-                    coroutine.frame,
-                    field,
-                    &format!("task.await.live.{index}.pointer"),
-                )
-                .map_err(builder_error)?;
-            values.push(
-                self.backend
-                    .builder
-                    .build_load(
-                        self.backend.llvm_type(ty)?,
-                        pointer,
-                        &format!("task.await.live.{index}"),
-                    )
-                    .map_err(builder_error)?,
-            );
-        }
+        values.extend(self.load_coroutine_live_values(plan_row, layout_row, "task.await.live")?);
         let predecessor = self.current_block()?;
         self.add_basic_incoming(normal.block, &values, predecessor)?;
         self.backend
@@ -6591,16 +6699,110 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn await_for_state(&self, state: u32) -> Result<(Box<[ValueId]>, ResultTarget), CodegenError> {
+    fn activate_coroutine_fault(&self) -> Result<(), CodegenError> {
+        let context = self.fault_context.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "awaited child fault has no coroutine fault context",
+            )
+        })?;
+        let active = self
+            .backend
+            .builder
+            .build_struct_gep(
+                self.backend.fault_context_type,
+                context,
+                1,
+                "task.await.fault.active.pointer",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(active, self.backend.context.bool_type().const_int(1, false))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn load_coroutine_live_values(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        prefix: &str,
+    ) -> Result<Vec<BasicValueEnum<'ctx>>, CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "coroutine live reload has no active frame")
+        })?;
+        if layout_row.live_fields.len() != plan_row.live().len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "coroutine state {} live row disagrees with its frame layout",
+                    plan_row.state()
+                ),
+            ));
+        }
+        plan_row
+            .live()
+            .iter()
+            .copied()
+            .zip(layout_row.live_fields.iter().copied())
+            .zip(0_u32..)
+            .map(|((ty, field), index)| {
+                let pointer = self
+                    .backend
+                    .builder
+                    .build_struct_gep(
+                        coroutine.layout.frame,
+                        coroutine.frame,
+                        field,
+                        &format!("{prefix}.{index}.pointer"),
+                    )
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_load(
+                        self.backend.llvm_type(ty)?,
+                        pointer,
+                        &format!("{prefix}.{index}"),
+                    )
+                    .map_err(builder_error)
+            })
+            .collect()
+    }
+
+    fn emit_coroutine_live_branch(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        target: BlockId,
+        prefix: &str,
+    ) -> Result<(), CodegenError> {
+        let values = self.load_coroutine_live_values(plan_row, layout_row, prefix)?;
+        let predecessor = self.current_block()?;
+        self.add_basic_incoming(target, &values, predecessor)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(self.block(target)?)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn await_for_state(&self, state: u32) -> Result<AwaitExitTargets, CodegenError> {
         self.source
             .blocks()
             .iter()
             .find_map(|block| match block.terminator().map(Terminator::kind) {
                 Some(TerminatorKind::AwaitTasks {
                     state: candidate,
-                    tasks,
+                    tasks: _,
                     normal,
-                }) if *candidate == state => Some((tasks.clone(), normal.clone())),
+                    fault,
+                    cancel,
+                }) if *candidate == state => Some(AwaitExitTargets {
+                    normal: normal.clone(),
+                    fault: fault.clone(),
+                    cancel: cancel.clone(),
+                }),
                 _ => None,
             })
             .ok_or_else(|| {
@@ -6751,10 +6953,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(fault.block);
                     pending.push(success.block);
                 }
-                TerminatorKind::AwaitTasks { normal, .. } => pending.push(normal.block),
+                TerminatorKind::AwaitTasks {
+                    normal,
+                    fault,
+                    cancel,
+                    ..
+                } => {
+                    pending.push(cancel.block);
+                    pending.push(fault.block);
+                    pending.push(normal.block);
+                }
                 TerminatorKind::Return(_)
                 | TerminatorKind::Fault { .. }
-                | TerminatorKind::ResumeFault => {}
+                | TerminatorKind::ResumeFault
+                | TerminatorKind::TaskCancelled => {}
             }
         }
         if order.len() != source.blocks().len() {
@@ -9806,7 +10018,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 state,
                 tasks,
                 normal,
-            } => self.emit_await_tasks(*state, tasks, normal),
+                fault,
+                cancel,
+            } => self.emit_await_tasks(*state, tasks, normal, fault, cancel),
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal,
@@ -9906,6 +10120,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 self.emit_fault_return(terminator.writebacks())
             }
             TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
+            TerminatorKind::TaskCancelled => {
+                if self.coroutine.is_none() {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "task.cancelled reached a non-coroutine emitter",
+                    ));
+                }
+                self.emit_coroutine_step_return(TASK_CANCELLED)
+            }
         }
     }
 
@@ -10270,6 +10493,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         state: u32,
         tasks: &[ValueId],
         normal: &ResultTarget,
+        fault: &UnwindTarget,
+        cancel: &BlockTarget,
     ) -> Result<(), CodegenError> {
         let coroutine = self.coroutine.as_ref().ok_or_else(|| {
             CodegenError::new("LlvmAbiDefect", "await terminator has no coroutine frame")
@@ -10303,6 +10528,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if suspension.child_fields.len() != tasks.len()
             || suspension.child_fields.len() != plan_row.awaited().len()
             || suspension.live_fields.len() != normal.arguments.len()
+            || normal.arguments.as_ref() != fault.arguments.as_ref()
+            || normal.arguments.as_ref() != cancel.arguments.as_ref()
         {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -10460,7 +10687,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.backend.builder.position_at_end(invalid);
         self.emit_coroutine_step_return(TASK_FAULTED)?;
         self.backend.builder.position_at_end(ready);
-        self.emit_coroutine_resume_state(plan_row, &suspension, normal)
+        self.emit_coroutine_resume_state(plan_row, &suspension, normal, fault, cancel)
     }
 
     #[expect(

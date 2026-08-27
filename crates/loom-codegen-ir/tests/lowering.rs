@@ -132,6 +132,123 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the source fixture and its three explicit cleanup continuations stay visible together"
+)]
+fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
+    let outcome = lower_run(
+        r"module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        assert self.value > 0
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+async fn child() Int {
+    Task.sleep(1).await
+    7
+}
+
+pub async fn main() Unit {
+    var marker = 0
+    defer {
+        marker = marker + 1
+    }
+    scoped resource = Resource { value = 3 }
+    let value = child().await
+    discard value
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("scoped cleanup across suspension must lower through typed LCIR")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let await_edges = main
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::AwaitTasks {
+                    normal,
+                    fault,
+                    cancel,
+                    ..
+                }) => Some((normal, fault, cancel)),
+                _ => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(await_edges.len(), 1);
+    let (normal, fault, cancel) = await_edges[0];
+    assert_eq!(normal.arguments.as_ref(), fault.arguments.as_ref());
+    assert_eq!(normal.arguments.as_ref(), cancel.arguments.as_ref());
+    assert_eq!(
+        normal.arguments.len(),
+        2,
+        "defer-captured state and the scoped Resource must remain live in the coroutine frame"
+    );
+
+    let dispose_calls = main
+        .blocks()
+        .iter()
+        .filter_map(|block| block.terminator())
+        .filter(|terminator| matches!(terminator.kind(), TerminatorKind::Invoke { .. }))
+        .count();
+    assert_eq!(
+        dispose_calls, 3,
+        "Dispose must be statically expanded on normal completion, child fault, and cancellation"
+    );
+    let deferred_adds = main
+        .blocks()
+        .iter()
+        .filter_map(|block| block.terminator())
+        .filter(|terminator| {
+            matches!(
+                terminator.kind(),
+                TerminatorKind::CheckedIntBinary {
+                    op: CheckedIntBinaryOp::Add,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        deferred_adds, 6,
+        "defer must run on all three exits and after a later scoped Dispose action faults"
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("task.cancelled"), "{dump}");
+    assert!(dump.contains("resume_fault"), "{dump}");
+    assert!(
+        dump.contains(", fault b") && dump.contains(", cancel b"),
+        "{dump}"
+    );
+}
+
+#[test]
 fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     let outcome = lower_run(TYPED_TASK_ALL_SOURCE);
     let LoweringOutcome::Complete(artifact) = outcome else {
@@ -151,9 +268,19 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(joins.len(), 2, "only stored composites need allocation");
-    for (instruction, tasks) in &joins {
-        assert_eq!(tasks.len(), 3);
+    let expected = [
+        (3, Type::Tuple(vec![Type::Text, Type::Int, Type::Unit])),
+        (3, Type::Tuple(vec![Type::Text, Type::Int, Type::Unit])),
+        (2, Type::Tuple(vec![Type::Int, Type::Bool])),
+    ];
+    assert_eq!(
+        joins.len(),
+        expected.len(),
+        "every stored composite needs one first-class allocation:\n{}",
+        dump_program(artifact.program())
+    );
+    for ((instruction, tasks), (expected_width, expected_output)) in joins.iter().zip(&expected) {
+        assert_eq!(tasks.len(), *expected_width);
         assert!(
             tasks
                 .windows(2)
@@ -168,11 +295,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
                 .representations()
                 .value_type(join_result.ty())
                 .map(loom_codegen_ir::ValueType::semantic),
-            Some(&Type::Task(Box::new(Type::Tuple(vec![
-                Type::Text,
-                Type::Int,
-                Type::Unit,
-            ]))))
+            Some(&Type::Task(Box::new(expected_output.clone())))
         );
     }
 
@@ -186,7 +309,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
             },
         )
         .collect::<Vec<_>>();
-    assert_eq!(await_widths, [2, 2, 1, 1, 1, 1]);
+    assert_eq!(await_widths, [2, 2, 1, 1, 1, 1, 1]);
     assert_eq!(
         exercise
             .coroutine()

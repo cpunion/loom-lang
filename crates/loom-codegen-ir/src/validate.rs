@@ -1313,6 +1313,7 @@ impl<'a> Validator<'a> {
             );
         }
         let reachable = reachable_blocks(entry.index(), &successors);
+        let cancellation_states = compute_cancellation_states(function);
         for (index, is_reachable) in reachable.iter().copied().enumerate() {
             if !is_reachable {
                 self.error(
@@ -1336,12 +1337,36 @@ impl<'a> Validator<'a> {
                     "block is reachable with both inactive and active source-fault state; split the control-flow merge",
                 );
             }
-            if let Some(terminator) = function
-                .blocks
-                .get(index)
-                .and_then(|block| block.terminator.as_ref())
+            if let Some(block) = function.blocks.get(index)
+                && let Some(terminator) = block.terminator.as_ref()
             {
                 self.validate_terminator_fault_state(terminator, state, index, &base);
+                let cancellation_state = cancellation_states
+                    .get(index)
+                    .copied()
+                    .unwrap_or(CancellationStateSet::NONE);
+                // Once a cleanup itself faults, source-fault propagation wins
+                // over the distinction between an ordinary child fault and a
+                // fault raised while cancelling. Those paths may share the
+                // canonical resume_fault tail. Without an active fault the
+                // cancellation obligation must remain distinct.
+                if cancellation_state == CancellationStateSet::BOTH
+                    && state != FaultStateSet::ACTIVE
+                {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!("{base}.block[{index}]"),
+                        "block is reachable from both ordinary and cancellation continuations; split the control-flow merge",
+                    );
+                }
+                self.validate_block_cancellation_state(
+                    function,
+                    block,
+                    terminator,
+                    cancellation_state,
+                    index,
+                    &base,
+                );
             }
         }
         let dominators = compute_dominators(entry.index(), &reachable, &successors, &predecessors);
@@ -1674,14 +1699,26 @@ impl<'a> Validator<'a> {
             }
         }
 
-        let mut await_states = BTreeMap::<u32, (&ResultTarget, &[ValueId])>::new();
+        let mut await_states = BTreeMap::<
+            u32,
+            (
+                &ResultTarget,
+                &UnwindTarget,
+                &crate::BlockTarget,
+                &[ValueId],
+            ),
+        >::new();
         for block in function.blocks() {
             if let Some(TerminatorKind::AwaitTasks {
                 state,
                 tasks,
                 normal,
+                fault,
+                cancel,
             }) = block.terminator().map(crate::Terminator::kind)
-                && await_states.insert(*state, (normal, tasks)).is_some()
+                && await_states
+                    .insert(*state, (normal, fault, cancel, tasks))
+                    .is_some()
             {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
@@ -1734,7 +1771,8 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            let Some((normal, tasks)) = await_states.remove(&suspension.state()) else {
+            let Some((normal, fault, cancel, tasks)) = await_states.remove(&suspension.state())
+            else {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.suspension[{index}]"),
@@ -1777,6 +1815,15 @@ impl<'a> Validator<'a> {
                         suspension.live().len(),
                         normal.arguments.len()
                     ),
+                );
+            }
+            if fault.arguments.as_ref() != normal.arguments.as_ref()
+                || cancel.arguments.as_ref() != normal.arguments.as_ref()
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].live"),
+                    "await_tasks normal, fault, and cancel exits must forward the same exact live-value row",
                 );
             }
             for (live_index, (argument, expected)) in normal
@@ -3393,7 +3440,10 @@ impl<'a> Validator<'a> {
         }
         let terminal_exit = matches!(
             terminator.kind(),
-            TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault
+            TerminatorKind::Return(_)
+                | TerminatorKind::Fault { .. }
+                | TerminatorKind::ResumeFault
+                | TerminatorKind::TaskCancelled
         );
         if terminal_exit {
             let expected = Self::signature_writeback_types(function);
@@ -3628,6 +3678,8 @@ impl<'a> Validator<'a> {
                 state,
                 tasks,
                 normal,
+                fault,
+                cancel,
             } => {
                 if *state == 0 {
                     self.error(
@@ -3668,6 +3720,17 @@ impl<'a> Validator<'a> {
                     })
                     .collect::<Vec<_>>();
                 self.validate_result_target(function, normal, &outputs, &format!("{path}.normal"));
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
+                self.validate_target(function, cancel, format!("{path}.cancel"));
+                if normal.arguments.as_ref() != fault.arguments.as_ref()
+                    || normal.arguments.as_ref() != cancel.arguments.as_ref()
+                {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "await_tasks normal, fault, and cancel exits must forward the same exact live-value row",
+                    );
+                }
                 if function.coroutine().is_none() {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
@@ -3682,6 +3745,7 @@ impl<'a> Validator<'a> {
                         "await_tasks requires the function's MAY_SUSPEND effect",
                     );
                 }
+                self.require_may_fault_effect(function, &path, "await_tasks child-fault exit");
             }
             TerminatorKind::CheckedIntNegate {
                 value,
@@ -3878,6 +3942,15 @@ impl<'a> Validator<'a> {
             }
             TerminatorKind::ResumeFault => {
                 self.require_may_fault_effect(function, &path, "resume_fault");
+            }
+            TerminatorKind::TaskCancelled => {
+                if function.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "task.cancelled is only valid in a checked coroutine",
+                    );
+                }
             }
         }
     }
@@ -4281,13 +4354,15 @@ impl<'a> Validator<'a> {
         }
         let path = format!("{base}.block[{block_index}].terminator");
         match terminator.kind() {
-            TerminatorKind::Return(_) | TerminatorKind::Fault { .. }
+            TerminatorKind::Return(_)
+            | TerminatorKind::Fault { .. }
+            | TerminatorKind::TaskCancelled
                 if state == FaultStateSet::ACTIVE =>
             {
                 self.error(
                     ValidationCode::FaultState,
                     path,
-                    "an active source fault cannot return normally or originate a second terminal fault; propagate it with resume_fault",
+                    "an active source fault cannot return normally, cancel, or originate a second terminal fault; propagate it with resume_fault",
                 );
             }
             TerminatorKind::ResumeFault if state == FaultStateSet::INACTIVE => {
@@ -4295,6 +4370,101 @@ impl<'a> Validator<'a> {
                     ValidationCode::FaultState,
                     path,
                     "resume_fault requires an active source fault from an unwind edge",
+                );
+            }
+            TerminatorKind::AwaitTasks { .. } if state == FaultStateSet::ACTIVE => {
+                self.error(
+                    ValidationCode::FaultState,
+                    path,
+                    "source-fault cleanup cannot suspend again; finish with resume_fault",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps cancellation as an explicit coroutine-CFG obligation. A backend
+    /// may dispatch a requested cancellation directly to an `await_tasks`
+    /// cancel target, so that path cannot merge back into ordinary execution,
+    /// suspend again, or manufacture `task.cancelled` from a normal path.
+    fn validate_block_cancellation_state(
+        &mut self,
+        function: &Function,
+        block: &crate::Block,
+        terminator: &Terminator,
+        state: CancellationStateSet,
+        block_index: usize,
+        base: &str,
+    ) {
+        if state == CancellationStateSet::NONE {
+            return;
+        }
+        if state.contains(CancellationStateSet::ACTIVE) {
+            for instruction_id in block.instructions() {
+                let Some(instruction) = function.instruction(*instruction_id) else {
+                    continue;
+                };
+                let operation = match instruction.kind() {
+                    InstructionKind::TaskCreate { .. } => Some("create a Task"),
+                    InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
+                    InstructionKind::DirectCall { callee, .. }
+                        if self
+                            .exact_effect(*callee)
+                            .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+                    {
+                        Some("call an executor-dependent function")
+                    }
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!(
+                            "{base}.block[{block_index}].instruction[{}]",
+                            instruction_id.raw()
+                        ),
+                        format!(
+                            "cancellation cleanup cannot {operation}; it must remain scheduler-topology neutral"
+                        ),
+                    );
+                }
+            }
+        }
+        let path = format!("{base}.block[{block_index}].terminator");
+        match terminator.kind() {
+            TerminatorKind::TaskCancelled if state.contains(CancellationStateSet::INACTIVE) => {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    path,
+                    "task.cancelled requires an active cancellation from an await_tasks cancel edge",
+                );
+            }
+            TerminatorKind::Return(_) if state.contains(CancellationStateSet::ACTIVE) => {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    path,
+                    "an active coroutine cancellation cannot return normally; finish cleanup with task.cancelled",
+                );
+            }
+            TerminatorKind::TaskSleep { .. } | TerminatorKind::AwaitTasks { .. }
+                if state.contains(CancellationStateSet::ACTIVE) =>
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    path,
+                    "cancellation cleanup cannot create or await a Task; it must remain scheduler-topology neutral",
+                );
+            }
+            TerminatorKind::Invoke { callee, .. }
+                if state.contains(CancellationStateSet::ACTIVE)
+                    && self
+                        .exact_effect(*callee)
+                        .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    path,
+                    "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
                 );
             }
             _ => {}
@@ -5073,7 +5243,9 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                     }
                 }
                 TerminatorKind::AwaitTasks { .. } => {
-                    effects[caller] = effects[caller].union(Effects::MAY_SUSPEND);
+                    effects[caller] = effects[caller]
+                        .union(Effects::MAY_FAULT)
+                        .union(Effects::MAY_SUSPEND);
                 }
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
@@ -5084,6 +5256,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 | TerminatorKind::SumSwitch { .. }
                 | TerminatorKind::DynSwitch { .. }
                 | TerminatorKind::Return(_)
+                | TerminatorKind::TaskCancelled
                 // Propagation cannot seed the least effect fixed point.
                 | TerminatorKind::ResumeFault => {}
             }
@@ -5193,6 +5366,98 @@ fn compute_fault_states(entry: usize, edges: &[Vec<FaultEdge>]) -> Vec<FaultStat
                 continue;
             };
             if target_state.insert(incoming) {
+                pending.push_back(edge.target);
+            }
+        }
+    }
+    states
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CancellationEdge {
+    target: usize,
+    activates_cancellation: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CancellationStateSet(u8);
+
+impl CancellationStateSet {
+    const NONE: Self = Self(0);
+    const INACTIVE: Self = Self(1);
+    const ACTIVE: Self = Self(2);
+    const BOTH: Self = Self(3);
+
+    const fn contains(self, state: Self) -> bool {
+        self.0 & state.0 == state.0
+    }
+
+    fn insert(&mut self, state: Self) -> bool {
+        let previous = self.0;
+        self.0 |= state.0;
+        self.0 != previous
+    }
+}
+
+fn compute_cancellation_states(function: &Function) -> Vec<CancellationStateSet> {
+    let mut edges = vec![Vec::new(); function.blocks.len()];
+    for (source, block) in function.blocks.iter().enumerate() {
+        let Some(terminator) = block.terminator.as_ref() else {
+            continue;
+        };
+        match terminator.kind() {
+            TerminatorKind::AwaitTasks {
+                normal,
+                fault,
+                cancel,
+                ..
+            } => {
+                for (target, activates_cancellation) in [
+                    (normal.block, false),
+                    (fault.block, false),
+                    (cancel.block, true),
+                ] {
+                    if target.owner() == function.id && target.index() < function.blocks.len() {
+                        edges[source].push(CancellationEdge {
+                            target: target.index(),
+                            activates_cancellation,
+                        });
+                    }
+                }
+            }
+            _ => {
+                for edge in terminator.control_flow_edges() {
+                    if edge.block.owner() == function.id
+                        && edge.block.index() < function.blocks.len()
+                    {
+                        edges[source].push(CancellationEdge {
+                            target: edge.block.index(),
+                            activates_cancellation: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut states = vec![CancellationStateSet::NONE; function.blocks.len()];
+    let Some(entry) = function
+        .entry
+        .filter(|entry| entry.owner() == function.id && entry.index() < function.blocks.len())
+    else {
+        return states;
+    };
+    states[entry.index()] = CancellationStateSet::INACTIVE;
+    let mut pending = VecDeque::from([entry.index()]);
+    while let Some(source) = pending.pop_front() {
+        let source_state = states[source];
+        for edge in &edges[source] {
+            let incoming = if edge.activates_cancellation {
+                CancellationStateSet::ACTIVE
+            } else {
+                source_state
+            };
+            if states[edge.target].insert(incoming) {
                 pending.push_back(edge.target);
             }
         }
@@ -5671,16 +5936,24 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
         ],
-        TerminatorKind::AwaitTasks { normal, .. } => {
-            vec![(normal.block, &normal.arguments)]
-        }
+        TerminatorKind::AwaitTasks {
+            normal,
+            fault,
+            cancel,
+            ..
+        } => vec![
+            (normal.block, normal.arguments.as_ref()),
+            (fault.block, fault.arguments.as_ref()),
+            (cancel.block, cancel.arguments.as_ref()),
+        ],
         TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, &success.arguments),
             (fault.block, &fault.arguments),
         ],
-        TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
-            Vec::new()
-        }
+        TerminatorKind::Return(_)
+        | TerminatorKind::Fault { .. }
+        | TerminatorKind::ResumeFault
+        | TerminatorKind::TaskCancelled => Vec::new(),
     }
 }
 

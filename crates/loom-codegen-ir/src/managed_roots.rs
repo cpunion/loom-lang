@@ -484,10 +484,16 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
         TerminatorKind::Assert { success, fault, .. } => {
             vec![success.block, fault.block]
         }
-        TerminatorKind::AwaitTasks { normal, .. } => vec![normal.block],
-        TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
-            Vec::new()
-        }
+        TerminatorKind::AwaitTasks {
+            normal,
+            fault,
+            cancel,
+            ..
+        } => vec![normal.block, fault.block, cancel.block],
+        TerminatorKind::Return(_)
+        | TerminatorKind::Fault { .. }
+        | TerminatorKind::ResumeFault
+        | TerminatorKind::TaskCancelled => Vec::new(),
     }
 }
 
@@ -509,9 +515,10 @@ fn add_terminator_local_uses(
     managed: &[bool],
 ) {
     let values = match terminator.kind() {
-        TerminatorKind::Jump(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
-            Vec::new()
-        }
+        TerminatorKind::Jump(_)
+        | TerminatorKind::Fault { .. }
+        | TerminatorKind::ResumeFault
+        | TerminatorKind::TaskCancelled => Vec::new(),
         TerminatorKind::Branch { condition, .. } | TerminatorKind::Assert { condition, .. } => {
             vec![*condition]
         }
@@ -567,16 +574,24 @@ fn edge_live_values(
             (normal.block, normal.arguments.as_ref()),
             (unwind.block, unwind.arguments.as_ref()),
         ],
-        TerminatorKind::AwaitTasks { normal, .. } => {
-            vec![(normal.block, normal.arguments.as_ref())]
-        }
+        TerminatorKind::AwaitTasks {
+            normal,
+            fault,
+            cancel,
+            ..
+        } => vec![
+            (normal.block, normal.arguments.as_ref()),
+            (fault.block, fault.arguments.as_ref()),
+            (cancel.block, cancel.arguments.as_ref()),
+        ],
         TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, success.arguments.as_ref()),
             (fault.block, fault.arguments.as_ref()),
         ],
-        TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
-            Vec::new()
-        }
+        TerminatorKind::Return(_)
+        | TerminatorKind::Fault { .. }
+        | TerminatorKind::ResumeFault
+        | TerminatorKind::TaskCancelled => Vec::new(),
     };
     for (destination, arguments) in edges {
         add_edge_live(

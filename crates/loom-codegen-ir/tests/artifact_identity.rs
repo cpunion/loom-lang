@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_static_task_all() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 27);
+fn identity_schema_is_pinned_after_async_cleanup_edges() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 28);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,8 +559,8 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 27,
-        "typed heterogeneous Task.all control flow is an artifact identity input"
+        ARTIFACT_IDENTITY_SCHEMA, 28,
+        "typed async cleanup control flow is an artifact identity input"
     );
 }
 

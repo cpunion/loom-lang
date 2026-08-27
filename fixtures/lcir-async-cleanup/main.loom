@@ -1,0 +1,96 @@
+module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        assert self.value == 7
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+async fn delayed(value Int) Int {
+    Task.sleep(1).await
+    value
+}
+
+async fn normalCleanup() Int {
+    var order = 0
+    {
+        defer {
+            order = order * 10 + 1
+        }
+        defer {
+            order = order * 10 + 2
+        }
+        let value = delayed(7).await
+        assert value == 7
+        Unit
+    }
+    order
+}
+
+async fn scopedCleanup() Unit {
+    {
+        scoped resource = Resource { value = 7 }
+        Task.sleep(1).await
+        assert resource.value == 7
+        Unit
+    }
+}
+
+async fn failsAfterSuspension() Unit {
+    Task.sleep(0).await
+    assert false
+    Unit
+}
+
+async fn waitsWithCleanup(marker Int) Unit {
+    defer {
+        assert marker == 2
+        Unit
+    }
+    Task.sleep(100).await
+}
+
+pub async fn faultCleanupMain() Unit {
+    let marker = 1
+    defer {
+        assert marker == 2
+        Unit
+    }
+    failsAfterSuspension().await
+}
+
+pub async fn cancellationMain() Unit {
+    let failed, waited = Task.all(failsAfterSuspension(), waitsWithCleanup(1)).await
+    discard failed
+    discard waited
+    Unit
+}
+
+async fn exercise() Unit {
+    let order = normalCleanup().await
+    assert order == 21
+    scopedCleanup().await
+}
+
+pub async fn main() Unit {
+    exercise().await
+}
+
+test async fn cleanupAcrossSuspension() Unit {
+    exercise().await
+}
