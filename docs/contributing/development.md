@@ -65,6 +65,11 @@ by Loom's supported hosts and cross-object tests. This prevents an otherwise
 valid host compiler from acquiring unresolved symbols for omitted cross
 targets.
 
+The statically linked LLVM 19 MSVC distribution is not asked to discover host
+CPU strings. Windows host codegen uses the generic x86-64 baseline with no
+extra features, which is also the required runtime-archive policy. Linux and
+macOS retain native host tuning.
+
 ## First build
 
 ```sh
