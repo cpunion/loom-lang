@@ -7060,8 +7060,8 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
     );
     assert!(
         exercise.effects().contains(Effects::NEEDS_EXECUTOR)
-            && exercise.effects().contains(Effects::MAY_COLLECT),
-        "typed Task.all did not preserve executor/GC effects: {dump}"
+            && !exercise.effects().contains(Effects::MAY_COLLECT),
+        "typed Task creation must require its executor without inheriting child collection: {dump}"
     );
 
     let lcir = emit_and_run_lcir_with_options(
