@@ -3065,58 +3065,207 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
 }
 
 #[test]
-fn competing_reachable_dynamic_witnesses_are_structured_unsupported() {
-    let source = r"
-module lcir_dyn_competing
-
-dyn concept Metric {
-    method read(self) Int
-}
-
-record First { value Int }
-record Second { value Int }
-
-impl Metric for First {
-    method read(self) Int { self.value }
-}
-
-impl Metric for Second {
-    method read(self) Int { self.value }
-}
-
-fn choose(first Bool) dyn Metric {
-    if first {
-        First { value = 1 }
-    } else {
-        Second { value = 2 }
-    }
-}
-
-pub fn main() Unit {
-    let metric = choose(true)
-    let measured = metric.read()
-    assert measured == 1
-}
-";
+#[expect(
+    clippy::too_many_lines,
+    reason = "one finite-dyn gate keeps checked representation, DCE, moving-GC value semantics, differential execution, and cross-target objects together"
+)]
+fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch() {
+    let source = include_str!("../../../fixtures/lcir-dyn-finite/main.loom");
     let program = compile_source(source);
-    let outcome = lower_typed_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        host_layout(),
-    )
-    .expect("classify competing dynamic witnesses");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("competing dynamic witnesses unexpectedly produced typed LCIR");
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
-        "{report:?}"
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
     );
+    let prepared =
+        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::LcirOnly)
+            .expect("prepare finite dynamic tests");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let representations = artifact.representations();
+    assert_eq!(representations.dynamics().len(), 2);
+    for dynamic in representations.dynamics() {
+        assert_eq!(dynamic.candidates().len(), 2);
+        assert_eq!(
+            representations
+                .value_type(dynamic.view())
+                .and_then(|ty| representations.repr(ty.repr())),
+            Some(&Repr::ManagedPointer)
+        );
+    }
+    let dynamic_list = representations
+        .registrations()
+        .iter()
+        .find(|registration| {
+            matches!(
+                registration.semantic(),
+                Type::List(element) if matches!(element.as_ref(), Type::View { .. })
+            )
+        })
+        .expect("List[dyn Metric] representation");
+    assert_eq!(
+        representations
+            .value_type(dynamic_list.value_type())
+            .and_then(|ty| representations.repr(ty.repr())),
+        Some(&Repr::ManagedPointer)
+    );
+
+    let dump = dump_program(artifact.program());
+    for required in [
+        "dynamic d",
+        "dyn.construct",
+        "dyn.switch",
+        "list.construct",
+        "list.get",
+        "inout=[0]",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    for dead in ["lcir_dyn_finite.cold", "7001", "7002"] {
+        assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-finite-dyn");
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-finite-dyn");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout)
+            .contains("passed lcir_dyn_finite.finiteDynamicWitnesses"),
+        "{:?}",
+        native.output
+    );
+    let descriptors = native
+        .ir
+        .lines()
+        .filter(|line| line.starts_with("@loom.lcir.dyn.descriptor."))
+        .collect::<Vec<_>>();
+    assert_eq!(descriptors.len(), 4, "{}", native.ir);
+    assert!(
+        descriptors
+            .iter()
+            .any(|line| line.contains("i64 1, ptr @loom.lcir.dyn.pointer_offsets.")),
+        "Counter candidates need one exact managed Text offset:\n{}",
+        native.ir
+    );
+    assert!(
+        descriptors
+            .iter()
+            .any(|line| line.contains("i64 0, ptr null")),
+        "Offset candidates must be pointer-free:\n{}",
+        native.ir
+    );
+    for required in [
+        "loom_gc_typed_alloc_v1",
+        "loom.lcir.dyn.pointer_offsets.",
+        "switch i32",
+        "managed.root.reload",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "finite dyn IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "ValueNode",
+        "loom_executor_",
+        "loom_witness_",
+        "WitnessInstance",
+        "dyn.registry",
+        "lcir_dyn_finite.cold",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "finite dyn IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_indirect_calls(&native.ir);
+    let mutable_dispatch = native
+        .ir
+        .split("\ndefine ")
+        .find(|body| {
+            body.contains("dyn.switch.tag")
+                && body.contains("dyn.construct.output")
+                && body.contains("ret { i32, i64, ptr }")
+        })
+        .expect("mutable finite-dyn dispatch function");
+    assert_eq!(
+        mutable_dispatch
+            .matches("call i32 @loom_gc_typed_alloc_v1")
+            .count(),
+        4,
+        "both candidates need normal and fault-edge fresh boxes:\n{mutable_dispatch}"
+    );
+    assert!(
+        mutable_dispatch.contains("insertvalue { i32, i64, ptr } { i32 0")
+            && mutable_dispatch.contains("insertvalue { i32, i64, ptr } { i32 1"),
+        "normal and fault exits must both return owner writeback:\n{mutable_dispatch}"
+    );
+    assert!(
+        !mutable_dispatch.contains("store ptr %0, ptr %managed.root."),
+        "the superseded dyn box must not remain a GC root while allocating its replacement:\n{mutable_dispatch}"
+    );
+    assert!(
+        mutable_dispatch.contains("store ptr %managed.root.product.extract"),
+        "only managed leaves of the updated concrete payload should be rooted:\n{mutable_dispatch}"
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create finite-dyn target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "finite-dyn.obj"
+        } else {
+            "finite-dyn.o"
+        });
+        let ir_path = directory.path().join("finite-dyn.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                emit_ir: Some(ir_path.clone()),
+                target_triple: Some(target.to_owned()),
+                optimization: OptimizationProfile::Development,
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit finite-dyn object for {target}: {error}"));
+        let bytes = std::fs::read(&object).expect("read finite-dyn object");
+        if target.contains("windows") {
+            assert_eq!(bytes.get(..2), Some([0x64, 0x86].as_slice()));
+        } else {
+            assert_eq!(bytes.get(..4), Some([0x7f, b'E', b'L', b'F'].as_slice()));
+        }
+        let ir = std::fs::read_to_string(ir_path).expect("read finite-dyn target IR");
+        assert!(ir.contains("loom.lcir.dyn.descriptor."), "{target}: {ir}");
+        assert!(ir.contains("switch i32"), "{target}: {ir}");
+        assert!(!ir.contains("loom_witness_"), "{target}: {ir}");
+        assert_no_indirect_calls(&ir);
+    }
+
+    match lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Tests,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit finite dyn")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| matches!(
+                item.feature(),
+                UnsupportedFeature::ExpressionType | UnsupportedFeature::SignatureType
+            )),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit finite dyn must fail closed"),
+    }
 }
 
 #[test]

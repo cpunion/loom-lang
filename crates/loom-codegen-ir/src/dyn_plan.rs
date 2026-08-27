@@ -78,9 +78,11 @@ impl DevirtualizedView {
 /// Artifact-wide checked representation choices for the first `dyn` LCIR
 /// slice.
 ///
-/// A view is admitted only when the reachable witness set contains one exact,
-/// non-generic conformance whose associated bindings match the view. Missing,
-/// open, or competing proofs remain absent and therefore select structured
+/// A view is admitted only when the artifact-closed reachable witness set
+/// contains exact, non-generic conformances whose associated bindings match
+/// the view. One candidate is erased completely; two or more candidates form
+/// a checked finite dynamic catalog. Missing, open, generic, or
+/// prerequisite-dependent proof sets remain absent and select structured
 /// unsupported classification before LCIR construction.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DynConceptPlan {

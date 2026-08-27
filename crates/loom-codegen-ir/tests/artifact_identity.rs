@@ -27,7 +27,7 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_coroutines() {
+fn identity_schema_is_pinned_after_typed_coroutines_and_closed_dynamic_catalogs() {
     assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 21);
 }
 
@@ -560,7 +560,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
         ARTIFACT_IDENTITY_SCHEMA, 21,
-        "typed coroutine plans advance the identity schema after scalar builtins"
+        "typed coroutine plans and closed dynamic catalogs are artifact identity inputs"
     );
 }
 

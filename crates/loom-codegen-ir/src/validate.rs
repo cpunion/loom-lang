@@ -1441,11 +1441,15 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             };
-            if self.product_fields(ty).is_none() {
+            if self.product_fields(ty).is_none()
+                && self.program.representations.dynamic(ty).is_none()
+            {
                 self.error(
                     ValidationCode::InOutShape,
                     format!("{base}.signature.inout[{writeback_index}]"),
-                    format!("inout parameter {parameter} must use a direct product value type"),
+                    format!(
+                        "inout parameter {parameter} must use a direct product or closed dynamic value type"
+                    ),
                 );
             }
         }

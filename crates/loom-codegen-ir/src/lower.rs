@@ -686,7 +686,10 @@ pub fn lower_typed_artifact(
     let checked = builder.finish_checked().map_err(|errors| {
         LoweringError::defect(
             LoweringDefectCode::GeneratedProgram,
-            format!("compiler-generated LCIR failed validation: {errors}"),
+            format!(
+                "compiler-generated LCIR failed validation: {errors}: {:?}",
+                errors.as_slice()
+            ),
         )
     })?;
     let lowered_roots = root_keys
@@ -2782,33 +2785,38 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                 PlaceSite::expression(expression),
                                 &format!("{path}.arguments[{index}].place"),
                             );
-                            let allowed =
-                                if matches!(target, CallTarget::Builtin(mir::Builtin::ListAdd)) {
-                                    index == 0
-                                        && place_type.as_ref().is_some_and(|ty| {
-                                            matches!(ty, Type::List(_))
-                                                && self.supported_value_type(ty)
-                                        })
-                                } else {
-                                    let physical_place = place_type
-                                        .as_ref()
-                                        .and_then(|ty| self.dyn_concepts.physical_type(ty));
-                                    index == 0
-                                        && mutable_receiver.as_ref() == physical_place.as_ref()
-                                        && place_type.as_ref().is_some_and(|ty| {
-                                            let physical = self
-                                                .dyn_concepts
-                                                .physical_type(ty)
-                                                .unwrap_or_else(|| ty.clone());
-                                            self.supported_record_type(&physical)
-                                                || (is_invariant_record_type(
-                                                    self.program,
-                                                    &physical,
-                                                ) && self
-                                                    .aggregates
-                                                    .supports_value_type(&physical))
-                                        })
-                                };
+                            let allowed = if matches!(
+                                target,
+                                CallTarget::Builtin(mir::Builtin::ListAdd)
+                            ) {
+                                index == 0
+                                    && place_type.as_ref().is_some_and(|ty| {
+                                        matches!(ty, Type::List(_)) && self.supported_value_type(ty)
+                                    })
+                            } else if matches!(target, CallTarget::Dynamic { requirement }
+                                    if self.program.requirement(*requirement).is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable)))
+                            {
+                                index == 0
+                                    && place_type.as_ref().is_some_and(|ty| {
+                                        self.dyn_concepts.finite(ty).is_some()
+                                            && self.supported_value_type(ty)
+                                    })
+                            } else {
+                                let physical_place = place_type
+                                    .as_ref()
+                                    .and_then(|ty| self.dyn_concepts.physical_type(ty));
+                                index == 0
+                                    && mutable_receiver.as_ref() == physical_place.as_ref()
+                                    && place_type.as_ref().is_some_and(|ty| {
+                                        let physical = self
+                                            .dyn_concepts
+                                            .physical_type(ty)
+                                            .unwrap_or_else(|| ty.clone());
+                                        self.supported_record_type(&physical)
+                                            || (is_invariant_record_type(self.program, &physical)
+                                                && self.aggregates.supports_value_type(&physical))
+                                    })
+                            };
                             if !allowed {
                                 self.expression_item(
                                     UnsupportedFeature::InOutArgument,
@@ -3199,12 +3207,18 @@ fn summarize_effects(
             .requirement(*requirement)
             .is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable))
             && arguments.first().is_some_and(|receiver| {
-                let CallArgument::Value(receiver) = receiver else {
-                    return false;
+                let receiver_ty = match receiver {
+                    CallArgument::Value(receiver) => Some(&receiver.ty),
+                    CallArgument::InOut(place) if place.projection.is_empty() => function
+                        .params
+                        .iter()
+                        .chain(&function.locals)
+                        .find(|local| local.id == place.local)
+                        .map(|local| &local.ty),
+                    CallArgument::InOut(_) => None,
                 };
-                substitution
-                    .instantiate_type(&receiver.ty)
-                    .ok()
+                receiver_ty
+                    .and_then(|receiver_ty| substitution.instantiate_type(receiver_ty).ok())
                     .is_some_and(|ty| dyn_concepts.finite(&ty).is_some())
             })
     }) {
@@ -9688,18 +9702,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let receiver = arguments
             .first()
             .ok_or_else(|| self.unsupported_reached("mutable dynamic call without receiver"))?;
-        let CallArgument::Value(receiver) = receiver else {
-            return Err(self.unsupported_reached("mutable dynamic inout argument"));
-        };
-        let ExprKind::ReborrowView {
-            owner,
-            mutable: true,
-            ..
-        } = &receiver.kind
-        else {
-            return Err(self.unsupported_reached(
-                "mutable finite dynamic receiver without first-class owner storage",
-            ));
+        let owner = match receiver {
+            CallArgument::InOut(owner) => owner,
+            CallArgument::Value(receiver) => {
+                let ExprKind::ReborrowView {
+                    owner,
+                    mutable: true,
+                    ..
+                } = &receiver.kind
+                else {
+                    return Err(self.unsupported_reached(
+                        "mutable finite dynamic receiver without first-class owner storage",
+                    ));
+                };
+                owner
+            }
         };
         let owner = self.place_plan(owner, PlaceUse::InOut)?;
         let owner_semantic = self
