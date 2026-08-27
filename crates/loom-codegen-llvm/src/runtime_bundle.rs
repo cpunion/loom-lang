@@ -29,6 +29,8 @@ const MAX_LINKER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_LINK_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_BUNDLE_ENTRIES: usize = 32;
 const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
+const WINDOWS_LINKER_INPUT_SHARE_MODE: u32 = 0x0000_0001;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -288,6 +290,22 @@ pub struct RuntimeLinker {
     program_sha256: String,
 }
 
+/// A private runtime archive whose writable construction handle has been
+/// closed before an external linker sees its path. The read handle is retained
+/// to keep the snapshot identity stable through the link.
+struct RuntimeArchiveSnapshot {
+    // Fields drop in declaration order: close the read handle before TempPath
+    // removes the file, including on Windows where deletion is share-checked.
+    file: File,
+    path: tempfile::TempPath,
+}
+
+impl RuntimeArchiveSnapshot {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 struct RemoveFileOnDrop(Option<PathBuf>);
 
 impl RemoveFileOnDrop {
@@ -539,7 +557,7 @@ fn publish_staged_pdb(
 fn snapshot_runtime_archive(
     bundle: &RuntimeBundle,
     parent: &Path,
-) -> Result<tempfile::NamedTempFile, CodegenError> {
+) -> Result<RuntimeArchiveSnapshot, CodegenError> {
     let suffix = bundle
         .archive()
         .extension()
@@ -573,15 +591,101 @@ fn snapshot_runtime_archive(
         .as_file()
         .sync_all()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
-    Ok(snapshot)
+    freeze_runtime_snapshot(snapshot)
+}
+
+fn freeze_runtime_snapshot(
+    snapshot: tempfile::NamedTempFile,
+) -> Result<RuntimeArchiveSnapshot, CodegenError> {
+    let original_identity = opened_file_identity(
+        snapshot.as_file(),
+        "ArtifactWriteFailed",
+        "runtime archive snapshot",
+    )?;
+    let reader = File::open(snapshot.path()).map_err(|error| {
+        CodegenError::new(
+            "ArtifactWriteFailed",
+            format!("cannot reopen runtime archive snapshot for reading: {error}"),
+        )
+    })?;
+    let reader_identity = opened_file_identity(
+        &reader,
+        "ArtifactWriteFailed",
+        "reopened runtime archive snapshot",
+    )?;
+    if original_identity != reader_identity {
+        return Err(CodegenError::new(
+            "ArtifactWriteFailed",
+            "runtime archive snapshot changed while it was being frozen",
+        ));
+    }
+
+    let (writer, path) = snapshot.into_parts();
+    drop(writer);
+
+    #[cfg(windows)]
+    let frozen = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        // Link.exe opens input libraries for reading while denying writers.
+        // Retaining the construction handle would therefore make the linker's
+        // CreateFile request conflict even though Rust initially shared it.
+        // Keep only read access and deny write/delete replacement during link.
+        let frozen = File::options()
+            .read(true)
+            .share_mode(WINDOWS_LINKER_INPUT_SHARE_MODE)
+            .open(&path)
+            .map_err(|error| {
+                CodegenError::new(
+                    "ArtifactWriteFailed",
+                    format!("cannot freeze runtime archive snapshot for linking: {error}"),
+                )
+            })?;
+        drop(reader);
+        frozen
+    };
+
+    #[cfg(not(windows))]
+    let frozen = reader;
+
+    let frozen_identity = opened_file_identity(
+        &frozen,
+        "ArtifactWriteFailed",
+        "frozen runtime archive snapshot",
+    )?;
+    if original_identity != frozen_identity {
+        return Err(CodegenError::new(
+            "ArtifactWriteFailed",
+            "runtime archive snapshot changed while its construction handle was closed",
+        ));
+    }
+
+    Ok(RuntimeArchiveSnapshot { file: frozen, path })
 }
 
 fn verify_runtime_snapshot(
-    snapshot: &tempfile::NamedTempFile,
+    snapshot: &RuntimeArchiveSnapshot,
     expected_sha256: &str,
 ) -> Result<(), CodegenError> {
+    let path_identity = Handle::from_path(snapshot.path()).map_err(|error| {
+        CodegenError::new(
+            "RuntimeBundleChecksumMismatch",
+            format!("cannot re-identify runtime archive snapshot: {error}"),
+        )
+    })?;
+    let file_identity = opened_file_identity(
+        &snapshot.file,
+        "RuntimeBundleChecksumMismatch",
+        "runtime archive snapshot for verification",
+    )?;
+    if path_identity != file_identity {
+        return Err(CodegenError::new(
+            "RuntimeBundleChecksumMismatch",
+            "private runtime archive snapshot path changed during linking",
+        ));
+    }
     let actual = hash_bounded_file_handle(
-        snapshot.as_file(),
+        &snapshot.file,
         MAX_ARCHIVE_BYTES,
         "runtime archive snapshot",
     )?;
@@ -592,6 +696,16 @@ fn verify_runtime_snapshot(
         ));
     }
     Ok(())
+}
+
+fn opened_file_identity(
+    file: &File,
+    error_code: &'static str,
+    label: &str,
+) -> Result<Handle, CodegenError> {
+    file.try_clone()
+        .and_then(Handle::from_file)
+        .map_err(|error| CodegenError::new(error_code, format!("cannot identify {label}: {error}")))
 }
 
 fn verify_linker(linker: &RuntimeLinker) -> Result<(), CodegenError> {
@@ -1194,6 +1308,51 @@ fn valid_digest(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_snapshot_is_read_shared_but_write_frozen_for_msvc_linking() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let archive = directory.path().join("input-runtime.lib");
+        let bundle_path = directory.path().join("runtime");
+        fs::write(&archive, b"Windows runtime snapshot").expect("write runtime archive");
+        pack_native_runtime_bundle(&archive, &bundle_path).expect("pack runtime bundle");
+        let target = native_target_identity().expect("host target identity");
+        let bundle = RuntimeBundle::load(&bundle_path, &target).expect("load runtime bundle");
+
+        let snapshot = snapshot_runtime_archive(&bundle, directory.path())
+            .expect("freeze runtime archive snapshot");
+        let linker_reader = File::options()
+            .read(true)
+            .share_mode(WINDOWS_LINKER_INPUT_SHARE_MODE)
+            .open(snapshot.path())
+            .expect("MSVC-compatible reader must coexist with the frozen snapshot");
+        assert_eq!(
+            hash_bounded_file_handle(
+                &linker_reader,
+                MAX_ARCHIVE_BYTES,
+                "linker-visible runtime archive",
+            )
+            .expect("hash linker-visible archive"),
+            bundle.archive_sha256()
+        );
+
+        let write_error = File::options()
+            .write(true)
+            .open(snapshot.path())
+            .expect_err("the frozen snapshot must reject a writer during linking");
+        assert_eq!(
+            write_error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION),
+            "unexpected Windows write-open error: {write_error}"
+        );
+        verify_runtime_snapshot(&snapshot, bundle.archive_sha256())
+            .expect("snapshot remains identical after linker-style reading");
+    }
 
     #[test]
     fn failed_linker_detail_preserves_diagnostics_from_both_streams() {

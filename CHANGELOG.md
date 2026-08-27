@@ -60,6 +60,10 @@ artifact, or runtime compatibility.
   the private static `libxml2s.lib` rebuild, keeps LLVM allocation and target
   APIs behind one runtime boundary, and packages the required DLL beside the
   release compiler.
+- Windows native linking now closes the writable construction handle for its
+  private runtime-archive snapshot before invoking Clang/MSVC. A retained
+  read-only, read-shared handle keeps the snapshot immutable and identifiable
+  without preventing `link.exe` from opening the `.lib` input.
 - Native `build`, `run`, `test`, and `debug` no longer obtain a runtime archive
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.

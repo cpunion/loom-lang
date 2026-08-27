@@ -322,6 +322,13 @@ explicit linker. Object emission is independent of this link input. Final
 native executables are not persistently cached because the system linker, SDK,
 and debug-companion environment are not yet hermetic.
 
+Linking copies the validated runtime archive to one adjacent private snapshot,
+synchronizes it, and closes its writable construction handle before starting an
+external linker. The compiler retains a read-only handle and rechecks both file
+identity and SHA-256 after linking. On Windows that handle permits concurrent
+readers but denies writers and deletion, matching MSVC input-library sharing
+without reopening the snapshot to replacement.
+
 ## Debug information
 
 The production checked-MIR backend emits source line information from stable
