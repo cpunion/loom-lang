@@ -44,6 +44,15 @@ codegen, the runtime, and native fixture closures. Until that job produces a
 real Windows runner result, this is configuration rather than verified platform
 or release evidence.
 
+The pinned LLVM 19.1.7 Windows development archive advertises
+`libxml2s.lib` in its static system-library closure but does not contain that
+archive. The Windows job therefore builds libxml2 2.9.12 from its
+SHA-256-pinned source using the options in LLVM's 19.1.7 release script and
+places the resulting static library beside LLVM's component libraries. Loom's
+object-build fingerprint includes both `llvm-config --system-libs` and every
+reported dependency supplied by the LLVM prefix, so changing this companion
+library invalidates native object-cache entries.
+
 ## First build
 
 ```sh

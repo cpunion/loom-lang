@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -143,6 +144,19 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
     );
     identity.field("llvm-libfiles", normalized_libfiles.as_bytes());
 
+    let system_libraries = llvm_config_args_allow_empty(&config, &["--system-libs", link_mode]);
+    let system_libraries =
+        String::from_utf8(system_libraries).expect("llvm-config --system-libs must be UTF-8");
+    let normalized_system_libraries =
+        system_libraries.replace(reported_libdir_text, "$LLVM_LIBDIR");
+    identity.field(
+        "llvm-system-libraries",
+        normalized_system_libraries.as_bytes(),
+    );
+    for library in packaged_system_libraries(&system_libraries, &declared_libdir) {
+        add_external_file(identity, "llvm-system-library", &library);
+    }
+
     let names = String::from_utf8(names_output).expect("llvm-config --libnames must be UTF-8");
     let mut names = names.split_ascii_whitespace().collect::<Vec<_>>();
     names.sort_unstable();
@@ -189,7 +203,23 @@ fn llvm_config_args(config: &Path, arguments: &[&str]) -> Vec<u8> {
     try_llvm_config(config, arguments).unwrap_or_else(|error| panic!("{error}"))
 }
 
+fn llvm_config_args_allow_empty(config: &Path, arguments: &[&str]) -> Vec<u8> {
+    try_run_llvm_config(config, arguments).unwrap_or_else(|error| panic!("{error}"))
+}
+
 fn try_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
+    let output = try_run_llvm_config(config, arguments)?;
+    if !output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        return Err(format!(
+            "{} {} returned empty output",
+            config.display(),
+            arguments.join(" ")
+        ));
+    }
+    Ok(output)
+}
+
+fn try_run_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new(config)
         .args(arguments)
         .output()
@@ -209,14 +239,41 @@ fn try_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String>
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    if !output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
-        return Err(format!(
-            "{} {} returned empty output",
-            config.display(),
-            arguments.join(" ")
-        ));
-    }
     Ok(output.stdout)
+}
+
+fn packaged_system_libraries(output: &str, libdir: &Path) -> Vec<PathBuf> {
+    let mut candidates = BTreeSet::new();
+    for argument in output.split_ascii_whitespace() {
+        let argument = argument.trim_matches('"');
+        let path = Path::new(argument);
+        if path.is_absolute() {
+            candidates.insert(path.to_path_buf());
+        } else if path.file_name().and_then(OsStr::to_str) == Some(argument) {
+            candidates.insert(libdir.join(argument));
+            if let Some(name) = argument.strip_prefix("-l").filter(|name| !name.is_empty()) {
+                for (prefix, suffix) in [
+                    ("lib", ".a"),
+                    ("lib", ".so"),
+                    ("lib", ".dylib"),
+                    ("", ".lib"),
+                ] {
+                    candidates.insert(libdir.join(format!("{prefix}{name}{suffix}")));
+                }
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .parent()
+                    .and_then(|parent| fs::canonicalize(parent).ok())
+                    .as_deref()
+                    == Some(libdir)
+        })
+        .collect()
 }
 
 fn add_external_file(identity: &mut BuildFingerprint, role: &str, path: &Path) -> PathBuf {
