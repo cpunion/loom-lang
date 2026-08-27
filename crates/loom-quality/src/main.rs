@@ -39,10 +39,6 @@ const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
-const CORE01_TEST_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
-    name: "core01-runtime-construction",
-    reason: "the negative tests intentionally exercise runtime-checked constrained-value and invariant construction outside current typed LCIR coverage",
-};
 const CORE02_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core02-dynamic-concepts",
     reason: "dyn concept values and dynamic dispatch are not yet represented in typed LCIR",
@@ -50,10 +46,6 @@ const CORE02_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::Lega
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
     reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
-};
-const C3_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
-    name: "c3-runtime-refinement",
-    reason: "the C3 graph still contains runtime-checked constrained-value construction outside current typed LCIR coverage",
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
@@ -72,7 +64,7 @@ const TASKS: &[TaskSpec] = &[
         source: "examples/core01/shop.loom",
         sha256: "f3c6b8cad23cf4113e7555ac29d2307d853af10eff4ee89482ef4c8617a77472",
         main_native_route: NativeRouteExpectation::Lcir,
-        test_native_route: CORE01_TEST_LEGACY_ROUTE,
+        test_native_route: NativeRouteExpectation::Lcir,
     },
     TaskSpec {
         name: "concept-polymorphism",
@@ -465,6 +457,7 @@ fn emit_routed_native(
 ) -> Result<NativeBuild, String> {
     let scenario = scenario.into();
     let has_debug_sources = !options.debug_sources.is_empty();
+    let diagnostic_options = options.clone();
     let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
         .map_err(|error| format!("{scenario} native preparation failed: {error}"))?;
     let actual = prepared.route_kind();
@@ -480,8 +473,16 @@ fn emit_routed_native(
         passed,
     });
     if !passed {
+        let detail = if matches!(expectation, NativeRouteExpectation::Lcir) {
+            match prepare_native_object(program, diagnostic_options, NativeRoutePolicy::LcirOnly) {
+                Ok(_) => "LcirOnly unexpectedly prepared after automatic legacy routing".into(),
+                Err(error) => error.to_string(),
+            }
+        } else {
+            "route did not match its reviewed expectation".to_owned()
+        };
         return Err(format!(
-            "{scenario} selected native route `{}`, expected `{}`",
+            "{scenario} selected native route `{}`, expected `{}`: {detail}",
             native_route_name(actual),
             native_route_name(expected),
         ));
@@ -992,7 +993,7 @@ fn run_c3_repository(
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.main",
-        C3_LEGACY_ROUTE,
+        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
@@ -1003,7 +1004,7 @@ fn run_c3_repository(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.tests",
-        C3_LEGACY_ROUTE,
+        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;

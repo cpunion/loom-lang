@@ -154,6 +154,101 @@ fn emit_automatic_executable(
 }
 
 #[test]
+fn runtime_constraint_errors_are_exact_typed_values_without_secret_disclosure() {
+    let source = r#"module runtime_constraint_values
+
+record Token {
+    secret Text
+
+    invariant self.secret == "allowed"
+}
+
+fn checked(secret Text) Result[Token, ConstraintError] {
+    Token { secret = secret }
+}
+
+pub fn main() Unit {
+    match checked("customer-token-do-not-disclose") {
+        Err(_) => Unit
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+"#;
+    let program = compile_source(source);
+    let checked = program
+        .functions
+        .iter()
+        .find(|function| function.name.rsplit('.').next() == Some("checked"))
+        .expect("checked function");
+    let token = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "Token")
+        .expect("Token type");
+    let loom_mir::TypeDefKind::Record {
+        invariant: Some(invariant),
+        ..
+    } = &token.kind
+    else {
+        panic!("Token invariant shape changed")
+    };
+    let runtime_secret = "runtime-secret-never-in-source-or-diagnostics";
+    let interpreted = Interpreter::new(&program)
+        .invoke(
+            checked.id,
+            vec![Value::Text {
+                value: runtime_secret.into(),
+            }],
+            Span::default(),
+        )
+        .expect("interpreter returns a rejected Result value");
+    let Value::Enum {
+        variant, payload, ..
+    } = interpreted
+    else {
+        panic!("runtime constraint did not return Result: {interpreted:?}")
+    };
+    assert_eq!(variant, loom_mir::VariantId(1));
+    let [Value::ConstraintError { value: error }] = payload.as_slice() else {
+        panic!("runtime constraint Err payload is not ConstraintError: {payload:?}")
+    };
+    assert_eq!(error.target_type, "Token");
+    assert_eq!(error.code, "InvariantViolation");
+    assert_eq!(error.predicate, "Token.invariant");
+    assert!(error.path.is_empty());
+    assert_eq!(error.value_summary, "Token");
+    assert!(!error.value_summary.contains(runtime_secret));
+    assert_eq!(error.contract_span, invariant.span);
+
+    let main = program.exports["main"];
+    assert_eq!(
+        Interpreter::new(&program)
+            .invoke(main, Vec::new(), Span::default())
+            .expect("interpreter validates structured ConstraintError"),
+        Value::Unit
+    );
+
+    let directory = tempfile::tempdir().expect("create runtime constraint output");
+    let executable = directory.path().join("runtime-constraint");
+    let ir = directory.path().join("runtime-constraint.ll");
+    let mut options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
+    options.emit_ir = Some(ir.clone());
+    assert_eq!(
+        emit_automatic_executable(&program, &executable, options),
+        NativeRouteKind::Lcir
+    );
+    let llvm = std::fs::read_to_string(ir).expect("read runtime constraint LLVM IR");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
+    let output = Command::new(executable)
+        .output()
+        .expect("run typed runtime constraint");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
 fn decoded_refinement_proof_rechecks_before_interpreter_or_typed_execution() {
     let source = r"module proof_provenance
 
