@@ -6570,13 +6570,21 @@ pub async fn postconditionMain() Unit {
                 .expect("runtime fault parent coroutine");
             let plan = parent.coroutine().expect("runtime fault coroutine plan");
             assert_eq!(plan.suspensions().len(), 2);
-            assert!(plan.suspensions()[0].live().iter().any(|ty| {
-                artifact
-                    .representations()
-                    .value_type(*ty)
-                    .and_then(|value| artifact.representations().repr(value.repr()))
-                    == Some(&Repr::TaskHandle)
-            }));
+            assert_eq!(
+                plan.suspensions()[0]
+                    .live()
+                    .iter()
+                    .filter(|ty| {
+                        artifact
+                            .representations()
+                            .value_type(**ty)
+                            .and_then(|value| artifact.representations().repr(value.repr()))
+                            == Some(&Repr::TaskHandle)
+                    })
+                    .count(),
+                1,
+                "the pending sibling Task must remain in the parent's first suspension row"
+            );
         }
         let lcir =
             emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-fallible-async-{entry}"));
@@ -6596,5 +6604,38 @@ pub async fn postconditionMain() Unit {
         );
         assert!(lcir.ir.contains("ret i32 2"), "{entry}: {}", lcir.ir);
         assert!(lcir.ir.contains("ret i32 3"), "{entry}: {}", lcir.ir);
+        if entry == "runtimeMain" {
+            let linger = artifact
+                .functions()
+                .iter()
+                .find(|function| function.name().ends_with("linger"))
+                .expect("sibling coroutine");
+            let descriptor_name =
+                format!("@loom.lcir.coroutine.descriptor.{} =", linger.id().raw());
+            let descriptor = lcir
+                .ir
+                .lines()
+                .find(|line| line.starts_with(&descriptor_name))
+                .expect("sibling coroutine descriptor");
+            assert!(
+                descriptor.contains("ptr @loom.lcir.coroutine.cancel"),
+                "pending sibling omitted its cancellation callback: {descriptor}"
+            );
+            let cancel_callback = lcir
+                .ir
+                .split("\ndefine ")
+                .find(|function| function.contains("@loom.lcir.coroutine.cancel("))
+                .expect("typed coroutine cancellation callback");
+            assert_eq!(
+                cancel_callback.matches("ret i32 3").count(),
+                1,
+                "typed sibling cancellation must report exactly one Cancelled step:\n{cancel_callback}"
+            );
+            assert!(
+                !diagnostic_text(&lcir.output).contains("LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED"),
+                "sibling cancellation was misclassified as a callback defect: {:?}",
+                lcir.output
+            );
+        }
     }
 }

@@ -210,6 +210,7 @@ struct TypedTaskStorage {
     result_disposed: bool,
     cancel_invoked: bool,
     dispose_invoked: bool,
+    join_cancel_authorized: bool,
 }
 
 impl TypedTaskStorage {
@@ -2223,6 +2224,7 @@ unsafe fn copy_typed_task_storage(
         result_disposed: false,
         cancel_invoked: false,
         dispose_invoked: false,
+        join_cancel_authorized: false,
     })
 }
 
@@ -4073,6 +4075,9 @@ pub unsafe extern "C" fn task_prepare_join(
         (*parent).join_winner = NO_JOIN_WINNER;
         (*parent).join_step = TASK_COMPLETED;
         (*parent).join_active = true;
+        if let Some(typed) = (*parent).typed.as_mut() {
+            typed.join_cancel_authorized = false;
+        }
     }
     WAIT_OK
 }
@@ -4204,11 +4209,32 @@ pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
 
 #[unsafe(export_name = "loom_task_join_step")]
 pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
-    if parent.is_null() {
-        TASK_FAULTED
-    } else {
-        unsafe { (*parent).join_step }
+    let parent_pointer = parent.cast_mut();
+    let Some(parent) = (unsafe { parent_pointer.as_mut() }) else {
+        return TASK_FAULTED;
+    };
+    let step = parent.join_step;
+    let executor = parent.executor;
+    let child_cancel_is_complete = step == TASK_CANCELLED
+        && !executor.is_null()
+        && !unsafe { (*executor).cleanup_active() }
+        && executor_owns(unsafe { &*executor }, parent_pointer)
+        && unsafe { (*executor).active_task } == parent_pointer
+        && parent.status == TaskStatus::Running
+        && !parent.cancel_requested
+        && !parent.join_active
+        && !parent.join_children.is_empty()
+        && all_terminal(&parent.join_children)
+        && parent
+            .join_children
+            .iter()
+            .any(|child| unsafe { (**child).status } == TaskStatus::Cancelled);
+    if let Some(typed) = parent.typed.as_mut() {
+        // This authorization lasts only until the current callback step is
+        // validated. Merely returning TASK_CANCELLED remains a runtime defect.
+        typed.join_cancel_authorized = child_cancel_is_complete;
     }
+    step
 }
 
 #[unsafe(export_name = "loom_task_join_result_step")]
@@ -4694,6 +4720,15 @@ pub unsafe extern "C" fn task_cancel(executor: *mut LoomExecutor, task: *mut Loo
 }
 
 unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: i32) -> i32 {
+    let join_cancel_authorized = unsafe {
+        std::mem::take(
+            &mut (*task)
+                .typed
+                .as_mut()
+                .expect("typed scheduler branch")
+                .join_cancel_authorized,
+        )
+    };
     // Recording a primary fault commits this resume/cancel activation to the
     // faulted terminal path even if buggy generated cleanup returns otherwise.
     if unsafe { (*task).primary_fault_recorded } && step != TASK_FAULTED {
@@ -4755,6 +4790,7 @@ unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: 
             }
             TASK_FAULTED
         }
+        TASK_CANCELLED if join_cancel_authorized => TASK_CANCELLED,
         TASK_CANCELLED => {
             unsafe {
                 record_typed_runtime_defect(
@@ -6844,6 +6880,134 @@ mod typed_task_tests {
         child: *mut LoomTask,
         state: u64,
         result: u64,
+    }
+
+    static JOIN_CANCEL_CHILD_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+    static JOIN_CANCEL_PARENT_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_join_child_cancel(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        JOIN_CANCEL_CHILD_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+        TASK_CANCELLED
+    }
+
+    unsafe extern "C" fn parent_inherits_join_cancel(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let frame = frame.cast::<ParentFrame>();
+        if unsafe { (*frame).state } == 0 {
+            if unsafe { task_prepare_join(executor, task, TASK_JOIN_ALL) } != WAIT_OK {
+                return TASK_FAULTED;
+            }
+            let descriptor = descriptor(remain_pending, count_join_child_cancel);
+            let child = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+            if child.is_null()
+                || unsafe { typed_task_initialize_v1(child, 0) } != TYPED_TASK_OK
+                || unsafe { typed_task_publish_v1(executor, child) } != TYPED_TASK_OK
+                || unsafe { task_add_join_child(executor, task, child) } != WAIT_OK
+                || unsafe { typed_task_request_cancel_v1(executor, child) } != TYPED_TASK_OK
+            {
+                return TASK_FAULTED;
+            }
+            unsafe {
+                (*frame).child = child;
+                (*frame).state = 1;
+            }
+            return if unsafe { task_suspend_join(executor, task) } == 1 {
+                TASK_PENDING
+            } else {
+                TASK_FAULTED
+            };
+        }
+        let step = unsafe { task_join_step(task) };
+        let valid = unsafe {
+            step == TASK_CANCELLED
+                && typed_task_status_v1((*frame).child) == TASK_CANCELLED
+                && typed_task_is_cancel_requested_v1(task) == 0
+                && !(*task).join_active
+                && (*task).join_children.as_slice() == [(*frame).child]
+        };
+        if valid {
+            JOIN_CANCEL_PARENT_OBSERVATIONS.fetch_add(1, Ordering::SeqCst);
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe extern "C" fn return_unrequested_cancel(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_CANCELLED
+    }
+
+    fn parent_join_cancel_descriptor() -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(parent_inherits_join_cancel),
+            cancel: Some(cancel_noop),
+            dispose_result: None,
+            frame_size: size_of::<ParentFrame>() as u64,
+            frame_align: align_of::<ParentFrame>() as u64,
+            result_offset: offset_of!(ParentFrame, result) as u64,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        }
+    }
+
+    #[test]
+    fn completed_child_join_authorizes_one_inherited_cancellation_step() {
+        JOIN_CANCEL_CHILD_CALLBACKS.store(0, Ordering::SeqCst);
+        JOIN_CANCEL_PARENT_OBSERVATIONS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = parent_join_cancel_descriptor();
+        unsafe {
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, parent), TASK_CANCELLED);
+            assert_eq!(typed_task_status_v1(parent), TASK_CANCELLED);
+            assert_eq!(typed_task_is_cancel_requested_v1(parent), 0);
+            assert_eq!(JOIN_CANCEL_CHILD_CALLBACKS.load(Ordering::SeqCst), 1);
+            assert_eq!(JOIN_CANCEL_PARENT_OBSERVATIONS.load(Ordering::SeqCst), 1);
+            let mut fault = LoomTypedTaskFaultView::default();
+            assert_eq!(
+                typed_task_fault_view_v1(parent, &raw mut fault),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn cancelled_without_a_completed_child_join_remains_a_runtime_defect() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(return_unrequested_cancel, cancel_noop);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_FAULTED);
+            assert_eq!(typed_task_status_v1(task), TASK_FAULTED);
+            assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED");
+            destroy(runtime, executor);
+        }
     }
 
     unsafe extern "C" fn parent_join_and_take(
