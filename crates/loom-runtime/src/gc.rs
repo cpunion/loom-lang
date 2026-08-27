@@ -8,7 +8,7 @@
 //! programs.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::{align_of, size_of};
@@ -29,7 +29,9 @@ use loom_runtime_abi::{
 
 use crate::reactor::LoomExecutor;
 use crate::runtime::LoomRuntime;
-use crate::scheduler::{LoomTask, LoomTraceVisitor, ValueNode, ValueSlot, trace_task_roots};
+use crate::scheduler::{
+    LoomTask, LoomTraceVisitor, ValueNode, ValueSlot, trace_task_roots, trace_typed_task_roots,
+};
 use crate::text;
 use crate::witness::{WitnessArena, clone_witnesses, walk_witnesses};
 
@@ -163,6 +165,181 @@ impl LoomHeap {
 thread_local! {
     static ACTIVE_RUNTIME: Cell<*mut LoomRuntime> = const { Cell::new(ptr::null_mut()) };
     static ACTIVE_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static ACTIVE_ROOT_BASELINES: RefCell<Vec<RootBaseline>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct RootBaseline {
+    sync_top: *mut LoomGcRootFrame,
+    sync_depth: u64,
+    typed_top: *mut LoomGcTypedRootFrame,
+    typed_depth: u64,
+}
+
+#[derive(Clone)]
+struct ActivationSnapshot {
+    active_runtime: *mut LoomRuntime,
+    active_depth: u32,
+    root_baselines: Vec<RootBaseline>,
+    runtime_depth: u32,
+    roots: RootBaseline,
+}
+
+/// One recoverable activation around a non-suspending cleanup callback.
+///
+/// Ordinary generated-code intervals use `enter_executor`/`leave_executor`
+/// and retain their fail-fast invariant checks. Cleanup callbacks are an ABI
+/// boundary, however, and a malformed callback must not strand thread-local
+/// activation state or a dangling stack-root pointer before the scheduler can
+/// turn the violation into a typed Task fault.
+pub(crate) struct RecoverableExecutorActivation {
+    runtime: NonNull<LoomRuntime>,
+    snapshot: ActivationSnapshot,
+    restored: bool,
+}
+
+impl RecoverableExecutorActivation {
+    pub(crate) fn enter(executor: *mut LoomExecutor) -> Option<Self> {
+        if executor.is_null() {
+            return None;
+        }
+        // SAFETY: scheduler callers retain a live executor and its attached
+        // Runtime for the complete cleanup callback.
+        let runtime = NonNull::new(unsafe { (*executor).runtime_pointer() })?;
+        let active_runtime = ACTIVE_RUNTIME.with(Cell::get);
+        let active_depth = ACTIVE_DEPTH.with(Cell::get);
+        let root_baselines = ACTIVE_ROOT_BASELINES.with(|baselines| baselines.borrow().clone());
+        let runtime_depth = unsafe { runtime.as_ref().active_depth.load(Ordering::Acquire) };
+        let roots = unsafe { RootBaseline::capture(runtime.as_ptr()) };
+
+        // A recoverable scope can nest only into the same internally
+        // consistent activation that ordinary enter_runtime accepts. If its
+        // entry state is already corrupt, do not call generated cleanup code.
+        if active_runtime.is_null() != (active_depth == 0)
+            || (!active_runtime.is_null() && active_runtime != runtime.as_ptr())
+            || usize::try_from(active_depth).ok() != Some(root_baselines.len())
+            || runtime_depth != active_depth
+        {
+            return None;
+        }
+
+        let snapshot = ActivationSnapshot {
+            active_runtime,
+            active_depth,
+            root_baselines,
+            runtime_depth,
+            roots,
+        };
+        if !enter_runtime(runtime.as_ptr()) {
+            return None;
+        }
+        Some(Self {
+            runtime,
+            snapshot,
+            restored: false,
+        })
+    }
+
+    fn expected_state_is_intact(&self) -> bool {
+        let Some(expected_depth) = self.snapshot.active_depth.checked_add(1) else {
+            return false;
+        };
+        let baselines_match = ACTIVE_ROOT_BASELINES.with(|baselines| {
+            let baselines = baselines.borrow();
+            baselines.len() == self.snapshot.root_baselines.len() + 1
+                && baselines[..self.snapshot.root_baselines.len()] == self.snapshot.root_baselines
+                && baselines.last().copied() == Some(self.snapshot.roots)
+        });
+        ACTIVE_RUNTIME.with(|active| active.get() == self.runtime.as_ptr())
+            && ACTIVE_DEPTH.with(|depth| depth.get() == expected_depth)
+            && baselines_match
+            && unsafe {
+                self.runtime.as_ref().active_depth.load(Ordering::Acquire) == expected_depth
+                    && self.snapshot.roots.matches(self.runtime.as_ptr())
+            }
+    }
+
+    fn restore(&mut self) -> bool {
+        if self.restored {
+            return true;
+        }
+        let intact = self.expected_state_is_intact();
+        let observed_runtime = ACTIVE_RUNTIME.with(Cell::get);
+
+        // A callback can deactivate this Runtime and activate another one
+        // before returning. Such a switch is a protocol defect, but the
+        // public activation ABI guarantees that the unexpected Runtime was
+        // inactive and root-empty when this thread acquired it. Release that
+        // leaked ownership before restoring the exact entry snapshot.
+        if !observed_runtime.is_null()
+            && observed_runtime != self.runtime.as_ptr()
+            && observed_runtime != self.snapshot.active_runtime
+        {
+            unsafe {
+                (*observed_runtime).sync_root_top = ptr::null_mut();
+                (*observed_runtime).sync_root_depth = 0;
+                (*observed_runtime).typed_root_top = ptr::null_mut();
+                (*observed_runtime).typed_root_depth = 0;
+                (*observed_runtime).active_depth.store(0, Ordering::Release);
+            }
+        }
+
+        unsafe {
+            let runtime = self.runtime.as_mut();
+            runtime.sync_root_top = self.snapshot.roots.sync_top;
+            runtime.sync_root_depth = self.snapshot.roots.sync_depth;
+            runtime.typed_root_top = self.snapshot.roots.typed_top;
+            runtime.typed_root_depth = self.snapshot.roots.typed_depth;
+            runtime
+                .active_depth
+                .store(self.snapshot.runtime_depth, Ordering::Release);
+        }
+        ACTIVE_ROOT_BASELINES.with(|baselines| {
+            baselines
+                .borrow_mut()
+                .clone_from(&self.snapshot.root_baselines);
+        });
+        ACTIVE_DEPTH.with(|depth| depth.set(self.snapshot.active_depth));
+        ACTIVE_RUNTIME.with(|active| active.set(self.snapshot.active_runtime));
+        self.restored = true;
+        intact
+    }
+
+    /// Restores the exact state captured before entry and reports whether the
+    /// callback returned with the one activation and both root chains intact.
+    pub(crate) fn finish(mut self) -> bool {
+        self.restore()
+    }
+}
+
+impl Drop for RecoverableExecutorActivation {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = self.restore();
+        }
+    }
+}
+
+impl RootBaseline {
+    unsafe fn capture(runtime: *const LoomRuntime) -> Self {
+        unsafe {
+            Self {
+                sync_top: (*runtime).sync_root_top,
+                sync_depth: (*runtime).sync_root_depth,
+                typed_top: (*runtime).typed_root_top,
+                typed_depth: (*runtime).typed_root_depth,
+            }
+        }
+    }
+
+    unsafe fn matches(self, runtime: *const LoomRuntime) -> bool {
+        unsafe {
+            (*runtime).sync_root_top == self.sync_top
+                && (*runtime).sync_root_depth == self.sync_depth
+                && (*runtime).typed_root_top == self.typed_top
+                && (*runtime).typed_root_depth == self.typed_depth
+        }
+    }
 }
 
 fn enter_runtime(runtime: *mut LoomRuntime) -> bool {
@@ -197,6 +374,10 @@ fn enter_runtime(runtime: *mut LoomRuntime) -> bool {
     if current_depth == 0 {
         ACTIVE_RUNTIME.with(|active| active.set(runtime));
     }
+    // SAFETY: the successful atomic transition either acquired an inactive
+    // Runtime or proved this thread owns the nested activation.
+    let baseline = unsafe { RootBaseline::capture(runtime) };
+    ACTIVE_ROOT_BASELINES.with(|baselines| baselines.borrow_mut().push(baseline));
     ACTIVE_DEPTH.with(|depth| depth.set(current_depth + 1));
     true
 }
@@ -207,9 +388,23 @@ fn leave_runtime() -> i32 {
     if runtime.is_null() || depth == 0 {
         return GC_INVALID_ARGUMENT;
     }
+    let Ok(baseline_depth) = usize::try_from(depth) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let baseline = ACTIVE_ROOT_BASELINES.with(|baselines| {
+        let baselines = baselines.borrow();
+        (baselines.len() == baseline_depth)
+            .then_some(baselines.last().copied())
+            .flatten()
+    });
+    let Some(baseline) = baseline else {
+        return GC_INVALID_ARGUMENT;
+    };
     // SAFETY: ACTIVE_RUNTIME is installed only from a successful activation
-    // owned by this thread.
-    if unsafe { (*runtime).has_sync_roots() } {
+    // owned by this thread. Each layer must restore both root chains exactly
+    // to the top/depth pair captured on entry; outer roots remain valid across
+    // a nested runtime callback.
+    if !unsafe { baseline.matches(runtime) } {
         return GC_ROOT_STACK_NOT_EMPTY;
     }
     let runtime_depth = unsafe { &(*runtime).active_depth };
@@ -220,6 +415,10 @@ fn leave_runtime() -> i32 {
         return GC_INVALID_ARGUMENT;
     }
     let remaining = depth - 1;
+    ACTIVE_ROOT_BASELINES.with(|baselines| {
+        let popped = baselines.borrow_mut().pop();
+        debug_assert!(popped.is_some());
+    });
     ACTIVE_DEPTH.with(|active_depth| active_depth.set(remaining));
     if remaining == 0 {
         ACTIVE_RUNTIME.with(|active| active.set(ptr::null_mut()));
@@ -2363,6 +2562,24 @@ unsafe fn validate_root_chains(
     unsafe { visit_typed_roots(typed_root_top, typed_root_depth, None, ptr::null_mut()) }
 }
 
+unsafe fn trace_scheduler_roots(
+    tasks: &[Box<LoomTask>],
+    trace_context: &mut TraceContext,
+    typed_trace_context: &mut TypedTraceContext,
+) {
+    for task in tasks {
+        let task = (&raw const **task).cast_mut();
+        unsafe { trace_task_roots(task, Some(trace_slot), ptr::from_mut(trace_context).cast()) };
+        unsafe {
+            trace_typed_task_roots(
+                task,
+                Some(trace_typed_slot),
+                ptr::from_mut(typed_trace_context).cast(),
+            );
+        }
+    }
+}
+
 unsafe fn collect_heap(
     heap: &mut LoomHeap,
     tasks: &mut [Box<LoomTask>],
@@ -2410,10 +2627,7 @@ unsafe fn collect_heap(
         marks: &raw mut marks,
         work: Vec::new(),
     };
-    for task in tasks.iter() {
-        let task = (&raw const **task).cast_mut();
-        unsafe { trace_task_roots(task, Some(trace_slot), (&raw mut trace_context).cast()) };
-    }
+    unsafe { trace_scheduler_roots(tasks, &mut trace_context, &mut typed_trace_context) };
     let root_status = unsafe {
         visit_sync_roots(
             root_top,
@@ -2606,7 +2820,7 @@ unsafe fn relocate_marked_heap(
         nodes: &node_moves,
         sequences: &sequence_moves,
     };
-    for task in tasks {
+    for task in tasks.iter_mut() {
         unsafe {
             trace_task_roots(
                 &raw mut **task,
@@ -2629,6 +2843,15 @@ unsafe fn relocate_marked_heap(
     let mut typed_rewrite_context = TypedRewriteContext {
         typed_objects: &typed_object_moves,
     };
+    for task in tasks.iter_mut() {
+        unsafe {
+            trace_typed_task_roots(
+                &raw mut **task,
+                Some(rewrite_typed_slot),
+                (&raw mut typed_rewrite_context).cast(),
+            );
+        }
+    }
     let root_status = unsafe {
         visit_typed_roots(
             typed_root_top,

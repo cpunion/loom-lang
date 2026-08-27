@@ -1,19 +1,27 @@
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::mem::{align_of, size_of};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use loom_runtime_abi::{
-    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, LoomWitnessInstance, VALUE_SLOT_WORDS,
-    VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, GC_MAX_OBJECT_ALIGNMENT,
+    GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+    LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedTaskCallback, LoomTypedTaskFaultView,
+    LoomWitnessInstance, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
+    TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
+    TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST,
+    VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
 use crate::gc::{
-    NodeStream, RuntimeRootScope, active_runtime_pointer, enter_executor, leave_executor, poll,
+    NodeStream, RecoverableExecutorActivation, RuntimeRootScope, active_runtime_pointer,
+    enter_executor, leave_executor, poll,
 };
 use crate::platform::{
     INVALID_HANDLE, OwnedResource, close_untracked, duplicate_file, duplicate_socket,
@@ -147,6 +155,7 @@ pub type LoomTaskResume = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor)
 pub type LoomTaskCancel = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
 pub type LoomTraceVisitor = unsafe extern "C" fn(*mut c_void, *mut c_void);
 pub type LoomTaskTrace = unsafe extern "C" fn(*mut LoomTask, Option<LoomTraceVisitor>, *mut c_void);
+pub(crate) type LoomTypedTraceVisitor = unsafe extern "C" fn(*mut *mut c_void, *mut c_void);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -164,8 +173,69 @@ pub struct LoomCoroutineDescriptor {
     pub live_bitmaps: *const u64,
 }
 
+/// Owned, validated metadata and stable storage for one typed coroutine.
+///
+/// The source descriptor's variable-length arrays are copied during Task
+/// creation. No pointer into an untrusted or short-lived descriptor is kept.
+struct TypedTaskStorage {
+    resume: LoomTypedTaskCallback,
+    cancel: LoomTypedTaskCallback,
+    dispose_result: Option<LoomTypedTaskCallback>,
+    frame: NonNull<u8>,
+    frame_layout: Layout,
+    result_offset: usize,
+    result_size: usize,
+    result_align: usize,
+    root_offsets: Box<[usize]>,
+    root_state_count: usize,
+    root_bitmap_words: usize,
+    live_bitmaps: Box<[u64]>,
+    completed_root_state: usize,
+    root_state: usize,
+    initialized: bool,
+    published: bool,
+    result_initialized: bool,
+    result_taken: bool,
+    result_disposed: bool,
+    cancel_invoked: bool,
+    dispose_invoked: bool,
+}
+
+impl TypedTaskStorage {
+    fn frame_pointer(&self) -> *mut c_void {
+        self.frame.as_ptr().cast()
+    }
+
+    fn result_pointer(&self) -> *mut u8 {
+        // SAFETY: descriptor validation proved the complete result range lies
+        // in the stable frame allocation.
+        unsafe { self.frame.as_ptr().add(self.result_offset) }
+    }
+
+    fn root_is_live(&self, state: usize, index: usize) -> bool {
+        let word = self.live_bitmaps[state * self.root_bitmap_words + index / 64];
+        word & (1_u64 << (index % 64)) != 0
+    }
+
+    #[allow(clippy::cast_ptr_alignment)]
+    unsafe fn root_cell(&self, offset: usize) -> *mut *mut c_void {
+        // SAFETY: descriptor validation proved both the frame base alignment
+        // and every copied root offset before this storage was constructed.
+        unsafe { self.frame.as_ptr().add(offset).cast() }
+    }
+}
+
+impl Drop for TypedTaskStorage {
+    fn drop(&mut self) {
+        // SAFETY: `frame` came from alloc_zeroed with this exact Layout and is
+        // owned solely by this storage object.
+        unsafe { dealloc(self.frame.as_ptr(), self.frame_layout) };
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TaskStatus {
+    Unpublished,
     Runnable,
     Running,
     Waiting,
@@ -288,6 +358,8 @@ pub struct LoomTask {
     witness_slots: Box<[*const LoomWitnessInstance]>,
     witness_arena: WitnessArena,
     witnesses_captured: bool,
+    typed: Option<TypedTaskStorage>,
+    pending_owner: *mut LoomTask,
 }
 
 pub struct LoomJoinSpec {
@@ -309,7 +381,7 @@ fn terminal(status: TaskStatus) -> bool {
 fn task_slot_is_live(task: &LoomTask, index: usize) -> bool {
     match task.status {
         TaskStatus::Completed => return index == task.result_slot,
-        TaskStatus::Faulted | TaskStatus::Cancelled => return false,
+        TaskStatus::Unpublished | TaskStatus::Faulted | TaskStatus::Cancelled => return false,
         TaskStatus::Runnable | TaskStatus::Running | TaskStatus::Waiting | TaskStatus::Draining => {
         }
     }
@@ -360,11 +432,53 @@ pub(crate) unsafe fn trace_task_roots(
     visitor: Option<LoomTraceVisitor>,
     context: *mut c_void,
 ) {
-    if task.is_null() {
+    if task.is_null() || unsafe { (*task).typed.is_some() } {
         return;
     }
     if let Some(trace) = unsafe { (*task).descriptor.trace } {
         unsafe { trace(task, visitor, context) };
+    }
+}
+
+/// Visits the exact direct-pointer root cells in a typed coroutine frame.
+///
+/// Runnable, running, suspended, and draining tasks use their published MIR
+/// state row. A completed task uses the independently validated result row;
+/// faulted, cancelled, consumed, and disposed results retain no roots.
+pub(crate) unsafe fn trace_typed_task_roots(
+    task: *mut LoomTask,
+    visitor: Option<LoomTypedTraceVisitor>,
+    context: *mut c_void,
+) {
+    let (Some(task), Some(visitor)) = (unsafe { task.as_mut() }, visitor) else {
+        return;
+    };
+    let Some(typed) = task.typed.as_ref() else {
+        return;
+    };
+    if !typed.initialized {
+        return;
+    }
+    let state = match task.status {
+        TaskStatus::Unpublished
+        | TaskStatus::Runnable
+        | TaskStatus::Running
+        | TaskStatus::Waiting
+        | TaskStatus::Draining => typed.root_state,
+        TaskStatus::Completed
+            if typed.result_initialized && !typed.result_taken && !typed.result_disposed =>
+        {
+            typed.completed_root_state
+        }
+        TaskStatus::Completed | TaskStatus::Faulted | TaskStatus::Cancelled => return,
+    };
+    for (index, offset) in typed.root_offsets.iter().copied().enumerate() {
+        if typed.root_is_live(state, index) {
+            // SAFETY: copied descriptor validation proved every live root is
+            // an aligned pointer-sized cell fully inside this stable frame.
+            let slot = unsafe { typed.root_cell(offset) };
+            unsafe { visitor(slot, context) };
+        }
     }
 }
 
@@ -425,7 +539,10 @@ unsafe fn request_cancel(executor: &mut LoomExecutor, task: *mut LoomTask) {
     }
     // SAFETY: task is owned by executor; copies release the borrow before
     // recursive scheduler operations.
-    if terminal(unsafe { (*task).status }) {
+    if terminal(unsafe { (*task).status })
+        || unsafe { (*task).status } == TaskStatus::Unpublished
+        || unsafe { (*task).cancel_requested }
+    {
         return;
     }
     unsafe { (*task).cancel_requested = true };
@@ -434,16 +551,22 @@ unsafe fn request_cancel(executor: &mut LoomExecutor, task: *mut LoomTask) {
         // SAFETY: each registration was created by this executor for task.
         let _ = unsafe { cancel_for_task(executor, &raw const registration) };
     }
+    if unsafe { (*task).status } != TaskStatus::Running {
+        // Cancellation is strict reverse creation order. Reinsert the owner at
+        // the front first, then visit children oldest-to-newest; every newer
+        // child (and its descendants) is placed ahead of older work.
+        executor.runnable.retain(|candidate| *candidate != task);
+        unsafe {
+            (*task).queued = false;
+            (*task).status = TaskStatus::Runnable;
+            (*task).queued = true;
+        }
+        executor.runnable.push_front(task);
+    }
     let children = unsafe { (*task).owned_children.clone() };
     for child in children {
         // SAFETY: structured child pointers remain live until executor drop.
         unsafe { request_cancel(executor, child) };
-    }
-    if unsafe { (*task).status } != TaskStatus::Running {
-        unsafe {
-            (*task).status = TaskStatus::Runnable;
-            enqueue_task(executor, task);
-        }
     }
 }
 
@@ -585,11 +708,616 @@ unsafe fn child_became_terminal(executor: &mut LoomExecutor, child: *mut LoomTas
     } else if unsafe { (*owner).status } == TaskStatus::Draining {
         let children = unsafe { (*owner).owned_children.clone() };
         if all_terminal(&children) {
-            let deferred = unsafe { (*owner).deferred_terminal };
-            unsafe {
-                (*owner).deferred_terminal = TASK_PENDING;
-                complete_terminal(executor, owner, deferred);
+            let typed_cancel_pending = unsafe {
+                (*owner)
+                    .typed
+                    .as_ref()
+                    .is_some_and(|typed| (*owner).cancel_requested && !typed.cancel_invoked)
+            };
+            if typed_cancel_pending {
+                unsafe {
+                    (*owner).status = TaskStatus::Runnable;
+                    enqueue_task(executor, owner);
+                }
+            } else {
+                let deferred = unsafe { (*owner).deferred_terminal };
+                unsafe {
+                    (*owner).deferred_terminal = TASK_PENDING;
+                    complete_terminal(executor, owner, deferred);
+                }
             }
+        }
+    }
+}
+
+unsafe fn record_typed_runtime_defect(task: *mut LoomTask, code: &str, message: &str) {
+    if !task.is_null() {
+        unsafe {
+            record_primary_task_fault(
+                &mut *task,
+                code.to_owned(),
+                message.to_owned(),
+                String::new(),
+            );
+        }
+    }
+}
+
+unsafe fn suppress_new_typed_cleanup_fault(task: *mut LoomTask, fault_before: bool) {
+    if task.is_null() || fault_before || !unsafe { (*task).primary_fault_recorded } {
+        return;
+    }
+    unsafe {
+        (*task).primary_fault_recorded = false;
+        (*task).fault_code.clear();
+        (*task).fault_message.clear();
+        (*task).fault_detail.clear();
+    }
+}
+
+/// Marks one nested non-suspending cleanup activation. The raw pointer keeps
+/// the guard from borrowing the executor across a generated callback, while
+/// Drop guarantees depth restoration on every Rust return path.
+struct CleanupPhaseGuard {
+    executor: NonNull<LoomExecutor>,
+}
+
+impl CleanupPhaseGuard {
+    fn enter(executor: &mut LoomExecutor) -> Option<Self> {
+        if !executor.enter_cleanup() {
+            return None;
+        }
+        Some(Self {
+            executor: NonNull::from(executor),
+        })
+    }
+}
+
+impl Drop for CleanupPhaseGuard {
+    fn drop(&mut self) {
+        // SAFETY: the guard never outlives the callback site, which retains
+        // ownership of this live executor for the complete activation.
+        unsafe { self.executor.as_mut().leave_cleanup() };
+    }
+}
+
+/// Scheduler topology which a cleanup callback is forbidden to change.
+/// Public mutation APIs fail while `cleanup_depth` is nonzero; restoring this
+/// snapshot is a final defense before the callback's frame may be reclaimed.
+struct CleanupTopologySnapshot {
+    status: TaskStatus,
+    owner: *mut LoomTask,
+    pending_owner: *mut LoomTask,
+    waits: Vec<LoomRegistration>,
+    owned_children: Vec<*mut LoomTask>,
+    join_children: Vec<*mut LoomTask>,
+    join_active: bool,
+    queued: bool,
+    cancel_requested: bool,
+    runnable: Vec<*mut LoomTask>,
+    retired_tasks: Vec<*mut LoomTask>,
+    tasks: Vec<*mut LoomTask>,
+    join_specs: Vec<*mut LoomJoinSpec>,
+}
+
+impl CleanupTopologySnapshot {
+    unsafe fn capture(executor: &LoomExecutor, task: *const LoomTask) -> Self {
+        let task = unsafe { &*task };
+        Self {
+            status: task.status,
+            owner: task.owner,
+            pending_owner: task.pending_owner,
+            waits: task.waits.clone(),
+            owned_children: task.owned_children.clone(),
+            join_children: task.join_children.clone(),
+            join_active: task.join_active,
+            queued: task.queued,
+            cancel_requested: task.cancel_requested,
+            runnable: executor.runnable.iter().copied().collect(),
+            retired_tasks: executor.retired_tasks.clone(),
+            tasks: executor
+                .tasks
+                .iter()
+                .map(|candidate| (&raw const **candidate).cast_mut())
+                .collect(),
+            join_specs: executor
+                .join_specs
+                .iter()
+                .map(|join| (&raw const **join).cast_mut())
+                .collect(),
+        }
+    }
+
+    unsafe fn validate_and_restore(self, executor: &mut LoomExecutor, task: *mut LoomTask) -> bool {
+        let current_tasks = executor
+            .tasks
+            .iter()
+            .map(|candidate| (&raw const **candidate).cast_mut())
+            .collect::<Vec<_>>();
+        let current_join_specs = executor
+            .join_specs
+            .iter()
+            .map(|join| (&raw const **join).cast_mut())
+            .collect::<Vec<_>>();
+        let task_ref = unsafe { &mut *task };
+        let intact = task_ref.status == self.status
+            && task_ref.owner == self.owner
+            && task_ref.pending_owner == self.pending_owner
+            && task_ref.waits == self.waits
+            && task_ref.owned_children == self.owned_children
+            && task_ref.join_children == self.join_children
+            && task_ref.join_active == self.join_active
+            && task_ref.queued == self.queued
+            && task_ref.cancel_requested == self.cancel_requested
+            && executor
+                .runnable
+                .iter()
+                .copied()
+                .eq(self.runnable.iter().copied())
+            && executor.retired_tasks == self.retired_tasks
+            && current_tasks == self.tasks
+            && current_join_specs == self.join_specs
+            && executor.active_task == task;
+
+        // Any registration appended by a malicious callback is cancelled
+        // after leaving cleanup phase, before the frame can be reclaimed.
+        for registration in task_ref
+            .waits
+            .iter()
+            .copied()
+            .filter(|registration| !self.waits.contains(registration))
+        {
+            let _ = unsafe { cancel_for_task(executor, &raw const registration) };
+        }
+        task_ref.status = self.status;
+        task_ref.owner = self.owner;
+        task_ref.pending_owner = self.pending_owner;
+        task_ref.waits = self.waits;
+        task_ref.owned_children = self.owned_children;
+        task_ref.join_children = self.join_children;
+        task_ref.join_active = self.join_active;
+        task_ref.queued = self.queued;
+        task_ref.cancel_requested = self.cancel_requested;
+        executor.runnable = self.runnable.into();
+        executor.retired_tasks = self.retired_tasks;
+        intact
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CleanupCallbackInvocation {
+    step: i32,
+    topology_intact: bool,
+    activation_intact: bool,
+    cleanup_phase_entered: bool,
+}
+
+impl CleanupCallbackInvocation {
+    const fn protocol_intact(self) -> bool {
+        self.topology_intact && self.activation_intact && self.cleanup_phase_entered
+    }
+}
+
+/// Invokes one non-suspending typed cleanup callback behind recoverable
+/// scheduler-topology and runtime-activation boundaries. A callback may return
+/// malformed state, but it cannot strand a root chain or nested activation in
+/// the scheduler thread before the defect is converted into a Task fault.
+unsafe fn invoke_typed_cleanup_callback(
+    executor: &mut LoomExecutor,
+    task: *mut LoomTask,
+    callback: LoomTypedTaskCallback,
+    frame: *mut c_void,
+) -> CleanupCallbackInvocation {
+    let Some(cleanup) = CleanupPhaseGuard::enter(executor) else {
+        return CleanupCallbackInvocation {
+            step: TASK_FAULTED,
+            topology_intact: true,
+            activation_intact: true,
+            cleanup_phase_entered: false,
+        };
+    };
+    let topology = unsafe { CleanupTopologySnapshot::capture(executor, task) };
+    let Some(activation) = RecoverableExecutorActivation::enter(ptr::from_mut(executor)) else {
+        drop(cleanup);
+        return CleanupCallbackInvocation {
+            step: TASK_FAULTED,
+            topology_intact: unsafe { topology.validate_and_restore(executor, task) },
+            activation_intact: false,
+            cleanup_phase_entered: true,
+        };
+    };
+    let step = unsafe { callback(task.cast(), ptr::from_mut(executor).cast(), frame) };
+    let activation_intact = activation.finish();
+    drop(cleanup);
+    CleanupCallbackInvocation {
+        step,
+        topology_intact: unsafe { topology.validate_and_restore(executor, task) },
+        activation_intact,
+        cleanup_phase_entered: true,
+    }
+}
+
+/// Disposes one runtime-owned initialized result. This is structured Task
+/// cleanup, not a GC finalizer: it runs at a deterministic scheduler boundary
+/// while the stable frame and attached Runtime are still alive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupOutcome {
+    Clean,
+    Faulted,
+    Defect,
+}
+
+impl CleanupOutcome {
+    const fn is_clean(self) -> bool {
+        matches!(self, Self::Clean)
+    }
+
+    const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Defect, _) | (_, Self::Defect) => Self::Defect,
+            (Self::Faulted, _) | (_, Self::Faulted) => Self::Faulted,
+            (Self::Clean, Self::Clean) => Self::Clean,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+unsafe fn dispose_typed_result(executor: &mut LoomExecutor, task: *mut LoomTask) -> CleanupOutcome {
+    if !executor_owns(executor, task) {
+        return CleanupOutcome::Defect;
+    }
+    let (callback, frame, fault_before, cancellation_primary) = {
+        let task_ref = unsafe { &mut *task };
+        let cancellation_primary =
+            task_ref.cancel_requested || task_ref.status == TaskStatus::Cancelled;
+        let Some(typed) = task_ref.typed.as_mut() else {
+            return CleanupOutcome::Clean;
+        };
+        if !typed.result_initialized || typed.result_taken || typed.result_disposed {
+            return CleanupOutcome::Clean;
+        }
+        if typed.dispose_invoked {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_DISPOSE_TWICE",
+                    "typed Task result disposal was attempted more than once",
+                );
+            }
+            return CleanupOutcome::Defect;
+        }
+        typed.dispose_invoked = true;
+        (
+            typed.dispose_result,
+            typed.frame_pointer(),
+            task_ref.primary_fault_recorded,
+            cancellation_primary,
+        )
+    };
+
+    let previous_active = executor.active_task;
+    executor.active_task = task;
+    let invocation = if let Some(callback) = callback {
+        unsafe { invoke_typed_cleanup_callback(executor, task, callback, frame) }
+    } else {
+        CleanupCallbackInvocation {
+            step: TASK_COMPLETED,
+            topology_intact: true,
+            activation_intact: true,
+            cleanup_phase_entered: true,
+        }
+    };
+    if !invocation.cleanup_phase_entered {
+        unsafe {
+            record_typed_runtime_defect(
+                task,
+                "LOOM_RUNTIME_TYPED_CLEANUP_DEPTH",
+                "typed result disposal exceeded the cleanup nesting limit",
+            );
+        }
+    }
+    if !invocation.activation_intact {
+        unsafe {
+            record_typed_runtime_defect(
+                task,
+                "LOOM_RUNTIME_TYPED_DISPOSE_ACTIVATION",
+                "typed Task result disposal leaked runtime activation or root state",
+            );
+        }
+    }
+    if !invocation.topology_intact {
+        unsafe {
+            record_typed_runtime_defect(
+                task,
+                "LOOM_RUNTIME_TYPED_DISPOSE_TOPOLOGY",
+                "typed Task result disposal changed scheduler topology",
+            );
+        }
+    }
+    executor.active_task = previous_active;
+
+    let typed = unsafe { (*task).typed.as_mut().expect("typed result owner") };
+    if typed.result_size != 0 {
+        unsafe { ptr::write_bytes(typed.result_pointer(), 0, typed.result_size) };
+    }
+    typed.result_initialized = false;
+    typed.result_disposed = true;
+
+    let step = invocation.step;
+    let cleanup_recorded_fault = !fault_before && unsafe { (*task).primary_fault_recorded };
+    if cancellation_primary && !fault_before && invocation.protocol_intact() {
+        match step {
+            TASK_COMPLETED if !cleanup_recorded_fault => return CleanupOutcome::Clean,
+            TASK_FAULTED if cleanup_recorded_fault => {
+                // This is a legitimate cleanup RuntimeFault after an already
+                // established cancellation, so cancellation remains primary.
+                unsafe { suppress_new_typed_cleanup_fault(task, fault_before) };
+                return CleanupOutcome::Clean;
+            }
+            _ => {}
+        }
+    }
+    if !invocation.protocol_intact() {
+        return CleanupOutcome::Defect;
+    }
+    match step {
+        TASK_COMPLETED if !cleanup_recorded_fault => CleanupOutcome::Clean,
+        TASK_COMPLETED => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_DISPOSE_STATUS",
+                    "typed Task result disposal recorded a fault but returned completed",
+                );
+            }
+            CleanupOutcome::Defect
+        }
+        TASK_PENDING => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_DISPOSE_PENDING",
+                    "typed Task result disposal must not suspend",
+                );
+            }
+            CleanupOutcome::Defect
+        }
+        TASK_FAULTED => {
+            if unsafe { (*task).primary_fault_recorded } {
+                CleanupOutcome::Faulted
+            } else {
+                unsafe {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_DISPOSE_FAULTED",
+                        "typed Task result disposal failed without recording a fault",
+                    );
+                }
+                CleanupOutcome::Defect
+            }
+        }
+        TASK_CANCELLED => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_DISPOSE_CANCELLED",
+                    "typed Task result disposal returned cancellation",
+                );
+            }
+            CleanupOutcome::Defect
+        }
+        _ => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_DISPOSE_STATUS",
+                    "typed Task result disposal returned an invalid status",
+                );
+            }
+            CleanupOutcome::Defect
+        }
+    }
+}
+
+unsafe fn retire_terminal_typed_children(
+    executor: &mut LoomExecutor,
+    owner: *mut LoomTask,
+) -> Option<(*mut LoomTask, CleanupOutcome, Option<*mut LoomTask>)> {
+    let children = unsafe { (*owner).owned_children.clone() };
+    let mut first_failure = None;
+    let mut first_defect = None;
+    for child in children.into_iter().rev() {
+        if unsafe { (*child).typed.is_none() } || !terminal(unsafe { (*child).status }) {
+            continue;
+        }
+        if unsafe { (*child).status } == TaskStatus::Completed {
+            let outcome = unsafe { dispose_typed_result(executor, child) };
+            if !outcome.is_clean() {
+                unsafe { (*child).status = TaskStatus::Faulted };
+                first_failure.get_or_insert((child, outcome));
+                if outcome == CleanupOutcome::Defect {
+                    first_defect.get_or_insert(child);
+                }
+            }
+        }
+        unsafe { retire_typed_child(executor, owner, child) };
+    }
+    first_failure.map(|(task, outcome)| (task, outcome, first_defect))
+}
+
+#[allow(clippy::too_many_lines)]
+unsafe fn retire_typed_frame(executor: &mut LoomExecutor, task: *mut LoomTask) -> CleanupOutcome {
+    if !executor_owns(executor, task) || unsafe { (*task).typed.is_none() } {
+        return CleanupOutcome::Defect;
+    }
+    let needs_cancel = {
+        let task_ref = unsafe { &*task };
+        let typed = task_ref.typed.as_ref().expect("typed retirement branch");
+        typed.initialized && !terminal(task_ref.status)
+    };
+    let mut outcome = CleanupOutcome::Clean;
+    if needs_cancel {
+        let (callback, frame, fault_before, cancellation_primary) = {
+            let task_ref = unsafe { &mut *task };
+            let cancellation_primary = task_ref.cancel_requested;
+            let typed = task_ref.typed.as_mut().expect("typed retirement branch");
+            if typed.cancel_invoked {
+                unsafe {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_CANCEL_TWICE",
+                        "typed coroutine frame retirement attempted cancellation twice",
+                    );
+                }
+                return CleanupOutcome::Defect;
+            }
+            typed.cancel_invoked = true;
+            task_ref.cancel_requested = true;
+            task_ref.status = TaskStatus::Running;
+            (
+                typed.cancel,
+                typed.frame_pointer(),
+                task_ref.primary_fault_recorded,
+                cancellation_primary,
+            )
+        };
+        let previous_active = executor.active_task;
+        executor.active_task = task;
+        let invocation = unsafe { invoke_typed_cleanup_callback(executor, task, callback, frame) };
+        if !invocation.cleanup_phase_entered {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CLEANUP_DEPTH",
+                    "typed frame cancellation exceeded the cleanup nesting limit",
+                );
+            }
+        }
+        if !invocation.activation_intact {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CANCEL_ACTIVATION",
+                    "typed coroutine cancellation leaked runtime activation or root state",
+                );
+            }
+        }
+        if !invocation.topology_intact {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CANCEL_TOPOLOGY",
+                    "typed coroutine cancellation changed scheduler topology",
+                );
+            }
+        }
+        executor.active_task = previous_active;
+
+        // A malicious cleanup callback cannot leave a registration referring
+        // to a frame that retirement is about to free.
+        let registrations = unsafe { std::mem::take(&mut (*task).waits) };
+        for registration in registrations {
+            let _ = unsafe { cancel_for_task(executor, &raw const registration) };
+        }
+        let step = invocation.step;
+        let cleanup_recorded_fault = !fault_before && unsafe { (*task).primary_fault_recorded };
+        let cancel_outcome = if cancellation_primary
+            && !fault_before
+            && invocation.protocol_intact()
+            && step == TASK_FAULTED
+            && cleanup_recorded_fault
+        {
+            unsafe {
+                suppress_new_typed_cleanup_fault(task, fault_before);
+                (*task).status = TaskStatus::Cancelled;
+            }
+            CleanupOutcome::Clean
+        } else if !invocation.protocol_intact() {
+            unsafe { (*task).status = TaskStatus::Faulted };
+            CleanupOutcome::Defect
+        } else {
+            match step {
+                TASK_CANCELLED if !cleanup_recorded_fault => {
+                    unsafe { (*task).status = TaskStatus::Cancelled };
+                    CleanupOutcome::Clean
+                }
+                TASK_CANCELLED => {
+                    unsafe {
+                        record_typed_runtime_defect(
+                            task,
+                            "LOOM_RUNTIME_TYPED_CANCEL_STATUS",
+                            "typed coroutine cancellation recorded a fault but returned cancelled",
+                        );
+                        (*task).status = TaskStatus::Faulted;
+                    }
+                    CleanupOutcome::Defect
+                }
+                TASK_FAULTED => {
+                    if unsafe { (*task).primary_fault_recorded } {
+                        unsafe { (*task).status = TaskStatus::Faulted };
+                        CleanupOutcome::Faulted
+                    } else {
+                        unsafe {
+                            record_typed_runtime_defect(
+                                task,
+                                "LOOM_RUNTIME_TYPED_CANCEL_FAULTED",
+                                "typed coroutine cancellation failed without recording a fault",
+                            );
+                        }
+                        unsafe { (*task).status = TaskStatus::Faulted };
+                        CleanupOutcome::Defect
+                    }
+                }
+                TASK_PENDING => {
+                    unsafe {
+                        record_typed_runtime_defect(
+                            task,
+                            "LOOM_RUNTIME_TYPED_CANCEL_PENDING",
+                            "typed coroutine frame retirement must not suspend",
+                        );
+                        (*task).status = TaskStatus::Faulted;
+                    }
+                    CleanupOutcome::Defect
+                }
+                _ => {
+                    unsafe {
+                        record_typed_runtime_defect(
+                            task,
+                            "LOOM_RUNTIME_TYPED_CANCEL_STATUS",
+                            "typed coroutine frame retirement returned an invalid status",
+                        );
+                        (*task).status = TaskStatus::Faulted;
+                    }
+                    CleanupOutcome::Defect
+                }
+            }
+        };
+        outcome = outcome.combine(cancel_outcome);
+    }
+    if unsafe { (*task).typed.as_ref().unwrap().result_initialized } {
+        let dispose_outcome = unsafe { dispose_typed_result(executor, task) };
+        if !dispose_outcome.is_clean() {
+            unsafe { (*task).status = TaskStatus::Faulted };
+        }
+        outcome = outcome.combine(dispose_outcome);
+    }
+    outcome
+}
+
+pub(crate) unsafe fn retire_typed_frames_before_executor_drop(executor: &mut LoomExecutor) {
+    // Child frames are created after their owners, so reverse creation order
+    // preserves the same inner-before-outer cleanup order as normal structured
+    // completion. Initialized nonterminal frames are cancelled first; only a
+    // genuinely published result is subsequently passed to dispose_result.
+    let tasks = executor
+        .tasks
+        .iter_mut()
+        .rev()
+        .map(|task| &raw mut **task)
+        .collect::<Vec<_>>();
+    for task in tasks {
+        if unsafe { (*task).typed.is_some() } {
+            let _ = unsafe { retire_typed_frame(executor, task) };
         }
     }
 }
@@ -611,10 +1339,70 @@ unsafe fn complete_terminal(executor: &mut LoomExecutor, task: *mut LoomTask, st
         }
         return;
     }
+    let mut step = step;
+    if let Some((first_failure, _outcome, first_defect)) =
+        unsafe { retire_terminal_typed_children(executor, task) }
+    {
+        let failure = if step == TASK_CANCELLED {
+            first_defect.unwrap_or(first_failure)
+        } else {
+            first_failure
+        };
+        let replaces_outcome = step == TASK_COMPLETED || first_defect.is_some();
+        if replaces_outcome {
+            unsafe {
+                inherit_primary_task_fault(&mut *task, &*failure);
+                if !(*task).primary_fault_recorded {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_CHILD_DISPOSE",
+                        "a typed child result could not be disposed",
+                    );
+                }
+            }
+            step = TASK_FAULTED;
+        }
+    }
+    if unsafe { (*task).typed.is_some() } {
+        if step == TASK_COMPLETED && !unsafe { (*task).typed.as_ref().unwrap().result_initialized }
+        {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_RESULT_MISSING",
+                    "typed Task completed without publishing its result",
+                );
+            }
+            step = TASK_FAULTED;
+        }
+        if step != TASK_COMPLETED
+            && unsafe { (*task).typed.as_ref().unwrap().result_initialized }
+            && !unsafe { dispose_typed_result(executor, task) }.is_clean()
+        {
+            // Legitimate cleanup faults after cancellation were normalized to
+            // Clean above. A remaining Faulted/Defect outcome is an earlier
+            // fault or cleanup protocol defect and must not be laundered into
+            // cancellation.
+            step = TASK_FAULTED;
+        }
+        if step == TASK_FAULTED && !unsafe { (*task).primary_fault_recorded } {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_TASK_FAULTED",
+                    "typed Task returned faulted without recording a fault",
+                );
+            }
+        }
+    }
     if step != TASK_COMPLETED {
         // A cancelled or faulted I/O task cannot publish a resource result.
         // Drop both a readiness operation's private descriptor and any worker
         // result that raced with cancellation before making the task terminal.
+        let registrations = unsafe { std::mem::take(&mut (*task).waits) };
+        for registration in registrations {
+            let _ = unsafe { cancel_for_task(executor, &raw const registration) };
+        }
         unsafe {
             (*task).io_operation = None;
             (*task).blocking_result = None;
@@ -692,7 +1480,7 @@ fn move_task_frames(executor: &mut LoomExecutor) {
     let mut relocations = 0_u64;
     for task in &mut executor.tasks {
         let pointer = (&raw mut **task).cast::<LoomTask>();
-        if pointer == executor.active_task || task.slots.is_empty() {
+        if task.typed.is_some() || pointer == executor.active_task || task.slots.is_empty() {
             continue;
         }
         task.slots = task.slots.to_vec().into_boxed_slice();
@@ -1226,6 +2014,680 @@ unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
     TASK_FAULTED
 }
 
+fn empty_legacy_descriptor() -> LoomCoroutineDescriptor {
+    LoomCoroutineDescriptor {
+        abi_version: COROUTINE_ABI_VERSION,
+        flags: 0,
+        resume: None,
+        cancel: None,
+        trace: None,
+        slot_count: 0,
+        witness_count: 0,
+        result_slot: 0,
+        state_count: 0,
+        live_bitmap_words: 0,
+        live_bitmaps: ptr::null(),
+    }
+}
+
+fn is_aligned_for<T>(pointer: *const T) -> bool {
+    !pointer.is_null() && (pointer as usize).is_multiple_of(align_of::<T>())
+}
+
+struct CopiedTypedRoots {
+    offsets: Box<[usize]>,
+    state_count: usize,
+    bitmap_words: usize,
+    live_bitmaps: Box<[u64]>,
+    completed_state: usize,
+}
+
+unsafe fn copy_typed_roots(
+    descriptor: &LoomTypedCoroutineDescriptor,
+    frame_size: usize,
+    frame_align: usize,
+    result_offset: usize,
+    result_size: usize,
+) -> Option<CopiedTypedRoots> {
+    let (Ok(slot_count), Ok(state_count), Ok(bitmap_words)) = (
+        usize::try_from(descriptor.root_slot_count),
+        usize::try_from(descriptor.root_state_count),
+        usize::try_from(descriptor.root_bitmap_words),
+    ) else {
+        return None;
+    };
+    let total_bitmap_words = state_count.checked_mul(bitmap_words)?;
+    if descriptor.root_slot_count > GC_MAX_ROOT_SLOTS
+        || state_count == 0
+        || descriptor.root_state_count > GC_MAX_ROOT_STATES
+        || bitmap_words != slot_count.div_ceil(64)
+        || u64::try_from(total_bitmap_words).map_or(true, |words| words > GC_MAX_ROOT_BITMAP_WORDS)
+        || usize::try_from(descriptor.completed_root_state)
+            .map_or(true, |state| state >= state_count)
+        || (slot_count == 0) != descriptor.root_offsets.is_null()
+        || (total_bitmap_words == 0) != descriptor.live_bitmaps.is_null()
+        || (slot_count != 0
+            && (!is_aligned_for(descriptor.root_offsets)
+                || frame_align < align_of::<*mut c_void>()))
+        || (total_bitmap_words != 0 && !is_aligned_for(descriptor.live_bitmaps))
+    {
+        return None;
+    }
+
+    let source_offsets = if slot_count == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the ABI requires this bounded, aligned array to remain
+        // readable for the call. Canonical null/count shape was checked.
+        unsafe { slice::from_raw_parts(descriptor.root_offsets, slot_count) }
+    };
+    let mut offsets = Vec::new();
+    offsets.try_reserve_exact(slot_count).ok()?;
+    let pointer_size = size_of::<*mut c_void>();
+    for (index, offset) in source_offsets.iter().copied().enumerate() {
+        let offset = usize::try_from(offset).ok()?;
+        if !offset.is_multiple_of(align_of::<*mut c_void>())
+            || offset
+                .checked_add(pointer_size)
+                .is_none_or(|end| end > frame_size)
+            || index > 0 && offsets[index - 1] >= offset
+        {
+            return None;
+        }
+        offsets.push(offset);
+    }
+
+    let source_bitmaps = if total_bitmap_words == 0 {
+        &[][..]
+    } else {
+        // SAFETY: same bounded copied-metadata contract as root_offsets.
+        unsafe { slice::from_raw_parts(descriptor.live_bitmaps, total_bitmap_words) }
+    };
+    let mut live_bitmaps = Vec::new();
+    live_bitmaps.try_reserve_exact(total_bitmap_words).ok()?;
+    live_bitmaps.extend_from_slice(source_bitmaps);
+    if let Some(remainder) = slot_count.checked_rem(64).filter(|value| *value != 0) {
+        let allowed = (1_u64 << remainder) - 1;
+        for state in 0..state_count {
+            if live_bitmaps[state * bitmap_words + bitmap_words - 1] & !allowed != 0 {
+                return None;
+            }
+        }
+    }
+    let completed_state = usize::try_from(descriptor.completed_root_state).ok()?;
+    let result_end = result_offset + result_size;
+    for index in 0..slot_count {
+        if bitmap_words != 0
+            && live_bitmaps[completed_state * bitmap_words + index / 64] & (1_u64 << (index % 64))
+                != 0
+        {
+            let offset = offsets[index];
+            if offset < result_offset || offset + pointer_size > result_end {
+                return None;
+            }
+        }
+    }
+    Some(CopiedTypedRoots {
+        offsets: offsets.into_boxed_slice(),
+        state_count,
+        bitmap_words,
+        live_bitmaps: live_bitmaps.into_boxed_slice(),
+        completed_state,
+    })
+}
+
+unsafe fn copy_typed_task_storage(
+    descriptor: *const LoomTypedCoroutineDescriptor,
+) -> Option<TypedTaskStorage> {
+    if !is_aligned_for(descriptor) {
+        return None;
+    }
+    // SAFETY: the ABI requires a readable descriptor at this aligned pointer.
+    let descriptor = unsafe { &*descriptor };
+    let (Some(resume), Some(cancel)) = (descriptor.resume, descriptor.cancel) else {
+        return None;
+    };
+    if descriptor.abi_version != TYPED_TASK_ABI_VERSION || descriptor.flags != 0 {
+        return None;
+    }
+    let (Ok(frame_size), Ok(frame_align), Ok(result_offset), Ok(result_size), Ok(result_align)) = (
+        usize::try_from(descriptor.frame_size),
+        usize::try_from(descriptor.frame_align),
+        usize::try_from(descriptor.result_offset),
+        usize::try_from(descriptor.result_size),
+        usize::try_from(descriptor.result_align),
+    ) else {
+        return None;
+    };
+    if frame_size == 0
+        || descriptor.frame_size > GC_MAX_OBJECT_BYTES
+        || frame_align == 0
+        || !frame_align.is_power_of_two()
+        || descriptor.frame_align > GC_MAX_OBJECT_ALIGNMENT
+        || result_align == 0
+        || !result_align.is_power_of_two()
+        || result_align > frame_align
+        || result_offset % result_align != 0
+        || result_offset
+            .checked_add(result_size)
+            .is_none_or(|end| end > frame_size)
+    {
+        return None;
+    }
+    let frame_layout = Layout::from_size_align(frame_size, frame_align).ok()?;
+
+    let roots = unsafe {
+        copy_typed_roots(
+            descriptor,
+            frame_size,
+            frame_align,
+            result_offset,
+            result_size,
+        )
+    }?;
+
+    // SAFETY: the validated nonzero Layout is bounded by the shared ABI
+    // resource limits. Null reports allocation failure without publishing a
+    // partially constructed Task.
+    let frame = NonNull::new(unsafe { alloc_zeroed(frame_layout) })?;
+    Some(TypedTaskStorage {
+        resume,
+        cancel,
+        dispose_result: descriptor.dispose_result,
+        frame,
+        frame_layout,
+        result_offset,
+        result_size,
+        result_align,
+        root_offsets: roots.offsets,
+        root_state_count: roots.state_count,
+        root_bitmap_words: roots.bitmap_words,
+        live_bitmaps: roots.live_bitmaps,
+        completed_root_state: roots.completed_state,
+        root_state: 0,
+        initialized: false,
+        published: false,
+        result_initialized: false,
+        result_taken: false,
+        result_disposed: false,
+        cancel_invoked: false,
+        dispose_invoked: false,
+    })
+}
+
+/// Allocates an unpublished typed Task and its zeroed stable coroutine frame.
+///
+/// The descriptor and its variable-length metadata are fully validated and
+/// copied. The Task is not linked into its structured owner or ready queue
+/// until `loom_typed_task_publish_v1` succeeds.
+#[unsafe(export_name = "loom_typed_task_create_v1")]
+pub unsafe extern "C" fn typed_task_create_v1(
+    executor: *mut LoomExecutor,
+    descriptor: *const LoomTypedCoroutineDescriptor,
+) -> *mut LoomTask {
+    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
+        return ptr::null_mut();
+    }
+    let Some(typed) = (unsafe { copy_typed_task_storage(descriptor) }) else {
+        return ptr::null_mut();
+    };
+    let executor_ref = unsafe { &mut *executor };
+    let pending_owner = executor_ref.active_task;
+    if !pending_owner.is_null()
+        && (!executor_owns(executor_ref, pending_owner)
+            || unsafe { (*pending_owner).status } != TaskStatus::Running
+            || unsafe { (*pending_owner).cancel_requested })
+    {
+        return ptr::null_mut();
+    }
+    let mut task = Box::new(LoomTask {
+        descriptor: empty_legacy_descriptor(),
+        slots: Box::new([]),
+        result_slot: 0,
+        state: 0,
+        executor,
+        owner: ptr::null_mut(),
+        owned_children: Vec::new(),
+        join_children: Vec::new(),
+        waits: Vec::new(),
+        status: TaskStatus::Unpublished,
+        deferred_terminal: TASK_PENDING,
+        join_mode: TASK_JOIN_ALL,
+        join_winner: NO_JOIN_WINNER,
+        join_step: TASK_COMPLETED,
+        queued: false,
+        cancel_requested: false,
+        join_active: false,
+        wait_leaf: false,
+        wait_source: LoomWaitSource::default(),
+        composite_spec: ptr::null_mut(),
+        io_operation: None,
+        blocking_result: None,
+        io_fallible: false,
+        owned_result_resources: Vec::new(),
+        primary_fault_recorded: false,
+        fault_code: String::new(),
+        fault_message: String::new(),
+        fault_detail: String::new(),
+        witness_slots: Box::new([]),
+        witness_arena: WitnessArena::default(),
+        witnesses_captured: true,
+        typed: Some(typed),
+        pending_owner,
+    });
+    let pointer = &raw mut *task;
+    executor_ref.tasks.push(task);
+    pointer
+}
+
+#[unsafe(export_name = "loom_typed_task_frame_v1")]
+pub unsafe extern "C" fn typed_task_frame_v1(task: *mut LoomTask) -> *mut c_void {
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    let task = unsafe { &*task };
+    if task.status != TaskStatus::Unpublished
+        || task.executor.is_null()
+        || unsafe { (*task.executor).cleanup_active() }
+    {
+        return ptr::null_mut();
+    }
+    task.typed
+        .as_ref()
+        .map_or(ptr::null_mut(), TypedTaskStorage::frame_pointer)
+}
+
+#[unsafe(export_name = "loom_typed_task_initialize_v1")]
+pub unsafe extern "C" fn typed_task_initialize_v1(task: *mut LoomTask, root_state: u64) -> i32 {
+    let Some(task) = (unsafe { task.as_mut() }) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Some(typed) = task.typed.as_mut() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Ok(root_state) = usize::try_from(root_state) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if task.executor.is_null()
+        || unsafe { (*task.executor).cleanup_active() }
+        || task.status != TaskStatus::Unpublished
+        || typed.initialized
+        || root_state >= typed.root_state_count
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    typed.root_state = root_state;
+    typed.initialized = true;
+    TYPED_TASK_OK
+}
+
+#[unsafe(export_name = "loom_typed_task_publish_v1")]
+pub unsafe extern "C" fn typed_task_publish_v1(
+    executor: *mut LoomExecutor,
+    task: *mut LoomTask,
+) -> i32 {
+    if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let task_ref = unsafe { &mut *task };
+    let Some(typed) = task_ref.typed.as_mut() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if task_ref.status != TaskStatus::Unpublished || !typed.initialized || typed.published {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    let owner = task_ref.pending_owner;
+    if !owner.is_null()
+        && (executor_ref.active_task != owner
+            || !executor_owns(executor_ref, owner)
+            || unsafe { (*owner).status } != TaskStatus::Running
+            || unsafe { (*owner).cancel_requested })
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    task_ref.pending_owner = ptr::null_mut();
+    task_ref.owner = owner;
+    typed.published = true;
+    task_ref.status = TaskStatus::Runnable;
+    if !owner.is_null() {
+        unsafe { (*owner).owned_children.push(task) };
+    }
+    unsafe { enqueue_task(executor_ref, task) };
+    TYPED_TASK_OK
+}
+
+/// Retires and removes an unpublished frame. An initialized frame first runs
+/// its non-suspending cancellation cleanup exactly once; cleanup failure is
+/// reported as `TYPED_TASK_CLEANUP_FAULTED`, but the frame is still removed.
+#[unsafe(export_name = "loom_typed_task_abort_unpublished_v1")]
+pub unsafe extern "C" fn typed_task_abort_unpublished_v1(
+    executor: *mut LoomExecutor,
+    task: *mut LoomTask,
+) -> i32 {
+    if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let task_ref = unsafe { &*task };
+    let Some(typed) = task_ref.typed.as_ref() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if task_ref.status != TaskStatus::Unpublished || typed.published {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    let outcome = if typed.initialized {
+        unsafe { retire_typed_frame(executor_ref, task) }
+    } else {
+        CleanupOutcome::Clean
+    };
+    let Some(index) = executor_ref
+        .tasks
+        .iter()
+        .position(|candidate| ptr::eq::<LoomTask>(&raw const **candidate, task))
+    else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    // Abort is not a hot path. Preserve creation order so executor shutdown's
+    // reverse iteration remains a true child/newest-before-parent LIFO.
+    executor_ref.tasks.remove(index);
+    if outcome.is_clean() {
+        TYPED_TASK_OK
+    } else {
+        TYPED_TASK_CLEANUP_FAULTED
+    }
+}
+
+#[unsafe(export_name = "loom_typed_task_set_root_state_v1")]
+pub unsafe extern "C" fn typed_task_set_root_state_v1(task: *mut LoomTask, root_state: u64) -> i32 {
+    let task_pointer = task;
+    let Some(task) = (unsafe { task.as_mut() }) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Some(typed) = task.typed.as_mut() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Ok(root_state) = usize::try_from(root_state) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let executor = task.executor;
+    if !typed.initialized
+        || !typed.published
+        || typed.result_initialized
+        || executor.is_null()
+        || unsafe { (*executor).active_task } != task_pointer
+        || task.status != TaskStatus::Running
+        || root_state >= typed.root_state_count
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    typed.root_state = root_state;
+    TYPED_TASK_OK
+}
+
+#[unsafe(export_name = "loom_typed_task_publish_result_v1")]
+pub unsafe extern "C" fn typed_task_publish_result_v1(task: *mut LoomTask) -> i32 {
+    let task_pointer = task;
+    let Some(task) = (unsafe { task.as_mut() }) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Some(typed) = task.typed.as_mut() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let executor = task.executor;
+    if task.status != TaskStatus::Running
+        || !typed.initialized
+        || !typed.published
+        || typed.result_initialized
+        || task.cancel_requested
+        || executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || unsafe { (*executor).active_task } != task_pointer
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    typed.result_initialized = true;
+    typed.root_state = typed.completed_root_state;
+    TYPED_TASK_OK
+}
+
+#[unsafe(export_name = "loom_typed_task_status_v1")]
+pub unsafe extern "C" fn typed_task_status_v1(task: *const LoomTask) -> i32 {
+    if task.is_null() || unsafe { (*task).typed.is_none() } {
+        return TYPED_TASK_STATUS_INVALID;
+    }
+    match unsafe { (*task).status } {
+        TaskStatus::Completed => TASK_COMPLETED,
+        TaskStatus::Faulted => TASK_FAULTED,
+        TaskStatus::Cancelled => TASK_CANCELLED,
+        TaskStatus::Unpublished
+        | TaskStatus::Runnable
+        | TaskStatus::Running
+        | TaskStatus::Waiting
+        | TaskStatus::Draining => TASK_PENDING,
+    }
+}
+
+#[unsafe(export_name = "loom_typed_task_is_cancel_requested_v1")]
+pub unsafe extern "C" fn typed_task_is_cancel_requested_v1(task: *const LoomTask) -> i32 {
+    i32::from(
+        !task.is_null()
+            && unsafe { (*task).typed.is_some() }
+            && unsafe { (*task).cancel_requested },
+    )
+}
+
+unsafe fn retire_typed_child(
+    executor: &mut LoomExecutor,
+    owner: *mut LoomTask,
+    child: *mut LoomTask,
+) {
+    if owner.is_null() || !executor_owns(executor, owner) || !executor_owns(executor, child) {
+        return;
+    }
+    unsafe {
+        (*owner)
+            .owned_children
+            .retain(|candidate| *candidate != child);
+        (*owner)
+            .join_children
+            .retain(|candidate| *candidate != child);
+        (*child).owner = ptr::null_mut();
+    }
+    if !executor.retired_tasks.contains(&child) {
+        executor.retired_tasks.push(child);
+    }
+}
+
+/// Moves a completed result out of its stable Task frame and consumes the
+/// structured child handle. Size and alignment are repeated by the caller so
+/// an ABI/layout disagreement fails before touching either storage location.
+#[unsafe(export_name = "loom_typed_task_take_result_v1")]
+pub unsafe extern "C" fn typed_task_take_result_v1(
+    task: *mut LoomTask,
+    output: *mut c_void,
+    output_size: u64,
+    output_align: u64,
+) -> i32 {
+    let Some(task_ref) = (unsafe { task.as_mut() }) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let Some(typed) = task_ref.typed.as_mut() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let (Ok(output_size), Ok(output_align)) =
+        (usize::try_from(output_size), usize::try_from(output_align))
+    else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if task_ref.status != TaskStatus::Completed
+        || !typed.result_initialized
+        || typed.result_taken
+        || typed.result_disposed
+        || typed.dispose_invoked
+        || output_size != typed.result_size
+        || output_align != typed.result_align
+        || (output_size != 0
+            && (output.is_null() || !(output as usize).is_multiple_of(output_align)))
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    if output_size != 0 {
+        let output_start = output as usize;
+        let source_start = typed.result_pointer() as usize;
+        let (Some(output_end), Some(source_end)) = (
+            output_start.checked_add(output_size),
+            source_start.checked_add(output_size),
+        ) else {
+            return TYPED_TASK_INVALID_ARGUMENT;
+        };
+        if output_start < source_end && source_start < output_end {
+            return TYPED_TASK_INVALID_ARGUMENT;
+        }
+    }
+    let executor = task_ref.executor;
+    if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let owner = task_ref.owner;
+    if !owner.is_null()
+        && (unsafe { (*executor).active_task } != owner
+            || !executor_owns(unsafe { &*executor }, owner)
+            || unsafe { (*owner).status } != TaskStatus::Running)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    if output_size != 0 {
+        // SAFETY: both nonoverlapping ranges have the exact validated size and
+        // alignment. Task frames are non-GC storage, and `output` is borrowed
+        // by this call only.
+        unsafe {
+            ptr::copy_nonoverlapping(typed.result_pointer(), output.cast(), output_size);
+            ptr::write_bytes(typed.result_pointer(), 0, output_size);
+        }
+    }
+    typed.result_initialized = false;
+    typed.result_taken = true;
+    if !owner.is_null() {
+        unsafe { retire_typed_child(&mut *executor, owner, task) };
+    }
+    TYPED_TASK_OK
+}
+
+#[unsafe(export_name = "loom_typed_task_request_cancel_v1")]
+pub unsafe extern "C" fn typed_task_request_cancel_v1(
+    executor: *mut LoomExecutor,
+    task: *mut LoomTask,
+) -> i32 {
+    if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+        || unsafe { (*task).typed.as_ref() }.is_none_or(|typed| !typed.published)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    unsafe { request_cancel(&mut *executor, task) };
+    TYPED_TASK_OK
+}
+
+unsafe fn copy_typed_fault_text(data: *const u8, length: u64) -> Result<String, i32> {
+    if length > TYPED_TASK_MAX_FAULT_TEXT_BYTES {
+        return Err(TYPED_TASK_INVALID_ARGUMENT);
+    }
+    let length = usize::try_from(length).map_err(|_| TYPED_TASK_INVALID_ARGUMENT)?;
+    if data.is_null() && length != 0 {
+        return Err(TYPED_TASK_INVALID_ARGUMENT);
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| TYPED_TASK_NO_MEMORY)?;
+    if length != 0 {
+        // SAFETY: the unsafe ABI requires this bounded byte range to remain
+        // readable for the call. A u8 pointer has no stronger alignment.
+        bytes.extend_from_slice(unsafe { slice::from_raw_parts(data, length) });
+    }
+    String::from_utf8(bytes).map_err(|_| TYPED_TASK_INVALID_ARGUMENT)
+}
+
+/// Copies one primary typed fault. Later cleanup failures never overwrite the
+/// original code/message/detail triplet.
+#[unsafe(export_name = "loom_typed_task_record_fault_v1")]
+pub unsafe extern "C" fn typed_task_record_fault_v1(
+    task: *mut LoomTask,
+    code: *const u8,
+    code_length: u64,
+    message: *const u8,
+    message_length: u64,
+    detail: *const u8,
+    detail_length: u64,
+) -> i32 {
+    let Some(task_ref) = (unsafe { task.as_mut() }) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let executor = task_ref.executor;
+    if task_ref.typed.is_none() || executor.is_null() || unsafe { (*executor).active_task } != task
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let code = match unsafe { copy_typed_fault_text(code, code_length) } {
+        Ok(code) => code,
+        Err(status) => return status,
+    };
+    let message = match unsafe { copy_typed_fault_text(message, message_length) } {
+        Ok(message) => message,
+        Err(status) => return status,
+    };
+    let detail = match unsafe { copy_typed_fault_text(detail, detail_length) } {
+        Ok(detail) => detail,
+        Err(status) => return status,
+    };
+    record_primary_task_fault(task_ref, code, message, detail);
+    TYPED_TASK_OK
+}
+
+fn byte_view(value: &str) -> LoomByteView {
+    LoomByteView {
+        data: if value.is_empty() {
+            ptr::null()
+        } else {
+            value.as_ptr()
+        },
+        length: value.len() as u64,
+    }
+}
+
+#[unsafe(export_name = "loom_typed_task_fault_view_v1")]
+pub unsafe extern "C" fn typed_task_fault_view_v1(
+    task: *const LoomTask,
+    output: *mut LoomTypedTaskFaultView,
+) -> i32 {
+    if task.is_null() || !is_aligned_for(output) {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let task = unsafe { &*task };
+    if task.typed.is_none() || !task.primary_fault_recorded {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    unsafe {
+        output.write(LoomTypedTaskFaultView {
+            code: byte_view(&task.fault_code),
+            message: byte_view(&task.fault_message),
+            detail: byte_view(&task.fault_detail),
+        });
+    }
+    TYPED_TASK_OK
+}
+
 #[unsafe(export_name = "loom_task_spawn")]
 pub unsafe extern "C" fn task_spawn(
     executor: *mut LoomExecutor,
@@ -1254,6 +2716,9 @@ pub unsafe extern "C" fn task_spawn_descriptor(
     executor: *mut LoomExecutor,
     descriptor: *const LoomCoroutineDescriptor,
 ) -> *mut LoomTask {
+    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
+        return ptr::null_mut();
+    }
     let Some(mut descriptor) = (unsafe { descriptor.as_ref() }).copied() else {
         return ptr::null_mut();
     };
@@ -1272,8 +2737,7 @@ pub unsafe extern "C" fn task_spawn_descriptor(
                 .state_count
                 .checked_mul(descriptor.live_bitmap_words)
                 .is_some());
-    if executor.is_null()
-        || descriptor.abi_version != COROUTINE_ABI_VERSION
+    if descriptor.abi_version != COROUTINE_ABI_VERSION
         || slot_count == 0
         || result_slot >= slot_count
         || !bitmap_layout_valid
@@ -1289,6 +2753,13 @@ pub unsafe extern "C" fn task_spawn_descriptor(
     // SAFETY: non-null executor is uniquely driven on this thread.
     let executor_ref = unsafe { &mut *executor };
     let owner = executor_ref.active_task;
+    if !owner.is_null()
+        && (!executor_owns(executor_ref, owner)
+            || unsafe { (*owner).status } != TaskStatus::Running
+            || unsafe { (*owner).cancel_requested })
+    {
+        return ptr::null_mut();
+    }
     let mut task = Box::new(LoomTask {
         descriptor,
         slots: vec![ValueSlot::default(); slot_count].into_boxed_slice(),
@@ -1321,6 +2792,8 @@ pub unsafe extern "C" fn task_spawn_descriptor(
         witness_slots: vec![ptr::null(); witness_count].into_boxed_slice(),
         witness_arena: WitnessArena::default(),
         witnesses_captured: witness_count == 0,
+        typed: None,
+        pending_owner: ptr::null_mut(),
     });
     let pointer = &raw mut *task;
     executor_ref.tasks.push(task);
@@ -1349,7 +2822,9 @@ pub unsafe extern "C" fn task_capture_witnesses_v1(
     let Ok(count) = usize::try_from(count) else {
         return WAIT_INVALID_ARGUMENT;
     };
-    if task.witnesses_captured
+    if task.executor.is_null()
+        || unsafe { (*task.executor).cleanup_active() }
+        || task.witnesses_captured
         || task.status != TaskStatus::Runnable
         || task.state != 0
         || count != task.witness_slots.len()
@@ -2503,9 +3978,12 @@ pub unsafe extern "C" fn task_prepare_join(
         return WAIT_INVALID_ARGUMENT;
     }
     let executor_ref = unsafe { &mut *executor };
-    if !executor_owns(executor_ref, parent)
+    if executor_ref.cleanup_active()
+        || !executor_owns(executor_ref, parent)
         || mode > TASK_JOIN_RACE
         || executor_ref.active_task != parent
+        || unsafe { (*parent).status } != TaskStatus::Running
+        || unsafe { (*parent).cancel_requested }
         || unsafe { (*parent).join_active }
     {
         return WAIT_INVALID_ARGUMENT;
@@ -2530,8 +4008,12 @@ pub unsafe extern "C" fn task_add_join_child(
         return WAIT_INVALID_ARGUMENT;
     }
     let executor_ref = unsafe { &mut *executor };
-    if !executor_owns(executor_ref, parent)
+    if executor_ref.cleanup_active()
+        || !executor_owns(executor_ref, parent)
         || !executor_owns(executor_ref, child)
+        || executor_ref.active_task != parent
+        || unsafe { (*parent).status } != TaskStatus::Running
+        || unsafe { (*parent).cancel_requested }
         || !unsafe { (*parent).join_active }
         || child == parent
         || unsafe { (*child).owner } != parent
@@ -2552,8 +4034,11 @@ pub unsafe extern "C" fn task_suspend_join(
         return -WAIT_INVALID_ARGUMENT;
     }
     let executor_ref = unsafe { &mut *executor };
-    if !executor_owns(executor_ref, parent)
+    if executor_ref.cleanup_active()
+        || !executor_owns(executor_ref, parent)
         || executor_ref.active_task != parent
+        || unsafe { (*parent).status } != TaskStatus::Running
+        || unsafe { (*parent).cancel_requested }
         || !unsafe { (*parent).join_active }
     {
         return -WAIT_INVALID_ARGUMENT;
@@ -2814,7 +4299,12 @@ pub unsafe extern "C" fn task_write_join_result(
     destination: *mut c_void,
     shape: u32,
 ) -> i32 {
-    if parent.is_null() || destination.is_null() || shape > JOIN_RESULT_OUTCOME_LIST {
+    if parent.is_null()
+        || destination.is_null()
+        || shape > JOIN_RESULT_OUTCOME_LIST
+        || unsafe { (*parent).executor.is_null() }
+        || unsafe { (*(*parent).executor).cleanup_active() }
+    {
         return WAIT_INVALID_ARGUMENT;
     }
     let destination = destination.cast::<ValueSlot>();
@@ -2904,6 +4394,7 @@ pub unsafe extern "C" fn join_create(
     if executor.is_null()
         || mode > TASK_JOIN_RACE
         || shape > JOIN_RESULT_OUTCOME_LIST
+        || unsafe { (*executor).cleanup_active() }
         || unsafe { (*executor).active_task.is_null() }
     {
         return ptr::null_mut();
@@ -2943,6 +4434,7 @@ pub unsafe extern "C" fn join_add_task(join: *mut LoomJoinSpec, task: *mut LoomT
     }
     let executor = unsafe { (*join).executor };
     let valid = !executor.is_null()
+        && !unsafe { (*executor).cleanup_active() }
         && executor_owns(unsafe { &*executor }, task)
         && unsafe { (*join).owner } == unsafe { (*executor).active_task };
     if !valid
@@ -2975,6 +4467,10 @@ pub unsafe extern "C" fn join_add_task(join: *mut LoomJoinSpec, task: *mut LoomT
 #[unsafe(export_name = "loom_join_add_list")]
 pub unsafe extern "C" fn join_add_list(join: *mut LoomJoinSpec, list_value: *const c_void) -> i32 {
     if join.is_null() || list_value.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    let executor = unsafe { (*join).executor };
+    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
         return WAIT_INVALID_ARGUMENT;
     }
     let list = unsafe { &*list_value.cast::<ValueSlot>() };
@@ -3036,8 +4532,11 @@ pub unsafe extern "C" fn task_suspend_wait(
     if executor.is_null() || task.is_null() || source.is_null() {
         return WAIT_INVALID_ARGUMENT;
     }
-    let valid =
-        executor_owns(unsafe { &*executor }, task) && unsafe { (*executor).active_task } == task;
+    let valid = !unsafe { (*executor).cleanup_active() }
+        && executor_owns(unsafe { &*executor }, task)
+        && unsafe { (*executor).active_task } == task
+        && unsafe { (*task).status } == TaskStatus::Running
+        && !unsafe { (*task).cancel_requested };
     if !valid {
         return WAIT_INVALID_ARGUMENT;
     }
@@ -3062,18 +4561,215 @@ pub unsafe extern "C" fn task_suspend_wait(
 
 #[unsafe(export_name = "loom_task_cancel")]
 pub unsafe extern "C" fn task_cancel(executor: *mut LoomExecutor, task: *mut LoomTask) -> i32 {
-    if executor.is_null() || !executor_owns(unsafe { &*executor }, task) {
+    if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+    {
         return WAIT_INVALID_ARGUMENT;
     }
     unsafe { request_cancel(&mut *executor, task) };
     WAIT_OK
 }
 
+unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: i32) -> i32 {
+    // Recording a primary fault commits this resume/cancel activation to the
+    // faulted terminal path even if buggy generated cleanup returns otherwise.
+    if unsafe { (*task).primary_fault_recorded } && step != TASK_FAULTED {
+        return TASK_FAULTED;
+    }
+    if cancelling {
+        return match step {
+            TASK_CANCELLED | TASK_FAULTED => step,
+            TASK_PENDING => {
+                unsafe {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_CANCEL_PENDING",
+                        "typed Task cancellation must not suspend",
+                    );
+                }
+                TASK_FAULTED
+            }
+            _ => {
+                unsafe {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_CANCEL_STATUS",
+                        "typed Task cancellation returned an invalid terminal status",
+                    );
+                }
+                TASK_FAULTED
+            }
+        };
+    }
+    let result_initialized = unsafe {
+        (*task)
+            .typed
+            .as_ref()
+            .expect("typed scheduler branch")
+            .result_initialized
+    };
+    match step {
+        TASK_PENDING if !result_initialized => TASK_PENDING,
+        TASK_COMPLETED if result_initialized => TASK_COMPLETED,
+        TASK_FAULTED => TASK_FAULTED,
+        TASK_PENDING => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_RESULT_EARLY",
+                    "typed Task published a result before returning completed",
+                );
+            }
+            TASK_FAULTED
+        }
+        TASK_COMPLETED => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_RESULT_MISSING",
+                    "typed Task returned completed without publishing its result",
+                );
+            }
+            TASK_FAULTED
+        }
+        TASK_CANCELLED => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED",
+                    "typed Task returned cancelled without a cancellation request",
+                );
+            }
+            TASK_FAULTED
+        }
+        _ => {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_RESUME_STATUS",
+                    "typed Task resume returned an invalid status",
+                );
+            }
+            TASK_FAULTED
+        }
+    }
+}
+
+unsafe fn run_typed_task_step(executor: *mut LoomExecutor, task: *mut LoomTask) -> i32 {
+    let cancelling = unsafe { (*task).cancel_requested };
+    if cancelling {
+        let children = unsafe { (*task).owned_children.clone() };
+        for child in &children {
+            if !terminal(unsafe { (**child).status }) {
+                unsafe { request_cancel(&mut *executor, *child) };
+            }
+        }
+        if !all_terminal(&children) {
+            unsafe {
+                (*task).deferred_terminal = TASK_CANCELLED;
+                (*task).status = TaskStatus::Draining;
+            }
+            return TASK_PENDING;
+        }
+    }
+    let fault_before = unsafe { (*task).primary_fault_recorded };
+    let (callback, frame) = {
+        let typed = unsafe { (*task).typed.as_mut().expect("typed scheduler branch") };
+        let callback = if cancelling {
+            if typed.cancel_invoked {
+                unsafe {
+                    record_typed_runtime_defect(
+                        task,
+                        "LOOM_RUNTIME_TYPED_CANCEL_TWICE",
+                        "typed Task cancellation callback was selected more than once",
+                    );
+                }
+                return TASK_FAULTED;
+            }
+            typed.cancel_invoked = true;
+            typed.cancel
+        } else {
+            typed.resume
+        };
+        (callback, typed.frame_pointer())
+    };
+
+    let (step, cleanup_protocol_intact) = if cancelling {
+        let invocation =
+            unsafe { invoke_typed_cleanup_callback(&mut *executor, task, callback, frame) };
+        if !invocation.cleanup_phase_entered {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CLEANUP_DEPTH",
+                    "typed Task cancellation exceeded the cleanup nesting limit",
+                );
+            }
+        }
+        if !invocation.activation_intact {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CANCEL_ACTIVATION",
+                    "typed Task cancellation leaked runtime activation or root state",
+                );
+            }
+        }
+        if !invocation.topology_intact {
+            unsafe {
+                record_typed_runtime_defect(
+                    task,
+                    "LOOM_RUNTIME_TYPED_CANCEL_TOPOLOGY",
+                    "typed Task cancellation changed scheduler topology",
+                );
+            }
+        }
+        (
+            if invocation.protocol_intact() {
+                invocation.step
+            } else {
+                TASK_FAULTED
+            },
+            invocation.protocol_intact(),
+        )
+    } else {
+        enter_executor(executor);
+        let step = unsafe { callback(task.cast(), executor.cast(), frame) };
+        leave_executor();
+        (step, true)
+    };
+    let cleanup_recorded_fault = !fault_before && unsafe { (*task).primary_fault_recorded };
+    if cancelling
+        && !fault_before
+        && cleanup_protocol_intact
+        && step == TASK_FAULTED
+        && cleanup_recorded_fault
+    {
+        // Only a well-formed cleanup RuntimeFault is suppressed after an
+        // established cancellation. Protocol and topology defects remain
+        // faulted and are never laundered into Cancelled.
+        unsafe { suppress_new_typed_cleanup_fault(task, fault_before) };
+        TASK_CANCELLED
+    } else if cancelling
+        && !fault_before
+        && cleanup_protocol_intact
+        && step == TASK_CANCELLED
+        && !cleanup_recorded_fault
+    {
+        TASK_CANCELLED
+    } else {
+        unsafe { validate_typed_task_step(task, cancelling, step) }
+    }
+}
+
 #[unsafe(export_name = "loom_executor_run")]
 pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut LoomTask) -> i32 {
     if executor.is_null()
+        || unsafe { (*executor).cleanup_active() }
         || !executor_owns(unsafe { &*executor }, root)
         || !unsafe { (*root).owner.is_null() }
+        || unsafe { (*root).status } == TaskStatus::Unpublished
     {
         return WAIT_INVALID_ARGUMENT;
     }
@@ -3112,22 +4808,27 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
         }
         unsafe { (*task).status = TaskStatus::Running };
         unsafe { (*executor).active_task = task };
-        let descriptor = unsafe { (*task).descriptor };
-        let resume = if unsafe { (*task).cancel_requested } {
-            descriptor.cancel.or(descriptor.resume)
+        let step = if unsafe { (*task).typed.is_some() } {
+            unsafe { run_typed_task_step(executor, task) }
         } else {
-            descriptor.resume
+            let descriptor = unsafe { (*task).descriptor };
+            let resume = if unsafe { (*task).cancel_requested } {
+                descriptor.cancel.or(descriptor.resume)
+            } else {
+                descriptor.resume
+            };
+            let Some(resume) = resume else {
+                unsafe {
+                    (*executor).active_task = ptr::null_mut();
+                    complete_terminal(&mut *executor, task, TASK_FAULTED);
+                }
+                continue;
+            };
+            enter_executor(executor);
+            let step = unsafe { resume(task, executor) };
+            leave_executor();
+            step
         };
-        let Some(resume) = resume else {
-            unsafe {
-                (*executor).active_task = ptr::null_mut();
-                complete_terminal(&mut *executor, task, TASK_FAULTED);
-            }
-            continue;
-        };
-        enter_executor(executor);
-        let step = unsafe { resume(task, executor) };
-        leave_executor();
         unsafe { (*executor).active_task = ptr::null_mut() };
         if step == TASK_PENDING {
             if unsafe { (*task).status } == TaskStatus::Running {
@@ -3540,6 +5241,1827 @@ mod resource_ownership_tests {
 
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+}
+
+#[cfg(test)]
+mod typed_task_tests {
+    use std::ffi::c_void;
+    use std::mem::{align_of, offset_of, size_of};
+    use std::ptr;
+    use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+
+    use loom_runtime_abi::{
+        LoomGcObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor,
+        LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView,
+        SHADOW_STACK_ABI_VERSION, TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION,
+        TYPED_TASK_ABI_VERSION,
+    };
+
+    use super::*;
+    use crate::GC_OK;
+    use crate::gc::{
+        activate_runtime_v1, active_runtime_pointer, collect, enter_executor, leave_executor,
+        root_pop_v1, root_push_v1, typed_alloc_v1, typed_root_pop_v1, typed_root_push_v1,
+    };
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy, executor_register};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+
+    unsafe extern "C" fn complete_u64(
+        task: *mut c_void,
+        _executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        if unsafe { typed_task_set_root_state_v1(task.cast(), 0) } != TYPED_TASK_OK {
+            return TASK_FAULTED;
+        }
+        unsafe { frame.cast::<u64>().write(42) };
+        if unsafe { typed_task_publish_result_v1(task.cast()) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe extern "C" fn cancel_noop(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_CANCELLED
+    }
+
+    fn descriptor(
+        resume: LoomTypedTaskCallback,
+        cancel: LoomTypedTaskCallback,
+    ) -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(resume),
+            cancel: Some(cancel),
+            dispose_result: None,
+            frame_size: size_of::<u64>() as u64,
+            frame_align: align_of::<u64>() as u64,
+            result_offset: 0,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        }
+    }
+
+    unsafe fn with_sync_and_typed_roots(action: impl FnOnce() -> bool) -> bool {
+        let bitmap = [1_u64];
+        let sync_descriptor = LoomGcRootDescriptor {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            slot_count: 1,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        let mut sync_value = ValueSlot::default();
+        let sync_slots = [(&raw mut sync_value).cast::<c_void>()];
+        let mut sync_frame = LoomGcRootFrame {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            state: 0,
+            descriptor: &raw const sync_descriptor,
+            slots: sync_slots.as_ptr(),
+            previous: ptr::null_mut(),
+        };
+        let typed_descriptor = LoomGcTypedRootDescriptor {
+            abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            slot_count: 1,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        let mut typed_value = ptr::null_mut::<c_void>();
+        let typed_slots = [(&raw mut typed_value).cast::<c_void>()];
+        let mut typed_frame = LoomGcTypedRootFrame {
+            abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            state: 0,
+            descriptor: &raw const typed_descriptor,
+            slots: typed_slots.as_ptr(),
+            previous: ptr::null_mut(),
+        };
+
+        if unsafe { root_push_v1(&raw mut sync_frame) } != GC_OK {
+            return false;
+        }
+        if unsafe { typed_root_push_v1(&raw mut typed_frame) } != GC_OK {
+            let _ = unsafe { root_pop_v1(&raw mut sync_frame) };
+            return false;
+        }
+        let action_ok = action();
+        let typed_pop_ok = unsafe { typed_root_pop_v1(&raw mut typed_frame) } == GC_OK;
+        let sync_pop_ok = unsafe { root_pop_v1(&raw mut sync_frame) } == GC_OK;
+        action_ok && typed_pop_ok && sync_pop_ok
+    }
+
+    fn runtime_and_executor() -> (*mut crate::runtime::LoomRuntime, *mut LoomExecutor) {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        (runtime, executor)
+    }
+
+    unsafe fn destroy(runtime: *mut crate::runtime::LoomRuntime, executor: *mut LoomExecutor) {
+        unsafe {
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    unsafe fn prime_pending_parent(
+        executor: *mut LoomExecutor,
+        parent: *mut LoomTask,
+        resume: LoomTypedTaskCallback,
+    ) -> Vec<*mut LoomTask> {
+        unsafe {
+            (*executor)
+                .runnable
+                .retain(|candidate| *candidate != parent);
+            (*parent).queued = false;
+            (*parent).status = TaskStatus::Running;
+            (*executor).active_task = parent;
+            let frame = (*parent)
+                .typed
+                .as_ref()
+                .expect("typed test parent")
+                .frame_pointer();
+            enter_executor(executor);
+            let step = resume(parent.cast(), executor.cast(), frame);
+            leave_executor();
+            assert_eq!(step, TASK_PENDING);
+            (*executor).active_task = ptr::null_mut();
+            (*parent).status = TaskStatus::Waiting;
+            let children = (*parent).owned_children.clone();
+            for child in &children {
+                (*executor).runnable.retain(|candidate| candidate != child);
+                (**child).queued = false;
+                (**child).status = TaskStatus::Waiting;
+            }
+            children
+        }
+    }
+
+    unsafe fn complete_typed_u64_for_test(task: *mut LoomTask, value: u64) {
+        unsafe {
+            let typed = (*task).typed.as_mut().expect("typed test child");
+            typed.frame_pointer().cast::<u64>().write(value);
+            typed.result_initialized = true;
+            typed.root_state = typed.completed_root_state;
+            (*task).status = TaskStatus::Completed;
+        }
+    }
+
+    #[test]
+    fn typed_task_requires_initialize_before_publish_and_take_zeros_the_result() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(complete_u64, cancel_noop);
+        unsafe {
+            let aborted = typed_task_create_v1(executor, &raw const descriptor);
+            assert!(!aborted.is_null());
+            assert_eq!(executor_live_tasks(executor), 1);
+            let aborted_frame = typed_task_frame_v1(aborted);
+            assert!(!aborted_frame.is_null());
+            assert_eq!(
+                typed_task_publish_v1(executor, aborted),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(typed_task_initialize_v1(aborted, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_frame_v1(aborted), aborted_frame);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, aborted),
+                TYPED_TASK_OK
+            );
+            assert_eq!(executor_live_tasks(executor), 0);
+
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            let frame = typed_task_frame_v1(task).cast::<u64>();
+            assert!(!frame.is_null());
+            assert_eq!(frame.read(), 0);
+            assert_eq!(
+                typed_task_initialize_v1(task, 1),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert!(typed_task_frame_v1(task).is_null());
+            assert_eq!(
+                typed_task_set_root_state_v1(task, 0),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, task),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            move_task_frames(&mut *executor);
+            assert_eq!((*task).typed.as_ref().unwrap().frame.as_ptr(), frame.cast());
+            assert_eq!(executor_run(executor, task), TASK_COMPLETED);
+            assert_eq!(typed_task_status_v1(task), TASK_COMPLETED);
+
+            let mut result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    task,
+                    (&raw mut result).cast(),
+                    size_of::<u32>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            let mut misaligned_storage = [0_u8; size_of::<u64>() + align_of::<u64>()];
+            let mut misaligned = misaligned_storage.as_mut_ptr();
+            if (misaligned as usize).is_multiple_of(align_of::<u64>()) {
+                misaligned = misaligned.add(1);
+            }
+            assert_eq!(
+                typed_task_take_result_v1(
+                    task,
+                    misaligned.cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typed_task_take_result_v1(
+                    task,
+                    frame.cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typed_task_take_result_v1(
+                    task,
+                    (&raw mut result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(result, 42);
+            assert_eq!(frame.read(), 0);
+            assert_eq!(
+                typed_task_take_result_v1(
+                    task,
+                    (&raw mut result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn typed_descriptor_rejects_hostile_shapes_and_misaligned_metadata() {
+        let (runtime, executor) = runtime_and_executor();
+        let base = descriptor(complete_u64, cancel_noop);
+        unsafe {
+            let mut descriptor_bytes = [0_u8; size_of::<LoomTypedCoroutineDescriptor>() + 1];
+            let mut misaligned_descriptor = descriptor_bytes.as_mut_ptr();
+            if (misaligned_descriptor as usize)
+                .is_multiple_of(align_of::<LoomTypedCoroutineDescriptor>())
+            {
+                misaligned_descriptor = misaligned_descriptor.add(1);
+            }
+            assert!(typed_task_create_v1(executor, misaligned_descriptor.cast()).is_null());
+
+            let reject = |candidate: LoomTypedCoroutineDescriptor| {
+                assert!(typed_task_create_v1(executor, &raw const candidate).is_null());
+            };
+            reject(LoomTypedCoroutineDescriptor {
+                abi_version: TYPED_TASK_ABI_VERSION + 1,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor { flags: 1, ..base });
+            reject(LoomTypedCoroutineDescriptor {
+                resume: None,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                cancel: None,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                frame_size: 0,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                frame_align: 3,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                result_offset: 1,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                result_size: 9,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                root_state_count: 0,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                completed_root_state: 1,
+                ..base
+            });
+            reject(LoomTypedCoroutineDescriptor {
+                root_slot_count: 1,
+                root_bitmap_words: 0,
+                ..base
+            });
+
+            let aligned_offsets = [0_u64];
+            let aligned_bitmaps = [1_u64];
+            let rooted = LoomTypedCoroutineDescriptor {
+                root_slot_count: 1,
+                root_bitmap_words: 1,
+                root_offsets: aligned_offsets.as_ptr(),
+                live_bitmaps: aligned_bitmaps.as_ptr(),
+                ..base
+            };
+            let offset_storage = [0_u64; 2];
+            reject(LoomTypedCoroutineDescriptor {
+                root_offsets: offset_storage.as_ptr().cast::<u8>().add(1).cast(),
+                ..rooted
+            });
+            let bitmap_storage = [0_u64; 2];
+            reject(LoomTypedCoroutineDescriptor {
+                live_bitmaps: bitmap_storage.as_ptr().cast::<u8>().add(1).cast(),
+                ..rooted
+            });
+            let unaligned_offset = [1_u64];
+            reject(LoomTypedCoroutineDescriptor {
+                root_offsets: unaligned_offset.as_ptr(),
+                ..rooted
+            });
+            let outside_offset = [8_u64];
+            reject(LoomTypedCoroutineDescriptor {
+                root_offsets: outside_offset.as_ptr(),
+                ..rooted
+            });
+            let dirty_tail = [2_u64];
+            reject(LoomTypedCoroutineDescriptor {
+                live_bitmaps: dirty_tail.as_ptr(),
+                ..rooted
+            });
+
+            let two_offsets = [0_u64, 8_u64];
+            let two_bitmaps = [3_u64];
+            let two_roots = LoomTypedCoroutineDescriptor {
+                frame_size: 16,
+                result_offset: 8,
+                root_slot_count: 2,
+                root_bitmap_words: 1,
+                root_offsets: two_offsets.as_ptr(),
+                live_bitmaps: two_bitmaps.as_ptr(),
+                ..base
+            };
+            reject(two_roots);
+            let duplicate_offsets = [0_u64, 0_u64];
+            reject(LoomTypedCoroutineDescriptor {
+                root_offsets: duplicate_offsets.as_ptr(),
+                ..two_roots
+            });
+            assert_eq!(executor_live_tasks(executor), 0);
+            destroy(runtime, executor);
+        }
+    }
+
+    static CANCEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_cancel(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        CANCEL_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_CANCELLED
+    }
+
+    #[test]
+    fn repeated_cancel_requests_invoke_the_callback_exactly_once() {
+        CANCEL_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(complete_u64, count_cancel);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(typed_task_is_cancel_requested_v1(task), 1);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert_eq!(CANCEL_CALLS.load(Ordering::SeqCst), 1);
+            destroy(runtime, executor);
+        }
+    }
+
+    static DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_dispose(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn pending_dispose(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn remain_pending(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn outer_aborts_child_with_live_roots(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let roots_restored = unsafe {
+            with_sync_and_typed_roots(|| {
+                let descriptor = descriptor(remain_pending, cancel_noop);
+                let child = typed_task_create_v1(executor, &raw const descriptor);
+                !child.is_null()
+                    && typed_task_initialize_v1(child, 0) == TYPED_TASK_OK
+                    && typed_task_abort_unpublished_v1(executor, child) == TYPED_TASK_OK
+            })
+        };
+        unsafe { frame.cast::<u64>().write(73) };
+        if roots_restored && unsafe { typed_task_publish_result_v1(task) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    static REENTRANT_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn reentrant_dispose_callback(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        REENTRANT_DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn outer_disposes_child_with_live_roots(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let roots_restored = unsafe {
+            with_sync_and_typed_roots(|| {
+                let mut descriptor = descriptor(complete_u64, cancel_noop);
+                descriptor.dispose_result = Some(reentrant_dispose_callback);
+                let child = typed_task_create_v1(executor, &raw const descriptor);
+                if child.is_null() {
+                    return false;
+                }
+                let child_frame = typed_task_frame_v1(child).cast::<u64>();
+                if child_frame.is_null()
+                    || typed_task_initialize_v1(child, 0) != TYPED_TASK_OK
+                    || typed_task_publish_v1(executor, child) != TYPED_TASK_OK
+                {
+                    return false;
+                }
+                (*executor).runnable.retain(|candidate| *candidate != child);
+                (*child).queued = false;
+                child_frame.write(19);
+                let typed = (*child).typed.as_mut().expect("typed child");
+                typed.result_initialized = true;
+                typed.root_state = typed.completed_root_state;
+                (*child).status = TaskStatus::Completed;
+                dispose_typed_result(&mut *executor, child).is_clean()
+            })
+        };
+        unsafe { frame.cast::<u64>().write(91) };
+        if roots_restored && unsafe { typed_task_publish_result_v1(task) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    #[test]
+    fn nested_cancel_and_dispose_restore_outer_sync_and_typed_root_baselines() {
+        REENTRANT_DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        for (resume, expected) in [
+            (
+                outer_aborts_child_with_live_roots as LoomTypedTaskCallback,
+                73_u64,
+            ),
+            (
+                outer_disposes_child_with_live_roots as LoomTypedTaskCallback,
+                91_u64,
+            ),
+        ] {
+            let (runtime, executor) = runtime_and_executor();
+            let descriptor = descriptor(resume, cancel_noop);
+            unsafe {
+                let root = typed_task_create_v1(executor, &raw const descriptor);
+                assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+                assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+                assert_eq!(executor_run(executor, root), TASK_COMPLETED);
+                let mut result = 0_u64;
+                assert_eq!(
+                    typed_task_take_result_v1(
+                        root,
+                        (&raw mut result).cast(),
+                        size_of::<u64>() as u64,
+                        align_of::<u64>() as u64,
+                    ),
+                    TYPED_TASK_OK
+                );
+                assert_eq!(result, expected);
+                destroy(runtime, executor);
+            }
+        }
+        assert_eq!(REENTRANT_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    const CLEANUP_LEGACY_SPAWN_DENIED: usize = 1 << 0;
+    const CLEANUP_TYPED_SPAWN_DENIED: usize = 1 << 1;
+    const CLEANUP_DELAYED_PUBLISH_DENIED: usize = 1 << 2;
+    const CLEANUP_REGISTER_DENIED: usize = 1 << 3;
+    const CLEANUP_SUSPEND_DENIED: usize = 1 << 4;
+    const CLEANUP_JOIN_DENIED: usize = 1 << 5;
+    const CLEANUP_CANCEL_DENIED: usize = 1 << 6;
+    const CLEANUP_RUN_DENIED: usize = 1 << 7;
+    const CLEANUP_ABORT_DENIED: usize = 1 << 8;
+    const CLEANUP_ROOTS_ALLOWED: usize = 1 << 9;
+    const CLEANUP_ALL_GUARDS: usize = (1 << 10) - 1;
+
+    static DELAYED_TYPED_TASK: AtomicUsize = AtomicUsize::new(0);
+    static CLEANUP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static CANCEL_CLEANUP_GUARDS: AtomicUsize = AtomicUsize::new(0);
+    static DISPOSE_CLEANUP_GUARDS: AtomicUsize = AtomicUsize::new(0);
+    static SELF_TAKE_STATUS: AtomicI32 = AtomicI32::new(i32::MIN);
+    static SELF_TAKE_VALUE: AtomicU64 = AtomicU64::new(0);
+    static MALICIOUS_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn legacy_pending(_task: *mut LoomTask, _executor: *mut LoomExecutor) -> i32 {
+        TASK_PENDING
+    }
+
+    unsafe fn exercise_cleanup_guards(
+        task: *mut LoomTask,
+        executor: *mut LoomExecutor,
+        frame: *mut c_void,
+    ) -> usize {
+        let mut passed = 0;
+        if unsafe { task_spawn(executor, Some(legacy_pending), 1, 0) }.is_null() {
+            passed |= CLEANUP_LEGACY_SPAWN_DENIED;
+        }
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        if unsafe { typed_task_create_v1(executor, &raw const descriptor) }.is_null() {
+            passed |= CLEANUP_TYPED_SPAWN_DENIED;
+        }
+        let delayed = DELAYED_TYPED_TASK.load(Ordering::SeqCst) as *mut LoomTask;
+        if !delayed.is_null()
+            && unsafe { typed_task_publish_v1(executor, delayed) } == TYPED_TASK_INVALID_ARGUMENT
+        {
+            passed |= CLEANUP_DELAYED_PUBLISH_DENIED;
+        }
+        let source = LoomWaitSource {
+            abi_version: WAIT_ABI_VERSION,
+            kind: WAIT_SOURCE_TIMER,
+            handle: 0,
+            interests: 0,
+            reserved: 0,
+            deadline_ns: u64::MAX,
+        };
+        let mut registration = LoomRegistration::default();
+        if unsafe { executor_register(executor, &raw const source, frame, &raw mut registration) }
+            == WAIT_INVALID_ARGUMENT
+        {
+            passed |= CLEANUP_REGISTER_DENIED;
+        }
+        if unsafe { task_suspend_wait(executor, task, &raw const source) } == WAIT_INVALID_ARGUMENT
+        {
+            passed |= CLEANUP_SUSPEND_DENIED;
+        }
+        if unsafe { task_prepare_join(executor, task, TASK_JOIN_ALL) } == WAIT_INVALID_ARGUMENT {
+            passed |= CLEANUP_JOIN_DENIED;
+        }
+        if unsafe { typed_task_request_cancel_v1(executor, task) } == TYPED_TASK_INVALID_ARGUMENT {
+            passed |= CLEANUP_CANCEL_DENIED;
+        }
+        if unsafe { executor_run(executor, task) } == WAIT_INVALID_ARGUMENT {
+            passed |= CLEANUP_RUN_DENIED;
+        }
+        if !delayed.is_null()
+            && unsafe { typed_task_abort_unpublished_v1(executor, delayed) }
+                == TYPED_TASK_INVALID_ARGUMENT
+        {
+            passed |= CLEANUP_ABORT_DENIED;
+        }
+        if unsafe { with_sync_and_typed_roots(|| true) } {
+            passed |= CLEANUP_ROOTS_ALLOWED;
+        }
+        passed
+    }
+
+    unsafe extern "C" fn adversarial_cancel(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let passed = unsafe { exercise_cleanup_guards(task, executor, frame) };
+        if unsafe { typed_task_set_root_state_v1(task, 0) } == TYPED_TASK_OK
+            && unsafe { typed_task_is_cancel_requested_v1(task) } == 1
+        {
+            CANCEL_CLEANUP_GUARDS.store(passed, Ordering::SeqCst);
+        }
+        TASK_CANCELLED
+    }
+
+    unsafe extern "C" fn cancellation_mutates_topology(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let executor = executor.cast::<LoomExecutor>();
+        unsafe { (*(*executor).active_task).status = TaskStatus::Waiting };
+        TASK_CANCELLED
+    }
+
+    unsafe extern "C" fn cancellation_returns_pending(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn cancellation_leaks_sync_root(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let bitmap = [1_u64];
+        let descriptor = LoomGcRootDescriptor {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            slot_count: 1,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        let mut value = ValueSlot::default();
+        let slots = [(&raw mut value).cast::<c_void>()];
+        let mut root = LoomGcRootFrame {
+            abi_version: SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            state: 0,
+            descriptor: &raw const descriptor,
+            slots: slots.as_ptr(),
+            previous: ptr::null_mut(),
+        };
+        if unsafe { root_push_v1(&raw mut root) } == GC_OK {
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe extern "C" fn cancellation_leaks_typed_root(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let bitmap = [1_u64];
+        let descriptor = LoomGcTypedRootDescriptor {
+            abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            slot_count: 1,
+            state_count: 1,
+            live_bitmap_words: 1,
+            live_bitmaps: bitmap.as_ptr(),
+        };
+        let mut value = ptr::null_mut::<c_void>();
+        let slots = [(&raw mut value).cast::<c_void>()];
+        let mut root = LoomGcTypedRootFrame {
+            abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+            flags: 0,
+            state: 0,
+            descriptor: &raw const descriptor,
+            slots: slots.as_ptr(),
+            previous: ptr::null_mut(),
+        };
+        if unsafe { typed_root_push_v1(&raw mut root) } == GC_OK {
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe extern "C" fn cancellation_leaks_nested_activation(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let executor = executor.cast::<LoomExecutor>();
+        if unsafe { activate_runtime_v1((*executor).runtime_pointer()) } == GC_OK {
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe fn assert_cleanup_activation_defect_is_recoverable(cancel: LoomTypedTaskCallback) {
+        let (runtime, executor) = runtime_and_executor();
+        let faulting_descriptor = descriptor(remain_pending, cancel);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const faulting_descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_FAULTED);
+            assert_eq!(typed_task_status_v1(task), TASK_FAULTED);
+            assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_CANCEL_ACTIVATION");
+            assert!(active_runtime_pointer().is_null());
+            assert_eq!((*runtime).active_depth.load(Ordering::Acquire), 0);
+            assert!((*runtime).sync_root_top.is_null());
+            assert_eq!((*runtime).sync_root_depth, 0);
+            assert!((*runtime).typed_root_top.is_null());
+            assert_eq!((*runtime).typed_root_depth, 0);
+
+            // The same Runtime and executor must remain usable after the
+            // malformed cleanup is isolated and converted into a Task fault.
+            let follow_up_descriptor = descriptor(complete_u64, cancel_noop);
+            let follow_up = typed_task_create_v1(executor, &raw const follow_up_descriptor);
+            assert!(!follow_up.is_null());
+            assert_eq!(typed_task_initialize_v1(follow_up, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, follow_up), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, follow_up), TASK_COMPLETED);
+            let mut result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    follow_up,
+                    (&raw mut result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(result, 42);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn cleanup_sync_root_leak_faults_and_recovers_activation() {
+        unsafe {
+            assert_cleanup_activation_defect_is_recoverable(cancellation_leaks_sync_root);
+        }
+    }
+
+    #[test]
+    fn cleanup_typed_root_leak_faults_and_recovers_activation() {
+        unsafe {
+            assert_cleanup_activation_defect_is_recoverable(cancellation_leaks_typed_root);
+        }
+    }
+
+    #[test]
+    fn cleanup_nested_activation_leak_faults_and_recovers_activation() {
+        unsafe {
+            assert_cleanup_activation_defect_is_recoverable(cancellation_leaks_nested_activation);
+        }
+    }
+
+    unsafe extern "C" fn adversarial_dispose_and_take(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        MALICIOUS_DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        DISPOSE_CLEANUP_GUARDS.store(
+            unsafe { exercise_cleanup_guards(task, executor, frame) },
+            Ordering::SeqCst,
+        );
+        let mut stolen = u64::MAX;
+        SELF_TAKE_STATUS.store(
+            unsafe {
+                typed_task_take_result_v1(
+                    task,
+                    (&raw mut stolen).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                )
+            },
+            Ordering::SeqCst,
+        );
+        SELF_TAKE_VALUE.store(stolen, Ordering::SeqCst);
+        TASK_COMPLETED
+    }
+
+    #[test]
+    fn cancellation_cleanup_cannot_create_work_or_change_wait_topology() {
+        let _serial = CLEANUP_TEST_LOCK.lock().unwrap();
+        CANCEL_CLEANUP_GUARDS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let delayed_descriptor = descriptor(remain_pending, cancel_noop);
+        let root_descriptor = descriptor(remain_pending, adversarial_cancel);
+        unsafe {
+            let delayed = typed_task_create_v1(executor, &raw const delayed_descriptor);
+            assert_eq!(typed_task_initialize_v1(delayed, 0), TYPED_TASK_OK);
+            DELAYED_TYPED_TASK.store(delayed as usize, Ordering::SeqCst);
+
+            let root = typed_task_create_v1(executor, &raw const root_descriptor);
+            assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, root), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, root), TASK_CANCELLED);
+            assert_eq!(
+                CANCEL_CLEANUP_GUARDS.load(Ordering::SeqCst),
+                CLEANUP_ALL_GUARDS
+            );
+            assert_eq!(executor_live_tasks(executor), 2);
+            assert!(!has_registrations(&*executor));
+            assert_eq!(typed_task_status_v1(delayed), TASK_PENDING);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, delayed),
+                TYPED_TASK_OK
+            );
+            DELAYED_TYPED_TASK.store(0, Ordering::SeqCst);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn cancellation_does_not_suppress_topology_or_callback_protocol_defects() {
+        for cancel in [
+            cancellation_mutates_topology as LoomTypedTaskCallback,
+            cancellation_returns_pending as LoomTypedTaskCallback,
+        ] {
+            let (runtime, executor) = runtime_and_executor();
+            let descriptor = descriptor(remain_pending, cancel);
+            unsafe {
+                let root = typed_task_create_v1(executor, &raw const descriptor);
+                assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+                assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+                assert_eq!(typed_task_request_cancel_v1(executor, root), TYPED_TASK_OK);
+                assert_eq!(executor_run(executor, root), TASK_FAULTED);
+                assert_eq!(typed_task_status_v1(root), TASK_FAULTED);
+                let mut fault = LoomTypedTaskFaultView::default();
+                assert_eq!(
+                    typed_task_fault_view_v1(root, &raw mut fault),
+                    TYPED_TASK_OK
+                );
+                destroy(runtime, executor);
+            }
+        }
+    }
+
+    #[test]
+    fn root_disposer_cannot_take_its_result_or_reenter_scheduler_topology() {
+        let _serial = CLEANUP_TEST_LOCK.lock().unwrap();
+        DISPOSE_CLEANUP_GUARDS.store(0, Ordering::SeqCst);
+        SELF_TAKE_STATUS.store(i32::MIN, Ordering::SeqCst);
+        SELF_TAKE_VALUE.store(0, Ordering::SeqCst);
+        MALICIOUS_DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let delayed_descriptor = descriptor(remain_pending, cancel_noop);
+        let mut root_descriptor = descriptor(complete_u64, cancel_noop);
+        root_descriptor.dispose_result = Some(adversarial_dispose_and_take);
+        unsafe {
+            let delayed = typed_task_create_v1(executor, &raw const delayed_descriptor);
+            assert_eq!(typed_task_initialize_v1(delayed, 0), TYPED_TASK_OK);
+            DELAYED_TYPED_TASK.store(delayed as usize, Ordering::SeqCst);
+
+            let root = typed_task_create_v1(executor, &raw const root_descriptor);
+            assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, root), TASK_COMPLETED);
+            destroy(runtime, executor);
+        }
+        DELAYED_TYPED_TASK.store(0, Ordering::SeqCst);
+        assert_eq!(
+            DISPOSE_CLEANUP_GUARDS.load(Ordering::SeqCst),
+            CLEANUP_ALL_GUARDS
+        );
+        assert_eq!(
+            SELF_TAKE_STATUS.load(Ordering::SeqCst),
+            TYPED_TASK_INVALID_ARGUMENT
+        );
+        assert_eq!(SELF_TAKE_VALUE.load(Ordering::SeqCst), u64::MAX);
+        assert_eq!(MALICIOUS_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn disposal_is_exactly_once_never_runs_for_pending_and_cannot_suspend() {
+        let _serial = CLEANUP_TEST_LOCK.lock().unwrap();
+        DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let mut completed_descriptor = descriptor(complete_u64, cancel_noop);
+        completed_descriptor.dispose_result = Some(count_dispose);
+        unsafe {
+            let completed = typed_task_create_v1(executor, &raw const completed_descriptor);
+            assert_eq!(typed_task_initialize_v1(completed, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, completed), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, completed), TASK_COMPLETED);
+            destroy(runtime, executor);
+        }
+        assert_eq!(DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+
+        DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let mut pending_descriptor = descriptor(remain_pending, cancel_noop);
+        pending_descriptor.dispose_result = Some(count_dispose);
+        unsafe {
+            let pending = typed_task_create_v1(executor, &raw const pending_descriptor);
+            assert_eq!(typed_task_initialize_v1(pending, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, pending), TYPED_TASK_OK);
+            (*executor).runnable.clear();
+            (*pending).queued = false;
+            (*pending).status = TaskStatus::Waiting;
+            destroy(runtime, executor);
+        }
+        assert_eq!(DISPOSE_CALLS.load(Ordering::SeqCst), 0);
+
+        let (runtime, executor) = runtime_and_executor();
+        let mut invalid_descriptor = descriptor(complete_u64, cancel_noop);
+        invalid_descriptor.dispose_result = Some(pending_dispose);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const invalid_descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_COMPLETED);
+            assert_eq!(
+                dispose_typed_result(&mut *executor, task),
+                CleanupOutcome::Defect
+            );
+            assert_eq!(DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+            assert!((*task).typed.as_ref().unwrap().result_disposed);
+            assert!(!(*task).typed.as_ref().unwrap().result_initialized);
+            assert_eq!((*task).typed.as_ref().unwrap().result_pointer().read(), 0);
+            assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_DISPOSE_PENDING");
+            assert_eq!(
+                dispose_typed_result(&mut *executor, task),
+                CleanupOutcome::Clean
+            );
+            assert_eq!(DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+            (*task).status = TaskStatus::Faulted;
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_faults_are_copied_bounded_and_first_fault_wins() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(complete_u64, cancel_noop);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            (*task).queued = false;
+            (*executor).runnable.clear();
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+            let invalid_utf8 = [0xff_u8];
+            assert_eq!(
+                typed_task_record_fault_v1(
+                    task,
+                    invalid_utf8.as_ptr(),
+                    1,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                typed_task_record_fault_v1(
+                    task,
+                    ptr::null(),
+                    TYPED_TASK_MAX_FAULT_TEXT_BYTES + 1,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    0,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            let (code, message, detail) = (b"TypedFault", b"first message", b"detail");
+            assert_eq!(
+                typed_task_record_fault_v1(
+                    task,
+                    code.as_ptr(),
+                    code.len() as u64,
+                    message.as_ptr(),
+                    message.len() as u64,
+                    detail.as_ptr(),
+                    detail.len() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(
+                typed_task_record_fault_v1(
+                    task,
+                    b"Later".as_ptr(),
+                    5,
+                    b"ignored".as_ptr(),
+                    7,
+                    ptr::null(),
+                    0,
+                ),
+                TYPED_TASK_OK
+            );
+            (*executor).active_task = ptr::null_mut();
+            (*task).status = TaskStatus::Faulted;
+
+            let mut view = LoomTypedTaskFaultView::default();
+            assert_eq!(typed_task_fault_view_v1(task, &raw mut view), TYPED_TASK_OK);
+            let view_bytes = |view: LoomByteView| {
+                if view.length == 0 {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts(
+                        view.data,
+                        usize::try_from(view.length).expect("bounded typed fault view"),
+                    )
+                }
+            };
+            assert_eq!(view_bytes(view.code), code);
+            assert_eq!(view_bytes(view.message), message);
+            assert_eq!(view_bytes(view.detail), detail);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[repr(C)]
+    struct RootFrame {
+        active: *mut c_void,
+        result: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct Leaf {
+        marker: u64,
+    }
+
+    #[test]
+    fn suspended_and_completed_rows_move_only_their_exact_typed_roots() {
+        let (runtime, executor) = runtime_and_executor();
+        let mut offsets = [
+            offset_of!(RootFrame, active) as u64,
+            offset_of!(RootFrame, result) as u64,
+        ];
+        let mut bitmaps = [1_u64, 2_u64];
+        let descriptor = LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(remain_pending),
+            cancel: Some(cancel_noop),
+            dispose_result: None,
+            frame_size: size_of::<RootFrame>() as u64,
+            frame_align: align_of::<RootFrame>() as u64,
+            result_offset: offset_of!(RootFrame, result) as u64,
+            result_size: size_of::<*mut c_void>() as u64,
+            result_align: align_of::<*mut c_void>() as u64,
+            root_slot_count: 2,
+            root_state_count: 2,
+            root_bitmap_words: 1,
+            root_offsets: offsets.as_ptr(),
+            live_bitmaps: bitmaps.as_ptr(),
+            completed_root_state: 1,
+        };
+        let leaf_descriptor = LoomGcObjectDescriptor {
+            abi_version: TYPED_GC_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<Leaf>() as u64,
+            object_align: align_of::<Leaf>() as u64,
+            pointer_count: 0,
+            pointer_offsets: ptr::null(),
+        };
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            let frame = typed_task_frame_v1(task).cast::<RootFrame>();
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            // Runtime owns copied metadata after create.
+            offsets.fill(u64::MAX);
+            bitmaps.fill(u64::MAX);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            (*executor).runnable.clear();
+            (*task).queued = false;
+            (*task).status = TaskStatus::Waiting;
+
+            enter_executor(executor);
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const leaf_descriptor,
+                    size_of::<Leaf>() as u64,
+                    &raw mut (*frame).active,
+                ),
+                GC_OK
+            );
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const leaf_descriptor,
+                    size_of::<Leaf>() as u64,
+                    &raw mut (*frame).result,
+                ),
+                GC_OK
+            );
+            leave_executor();
+            let old_active = (*frame).active;
+            let dead_result = (*frame).result;
+            collect(&mut *executor);
+            assert_ne!((*frame).active, old_active);
+            assert_eq!((*frame).result, dead_result);
+            assert_eq!((*executor).heap().typed_object_count(), 1);
+
+            (*frame).result = ptr::null_mut();
+            enter_executor(executor);
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const leaf_descriptor,
+                    size_of::<Leaf>() as u64,
+                    &raw mut (*frame).result,
+                ),
+                GC_OK
+            );
+            leave_executor();
+            let old_result = (*frame).result;
+            (*task).typed.as_mut().unwrap().result_initialized = true;
+            (*task).typed.as_mut().unwrap().root_state = 1;
+            (*task).status = TaskStatus::Completed;
+            collect(&mut *executor);
+            assert_ne!((*frame).result, old_result);
+            assert_eq!((*executor).heap().typed_object_count(), 1);
+            assert!((*executor).heap().reclaimed >= 2);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[repr(C)]
+    struct ParentFrame {
+        child: *mut LoomTask,
+        state: u64,
+        result: u64,
+    }
+
+    unsafe extern "C" fn parent_join_and_take(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let frame = frame.cast::<ParentFrame>();
+        if unsafe { (*frame).state } == 0 {
+            if unsafe { task_prepare_join(executor, task, TASK_JOIN_ALL) } != WAIT_OK {
+                return TASK_FAULTED;
+            }
+            let descriptor = descriptor(complete_u64, cancel_noop);
+            let child = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+            if child.is_null()
+                || unsafe { typed_task_initialize_v1(child, 0) } != TYPED_TASK_OK
+                || unsafe { typed_task_publish_v1(executor, child) } != TYPED_TASK_OK
+                || unsafe { task_add_join_child(executor, task, child) } != WAIT_OK
+            {
+                return TASK_FAULTED;
+            }
+            unsafe {
+                (*frame).child = child;
+                (*frame).state = 1;
+            }
+            return if unsafe { task_suspend_join(executor, task) } == 1 {
+                TASK_PENDING
+            } else {
+                TASK_FAULTED
+            };
+        }
+        let mut child_result = 0_u64;
+        if unsafe {
+            typed_task_take_result_v1(
+                (*frame).child,
+                (&raw mut child_result).cast(),
+                size_of::<u64>() as u64,
+                align_of::<u64>() as u64,
+            )
+        } != TYPED_TASK_OK
+        {
+            return TASK_FAULTED;
+        }
+        unsafe { (*frame).result = child_result + 1 };
+        if unsafe { typed_task_publish_result_v1(task) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    static STRUCTURED_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_structured_dispose(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        STRUCTURED_DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn parent_join_without_taking(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let task = task.cast::<LoomTask>();
+        let executor = executor.cast::<LoomExecutor>();
+        let frame = frame.cast::<ParentFrame>();
+        if unsafe { (*frame).state } == 0 {
+            if unsafe { task_prepare_join(executor, task, TASK_JOIN_ALL) } != WAIT_OK {
+                return TASK_FAULTED;
+            }
+            let mut descriptor = descriptor(complete_u64, cancel_noop);
+            descriptor.dispose_result = Some(count_structured_dispose);
+            let child = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+            if child.is_null()
+                || unsafe { typed_task_initialize_v1(child, 0) } != TYPED_TASK_OK
+                || unsafe { typed_task_publish_v1(executor, child) } != TYPED_TASK_OK
+                || unsafe { task_add_join_child(executor, task, child) } != WAIT_OK
+            {
+                return TASK_FAULTED;
+            }
+            unsafe {
+                (*frame).child = child;
+                (*frame).state = 1;
+            }
+            return if unsafe { task_suspend_join(executor, task) } == 1 {
+                TASK_PENDING
+            } else {
+                TASK_FAULTED
+            };
+        }
+        unsafe { (*frame).result = 7 };
+        if unsafe { typed_task_publish_result_v1(task) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    #[test]
+    fn taking_a_structured_child_result_detaches_and_reclaims_its_frame() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(parent_join_and_take),
+            cancel: Some(cancel_noop),
+            dispose_result: None,
+            frame_size: size_of::<ParentFrame>() as u64,
+            frame_align: align_of::<ParentFrame>() as u64,
+            result_offset: offset_of!(ParentFrame, result) as u64,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        };
+        unsafe {
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, parent), TASK_COMPLETED);
+            assert_eq!(executor_live_tasks(executor), 2);
+            assert_eq!((*executor).retired_tasks.len(), 1);
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            assert_eq!(executor_tasks_reclaimed(executor), 1);
+            let mut result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    parent,
+                    (&raw mut result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(result, 43);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn structured_completion_disposes_an_unconsumed_child_result_once() {
+        STRUCTURED_DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(parent_join_without_taking),
+            cancel: Some(cancel_noop),
+            dispose_result: None,
+            frame_size: size_of::<ParentFrame>() as u64,
+            frame_align: align_of::<ParentFrame>() as u64,
+            result_offset: offset_of!(ParentFrame, result) as u64,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        };
+        unsafe {
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, parent), TASK_COMPLETED);
+            assert_eq!(STRUCTURED_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!((*executor).retired_tasks.len(), 1);
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            let mut result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    parent,
+                    (&raw mut result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(result, 7);
+            destroy(runtime, executor);
+        }
+        assert_eq!(STRUCTURED_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    static RETIRE_ORDER: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+    static RETIRE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static RETIRE_FAULT_STATUS: std::sync::atomic::AtomicI32 =
+        std::sync::atomic::AtomicI32::new(i32::MIN);
+
+    unsafe extern "C" fn log_retirement(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let marker = unsafe { frame.cast::<u64>().read() };
+        RETIRE_ORDER.lock().unwrap().push(marker);
+        TASK_CANCELLED
+    }
+
+    #[repr(C)]
+    struct CancelOrderParentFrame {
+        marker: u64,
+        state: u64,
+        result: u64,
+    }
+
+    unsafe extern "C" fn spawn_ordered_cancel_children(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let executor = executor.cast::<LoomExecutor>();
+        let frame = frame.cast::<CancelOrderParentFrame>();
+        if unsafe { (*frame).state } != 0 {
+            return TASK_PENDING;
+        }
+        let descriptor = descriptor(remain_pending, log_retirement);
+        for marker in 1_u64..=3 {
+            let child = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+            if child.is_null() {
+                return TASK_FAULTED;
+            }
+            unsafe { typed_task_frame_v1(child).cast::<u64>().write(marker) };
+            if unsafe { typed_task_initialize_v1(child, 0) } != TYPED_TASK_OK
+                || unsafe { typed_task_publish_v1(executor, child) } != TYPED_TASK_OK
+            {
+                return TASK_FAULTED;
+            }
+        }
+        unsafe { (*frame).state = 1 };
+        TASK_PENDING
+    }
+
+    fn cancel_order_parent_descriptor() -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(spawn_ordered_cancel_children),
+            cancel: Some(log_retirement),
+            dispose_result: None,
+            frame_size: size_of::<CancelOrderParentFrame>() as u64,
+            frame_align: align_of::<CancelOrderParentFrame>() as u64,
+            result_offset: offset_of!(CancelOrderParentFrame, result) as u64,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        }
+    }
+
+    unsafe extern "C" fn fault_retirement(
+        task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let code = b"RetireFault";
+        let message = b"retirement cleanup failed";
+        let status = unsafe {
+            typed_task_record_fault_v1(
+                task.cast(),
+                code.as_ptr(),
+                code.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
+                ptr::null(),
+                0,
+            )
+        };
+        RETIRE_FAULT_STATUS.store(status, Ordering::SeqCst);
+        TASK_FAULTED
+    }
+
+    unsafe extern "C" fn fault_during_requested_cancel(
+        task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let code = b"SuppressedCancelCleanup";
+        let message = b"cancellation already owns the outcome";
+        let _ = unsafe {
+            typed_task_record_fault_v1(
+                task.cast(),
+                code.as_ptr(),
+                code.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
+                ptr::null(),
+                0,
+            )
+        };
+        TASK_FAULTED
+    }
+
+    unsafe extern "C" fn fault_during_result_dispose(
+        task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        let code = b"SuppressedDisposeCleanup";
+        let message = b"parent cancellation already owns the outcome";
+        let _ = unsafe {
+            typed_task_record_fault_v1(
+                task.cast(),
+                code.as_ptr(),
+                code.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
+                ptr::null(),
+                0,
+            )
+        };
+        TASK_FAULTED
+    }
+
+    #[repr(C)]
+    struct OneChildParentFrame {
+        state: u64,
+        result: u64,
+    }
+
+    unsafe fn spawn_one_cleanup_child(
+        executor: *mut LoomExecutor,
+        frame: *mut OneChildParentFrame,
+        result_dispose: Option<LoomTypedTaskCallback>,
+    ) -> i32 {
+        if unsafe { (*frame).state } != 0 {
+            return TASK_PENDING;
+        }
+        let mut descriptor = if result_dispose.is_some() {
+            descriptor(complete_u64, cancel_noop)
+        } else {
+            descriptor(remain_pending, fault_during_requested_cancel)
+        };
+        descriptor.dispose_result = result_dispose;
+        let child = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+        if child.is_null()
+            || unsafe { typed_task_initialize_v1(child, 0) } != TYPED_TASK_OK
+            || unsafe { typed_task_publish_v1(executor, child) } != TYPED_TASK_OK
+        {
+            return TASK_FAULTED;
+        }
+        unsafe { (*frame).state = 1 };
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn spawn_cancel_fault_child(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        unsafe {
+            spawn_one_cleanup_child(executor.cast(), frame.cast::<OneChildParentFrame>(), None)
+        }
+    }
+
+    unsafe extern "C" fn spawn_dispose_fault_child(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        unsafe {
+            spawn_one_cleanup_child(
+                executor.cast(),
+                frame.cast::<OneChildParentFrame>(),
+                Some(fault_during_result_dispose),
+            )
+        }
+    }
+
+    unsafe extern "C" fn spawn_invalid_dispose_child(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        unsafe {
+            spawn_one_cleanup_child(
+                executor.cast(),
+                frame.cast::<OneChildParentFrame>(),
+                Some(pending_dispose),
+            )
+        }
+    }
+
+    fn one_child_parent_descriptor(resume: LoomTypedTaskCallback) -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(resume),
+            cancel: Some(cancel_noop),
+            dispose_result: None,
+            frame_size: size_of::<OneChildParentFrame>() as u64,
+            frame_align: align_of::<OneChildParentFrame>() as u64,
+            result_offset: offset_of!(OneChildParentFrame, result) as u64,
+            result_size: size_of::<u64>() as u64,
+            result_align: align_of::<u64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        }
+    }
+
+    unsafe extern "C" fn invalid_retirement(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_PENDING
+    }
+
+    #[test]
+    fn initialized_abort_and_executor_shutdown_retire_frames_once_in_lifo_order() {
+        let _serial = RETIRE_TEST_LOCK.lock().unwrap();
+        RETIRE_ORDER.lock().unwrap().clear();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, log_retirement);
+        unsafe {
+            let uninitialized = typed_task_create_v1(executor, &raw const descriptor);
+            typed_task_frame_v1(uninitialized).cast::<u64>().write(99);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, uninitialized),
+                TYPED_TASK_OK
+            );
+            assert!(RETIRE_ORDER.lock().unwrap().is_empty());
+
+            let initialized = typed_task_create_v1(executor, &raw const descriptor);
+            typed_task_frame_v1(initialized).cast::<u64>().write(3);
+            assert_eq!(typed_task_initialize_v1(initialized, 0), TYPED_TASK_OK);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, initialized),
+                TYPED_TASK_OK
+            );
+            assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[3]);
+            RETIRE_ORDER.lock().unwrap().clear();
+
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            typed_task_frame_v1(parent).cast::<u64>().write(1);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            (*parent).queued = false;
+            (*parent).status = TaskStatus::Running;
+            (*executor).runnable.clear();
+            (*executor).active_task = parent;
+
+            let child = typed_task_create_v1(executor, &raw const descriptor);
+            typed_task_frame_v1(child).cast::<u64>().write(2);
+            assert_eq!(typed_task_initialize_v1(child, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, child), TYPED_TASK_OK);
+            (*child).queued = false;
+            (*child).status = TaskStatus::Waiting;
+            (*parent).status = TaskStatus::Waiting;
+            (*executor).active_task = ptr::null_mut();
+            (*executor).runnable.clear();
+
+            destroy(runtime, executor);
+        }
+        assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[2, 1]);
+    }
+
+    #[test]
+    fn structured_cancellation_runs_children_in_reverse_creation_order() {
+        let _serial = RETIRE_TEST_LOCK.lock().unwrap();
+        RETIRE_ORDER.lock().unwrap().clear();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = cancel_order_parent_descriptor();
+        unsafe {
+            let root = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+            let children = prime_pending_parent(executor, root, spawn_ordered_cancel_children);
+            assert_eq!(children.len(), 3);
+            assert_eq!(typed_task_request_cancel_v1(executor, root), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, root), TASK_CANCELLED);
+            assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[3, 2, 1, 0]);
+            RETIRE_ORDER.lock().unwrap().clear();
+            destroy(runtime, executor);
+        }
+        assert!(RETIRE_ORDER.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn abort_preserves_reverse_creation_order_for_remaining_frames() {
+        let _serial = RETIRE_TEST_LOCK.lock().unwrap();
+        RETIRE_ORDER.lock().unwrap().clear();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, log_retirement);
+        unsafe {
+            let mut tasks = Vec::new();
+            for marker in 1_u64..=4 {
+                let task = typed_task_create_v1(executor, &raw const descriptor);
+                typed_task_frame_v1(task).cast::<u64>().write(marker);
+                assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+                tasks.push(task);
+            }
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, tasks[1]),
+                TYPED_TASK_OK
+            );
+            assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[2]);
+            RETIRE_ORDER.lock().unwrap().clear();
+            destroy(runtime, executor);
+        }
+        assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[4, 3, 1]);
+    }
+
+    #[test]
+    fn abort_reports_faulted_and_invalid_non_suspending_cleanup() {
+        RETIRE_FAULT_STATUS.store(i32::MIN, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let fault_descriptor = descriptor(remain_pending, fault_retirement);
+            let faulted = typed_task_create_v1(executor, &raw const fault_descriptor);
+            assert_eq!(typed_task_initialize_v1(faulted, 0), TYPED_TASK_OK);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, faulted),
+                TYPED_TASK_CLEANUP_FAULTED
+            );
+            assert_eq!(RETIRE_FAULT_STATUS.load(Ordering::SeqCst), TYPED_TASK_OK);
+
+            let invalid_descriptor = descriptor(remain_pending, invalid_retirement);
+            let invalid = typed_task_create_v1(executor, &raw const invalid_descriptor);
+            assert_eq!(typed_task_initialize_v1(invalid, 0), TYPED_TASK_OK);
+            assert_eq!(
+                typed_task_abort_unpublished_v1(executor, invalid),
+                TYPED_TASK_CLEANUP_FAULTED
+            );
+            assert_eq!(executor_live_tasks(executor), 0);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn requested_cancellation_suppresses_later_cleanup_faults() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, fault_during_requested_cancel);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert_eq!(typed_task_status_v1(task), TASK_CANCELLED);
+            let mut fault = LoomTypedTaskFaultView::default();
+            assert_eq!(
+                typed_task_fault_view_v1(task, &raw mut fault),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn parent_cancellation_suppresses_child_cancel_and_dispose_faults() {
+        for (resume, child_completed) in [
+            (spawn_cancel_fault_child as LoomTypedTaskCallback, false),
+            (spawn_dispose_fault_child as LoomTypedTaskCallback, true),
+        ] {
+            let (runtime, executor) = runtime_and_executor();
+            let descriptor = one_child_parent_descriptor(resume);
+            unsafe {
+                let root = typed_task_create_v1(executor, &raw const descriptor);
+                assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+                assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+                let children = prime_pending_parent(executor, root, resume);
+                assert_eq!(children.len(), 1);
+                if child_completed {
+                    complete_typed_u64_for_test(children[0], 42);
+                }
+                assert_eq!(typed_task_request_cancel_v1(executor, root), TYPED_TASK_OK);
+                assert_eq!(executor_run(executor, root), TASK_CANCELLED);
+                assert_eq!(typed_task_status_v1(root), TASK_CANCELLED);
+                let mut fault = LoomTypedTaskFaultView::default();
+                assert_eq!(
+                    typed_task_fault_view_v1(root, &raw mut fault),
+                    TYPED_TASK_INVALID_ARGUMENT
+                );
+                destroy(runtime, executor);
+            }
+        }
+    }
+
+    #[test]
+    fn parent_cancellation_does_not_suppress_child_dispose_protocol_defects() {
+        let _serial = CLEANUP_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor =
+            one_child_parent_descriptor(spawn_invalid_dispose_child as LoomTypedTaskCallback);
+        unsafe {
+            let root = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(root, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, root), TYPED_TASK_OK);
+            let children = prime_pending_parent(executor, root, spawn_invalid_dispose_child);
+            assert_eq!(children.len(), 1);
+            complete_typed_u64_for_test(children[0], 42);
+            assert_eq!(typed_task_request_cancel_v1(executor, root), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, root), TASK_FAULTED);
+            assert_eq!(typed_task_status_v1(root), TASK_FAULTED);
+            destroy(runtime, executor);
         }
     }
 }

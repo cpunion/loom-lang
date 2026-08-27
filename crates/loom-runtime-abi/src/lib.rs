@@ -4,8 +4,9 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 10;
+pub const RUNTIME_ABI_VERSION: u32 = 11;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
+pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
@@ -13,7 +14,7 @@ pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/runtime-v4/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/runtime-v5/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -37,6 +38,9 @@ pub const GC_MAX_ROOT_DEPTH: u64 = 65_536;
 pub const GC_MAX_OBJECT_POINTERS: u64 = 4_096;
 pub const GC_MAX_OBJECT_BYTES: u64 = 1 << 30;
 pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
+
+/// Hard byte limit for each copied component of a typed Task fault.
+pub const TYPED_TASK_MAX_FAULT_TEXT_BYTES: u64 = 64 * 1024;
 
 /// Zeroed typed allocator taking `(descriptor, allocation_size, output)`.
 ///
@@ -199,6 +203,90 @@ pub struct LoomGcObjectDescriptor {
     pub pointer_offsets: *const u64,
 }
 
+/// Scheduler-private callback used by a typed stackless coroutine.
+///
+/// The first two opaque pointers identify the Task and its Executor. The last
+/// pointer is the Task's stable, compiler-shaped frame. Callbacks return one
+/// of the `TASK_*` step constants. `resume` may return `TASK_PENDING`;
+/// `cancel` and `dispose_result` are non-suspending cleanup callbacks and must
+/// return a terminal step. The runtime invokes `cancel` exactly once when an
+/// initialized frame is retired before normal completion, including an
+/// initialized-but-unpublished frame. `dispose_result` runs exactly once only
+/// for a published, initialized result that was not transferred to its owner.
+/// Neither callback is a GC finalizer. While either cleanup callback is
+/// active, task creation/publication, joins, scheduler re-entry, and wait
+/// registration/suspension are invalid; fault reporting, precise root
+/// operations, GC, root-state publication, and cancellation queries remain
+/// available. A well-formed cleanup fault returns `TASK_FAULTED` after
+/// recording its fault. Such a fault is suppressed when cancellation already
+/// owns the primary outcome, but an invalid step or topology violation is a
+/// runtime defect and is never converted to cancellation.
+pub type LoomTypedTaskCallback = unsafe extern "C" fn(
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// Exact physical contract for one compiler-shaped coroutine frame.
+///
+/// `root_offsets` names pointer-sized managed-reference cells within the
+/// frame. `live_bitmaps` has `root_state_count` rows of exactly
+/// `root_bitmap_words` words. The runtime copies and validates both arrays at
+/// Task creation, so their source storage only needs to remain live for that
+/// call. Every live bit in `completed_root_state` must identify a cell wholly
+/// inside the result range; other frame cells cease to be roots at completion.
+/// The frame address is stable but is exposed only while unpublished and as a
+/// callback argument after publication. Results cross the ABI by an exact
+/// size/alignment checked move, never through a universal value envelope.
+/// Descriptor identity is not language RTTI and is never exposed to Loom
+/// source.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomTypedCoroutineDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub resume: Option<LoomTypedTaskCallback>,
+    pub cancel: Option<LoomTypedTaskCallback>,
+    pub dispose_result: Option<LoomTypedTaskCallback>,
+    pub frame_size: u64,
+    pub frame_align: u64,
+    pub result_offset: u64,
+    pub result_size: u64,
+    pub result_align: u64,
+    pub root_slot_count: u64,
+    pub root_state_count: u64,
+    pub root_bitmap_words: u64,
+    pub root_offsets: *const u64,
+    pub live_bitmaps: *const u64,
+    pub completed_root_state: u64,
+}
+
+/// Borrowed UTF-8 bytes owned by a live typed Task.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomByteView {
+    pub data: *const u8,
+    pub length: u64,
+}
+
+impl Default for LoomByteView {
+    fn default() -> Self {
+        Self {
+            data: core::ptr::null(),
+            length: 0,
+        }
+    }
+}
+
+/// Borrowed view of the primary fault retained by a typed Task.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoomTypedTaskFaultView {
+    pub code: LoomByteView,
+    pub message: LoomByteView,
+    pub detail: LoomByteView,
+}
+
 pub const VALUE_TAG_UNIT: u64 = 0;
 pub const VALUE_TAG_BOOL: u64 = 1;
 pub const VALUE_TAG_INT: u64 = 2;
@@ -260,6 +348,14 @@ pub const TASK_PENDING: i32 = 1;
 pub const TASK_FAULTED: i32 = 2;
 pub const TASK_CANCELLED: i32 = 3;
 
+/// Status domain for typed Task management operations. Coroutine callbacks
+/// use the independent `TASK_*` step domain above.
+pub const TYPED_TASK_OK: i32 = 0;
+pub const TYPED_TASK_INVALID_ARGUMENT: i32 = 1;
+pub const TYPED_TASK_NO_MEMORY: i32 = 2;
+pub const TYPED_TASK_CLEANUP_FAULTED: i32 = 3;
+pub const TYPED_TASK_STATUS_INVALID: i32 = -1;
+
 pub const TASK_JOIN_ALL: u32 = 0;
 pub const TASK_JOIN_SETTLED: u32 = 1;
 pub const TASK_JOIN_ANY: u32 = 2;
@@ -294,21 +390,25 @@ mod tests {
     use super::{
         COROUTINE_ABI_VERSION, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
         GC_MAX_OBJECT_POINTERS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS,
-        GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomGcObjectDescriptor,
-        LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
+        GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
+        LoomGcObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor,
+        LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView,
         LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
         TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
         TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
-        TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION, WITNESS_ABI_VERSION,
+        TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+        TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
+        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 10);
+        assert_eq!(RUNTIME_ABI_VERSION, 11);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
+        assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_ABI_VERSION, 1);
@@ -320,8 +420,37 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/runtime-v4/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/runtime-v5/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn typed_task_layout_is_pinned_for_the_native_64_bit_abi() {
+        assert_eq!(TYPED_TASK_OK, 0);
+        assert_eq!(TYPED_TASK_INVALID_ARGUMENT, 1);
+        assert_eq!(TYPED_TASK_NO_MEMORY, 2);
+        assert_eq!(TYPED_TASK_CLEANUP_FAULTED, 3);
+        assert_eq!(TYPED_TASK_STATUS_INVALID, -1);
+        assert_eq!(TYPED_TASK_MAX_FAULT_TEXT_BYTES, 64 * 1024);
+        assert_eq!(size_of::<LoomTypedCoroutineDescriptor>(), 120);
+        assert_eq!(align_of::<LoomTypedCoroutineDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, resume), 8);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, cancel), 16);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, dispose_result), 24);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, frame_size), 32);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, root_offsets), 96);
+        assert_eq!(offset_of!(LoomTypedCoroutineDescriptor, live_bitmaps), 104);
+        assert_eq!(
+            offset_of!(LoomTypedCoroutineDescriptor, completed_root_state),
+            112
+        );
+        assert_eq!(size_of::<LoomByteView>(), 16);
+        assert_eq!(align_of::<LoomByteView>(), 8);
+        assert_eq!(size_of::<LoomTypedTaskFaultView>(), 48);
+        assert_eq!(align_of::<LoomTypedTaskFaultView>(), 8);
     }
 
     #[test]

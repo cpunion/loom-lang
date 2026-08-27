@@ -21,8 +21,9 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v13` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `10` |
+| Native runtime ABI component | `11` |
 | Coroutine/Task ABI component | `2` |
+| Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
 | Standard-library ABI component | `4` |
 
@@ -44,6 +45,22 @@ to 11, artifact schema to 12, native-object domain to v8, and object-cache
 domain to v13. The new helper advances the native runtime component to `10`
 and the exact identity components to `text-v2` and `runtime-v4`; the collector
 implementation remains `gc-v8`.
+
+The typed Task runtime foundation adds `typed-task-v1` beside the retained
+legacy `task-v2` identity and advances the runtime component to `runtime-v5`
+(`11`). Typed descriptors, stable coroutine frames, precise suspended/result
+root rows, cancellation, result transfer, and deterministic result disposal
+cross this boundary without a universal value payload. Source and LCIR do not
+emit these symbols yet. Typed Task management calls use their own
+`TYPED_TASK_*` operation-status domain; coroutine callbacks independently
+return `TASK_*` scheduler steps, and cancellation/disposal callbacks may not
+return `TASK_PENDING`. Cleanup runs newest-child-first and cannot create or
+publish work, mutate joins, re-enter the scheduler, or register/suspend a wait.
+Nested callbacks preserve the caller's independent legacy and typed root-chain
+baselines. An established cancellation remains primary over a well-formed
+cleanup RuntimeFault; invalid callback statuses, missing fault records, and
+scheduler-topology violations remain runtime defects and are never laundered
+into cancellation.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity. Current typed source lowering
