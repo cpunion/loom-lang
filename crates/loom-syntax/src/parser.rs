@@ -1186,10 +1186,7 @@ impl<'a> Parser<'a> {
     ) -> Expr {
         let mut left = self.parse_unary_at(allow_record_literal, nesting);
         let mut chain_nesting = nesting;
-        loop {
-            let Some((op, precedence)) = self.current_binary_op() else {
-                break;
-            };
+        while let Some((op, precedence)) = self.current_binary_op() {
             if precedence < minimum {
                 break;
             }
