@@ -80,6 +80,172 @@ fn lower_source_artifact_with_layout(
     }
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source gate keeps normal, child-fault, and sibling-cancellation cleanup plus exact callback descriptors together"
+)]
+fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
+    let source = include_str!("../../../fixtures/lcir-async-cleanup/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "await_tasks state",
+        " fault b",
+        " cancel b",
+        "task.cancelled",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+
+    let normal = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("normalCleanup"))
+        .expect("defer-bearing coroutine");
+    let scoped = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("scopedCleanup"))
+        .expect("scoped-disposal coroutine");
+    for function in [normal, scoped] {
+        assert!(
+            function.effects().contains(Effects::MAY_FAULT)
+                && function.effects().contains(Effects::MAY_SUSPEND),
+            "await plus cleanup must carry exact fault and suspension effects: {}",
+            function.name()
+        );
+        assert_eq!(
+            function
+                .coroutine()
+                .expect("checked coroutine plan")
+                .suspensions()
+                .len(),
+            1,
+            "fixture keeps one exact cleanup-bearing suspension row"
+        );
+    }
+
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-async-cleanup-normal");
+    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-async-cleanup-normal");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    for required in [
+        "loom_typed_task_is_cancel_requested_v1",
+        "coroutine.cancel.dispatch",
+        "coroutine.cancel.live",
+        "task.await.fault.live",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "normal cleanup IR omitted `{required}`:\n{}",
+            lcir.ir
+        );
+    }
+    for function in [normal, scoped] {
+        let callback_name = format!("@loom.lcir.coroutine.resume.{}", function.id().raw());
+        let descriptor_name = format!("@loom.lcir.coroutine.descriptor.{} =", function.id().raw());
+        let descriptor = lcir
+            .ir
+            .lines()
+            .find(|line| line.starts_with(&descriptor_name))
+            .unwrap_or_else(|| panic!("missing descriptor `{descriptor_name}`"));
+        assert_eq!(
+            descriptor.matches(&callback_name).count(),
+            2,
+            "resume and cancellation must share the checked source callback: {descriptor}"
+        );
+    }
+
+    let expected = serde_json::to_value(
+        interpret_run(&program, "cancellationMain")
+            .expect_err("the first Task.all child must fault"),
+    )
+    .expect("serialize cancellation fixture fault");
+    let cancellation = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "cancellationMain".into(),
+        },
+    );
+    let cancelled =
+        emit_and_run_lcir_machine_fault(&cancellation, "lcir-async-cleanup-cancellation");
+    let legacy_cancelled = emit_and_run_legacy_machine_fault(
+        &program,
+        "cancellationMain",
+        "legacy-async-cleanup-cancellation",
+    );
+    assert!(!cancelled.output.status.success(), "{:?}", cancelled.output);
+    assert!(!legacy_cancelled.status.success(), "{legacy_cancelled:?}");
+    assert_eq!(machine_fault(&cancelled.output), expected);
+    assert_eq!(machine_fault(&legacy_cancelled), expected);
+    assert!(
+        !diagnostic_text(&cancelled.output).contains("LOOM_RUNTIME_TYPED_"),
+        "source cleanup violated the typed cancellation protocol: {:?}",
+        cancelled.output
+    );
+    let waiting = cancellation
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("waitsWithCleanup"))
+        .expect("cancelled cleanup-bearing sibling");
+    let callback_name = format!("@loom.lcir.coroutine.resume.{}", waiting.id().raw());
+    let waiting_callback = cancelled
+        .ir
+        .split("\ndefine ")
+        .find(|function| function.contains(&format!("{callback_name}(")))
+        .expect("cancelled cleanup-bearing callback");
+    assert!(
+        waiting_callback.contains("coroutine.cancel.live")
+            && waiting_callback.contains("ret i32 3"),
+        "cancelled sibling omitted its static cleanup exit:\n{waiting_callback}"
+    );
+    let descriptor_name = format!("@loom.lcir.coroutine.descriptor.{} =", waiting.id().raw());
+    let descriptor = cancelled
+        .ir
+        .lines()
+        .find(|line| line.starts_with(&descriptor_name))
+        .expect("cancelled sibling descriptor");
+    assert_eq!(
+        descriptor.matches(&callback_name).count(),
+        2,
+        "{descriptor}"
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create async cleanup target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "async-cleanup.obj"
+        } else {
+            "async-cleanup.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit async cleanup object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing async cleanup object for {target}"
+        );
+    }
+}
+
 const PROJECTED_PLACE_SOURCE: &str =
     include_str!("../../../fixtures/lcir-projected-places/main.loom");
 
@@ -7098,19 +7264,25 @@ pub async fn postconditionMain() Unit {
                 .lines()
                 .find(|line| line.starts_with(&descriptor_name))
                 .expect("sibling coroutine descriptor");
+            let callback_name = format!("@loom.lcir.coroutine.resume.{}", linger.id().raw());
             assert!(
-                descriptor.contains("ptr @loom.lcir.coroutine.cancel"),
-                "pending sibling omitted its cancellation callback: {descriptor}"
+                descriptor.matches(&callback_name).count() == 2,
+                "pending sibling must use its checked resume callback for both resume and cancellation: {descriptor}"
             );
             let cancel_callback = lcir
                 .ir
                 .split("\ndefine ")
-                .find(|function| function.contains("@loom.lcir.coroutine.cancel("))
-                .expect("typed coroutine cancellation callback");
+                .find(|function| function.contains(&format!("{callback_name}(")))
+                .expect("typed coroutine resume-and-cancellation callback");
             assert_eq!(
                 cancel_callback.matches("ret i32 3").count(),
-                1,
-                "typed sibling cancellation must report exactly one Cancelled step:\n{cancel_callback}"
+                2,
+                "typed sibling cancellation must terminate both the never-started and suspended states:\n{cancel_callback}"
+            );
+            assert!(
+                cancel_callback.contains("coroutine.cancel.dispatch")
+                    && cancel_callback.contains("loom_typed_task_is_cancel_requested_v1"),
+                "typed sibling callback omitted checked cancellation dispatch:\n{cancel_callback}"
             );
             assert!(
                 !diagnostic_text(&lcir.output).contains("LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED"),
