@@ -63,6 +63,78 @@ fn host_io_pool() -> &'static mpsc::SyncSender<HostIoJob> {
     })
 }
 
+#[cfg(test)]
+mod task_all_cancellation_tests {
+    use super::*;
+
+    fn task_id(value: Value) -> u64 {
+        let Value::Task { id } = value else {
+            panic!("fixture must create a Task")
+        };
+        id
+    }
+
+    #[test]
+    fn cancelled_all_child_propagates_cancellation_instead_of_shortening_the_tuple() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        let span = Span::default();
+        let first = task_id(
+            interpreter
+                .spawn_terminal_task(Ok(Value::Int { value: 1 }), span)
+                .expect("spawn first child"),
+        );
+        let cancelled = task_id(
+            interpreter
+                .spawn_terminal_task(Ok(Value::Int { value: 2 }), span)
+                .expect("spawn cancelled child"),
+        );
+        interpreter
+            .tasks
+            .get_mut(&cancelled)
+            .expect("cancelled child exists")
+            .status = TaskStatus::Cancelled;
+        let parent = task_id(
+            interpreter
+                .spawn_terminal_task(Ok(Value::Unit), span)
+                .expect("spawn parent"),
+        );
+        {
+            let parent_task = interpreter.tasks.get_mut(&parent).expect("parent exists");
+            parent_task.status = TaskStatus::Runnable;
+            parent_task.awaiting_state = Some(1);
+            parent_task.children = vec![first, cancelled];
+            parent_task.join_mode = TaskJoinMode::All;
+            parent_task.join_combined = true;
+        }
+        interpreter.active_root = Some(parent);
+        interpreter.active_task = Some(parent);
+        let awaited = Expr {
+            id: loom_mir::ExprId::UNASSIGNED,
+            kind: ExprKind::Await {
+                state: 1,
+                task: Box::new(Expr {
+                    id: loom_mir::ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(Constant::Unit),
+                    ty: Type::Unit,
+                    span,
+                }),
+            },
+            ty: Type::Tuple(vec![Type::Int, Type::Int]),
+            span,
+        };
+
+        assert!(matches!(
+            interpreter
+                .poll_await(parent, u64::MAX, &awaited)
+                .expect("poll all join"),
+            AwaitPoll::Cancelled
+        ));
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
     pub fuel: u64,
@@ -446,6 +518,7 @@ enum AwaitPoll {
     Pending,
     Ready(Value),
     Failed(ExecutionFailure),
+    Cancelled,
 }
 
 enum AwaitDestination {
@@ -1189,6 +1262,9 @@ impl<'program> Interpreter<'program> {
                         AwaitPoll::Failed(failure) => {
                             return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
                         }
+                        AwaitPoll::Cancelled => {
+                            return Ok(self.finish_task(task_id, Err(EvalAbort::Cancelled)));
+                        }
                         AwaitPoll::Ready(value) => {
                             match destination {
                                 AwaitDestination::Ignore => {}
@@ -1277,6 +1353,9 @@ impl<'program> Interpreter<'program> {
                         AwaitPoll::Failed(failure) => {
                             return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
                         }
+                        AwaitPoll::Cancelled => {
+                            return Ok(self.finish_task(task_id, Err(EvalAbort::Cancelled)));
+                        }
                     }
                 }
                 let outcome = self.eval_expr(frame, tail);
@@ -1319,7 +1398,7 @@ impl<'program> Interpreter<'program> {
                         )
                         .into());
                 }
-                Err(EvalAbort::Cancelled) => return Ok(AwaitPoll::Pending),
+                Err(EvalAbort::Cancelled) => return Ok(AwaitPoll::Cancelled),
             };
             let (children, mode, dynamic, combined) = match value {
                 Value::Task { id } => (vec![id], TaskJoinMode::All, false, false),
@@ -1430,6 +1509,7 @@ impl<'program> Interpreter<'program> {
         let mut values = Vec::with_capacity(children.len());
         let mut outcomes = Vec::with_capacity(children.len());
         let mut failure = None;
+        let mut cancelled = false;
         for child in &children {
             match self.tasks.get(child).map(|task| task.status.clone()) {
                 Some(TaskStatus::Completed(value)) => {
@@ -1443,6 +1523,7 @@ impl<'program> Interpreter<'program> {
                 }
                 Some(TaskStatus::Cancelled) => {
                     outcomes.push(self.task_outcome_cancelled(awaited.span)?);
+                    cancelled = true;
                     values.push(None);
                 }
                 Some(TaskStatus::Runnable | TaskStatus::Waiting) => {
@@ -1468,6 +1549,9 @@ impl<'program> Interpreter<'program> {
             TaskJoinMode::All => {
                 if let Some(failure) = failure {
                     return Ok(AwaitPoll::Failed(failure));
+                }
+                if cancelled {
+                    return Ok(AwaitPoll::Cancelled);
                 }
                 let values = values.into_iter().flatten().collect::<Vec<_>>();
                 if dynamic {
@@ -1542,6 +1626,7 @@ impl<'program> Interpreter<'program> {
                     return Ok(value);
                 }
                 AwaitPoll::Failed(failure) => return Err(EvalAbort::Failure(failure)),
+                AwaitPoll::Cancelled => return Err(EvalAbort::Cancelled),
                 AwaitPoll::Pending => self.drive_nested_wait(task_id, awaited.span)?,
             }
         }
