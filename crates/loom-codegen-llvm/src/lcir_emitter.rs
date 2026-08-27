@@ -1266,12 +1266,310 @@ fn debug_info_error(error: &inkwell::error::Error) -> CodegenError {
     CodegenError::new("LlvmDebugInfoFailed", error.to_string())
 }
 
+// This is an emitter work/resource boundary, not a language-visible ABI. It
+// prevents a hostile checked artifact from turning target-layout planning into
+// an unbounded allocation or search before LLVM verification.
+const SUM_CARRIER_MAX_BYTES: u64 = 64 * 1024;
+const SUM_CARRIER_MAX_PLACEMENT_WORK: u64 = 64 * 1024;
+const SUM_LAYOUT_MAX_GRAPH_WORK: u64 = 65_536;
+const SUM_CARRIER_MAX_EMISSION_BYTE_WORK: u64 = 65_536;
+
+const SUM_BYTE_NON_POINTER: u8 = 1;
+const SUM_BYTE_POINTER: u8 = 2;
+
+#[derive(Clone, Debug)]
+struct SumPayloadShape {
+    size: u64,
+    alignment: u32,
+    pointer_offsets: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SumCarrierPlan {
+    payload_byte_offsets: Vec<u64>,
+    byte_len: u64,
+    alignment: u32,
+    anchor_variant: usize,
+    placement_work: u64,
+}
+
+fn checked_align_up(value: u64, alignment: u64) -> Option<u64> {
+    value
+        .checked_add(alignment.checked_sub(1)?)
+        .map(|rounded| rounded / alignment * alignment)
+}
+
+fn checked_sum_carrier_emission_work(current: u64, amount: u64) -> Result<u64, CodegenError> {
+    let work = current.checked_add(amount).ok_or_else(|| {
+        CodegenError::new("ProgramTooLarge", "sum carrier emission work overflowed")
+    })?;
+    if work > SUM_CARRIER_MAX_EMISSION_BYTE_WORK {
+        return Err(CodegenError::new(
+            "ProgramTooLarge",
+            format!(
+                "sum carrier pack/unpack exceeds the shared {SUM_CARRIER_MAX_EMISSION_BYTE_WORK}-byte emission limit"
+            ),
+        ));
+    }
+    Ok(work)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the complete bounded collision proof is intentionally kept at the one physical sum-layout boundary"
+)]
+fn plan_sum_carrier(
+    payloads: &[SumPayloadShape],
+    pointer_size: u64,
+    pointer_alignment: u64,
+    placement_work_limit: u64,
+) -> Result<SumCarrierPlan, CodegenError> {
+    if placement_work_limit > SUM_CARRIER_MAX_PLACEMENT_WORK {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "sum carrier placement received an invalid shared work limit",
+        ));
+    }
+    if payloads.is_empty() {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "tagged payload sum has no variants",
+        ));
+    }
+    if pointer_size == 0 || pointer_alignment == 0 || !pointer_alignment.is_power_of_two() {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "sum carrier target pointer size/alignment is invalid",
+        ));
+    }
+
+    let mut alignment = 0_u32;
+    let mut anchor_variant = 0_usize;
+    for (index, payload) in payloads.iter().enumerate() {
+        let payload_alignment = u64::from(payload.alignment);
+        if payload_alignment == 0 || !payload_alignment.is_power_of_two() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("sum variant {index} has invalid payload alignment {payload_alignment}"),
+            ));
+        }
+        if payload.size > SUM_CARRIER_MAX_BYTES {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!(
+                    "sum variant {index} payload exceeds the {SUM_CARRIER_MAX_BYTES}-byte carrier limit"
+                ),
+            ));
+        }
+        for offset in &payload.pointer_offsets {
+            if !offset.is_multiple_of(pointer_alignment)
+                || offset
+                    .checked_add(pointer_size)
+                    .is_none_or(|end| end > payload.size)
+            {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!(
+                        "sum variant {index} has invalid managed pointer offset {offset} for payload size {}/pointer size {pointer_size}",
+                        payload.size
+                    ),
+                ));
+            }
+        }
+        if payload.alignment > alignment {
+            alignment = payload.alignment;
+            anchor_variant = index;
+        }
+    }
+    if alignment == 0 {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "sum carrier has no payload alignment",
+        ));
+    }
+
+    // Pure non-pointer payloads establish the reusable scalar byte class
+    // first. Pointer-bearing variants then choose the lowest aligned offset
+    // that never aliases a pointer byte with a non-pointer byte. Bytes of the
+    // same class may overlap, retaining compact ordinary enum ABIs while
+    // making the union pointer map exact for repeated storage.
+    let mut placement_order = (0..payloads.len()).collect::<Vec<_>>();
+    placement_order.sort_by_key(|index| (!payloads[*index].pointer_offsets.is_empty(), *index));
+    let mut payload_byte_offsets = vec![0_u64; payloads.len()];
+    let mut occupied = Vec::<u8>::new();
+    let mut byte_len = 0_u64;
+    let mut work = 0_u64;
+
+    for variant in placement_order {
+        let payload = &payloads[variant];
+        let payload_len = usize::try_from(payload.size).map_err(|_| {
+            CodegenError::new(
+                "ProgramTooLarge",
+                format!("sum variant {variant} payload does not fit host layout memory"),
+            )
+        })?;
+        work = work.checked_add(payload.size).ok_or_else(|| {
+            CodegenError::new("ProgramTooLarge", "sum carrier placement work overflowed")
+        })?;
+        if work > placement_work_limit {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!(
+                    "sum carrier placement exceeds the {SUM_CARRIER_MAX_PLACEMENT_WORK}-step work limit"
+                ),
+            ));
+        }
+        let mut classes = vec![SUM_BYTE_NON_POINTER; payload_len];
+        for offset in &payload.pointer_offsets {
+            let start = usize::try_from(*offset).map_err(|_| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "sum managed pointer offset does not fit host layout memory",
+                )
+            })?;
+            let end = usize::try_from(offset.checked_add(pointer_size).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "sum managed pointer extent overflowed")
+            })?)
+            .map_err(|_| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "sum managed pointer extent does not fit host layout memory",
+                )
+            })?;
+            classes[start..end].fill(SUM_BYTE_POINTER);
+        }
+
+        let step = u64::from(payload.alignment);
+        let mut candidate = 0_u64;
+        loop {
+            let end = candidate.checked_add(payload.size).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "sum carrier candidate extent overflowed")
+            })?;
+            if end > SUM_CARRIER_MAX_BYTES {
+                return Err(CodegenError::new(
+                    "ProgramTooLarge",
+                    format!("sum carrier placement exceeds the {SUM_CARRIER_MAX_BYTES}-byte limit"),
+                ));
+            }
+            let mut conflict = false;
+            for (local, class) in classes.iter().copied().enumerate() {
+                work = work.checked_add(1).ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "sum carrier placement work overflowed")
+                })?;
+                if work > placement_work_limit {
+                    return Err(CodegenError::new(
+                        "ProgramTooLarge",
+                        format!(
+                            "sum carrier placement exceeds the {SUM_CARRIER_MAX_PLACEMENT_WORK}-step work limit"
+                        ),
+                    ));
+                }
+                let absolute = usize::try_from(
+                    candidate
+                        .checked_add(u64::try_from(local).map_err(|_| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "sum carrier local byte index overflowed",
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "sum carrier absolute byte offset overflowed",
+                            )
+                        })?,
+                )
+                .map_err(|_| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "sum carrier byte offset does not fit host layout memory",
+                    )
+                })?;
+                let prior = occupied.get(absolute).copied().unwrap_or(0);
+                if (class == SUM_BYTE_POINTER && prior & SUM_BYTE_NON_POINTER != 0)
+                    || (class == SUM_BYTE_NON_POINTER && prior & SUM_BYTE_POINTER != 0)
+                {
+                    conflict = true;
+                    break;
+                }
+            }
+            if !conflict {
+                let end_usize = usize::try_from(end).map_err(|_| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "sum carrier extent does not fit host layout memory",
+                    )
+                })?;
+                occupied.resize(occupied.len().max(end_usize), 0);
+                let candidate_usize = usize::try_from(candidate).map_err(|_| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "sum carrier offset does not fit host layout memory",
+                    )
+                })?;
+                work = work.checked_add(payload.size).ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "sum carrier placement work overflowed")
+                })?;
+                if work > placement_work_limit {
+                    return Err(CodegenError::new(
+                        "ProgramTooLarge",
+                        format!(
+                            "sum carrier placement exceeds the {SUM_CARRIER_MAX_PLACEMENT_WORK}-step work limit"
+                        ),
+                    ));
+                }
+                for (local, class) in classes.iter().copied().enumerate() {
+                    occupied[candidate_usize + local] |= class;
+                }
+                payload_byte_offsets[variant] = candidate;
+                byte_len = byte_len.max(end);
+                break;
+            }
+            candidate = candidate.checked_add(step).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "sum carrier search offset overflowed")
+            })?;
+        }
+    }
+
+    let rounded = checked_align_up(byte_len, u64::from(alignment)).ok_or_else(|| {
+        CodegenError::new("ProgramTooLarge", "sum carrier aligned size overflowed")
+    })?;
+    if rounded > SUM_CARRIER_MAX_BYTES {
+        return Err(CodegenError::new(
+            "ProgramTooLarge",
+            format!("aligned sum carrier exceeds the {SUM_CARRIER_MAX_BYTES}-byte limit"),
+        ));
+    }
+    Ok(SumCarrierPlan {
+        payload_byte_offsets,
+        byte_len,
+        alignment,
+        anchor_variant,
+        placement_work: work,
+    })
+}
+
 #[derive(Clone)]
 struct SumLayout<'ctx> {
     tag: SumTagRepr,
     payloads: Vec<StructType<'ctx>>,
+    payload_byte_offsets: Vec<u64>,
     carrier: Option<StructType<'ctx>>,
     physical: BasicTypeEnum<'ctx>,
+}
+
+impl SumLayout<'_> {
+    fn payload_byte_offset(&self, variant: usize) -> Result<u64, CodegenError> {
+        self.payload_byte_offsets
+            .get(variant)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("sum variant {variant} has no carrier byte offset"),
+                )
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -1338,6 +1636,13 @@ struct Backend<'ctx, 'artifact> {
     coroutine_cancel: Option<FunctionValue<'ctx>>,
     debug: Option<DebugState<'ctx>>,
     names: Cell<u64>,
+    sum_layout_cache: RefCell<BTreeMap<u32, SumLayout<'ctx>>>,
+    sum_layout_in_progress: RefCell<BTreeSet<u32>>,
+    managed_offset_cache: RefCell<BTreeMap<u32, Vec<u64>>>,
+    managed_offset_in_progress: RefCell<BTreeSet<u32>>,
+    sum_layout_graph_work: Cell<u64>,
+    sum_carrier_placement_work: Cell<u64>,
+    sum_carrier_emission_work: Cell<u64>,
 }
 
 impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
@@ -1458,6 +1763,13 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             coroutine_cancel: None,
             debug,
             names: Cell::new(0),
+            sum_layout_cache: RefCell::new(BTreeMap::new()),
+            sum_layout_in_progress: RefCell::new(BTreeSet::new()),
+            managed_offset_cache: RefCell::new(BTreeMap::new()),
+            managed_offset_in_progress: RefCell::new(BTreeSet::new()),
+            sum_layout_graph_work: Cell::new(0),
+            sum_carrier_placement_work: Cell::new(0),
+            sum_carrier_emission_work: Cell::new(0),
         };
         backend.declare_functions()?;
         Ok(backend)
@@ -2135,11 +2447,58 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         }
     }
 
+    fn charge_sum_layout_graph_work(&self, amount: u64) -> Result<(), CodegenError> {
+        let work = self
+            .sum_layout_graph_work
+            .get()
+            .checked_add(amount)
+            .ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "sum layout graph work overflowed")
+            })?;
+        if work > SUM_LAYOUT_MAX_GRAPH_WORK {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!(
+                    "sum layout graph exceeds the shared {SUM_LAYOUT_MAX_GRAPH_WORK}-step work limit"
+                ),
+            ));
+        }
+        self.sum_layout_graph_work.set(work);
+        Ok(())
+    }
+
+    fn charge_sum_carrier_emission_work(&self, amount: u64) -> Result<(), CodegenError> {
+        let work = checked_sum_carrier_emission_work(self.sum_carrier_emission_work.get(), amount)?;
+        self.sum_carrier_emission_work.set(work);
+        Ok(())
+    }
+
+    fn sum_layout(&self, ty: ValueTypeId) -> Result<SumLayout<'ctx>, CodegenError> {
+        if let Some(layout) = self.sum_layout_cache.borrow().get(&ty.raw()).cloned() {
+            return Ok(layout);
+        }
+        self.charge_sum_layout_graph_work(1)?;
+        if !self.sum_layout_in_progress.borrow_mut().insert(ty.raw()) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("cyclic physical sum layout reached LCIR type {ty}"),
+            ));
+        }
+        let result = self.compute_sum_layout(ty);
+        self.sum_layout_in_progress.borrow_mut().remove(&ty.raw());
+        if let Ok(layout) = &result {
+            self.sum_layout_cache
+                .borrow_mut()
+                .insert(ty.raw(), layout.clone());
+        }
+        result
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "sum layout selection and its target-data size/alignment proof are intentionally one atomic computation"
     )]
-    fn sum_layout(&self, ty: ValueTypeId) -> Result<SumLayout<'ctx>, CodegenError> {
+    fn compute_sum_layout(&self, ty: ValueTypeId) -> Result<SumLayout<'ctx>, CodegenError> {
         let sum = self.sum_repr(ty)?;
         let payloads = sum
             .variants()
@@ -2163,6 +2522,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })?;
             return Ok(SumLayout {
                 tag: sum.tag(),
+                payload_byte_offsets: vec![0; payloads.len()],
                 payloads,
                 carrier: None,
                 physical: physical.into(),
@@ -2177,31 +2537,85 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         if sum.is_tag_only() {
             return Ok(SumLayout {
                 tag: sum.tag(),
+                payload_byte_offsets: vec![0; payloads.len()],
                 payloads,
                 carrier: None,
                 physical: tag_type.into(),
             });
         }
 
-        let mut maximum_size = 0_u64;
-        let mut anchor = None;
-        let mut maximum_alignment = 0_u32;
-        for payload in &payloads {
-            let size = self.target_data.get_abi_size(payload);
-            let alignment = self.target_data.get_abi_alignment(payload);
-            maximum_size = maximum_size.max(size);
-            if alignment > maximum_alignment {
-                maximum_alignment = alignment;
-                anchor = Some(*payload);
-            }
-        }
-        let anchor = anchor.ok_or_else(|| {
+        let pointer_size = self.target_data.get_abi_size(&self.ptr_type);
+        let pointer_alignment = u64::from(self.target_data.get_abi_alignment(&self.ptr_type));
+        let shapes = sum
+            .variants()
+            .iter()
+            .zip(&payloads)
+            .enumerate()
+            .map(|(variant_index, (variant, payload))| {
+                let mut pointer_offsets = BTreeSet::new();
+                for (field_index, field) in variant.fields().iter().copied().enumerate() {
+                    let field_index = u32::try_from(field_index).map_err(|_| {
+                        CodegenError::new(
+                            "ProgramTooLarge",
+                            format!("sum type {ty} variant {variant_index} has too many fields"),
+                        )
+                    })?;
+                    let field_base = self
+                        .target_data
+                        .offset_of_element(payload, field_index)
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!(
+                                    "sum type {ty} variant {variant_index} field {field_index} has no target offset"
+                                ),
+                            )
+                        })?;
+                    for offset in self.managed_element_offsets(field)? {
+                        pointer_offsets.insert(field_base.checked_add(offset).ok_or_else(|| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "sum payload managed pointer offset overflowed",
+                            )
+                        })?);
+                    }
+                }
+                Ok(SumPayloadShape {
+                    size: self.target_data.get_abi_size(payload),
+                    alignment: self.target_data.get_abi_alignment(payload),
+                    pointer_offsets: pointer_offsets.into_iter().collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+        let placement_before = self.sum_carrier_placement_work.get();
+        let placement_remaining = SUM_CARRIER_MAX_PLACEMENT_WORK
+            .checked_sub(placement_before)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "sum carrier placement budget underflowed",
+                )
+            })?;
+        let plan = plan_sum_carrier(
+            &shapes,
+            pointer_size,
+            pointer_alignment,
+            placement_remaining,
+        )?;
+        self.sum_carrier_placement_work.set(
+            placement_before
+                .checked_add(plan.placement_work)
+                .ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "sum carrier placement work overflowed")
+                })?,
+        );
+        let anchor = payloads.get(plan.anchor_variant).copied().ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
-                format!("LCIR sum type {ty} has no payload ABI"),
+                format!("LCIR sum type {ty} carrier anchor disappeared"),
             )
         })?;
-        let carrier_bytes = u32::try_from(maximum_size).map_err(|_| {
+        let carrier_bytes = u32::try_from(plan.byte_len).map_err(|_| {
             CodegenError::new(
                 "ProgramTooLarge",
                 format!("LCIR sum type {ty} carrier exceeds LLVM array limits"),
@@ -2214,22 +2628,21 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ],
             false,
         );
-        let expected_size = maximum_size
-            .checked_add(u64::from(maximum_alignment.saturating_sub(1)))
-            .map(|size| size / u64::from(maximum_alignment) * u64::from(maximum_alignment))
-            .ok_or_else(|| {
+        let expected_size =
+            checked_align_up(plan.byte_len, u64::from(plan.alignment)).ok_or_else(|| {
                 CodegenError::new(
                     "ProgramTooLarge",
-                    format!("LCIR sum type {ty} is too large"),
+                    format!("LCIR sum type {ty} aligned carrier size overflowed"),
                 )
             })?;
         let actual_size = self.target_data.get_abi_size(&carrier);
         let actual_alignment = self.target_data.get_abi_alignment(&carrier);
-        if actual_size != expected_size || actual_alignment != maximum_alignment {
+        if actual_size != expected_size || actual_alignment != plan.alignment {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 format!(
-                    "LCIR sum type {ty} carrier has ABI size/alignment {actual_size}/{actual_alignment}, expected {expected_size}/{maximum_alignment}"
+                    "LCIR sum type {ty} carrier has ABI size/alignment {actual_size}/{actual_alignment}, expected {expected_size}/{}",
+                    plan.alignment
                 ),
             ));
         }
@@ -2240,6 +2653,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(SumLayout {
             tag: sum.tag(),
             payloads,
+            payload_byte_offsets: plan.payload_byte_offsets,
             carrier: Some(carrier),
             physical,
         })
@@ -2303,15 +2717,43 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn managed_element_offsets(&self, root: ValueTypeId) -> Result<Vec<u64>, CodegenError> {
+        if let Some(offsets) = self.managed_offset_cache.borrow().get(&root.raw()).cloned() {
+            return Ok(offsets);
+        }
+        self.charge_sum_layout_graph_work(1)?;
+        if !self
+            .managed_offset_in_progress
+            .borrow_mut()
+            .insert(root.raw())
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("cyclic managed-offset layout reached LCIR type {root}"),
+            ));
+        }
+        let result = self.compute_managed_element_offsets(root);
+        self.managed_offset_in_progress
+            .borrow_mut()
+            .remove(&root.raw());
+        if let Ok(offsets) = &result {
+            self.managed_offset_cache
+                .borrow_mut()
+                .insert(root.raw(), offsets.clone());
+        }
+        result
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one bounded target-layout walk must keep products, nested sums, and pointer leaves under the same offset and alignment checks"
     )]
-    fn managed_element_offsets(&self, root: ValueTypeId) -> Result<Vec<u64>, CodegenError> {
+    fn compute_managed_element_offsets(&self, root: ValueTypeId) -> Result<Vec<u64>, CodegenError> {
         let mut offsets = BTreeSet::new();
         let mut pending = vec![(root, 0_u64, 0_usize)];
         let mut visited_nodes = 0_usize;
         while let Some((ty, base, depth)) = pending.pop() {
+            self.charge_sum_layout_graph_work(1)?;
             visited_nodes = visited_nodes.checked_add(1).ok_or_else(|| {
                 CodegenError::new("ProgramTooLarge", "List element pointer walk overflowed")
             })?;
@@ -2453,8 +2895,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                                     "tagged List sum carrier offset overflowed",
                                 )
                             })?;
-                        for (variant, payload) in sum.variants().iter().zip(&layout.payloads).rev()
+                        for (variant_index, (variant, payload)) in sum
+                            .variants()
+                            .iter()
+                            .zip(&layout.payloads)
+                            .enumerate()
+                            .rev()
                         {
+                            let variant_offset = layout
+                                .payload_byte_offsets
+                                .get(variant_index)
+                                .copied()
+                                .ok_or_else(|| {
+                                    CodegenError::new(
+                                        "LlvmAbiDefect",
+                                        "tagged sum payload offset disappeared",
+                                    )
+                                })?;
                             for (index, field) in variant.fields().iter().copied().enumerate().rev()
                             {
                                 let index = u32::try_from(index).map_err(|_| {
@@ -2474,12 +2931,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                                     })?;
                                 pending.push((
                                     field,
-                                    payload_base.checked_add(field_offset).ok_or_else(|| {
-                                        CodegenError::new(
-                                            "ProgramTooLarge",
-                                            "tagged List sum pointer offset overflowed",
-                                        )
-                                    })?,
+                                    payload_base
+                                        .checked_add(variant_offset)
+                                        .and_then(|offset| offset.checked_add(field_offset))
+                                        .ok_or_else(|| {
+                                            CodegenError::new(
+                                                "ProgramTooLarge",
+                                                "tagged repeated sum pointer offset overflowed",
+                                            )
+                                        })?,
                                     depth.saturating_add(1),
                                 ));
                             }
@@ -4712,7 +5172,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                                     "managed.root.sum.safe.carrier",
                                 )
                                 .map_err(builder_error)?;
-                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?
+                            self.unpack_sum_carrier(
+                                safe_carrier,
+                                carrier_type,
+                                payload_type,
+                                layout.payload_byte_offset(variant_index)?,
+                            )?
                         }
                     };
                     value = self
@@ -4922,8 +5387,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                                 "managed.root.rebuild.sum.safe.carrier",
                             )
                             .map_err(builder_error)?;
-                        let payload =
-                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?;
+                        let variant_index = usize::try_from(*variant).map_err(|_| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "managed sum rebuild variant is too wide",
+                            )
+                        })?;
+                        let payload = self.unpack_sum_carrier(
+                            safe_carrier,
+                            carrier_type,
+                            payload_type,
+                            layout.payload_byte_offset(variant_index)?,
+                        )?;
                         let child = self
                             .backend
                             .builder
@@ -4942,7 +5417,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                             )
                             .map_err(builder_error)?
                             .into_struct_value();
-                        let carrier = self.pack_sum_carrier(payload, payload_type, carrier_type)?;
+                        let carrier = self.pack_sum_carrier(
+                            payload,
+                            payload_type,
+                            carrier_type,
+                            layout.payload_byte_offset(variant_index)?,
+                        )?;
                         let rebuilt = self
                             .backend
                             .builder
@@ -6273,7 +6753,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     }
                     return Ok(tag.into());
                 };
-                let carrier = self.pack_sum_carrier(payload_value, payload_type, carrier_type)?;
+                let carrier = self.pack_sum_carrier(
+                    payload_value,
+                    payload_type,
+                    carrier_type,
+                    layout.payload_byte_offset(variant_index)?,
+                )?;
                 let physical = layout.physical.into_struct_type();
                 let tagged = self
                     .backend
@@ -7662,7 +8147,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         payload: inkwell::values::StructValue<'ctx>,
         payload_type: StructType<'ctx>,
         carrier_type: StructType<'ctx>,
+        byte_offset: u64,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        self.backend.charge_sum_carrier_emission_work(
+            self.backend.target_data.get_abi_size(&payload_type),
+        )?;
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(carrier_type.const_zero().into());
         }
@@ -7675,7 +8164,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             byte_array_type.const_zero(),
             payload.into(),
             payload_type.into(),
-            0,
+            byte_offset,
         )?;
         Ok(self
             .backend
@@ -7691,7 +8180,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         carrier: BasicValueEnum<'ctx>,
         carrier_type: StructType<'ctx>,
         payload_type: StructType<'ctx>,
+        byte_offset: u64,
     ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
+        self.backend.charge_sum_carrier_emission_work(
+            self.backend.target_data.get_abi_size(&payload_type),
+        )?;
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(payload_type.const_zero());
         }
@@ -7703,7 +8196,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)?
             .into_array_value();
         Ok(self
-            .unpack_value_bytes(byte_array, payload_type.into(), 0)?
+            .unpack_value_bytes(byte_array, payload_type.into(), byte_offset)?
             .into_struct_value())
     }
 
@@ -8715,18 +9208,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
         for (case, edge) in cases.iter().zip(edges) {
             self.backend.builder.position_at_end(edge);
-            let payload_type = layout
-                .payloads
-                .get(usize::try_from(case.variant).map_err(|_| {
-                    CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
-                })?)
-                .copied()
-                .ok_or_else(|| {
-                    CodegenError::new(
-                        "LlvmAbiDefect",
-                        format!("sum type {ty} has no case variant {}", case.variant),
-                    )
-                })?;
+            let variant_index = usize::try_from(case.variant).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
+            })?;
+            let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("sum type {ty} has no case variant {}", case.variant),
+                )
+            })?;
             let payload = match layout.tag {
                 SumTagRepr::Tagless => value.into_struct_value(),
                 SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
@@ -8740,6 +9230,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                             })?,
                             carrier_type,
                             payload_type,
+                            layout.payload_byte_offset(variant_index)?,
                         )?
                     } else {
                         payload_type.const_zero()
@@ -10547,9 +11038,155 @@ fn builder_error(error: inkwell::builder::BuilderError) -> CodegenError {
 mod tests {
     use std::path::Path;
 
+    use super::{
+        SUM_CARRIER_MAX_BYTES, SUM_CARRIER_MAX_EMISSION_BYTE_WORK, SumPayloadShape,
+        checked_sum_carrier_emission_work, plan_sum_carrier,
+    };
+
     #[test]
     fn bare_artifact_paths_do_not_attempt_to_create_an_empty_parent() {
         super::create_parent_directory(Path::new("artifact.o"))
             .expect("a bare artifact path has no directory to create");
+    }
+
+    #[test]
+    fn sum_carrier_planner_compacts_equal_byte_classes_without_cross_class_aliases() {
+        let json = plan_sum_carrier(
+            &[
+                SumPayloadShape {
+                    size: 0,
+                    alignment: 1,
+                    pointer_offsets: vec![],
+                },
+                SumPayloadShape {
+                    size: 1,
+                    alignment: 1,
+                    pointer_offsets: vec![],
+                },
+                SumPayloadShape {
+                    size: 8,
+                    alignment: 8,
+                    pointer_offsets: vec![],
+                },
+                SumPayloadShape {
+                    size: 8,
+                    alignment: 8,
+                    pointer_offsets: vec![0],
+                },
+                SumPayloadShape {
+                    size: 8,
+                    alignment: 8,
+                    pointer_offsets: vec![0],
+                },
+                SumPayloadShape {
+                    size: 8,
+                    alignment: 8,
+                    pointer_offsets: vec![0],
+                },
+            ],
+            8,
+            8,
+            super::SUM_CARRIER_MAX_PLACEMENT_WORK,
+        )
+        .expect("plan compact Json carrier");
+        assert_eq!(json.payload_byte_offsets, [0, 0, 0, 8, 8, 8]);
+        assert_eq!(json.byte_len, 16);
+        assert_eq!(json.alignment, 8);
+
+        let outer = plan_sum_carrier(
+            &[
+                SumPayloadShape {
+                    size: 24,
+                    alignment: 8,
+                    pointer_offsets: vec![16],
+                },
+                SumPayloadShape {
+                    size: 24,
+                    alignment: 8,
+                    pointer_offsets: vec![],
+                },
+            ],
+            8,
+            8,
+            super::SUM_CARRIER_MAX_PLACEMENT_WORK,
+        )
+        .expect("plan compact nested carrier");
+        assert_eq!(outer.payload_byte_offsets, [8, 0]);
+        assert_eq!(outer.byte_len, 32);
+        assert_eq!(outer.alignment, 8);
+
+        let crossed = plan_sum_carrier(
+            &[
+                SumPayloadShape {
+                    size: 16,
+                    alignment: 8,
+                    pointer_offsets: vec![0],
+                },
+                SumPayloadShape {
+                    size: 16,
+                    alignment: 8,
+                    pointer_offsets: vec![8],
+                },
+            ],
+            8,
+            8,
+            super::SUM_CARRIER_MAX_PLACEMENT_WORK,
+        )
+        .expect("separate oppositely interleaved pointer/scalar variants");
+        assert_eq!(crossed.payload_byte_offsets, [0, 8]);
+        assert_eq!(crossed.byte_len, 24);
+        assert_eq!(crossed.alignment, 8);
+    }
+
+    #[test]
+    fn sum_carrier_planner_fails_closed_on_invalid_or_oversized_shapes() {
+        let invalid_pointer = plan_sum_carrier(
+            &[SumPayloadShape {
+                size: 8,
+                alignment: 8,
+                pointer_offsets: vec![1],
+            }],
+            8,
+            8,
+            super::SUM_CARRIER_MAX_PLACEMENT_WORK,
+        )
+        .expect_err("unaligned pointer bytes must fail");
+        assert_eq!(invalid_pointer.code(), "LlvmAbiDefect");
+
+        let oversized = plan_sum_carrier(
+            &[SumPayloadShape {
+                size: SUM_CARRIER_MAX_BYTES + 1,
+                alignment: 8,
+                pointer_offsets: vec![],
+            }],
+            8,
+            8,
+            super::SUM_CARRIER_MAX_PLACEMENT_WORK,
+        )
+        .expect_err("oversized carriers must fail before host allocation");
+        assert_eq!(oversized.code(), "ProgramTooLarge");
+
+        assert_eq!(
+            checked_sum_carrier_emission_work(SUM_CARRIER_MAX_EMISSION_BYTE_WORK - 8, 8)
+                .expect("the exact global byte-emission limit is admitted"),
+            SUM_CARRIER_MAX_EMISSION_BYTE_WORK
+        );
+        let excessive_emission =
+            checked_sum_carrier_emission_work(SUM_CARRIER_MAX_EMISSION_BYTE_WORK, 1)
+                .expect_err("pack/unpack work beyond the shared limit must fail");
+        assert_eq!(excessive_emission.code(), "ProgramTooLarge");
+
+        let exhausted_placement = plan_sum_carrier(
+            &[SumPayloadShape {
+                size: 8,
+                alignment: 8,
+                pointer_offsets: vec![],
+            }],
+            8,
+            8,
+            0,
+        )
+        .expect_err("a depleted artifact-wide placement budget must fail immediately");
+        assert_eq!(exhausted_placement.code(), "ProgramTooLarge");
     }
 }

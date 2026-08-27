@@ -312,6 +312,52 @@ only behind an independently validated uniqueness certificate. Length and
 without a universal `Value`, witness/executor pointer, tag registry, or stable
 address assumption.
 
+## Collision-free closed-sum storage
+
+Every payload-bearing tagged sum receives one deterministic target-layout
+plan. LLVM target data supplies each variant payload's ABI size/alignment and
+the recursive managed-offset walk supplies its pointer cells. Pointer-width
+ranges are classified as pointer bytes; every other payload byte, including
+padding, is non-pointer. The planner visits pointer-free variants first in
+source order, followed by pointer-bearing variants in source order, and gives
+each the lowest ABI-aligned offset where pointer and non-pointer classes do not
+cross. Same-class bytes may overlap. Construction starts from a zero carrier,
+then writes only the active payload; match control flow reads payload bytes only
+after selecting their tag case.
+
+One backend-owned cache and in-progress set cover sum layouts and recursive
+managed-offset walks for the complete emission. A shared 65,536-step graph
+budget prevents nested sums from restarting work or expanding exponentially.
+Carrier bytes are limited to 64 KiB, and all carrier plans in one artifact
+consume one 65,536-byte-step placement budget. Every pack and unpack charges
+its target ABI payload size to an independent shared 65,536-byte emission
+budget before generating bytewise LLVM instructions. Checked arithmetic covers
+every extent and alignment calculation. Cycles, invalid pointer cells, and
+exhausted planning or emission bounds fail closed before LLVM can emit an
+unsafe or unbounded artifact. Checked wide-sum source regressions prove that
+neither budget resets between layouts or construct sites. The independent LCIR
+validator continues to validate semantic sum identities; it does not reproduce
+target-specific physical bytes.
+
+This general rule keeps the canonical recursive `Json` at 24 bytes on
+supported 64-bit targets, with Bool/Float bytes at physical offset 8 and its
+managed cell at offset 16. `List[Json]` derives stride 24/pointer offset 16 and
+its TextMap entry derives stride 32/pointer offsets 0 and 24. A separate
+`Choice(Number(Int), Label(Text), Pair)` receives the same compact safe shape.
+Two 16-byte record variants with pointer/scalar cells in opposing order receive
+different carrier offsets, producing a 32-byte sum whose exact pointer cells
+are bytes 8 and 24.
+An `Outer(Json, (Int, Int, Int))` value is 40 bytes with the nested managed
+cell at offset 32. Pack/unpack, active managed-root rebuild, and List/TextMap
+descriptor construction all consume this exact plan. There is no
+Json-specific condition, universal envelope, runtime tag registry, tracing
+callback, or executor. Unsupported 32-bit managed layouts fail closed.
+
+Canonical Json construction, copying, List/TextMap operations, exhaustive
+matching, and exact moving-GC roots are direct. Json equality, parsing, and
+formatting are separate coverage boundaries and still select whole-artifact
+fallback when reachable.
+
 ## Direct lexical cleanup
 
 LCIR contains the already expanded control flow for `defer`, `scoped`, and
@@ -394,7 +440,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v18` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v19` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -406,14 +452,15 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v23` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v24` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, nongeneric proof-replay guards,
 source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
-monomorphized managed Lists, compiler-private concrete TextMaps, List
+monomorphized managed Lists, compiler-private concrete TextMaps, the generic
+collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, suspension edges, and exact frame-root rows, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes

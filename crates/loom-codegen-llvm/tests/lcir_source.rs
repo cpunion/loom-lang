@@ -1,6 +1,7 @@
 #![allow(clippy::default_trait_access)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
@@ -681,6 +682,48 @@ test fn carriesAcrossLoop() Result[Unit, Problem] {
     }
 }
 ";
+
+const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r#"module lcir_interleaved_managed_release
+
+record PointerThenScalar { label Text, number Int }
+record ScalarThenPointer { number Int, label Text }
+
+enum Interleaved {
+    PointerFirst(PointerThenScalar)
+    PointerSecond(ScalarThenPointer)
+}
+
+enum Problem { WrongCarrier }
+
+fn choose(flag Bool, label Text, number Int, depth Int) Interleaved {
+    if depth > 0 {
+        choose(flag, label, number, depth - 1)
+    } else if flag {
+        Interleaved.PointerFirst(PointerThenScalar { label = label, number = number })
+    } else {
+        Interleaved.PointerSecond(ScalarThenPointer { number = number, label = label })
+    }
+}
+
+fn number(value Interleaved) Int {
+    match value {
+        PointerFirst(payload) => payload.number
+        PointerSecond(payload) => payload.number
+    }
+}
+
+test fn keepsManagedCarrierInRegisters() Result[Unit, Problem] {
+    let label = "ma".concat("naged")
+    var value = choose(true, label, 0, 1)
+    var flag = true
+    for index in 0..1000 {
+        value = choose(flag, label, index, 1)
+        flag = !flag
+        Unit
+    }
+    if number(value) == 999 { Ok(Unit) } else { Err(Problem.WrongCarrier) }
+}
+"#;
 
 #[test]
 fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
@@ -2339,6 +2382,429 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         assert!(!ir.contains("%loom.Value"), "{ir}");
         assert!(!ir.contains("loom_executor_"), "{ir}");
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate keeps recursive Json carrier layout, exact tracing, forced relocation, backend differential behavior, and cross-target emission together"
+)]
+fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
+    let source = include_str!("../../../fixtures/lcir-typed-json/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:?}");
+    assert_eq!(interpreted[0].status, TestStatus::Passed, "{interpreted:?}");
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native = emit_and_run_lcir(&artifact, "source-recursive-json");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("typedJson"),
+        "{:?}",
+        native.output
+    );
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.list.descriptor",
+        "loom.lcir.text_map.descriptor",
+        "loom.lcir.list.pointer_offsets",
+        "loom.lcir.text_map.pointer_offsets",
+        "managed.root.rebuild.active.sum",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_text_map_get",
+        "loom_runtime_text_map_insert",
+        "ValueNode",
+        "loom_executor_",
+        "loom_gc_root_push_v1",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "recursive Json IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    let json_list_offsets = native
+        .ir
+        .lines()
+        .find(|line| line.contains("@loom.lcir.list.pointer_offsets") && line.contains("[i64 16]"))
+        .unwrap_or_else(|| panic!("Json List must trace only carrier byte 16:\n{}", native.ir));
+    let json_list_suffix = json_list_offsets
+        .split_once(" = ")
+        .expect("Json List offsets global")
+        .1;
+    assert_eq!(
+        json_list_suffix,
+        "private unnamed_addr constant [1 x i64] [i64 16]"
+    );
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.list.descriptor")
+            && line.contains("i64 16, i64 8")
+            && line.contains("i64 24, i64 1")
+    }));
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.text_map.pointer_offsets")
+            && line.contains("[2 x i64] [i64 0, i64 24]")
+    }));
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.text_map.descriptor")
+            && line.contains("i64 8, i64 8")
+            && line.contains("i64 32, i64 2")
+    }));
+
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-recursive-json");
+    assert_eq!(legacy.status.success(), native.output.status.success());
+    assert_eq!(legacy.stdout, native.output.stdout);
+    assert_eq!(legacy.stderr, native.output.stderr);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create recursive Json target directory");
+        let object = directory.path().join("recursive-json.o");
+        let ir_path = directory.path().join("recursive-json.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit recursive Json object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read recursive Json target IR");
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("@loom.lcir.list.pointer_offsets") && line.contains("[i64 16]")
+            }),
+            "{target} lost the exact Json List pointer cell:\n{ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("@loom.lcir.text_map.pointer_offsets")
+                    && line.contains("[2 x i64] [i64 0, i64 24]")
+            }),
+            "{target} lost the exact Json TextMap pointer cells:\n{ir}"
+        );
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
+    let program = compile_source(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let artifact = lower_source_artifact_with_layout(
+        &program,
+        &request,
+        TargetLayout::new(64).expect("64-bit target"),
+    );
+    assert!(dump_program(artifact.program()).contains("text_map.construct"));
+    match lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit recursive Json")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| {
+                matches!(
+                    item.feature(),
+                    UnsupportedFeature::ExpressionType | UnsupportedFeature::SignatureType
+                )
+            }),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit recursive Json must fail closed"),
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate proves compact collision-free Choice/Interleaved/Outer sum bytes, exact repeated tracing, forced relocation, differential behavior, and cross-target emission together"
+)]
+fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells() {
+    let source = include_str!("../../../fixtures/lcir-sum-layout-collisions/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:?}");
+    assert_eq!(interpreted[0].status, TestStatus::Passed, "{interpreted:?}");
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native = emit_and_run_lcir(&artifact, "source-sum-layout-collisions");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("sumLayoutCollisions"),
+        "{:?}",
+        native.output
+    );
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.list.pointer_offsets",
+        "loom.lcir.text_map.pointer_offsets",
+        "managed.root.rebuild.active.sum",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_text_map_get",
+        "loom_runtime_text_map_insert",
+        "ValueNode",
+        "loom_executor_",
+        "loom_gc_root_push_v1",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "collision-free sum IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    // Choice and Json both retain compact 24-byte values with one managed
+    // cell at byte 16. The two Interleaved variants have opposing pointer and
+    // scalar cells, so they must occupy offsets 0 and 8: the physical sum is
+    // 32 bytes with exact managed cells at bytes 8 and 24. Outer nests Json
+    // beside a 24-byte scalar tuple and grows only to 40 bytes, moving its one
+    // managed cell to byte 32.
+    for required in [
+        "[1 x i64] [i64 16]",
+        "i64 24, i64 1, ptr @loom.lcir.list.pointer_offsets",
+        "[2 x i64] [i64 0, i64 24]",
+        "i64 32, i64 2, ptr @loom.lcir.text_map.pointer_offsets",
+        "[2 x i64] [i64 8, i64 24]",
+        "i64 32, i64 2, ptr @loom.lcir.list.pointer_offsets",
+        "[3 x i64] [i64 0, i64 16, i64 32]",
+        "i64 40, i64 3, ptr @loom.lcir.text_map.pointer_offsets",
+        "[1 x i64] [i64 32]",
+        "i64 40, i64 1, ptr @loom.lcir.list.pointer_offsets",
+        "[2 x i64] [i64 0, i64 40]",
+        "i64 48, i64 2, ptr @loom.lcir.text_map.pointer_offsets",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "sum collision layout omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-sum-layout-collisions");
+    assert_eq!(legacy.status.success(), native.output.status.success());
+    assert_eq!(legacy.stdout, native.output.stdout);
+    assert_eq!(legacy.stderr, native.output.stderr);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create sum-layout target directory");
+        let object = directory.path().join("sum-layout-collisions.o");
+        let ir_path = directory.path().join("sum-layout-collisions.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit sum-layout object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read sum-layout target IR");
+        for required in [
+            "[1 x i64] [i64 16]",
+            "[2 x i64] [i64 0, i64 24]",
+            "[2 x i64] [i64 8, i64 24]",
+            "[3 x i64] [i64 0, i64 16, i64 32]",
+            "[1 x i64] [i64 32]",
+            "[2 x i64] [i64 0, i64 40]",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    match lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit managed sums")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| {
+                matches!(
+                    item.feature(),
+                    UnsupportedFeature::ExpressionType | UnsupportedFeature::SignatureType
+                )
+            }),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit managed sum graph must fail closed"),
+    }
+}
+
+#[test]
+fn deep_nested_sum_layout_is_cached_and_bounded_across_the_complete_graph() {
+    const LAYERS: usize = 24;
+    let mut source =
+        String::from("module lcir_deep_sum_layout\n\nenum Layer0 { Number(Int), Label(Text) }\n");
+    for layer in 1..LAYERS {
+        writeln!(
+            source,
+            "enum Layer{layer} {{ Nested(Layer{}), Scalars((Int, Int, Int)) }}",
+            layer - 1
+        )
+        .expect("append nested sum declaration");
+    }
+    source.push_str(
+        "\nfn join(left Text, right Text) Text { left.concat(right) }\n\nfn label0(value Layer0) Text {\n    match value {\n        Label(text) => text\n        _ => \"missing\"\n    }\n}\n",
+    );
+    for layer in 1..LAYERS {
+        writeln!(
+            source,
+            "\nfn label{layer}(value Layer{layer}) Text {{\n    match value {{\n        Nested(inner) => label{}(inner)\n        _ => \"missing\"\n    }}\n}}",
+            layer - 1
+        )
+        .expect("append nested sum matcher");
+    }
+    let mut wrapped = "Layer0.Label(kept)".to_owned();
+    for layer in 1..LAYERS {
+        wrapped = format!("Layer{layer}.Nested({wrapped})");
+    }
+    writeln!(
+        source,
+        "\npub fn main() Unit {{\n    let kept = join(\"de\", \"ep\")\n    let values = [{wrapped}]\n    let pressure = join(\"mo\", \"ved\")\n    let valid = match values.get(0) {{\n        Some(value) => label{}(value) == \"deep\",\n        None => false,\n    }}\n    assert valid\n    discard pressure\n    Unit\n}}",
+        LAYERS - 1
+    )
+    .expect("append nested sum entry");
+
+    let program = compile_source(&source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create deep sum-layout directory");
+    let object = directory.path().join("deep-sum-layout.o");
+    let ir_path = directory.path().join("deep-sum-layout.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit a deeply nested sum graph within the shared layout budget");
+    assert!(object.is_file());
+    let ir = std::fs::read_to_string(ir_path).expect("read deep sum-layout IR");
+    assert!(ir.contains("loom.lcir.list.pointer_offsets"), "{ir}");
+    assert!(!ir.contains("%loom.Value"), "{ir}");
+}
+
+fn wide_sum_definition(name: &str, scalar_fields: usize) -> String {
+    let fields = std::iter::repeat_n("Int", scalar_fields)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("enum {name} {{ Scalars({fields}), Managed(Text) }}\n")
+}
+
+fn wide_sum_construct(name: &str, scalar_fields: usize) -> String {
+    let fields = std::iter::repeat_n("0", scalar_fields)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("    discard {name}.Scalars({fields})\n")
+}
+
+fn assert_sum_emission_resource_error(source: &str, label: &str, message: &str) {
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create bounded sum-emission directory");
+    let object = directory.path().join(format!("{label}.o"));
+    let ir_path = directory.path().join(format!("{label}.ll"));
+    let error = emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect_err("shared sum resource exhaustion must fail before LLVM IR materialization");
+    assert_eq!(error.code(), "ProgramTooLarge", "{error}");
+    assert!(
+        error.message().contains(message),
+        "unexpected structured resource error: {error}"
+    );
+    assert!(
+        !object.exists(),
+        "resource rejection emitted a partial object"
+    );
+    assert!(!ir_path.exists(), "resource rejection emitted bytewise IR");
+}
+
+#[test]
+fn independent_wide_sums_share_one_bounded_carrier_placement_budget() {
+    const SCALAR_FIELDS: usize = 250;
+    const SUMS: usize = 11;
+    let mut source = String::from("module lcir_shared_sum_placement\n\n");
+    for index in 0..SUMS {
+        source.push_str(&wide_sum_definition(&format!("Wide{index}"), SCALAR_FIELDS));
+    }
+    source.push_str("\npub fn main() Unit {\n");
+    for index in 0..SUMS {
+        source.push_str(&wide_sum_construct(&format!("Wide{index}"), SCALAR_FIELDS));
+    }
+    source.push_str("    Unit\n}\n");
+
+    assert_sum_emission_resource_error(&source, "shared-sum-placement", "sum carrier placement");
+}
+
+#[test]
+fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
+    const SCALAR_FIELDS: usize = 250;
+    const CONSTRUCTS: usize = 34;
+    let mut source = String::from("module lcir_shared_sum_emission\n\n");
+    source.push_str(&wide_sum_definition("Wide", SCALAR_FIELDS));
+    source.push_str("\npub fn main() Unit {\n");
+    for _ in 0..CONSTRUCTS {
+        source.push_str(&wide_sum_construct("Wide", SCALAR_FIELDS));
+    }
+    source.push_str("    Unit\n}\n");
+
+    assert_sum_emission_resource_error(&source, "shared-sum-emission", "sum carrier pack/unpack");
 }
 
 #[test]
@@ -5319,6 +5785,39 @@ fn release_keeps_a_live_sum_carrier_in_register_ssa() {
         assert!(
             !release.ir.contains(forbidden),
             "unexpected `{forbidden}` in live release carrier IR:\n{}",
+            release.ir
+        );
+    }
+    assert_no_indirect_calls(&release.ir);
+}
+
+#[test]
+fn release_keeps_oppositely_interleaved_managed_sum_carriers_in_register_ssa() {
+    let program = compile_source(INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1);
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let release = emit_and_run_lcir_with_options(
+        &artifact,
+        "release-interleaved-managed-sum",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+
+    assert!(release.output.status.success(), "{:?}", release.output);
+    assert!(
+        release.ir.contains(" phi { i8, {") || release.ir.contains("insertvalue { i8, {"),
+        "managed carrier did not remain an aggregate SSA value:\n{}",
+        release.ir
+    );
+    for forbidden in ["alloca { i8, {", "llvm.memcpy", "loom.Value"] {
+        assert!(
+            !release.ir.contains(forbidden),
+            "unexpected carrier scratch surface `{forbidden}` in managed release IR:\n{}",
             release.ir
         );
     }

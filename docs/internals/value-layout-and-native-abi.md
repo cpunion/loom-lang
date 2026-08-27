@@ -152,6 +152,27 @@ transparent/refined carriers, and other unsupported managed shapes remain
 complete legacy fallback. Concrete closed Lists instead use direct managed
 pointers and typed repeated descriptors.
 
+All payload-bearing tagged sums use a target-data-derived byte-class plan.
+Recursive managed cells classify pointer-width ranges; scalar, aggregate, and
+padding bytes are non-pointer. The bounded planner chooses the lowest aligned
+offset for each variant where those two classes never overlap, while allowing
+same-class reuse. The carrier is zeroed before the active payload is inserted,
+and packing, matching, root rebuild, and repeated descriptors share the one
+plan. Carrier storage is capped at 64 KiB; all sums in an artifact share a
+65,536-byte-step placement budget, and all pack/unpack sites independently
+share a 65,536-payload-byte emission budget. These bounds contain search and
+bytewise LLVM expansion across the whole artifact rather than per sum. This
+applies to every admitted closed sum rather than recognizing a source type
+name.
+
+The canonical recursive `Json` value, admitted through List/TextMap pointer
+cycle breakers, consequently remains 24 bytes on supported 64-bit targets:
+tag byte 0, scalar payload byte 8, and managed payload pointer byte 16.
+`List[Json]` traces only byte 16; a `TextMap[Json]` entry traces its Text key at
+byte 0 and the Json pointer cell at byte 24. The layout exposes no stable
+address, universal value, or runtime type tag, and unsupported or over-budget
+layouts fail closed.
+
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving
 objects reuse the existing language-visible layout prefix. The concat helper

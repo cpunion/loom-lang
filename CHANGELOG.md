@@ -63,6 +63,29 @@ artifact, or runtime compatibility.
   identity to schema 21, native-object domain to v17, and LLVM object-cache
   domain to v22. The existing typed-task v1 and native runtime ABI are
   unchanged.
+- Tagged LCIR sums now use one general target-data-derived carrier plan that
+  prevents managed-pointer bytes from aliasing scalar or padding bytes across
+  variants. The bounded deterministic planner places pointer-free variants
+  first, then chooses the lowest aligned offset for each pointer-bearing
+  payload; bytes of the same class may overlap to retain compact layouts. This
+  closes exact moving-GC tracing for arbitrary admitted closed sums in Lists
+  and TextMaps, including scalar/Text/product choices and sums nesting the
+  canonical recursive `Json`. Json remains 24 bytes on supported 64-bit
+  targets rather than growing to a fully disjoint carrier. The
+  `lcir-sum-layout-collisions` and `lcir-typed-json` fixtures cover forced
+  relocation, opposing pointer-first/scalar-first record variants,
+  interpreter/legacy/typed differential execution, Linux/MSVC object emission,
+  32-bit fail-closed classification, and real
+  `check/build/test/run`. The implementation reuses the existing repeated
+  allocator and shadow stack; it adds no universal value, executor, registry,
+  or runtime symbol. The compiler-private identity advances monotonically to
+  LCIR dump 22, artifact schema 23, native-object domain v19, and LLVM
+  object-cache domain v24. Json equality, parsing, and formatting remain
+  separate typed-LCIR slices. Carrier storage is capped at 64 KiB. Independent
+  artifact-wide 65,536-step placement and 65,536-payload-byte pack/unpack
+  budgets prevent many legal wide sums or construct sites from multiplying
+  search and bytewise LLVM IR work; checked source regressions exhaust both
+  bounds before an object or partial IR file is produced.
 - Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
   `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;

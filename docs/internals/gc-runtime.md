@@ -131,6 +131,28 @@ layout registry, or tracing callback. Nested Lists and TextMaps are ordinary
 managed-pointer leaves, while product and sum values contribute their precise
 projected cells.
 
+Every payload-bearing tagged sum uses a collision-free byte-class carrier
+plan. For each target-laid-out variant, pointer-width ranges beginning at its
+recursive managed offsets are pointer bytes; scalar, aggregate, and padding
+bytes are non-pointer. The compiler places pointer-free variants first, then
+chooses the lowest aligned offset for every pointer-bearing variant where the
+two classes never cross. Pointer bytes may overlap other pointer bytes, and
+non-pointer bytes may overlap other non-pointer bytes. Construction zeroes the
+complete carrier before writing the active payload. The collector can
+therefore scan the union pointer table without consulting the tag and without
+ever treating an inactive scalar bit pattern as an address.
+
+The same target-data plan drives carrier packing, unpacking, root rebuild, and
+repeated descriptors. The canonical recursive `Json` consequence remains a
+24-byte value on 64-bit targets, with its managed cell at byte 16;
+`List[Json]` has stride 24/pointer offset 16 and a `{ Text, Json }` TextMap
+entry has stride 32/pointer offsets 0 and 24. A nested sum containing Json and
+a three-Int tuple is 40 bytes with its managed cell at byte 32. This general
+representation reuses `typed-repeated-v1` and the typed shadow stack. It adds
+no universal `Value`, object tag, tracing callback, executor, or runtime ABI
+symbol. Bounded planning and checked arithmetic fail closed before an unsafe
+descriptor can be emitted.
+
 ## Moving collection
 
 The collector traces live universal values, managed nodes and sequences, text
