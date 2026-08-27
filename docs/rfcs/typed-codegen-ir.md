@@ -20,9 +20,9 @@ native build, run, and test preparation now selects complete supported
 primitive, direct literal/concat/get Text, structural-tuple, closed-record, and
 compile-time-established refined artifacts, plus bounded concrete direct
 generic instances over those representations and eligible concrete
-closed-enum artifacts including managed Text payloads, into typed LCIR and
-falls back atomically for reachable
-unsupported features. The broader
+closed-enum artifacts including managed Text payloads, lexical cleanup, and
+the supported source-contract subset into typed LCIR and falls back atomically
+for reachable unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
 
@@ -33,7 +33,7 @@ coverage through a universal value implementation and several closed-world
 native specializations. Managed values other than direct Text values and
 Text-bearing products/sums,
 unsupported or recursive enums,
-runtime-checked constraints, concepts, contracts,
+runtime-checked constraints and dynamic concepts,
 cleanup shapes outside the direct lexical slice, async, and private-list paths
 still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
@@ -78,7 +78,9 @@ representation from an expression shape, or create new callable instances.
 
 The implemented instance planner closes direct calls from the selected
 exported run or test roots. Identity contains the source function, exact type
-arguments, and complete static witness arguments. It deduplicates identical
+arguments, complete static witness arguments, and the source-contract boundary
+role. Ordinary calls target an `AssumedBody`; an exported root with
+preconditions receives a same-signature `CheckedRoot` wrapper. It deduplicates identical
 instances across roots, permits exact regular recursion, and rejects
 nonregular recursion or finite planning-budget exhaustion before LCIR
 construction. Proof-only witness identity remains compile-time data; it does
@@ -145,9 +147,10 @@ supports concat and Unicode-scalar selection through specialized typed helpers.
 Any concat, selection, or Text-bearing product/sum selects `ManagedPointer` for
 every Text in the complete artifact; concat and selection add `MAY_COLLECT`.
 Exact backwards SSA liveness expands a live aggregate to deterministic guarded
-leaf cells and a deduplicated bitmap state for every collecting site. Values are live after the call, so its
-not-yet-defined result is excluded; explicit edge arguments map only to live
-explicit destination parameters. Empty plans emit no frame. Other dynamic
+leaf cells and a deduplicated bitmap state for every collecting site. Values
+are live after the call, so its not-yet-defined result is excluded; explicit
+edge arguments map only to live explicit destination parameters. Empty plans
+emit no frame. Other dynamic
 producers, Text inside transparent/refined carriers, and managed lists remain
 whole-artifact fallback. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
@@ -238,10 +241,23 @@ optional bounded user code, the canonical message, and concrete contract and
 blame spans. A precondition can blame its materialized call site; every other
 kind must blame its own contract/assertion span. Independent validation rejects
 forged combinations and applies a 4 KiB UTF-8 limit to each text field before
-dumping or LLVM global/detail encoding. This exact vocabulary does not itself
-enable source contract lowering: source assertions are direct and traverse
-their active cleanup suffix, while source contracts remain atomic fallback
-until call-site placement is complete.
+dumping or LLVM global/detail encoding. Each closed-world call evaluates all
+arguments first, checks the callee's `requires` clauses with the concrete call
+expression as blame, and then enters the assumed body. Root harnesses perform
+the same checks in a checked wrapper, using the root declaration span because
+there is no source call expression. No caller-span argument is added to the
+physical callable ABI, and `requires` alone does not make an assumed body
+fallible.
+
+An inherent receiver invariant executes at assumed-body entry. Entry values
+for `old(self)` and `old(arguments)` remain typed SSA values. On every normal
+tail or explicit return, LCIR expands the active lexical cleanup suffix before
+checking the current receiver invariant and postconditions. Contract
+expressions lower directly from constants, values, bindings, product fields,
+unary and checked numeric operations, short-circuit Boolean control flow,
+`is_finite`, and bounded exhaustive match DAGs. Arithmetic faults retain their
+ordinary `RuntimeFault`; only a false predicate raises its exact contract
+metadata.
 
 `defer` and `scoped` are expanded by the MIR-to-LCIR lowerer, not represented by
 a runtime cleanup stack. Registration happens at statement reachability, and a

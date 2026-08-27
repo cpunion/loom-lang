@@ -121,6 +121,23 @@ impl PlacePlan {
         place: &Place,
         root_type: ValueTypeId,
     ) -> Result<Self, PlacePlanError> {
+        Self::build_with_invariant_receiver(representations, place, root_type, false)
+    }
+
+    pub(crate) fn build_invariant_receiver(
+        representations: &RepresentationPlan,
+        place: &Place,
+        root_type: ValueTypeId,
+    ) -> Result<Self, PlacePlanError> {
+        Self::build_with_invariant_receiver(representations, place, root_type, true)
+    }
+
+    fn build_with_invariant_receiver(
+        representations: &RepresentationPlan,
+        place: &Place,
+        root_type: ValueTypeId,
+        allow_invariant_receiver: bool,
+    ) -> Result<Self, PlacePlanError> {
         if place.projection.len() > PLACE_MAX_PROJECTION_DEPTH {
             return Err(PlacePlanError::new(format!(
                 "place projection depth {} exceeds the supported limit {}",
@@ -146,7 +163,11 @@ impl PlacePlan {
                     "place projection {index} has unknown parent type {current_type}"
                 ))
             })?;
-            if parent.kind() != ValueTypeKind::Direct {
+            let invariant_receiver_root = allow_invariant_receiver
+                && index == 0
+                && current_type == root_type
+                && parent.kind() == ValueTypeKind::InvariantProduct;
+            if parent.kind() != ValueTypeKind::Direct && !invariant_receiver_root {
                 return Err(PlacePlanError::new(format!(
                     "place projection {index} crosses protected value type {current_type}"
                 )));

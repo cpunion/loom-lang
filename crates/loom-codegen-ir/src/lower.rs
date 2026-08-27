@@ -4,8 +4,8 @@ use std::fmt;
 
 use loom_core::Span;
 use loom_mir::{
-    self as mir, BinaryOp, CallArgument, CallTarget, ExprId, ExprKind, FunctionId, LocalId,
-    StatementKind, Type, UnaryOp,
+    self as mir, BinaryOp, CallArgument, CallTarget, Contract, ContractExpr, ContractExprKind,
+    ContractValue, ExprId, ExprKind, FunctionId, LocalId, StatementKind, Type, UnaryOp,
 };
 
 use crate::aggregate_plan::{
@@ -15,16 +15,16 @@ use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
-use crate::match_plan::{MatchNode, MatchPlan, plan_match};
+use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::text_plan::TextLiteralBudget;
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
-    CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultMetadata, Effects, FloatBinaryOp,
-    FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstructionKind,
-    IntPredicate, Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature, SourceRoots,
-    SumCase, TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId,
-    ValueTypeId, analyze_source_reachability,
+    CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind, ContractFaultMetadata,
+    Effects, FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan,
+    InstanceRole, InstructionKind, IntPredicate, Origin, ProgramBuilder, ResourceKind,
+    ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId, analyze_source_reachability,
 };
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
@@ -446,7 +446,22 @@ pub fn lower_typed_artifact(
     // flow. A literal pointer remains a valid typed managed-root cell value.
     let managed_text = managed_text || aggregates.uses_text_aggregate_leaf();
     let aggregate_plan = aggregates.finish();
-    let summaries = closure
+    let root_keys = selected
+        .ordered
+        .iter()
+        .map(|source| {
+            let body = InstanceKey::monomorphic(*source);
+            if mir
+                .function(*source)
+                .is_some_and(|function| !function.call_plan.requires.is_empty())
+            {
+                InstanceKey::checked_root(body)
+            } else {
+                body
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut summaries = closure
         .entries()
         .iter()
         .map(|key| {
@@ -462,9 +477,18 @@ pub fn lower_typed_artifact(
                     format!("instance closure omitted call edges for {key}"),
                 )
             })?;
-            Ok(summarize_effects(function, key, calls))
+            Ok(summarize_effects(mir.as_program(), function, key, calls))
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
+    for root in &root_keys {
+        if root.role() == InstanceRole::CheckedRoot {
+            summaries.push(InstanceEffectSummary {
+                key: root.clone(),
+                local: Effects::MAY_FAULT,
+                calls: vec![InstanceKey::monomorphic(root.source())].into_boxed_slice(),
+            });
+        }
+    }
     let effects = solve_effects(summaries)?;
     let mut builder = ProgramBuilder::new(target);
     if managed_text {
@@ -572,15 +596,13 @@ pub fn lower_typed_artifact(
             format!("compiler-generated LCIR failed validation: {errors}"),
         )
     })?;
-    let lowered_roots = selected
-        .ordered
+    let lowered_roots = root_keys
         .iter()
-        .map(|source| {
-            let key = InstanceKey::monomorphic(*source);
-            instances.get(&key).ok_or_else(|| {
+        .map(|key| {
+            instances.get(key).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
-                    format!("root function #{} has no LCIR instance", source.0),
+                    format!("root function #{} has no LCIR instance", key.source().0),
                 )
             })
         })
@@ -789,6 +811,167 @@ fn test_outcome_plan(program: &mir::Program, ty: &Type) -> Option<TestOutcomePla
     })
 }
 
+fn constant_type(constant: &mir::Constant) -> Type {
+    match constant {
+        mir::Constant::Unit => Type::Unit,
+        mir::Constant::Bool(_) => Type::Bool,
+        mir::Constant::Int(_) => Type::Int,
+        mir::Constant::Float(_) => Type::Float,
+        mir::Constant::Text(_) => Type::Text,
+    }
+}
+
+fn contract_type_value(value: ContractValue, context: &ContractTypeContext) -> Option<&Type> {
+    match value {
+        ContractValue::SelfValue => context.receiver.as_ref(),
+        ContractValue::Result => context.result.as_ref(),
+        ContractValue::Argument(index) => context.arguments.get(index as usize),
+        ContractValue::OldSelf => context.old_receiver.as_ref(),
+        ContractValue::OldArgument(index) => context
+            .old_arguments
+            .get(index as usize)
+            .and_then(Option::as_ref),
+    }
+}
+
+fn contract_base_type(program: &mir::Program, ty: &Type) -> Option<Type> {
+    let mut current = ty.clone();
+    for _ in 0..64 {
+        let Type::Nominal(id, arguments) = &current else {
+            return Some(current);
+        };
+        let definition = program.type_def(*id)?;
+        let mir::TypeDefKind::Refined { base, .. } = &definition.kind else {
+            return Some(current);
+        };
+        if !arguments.is_empty() || definition.type_parameters != 0 {
+            return None;
+        }
+        current = base.clone();
+    }
+    None
+}
+
+fn contract_projected_type(program: &mir::Program, owner: &Type, field: u32) -> Option<Type> {
+    let owner = contract_base_type(program, owner)?;
+    contract_record_fields(program, &owner)?
+        .get(usize::try_from(field).ok()?)
+        .map(|field| field.ty.clone())
+}
+
+fn contract_record_fields<'program>(
+    program: &'program mir::Program,
+    ty: &Type,
+) -> Option<&'program [mir::FieldDef]> {
+    let Type::Nominal(id, arguments) = ty else {
+        return None;
+    };
+    let definition = program.type_def(*id)?;
+    if !arguments.is_empty() || definition.type_parameters != 0 {
+        return None;
+    }
+    let mir::TypeDefKind::Record { fields, .. } = &definition.kind else {
+        return None;
+    };
+    Some(fields)
+}
+
+fn is_invariant_record_type(program: &mir::Program, ty: &Type) -> bool {
+    let Type::Nominal(id, arguments) = ty else {
+        return false;
+    };
+    program.type_def(*id).is_some_and(|definition| {
+        arguments.is_empty()
+            && definition.type_parameters == 0
+            && matches!(
+                &definition.kind,
+                mir::TypeDefKind::Record {
+                    invariant: Some(_),
+                    ..
+                }
+            )
+    })
+}
+
+fn contract_operand(value: ContractValue, context: &ContractContext) -> Option<&ContractOperand> {
+    match value {
+        ContractValue::SelfValue => context.receiver.as_ref(),
+        ContractValue::Result => context.result.as_ref(),
+        ContractValue::Argument(index) => context.arguments.get(index as usize),
+        ContractValue::OldSelf => context.old_receiver.as_ref(),
+        ContractValue::OldArgument(index) => context
+            .old_arguments
+            .get(index as usize)
+            .and_then(Option::as_ref),
+    }
+}
+
+fn contract_type_context(context: &ContractContext) -> ContractTypeContext {
+    ContractTypeContext {
+        receiver: context.receiver.as_ref().map(|value| value.ty.clone()),
+        result: context.result.as_ref().map(|value| value.ty.clone()),
+        arguments: context
+            .arguments
+            .iter()
+            .map(|value| value.ty.clone())
+            .collect(),
+        old_receiver: context.old_receiver.as_ref().map(|value| value.ty.clone()),
+        old_arguments: context
+            .old_arguments
+            .iter()
+            .map(|value| value.as_ref().map(|value| value.ty.clone()))
+            .collect(),
+        bindings: context
+            .bindings
+            .iter()
+            .map(|value| value.ty.clone())
+            .collect(),
+    }
+}
+
+fn contract_expr_type(
+    program: &mir::Program,
+    expression: &ContractExpr,
+    context: &ContractTypeContext,
+) -> Option<Type> {
+    Some(match &expression.kind {
+        ContractExprKind::Constant(constant) => constant_type(constant),
+        ContractExprKind::Value(value) => contract_type_value(*value, context)?.clone(),
+        ContractExprKind::Binding(index) => context.bindings.get(*index as usize)?.clone(),
+        ContractExprKind::Field(owner, field) => contract_projected_type(
+            program,
+            &contract_expr_type(program, owner, context)?,
+            *field,
+        )?,
+        ContractExprKind::Unary(UnaryOp::Not, _)
+        | ContractExprKind::Binary(
+            BinaryOp::Equal
+            | BinaryOp::NotEqual
+            | BinaryOp::Less
+            | BinaryOp::LessEqual
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEqual
+            | BinaryOp::And
+            | BinaryOp::Or,
+            _,
+            _,
+        )
+        | ContractExprKind::IsFinite(_) => Type::Bool,
+        ContractExprKind::Unary(UnaryOp::Negate, operand)
+        | ContractExprKind::Binary(
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide,
+            operand,
+            _,
+        ) => contract_base_type(program, &contract_expr_type(program, operand, context)?)?,
+        ContractExprKind::Match { arms, .. } => {
+            let arm = arms.first()?;
+            let mut nested = context.clone();
+            nested.bindings.extend(arm.bindings.iter().cloned());
+            contract_expr_type(program, &arm.value, &nested)?
+        }
+    })
+}
+
 const fn is_scalar_type(ty: &Type) -> bool {
     is_direct_scalar(ty)
 }
@@ -809,6 +992,16 @@ struct Classifier<'program> {
 struct PlaceSite {
     expression: Option<ExprId>,
     span: Span,
+}
+
+#[derive(Clone, Debug)]
+struct ContractTypeContext {
+    receiver: Option<Type>,
+    result: Option<Type>,
+    arguments: Vec<Type>,
+    old_receiver: Option<Type>,
+    old_arguments: Vec<Option<Type>>,
+    bindings: Vec<Type>,
 }
 
 impl PlaceSite {
@@ -909,8 +1102,21 @@ impl<'program> Classifier<'program> {
         if !self.supported_value_type(&ty) {
             return None;
         }
-        for field in &place.projection {
-            let fields = closed_record_fields(self.program, &ty)?;
+        let invariant_receiver = function.receiver == Some(mir::Receiver::Mutable)
+            && function
+                .params
+                .first()
+                .is_some_and(|receiver| receiver.id == place.local)
+            && is_invariant_record_type(self.program, &ty);
+        let invariant_root_access = invariant_receiver
+            || (matches!(usage, PlaceUse::Read | PlaceUse::Move)
+                && is_invariant_record_type(self.program, &ty));
+        for (depth, field) in place.projection.iter().enumerate() {
+            let fields = if invariant_root_access && depth == 0 {
+                contract_record_fields(self.program, &ty)?
+            } else {
+                closed_record_fields(self.program, &ty)?
+            };
             let next = usize::try_from(*field)
                 .ok()
                 .and_then(|index| fields.get(index))
@@ -939,19 +1145,13 @@ impl<'program> Classifier<'program> {
                         &format!("{base}.params[0]"),
                     )
                 })
-                .is_some_and(|ty| self.supported_record_type(&ty));
+                .is_some_and(|ty| {
+                    self.supported_record_type(&ty)
+                        || (is_invariant_record_type(self.program, &ty)
+                            && self.aggregates.supports_value_type(&ty))
+                });
         if function.receiver == Some(mir::Receiver::Mutable) && !mutable_pod_receiver {
             self.function_item(UnsupportedFeature::MutableReceiver, function, &base);
-        }
-        if function.call_plan.receiver_invariant.is_some()
-            || !function.call_plan.requires.is_empty()
-            || !function.call_plan.ensures.is_empty()
-        {
-            self.function_item(
-                UnsupportedFeature::Contracts,
-                function,
-                &format!("{base}.call_plan"),
-            );
         }
         for (index, parameter) in function.params.iter().enumerate() {
             let path = format!("{base}.params[{index}]");
@@ -959,7 +1159,11 @@ impl<'program> Classifier<'program> {
                 && function.receiver == Some(mir::Receiver::Mutable)
                 && InstanceSubstitution::new(self.program, key)
                     .instantiate_type(&parameter.ty)
-                    .is_ok_and(|ty| self.supported_record_type(&ty));
+                    .is_ok_and(|ty| {
+                        self.supported_record_type(&ty)
+                            || (is_invariant_record_type(self.program, &ty)
+                                && self.aggregates.supports_value_type(&ty))
+                    });
             if parameter.mutable && !supported_inout_receiver {
                 self.item(
                     UnsupportedFeature::MutableParameter,
@@ -1002,11 +1206,310 @@ impl<'program> Classifier<'program> {
                 return_path,
             );
         }
+        self.classify_contracts(function, key, &base);
         // Function-local declarations include values from syntactically dead
         // regions. Reachable expressions below carry their checked types, so
         // classifying uses rather than the whole declaration table keeps DCE
         // exact while still rejecting every executable unsupported value.
         self.visit_block(function, key, &function.body, &format!("{base}.body"));
+    }
+
+    fn classify_contracts(&mut self, function: &mir::Function, key: &InstanceKey, base: &str) {
+        let substitution = InstanceSubstitution::new(self.program, key);
+        let Ok(parameters) = function
+            .params
+            .iter()
+            .map(|parameter| substitution.instantiate_type(&parameter.ty))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            self.function_item(
+                UnsupportedFeature::UnresolvedGenericInstantiation,
+                function,
+                &format!("{base}.call_plan"),
+            );
+            return;
+        };
+        let Ok(result) = substitution.instantiate_type(&function.return_ty) else {
+            self.function_item(
+                UnsupportedFeature::UnresolvedGenericInstantiation,
+                function,
+                &format!("{base}.call_plan"),
+            );
+            return;
+        };
+        let (receiver, arguments) = if function.receiver.is_some() {
+            let Some((receiver, arguments)) = parameters.split_first() else {
+                self.function_item(
+                    UnsupportedFeature::Contracts,
+                    function,
+                    &format!("{base}.call_plan.receiver"),
+                );
+                return;
+            };
+            (Some(receiver.clone()), arguments.to_vec())
+        } else {
+            (None, parameters)
+        };
+        let common = ContractTypeContext {
+            receiver: receiver.clone(),
+            result: None,
+            arguments: arguments.clone(),
+            old_receiver: receiver,
+            old_arguments: arguments.into_iter().map(Some).collect(),
+            bindings: Vec::new(),
+        };
+        if let Some(contract) = &function.call_plan.receiver_invariant {
+            self.classify_contract_expr(
+                function,
+                key,
+                &contract.expression,
+                &common,
+                &format!("{base}.call_plan.receiver_invariant"),
+            );
+        }
+        for (index, contract) in function.call_plan.requires.iter().enumerate() {
+            self.classify_contract_expr(
+                function,
+                key,
+                &contract.expression,
+                &common,
+                &format!("{base}.call_plan.requires[{index}]"),
+            );
+        }
+        let mut exit = common;
+        exit.result = Some(result);
+        for (index, contract) in function.call_plan.ensures.iter().enumerate() {
+            self.classify_contract_expr(
+                function,
+                key,
+                &contract.expression,
+                &exit,
+                &format!("{base}.call_plan.ensures[{index}]"),
+            );
+        }
+    }
+
+    fn admit_contract_pattern_text(
+        &mut self,
+        function: &mir::Function,
+        pattern: &mir::Pattern,
+        span: Span,
+        path: &str,
+    ) -> bool {
+        let mut pending = vec![pattern];
+        while let Some(pattern) = pending.pop() {
+            match pattern {
+                mir::Pattern::Constant(mir::Constant::Text(value)) => {
+                    if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                        self.item(
+                            UnsupportedFeature::TextConstant,
+                            function.id,
+                            None,
+                            span,
+                            path.to_owned(),
+                        );
+                        return false;
+                    }
+                    self.immortal_text = true;
+                }
+                mir::Pattern::Variant { payload, .. } => pending.extend(payload),
+                mir::Pattern::Wildcard | mir::Pattern::Binding | mir::Pattern::Constant(_) => {}
+            }
+        }
+        true
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn classify_contract_expr(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        expression: &ContractExpr,
+        context: &ContractTypeContext,
+        path: &str,
+    ) -> Option<Type> {
+        let ty = match &expression.kind {
+            ContractExprKind::Constant(constant) => {
+                if let mir::Constant::Text(value) = constant {
+                    if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                        self.item(
+                            UnsupportedFeature::TextConstant,
+                            function.id,
+                            None,
+                            expression.span,
+                            path.to_owned(),
+                        );
+                        return None;
+                    }
+                    self.immortal_text = true;
+                }
+                constant_type(constant)
+            }
+            ContractExprKind::Value(value) => contract_type_value(*value, context)?.clone(),
+            ContractExprKind::Binding(index) => context.bindings.get(*index as usize)?.clone(),
+            ContractExprKind::Field(owner, field) => {
+                let owner = self.classify_contract_expr(
+                    function,
+                    key,
+                    owner,
+                    context,
+                    &format!("{path}.owner"),
+                )?;
+                contract_projected_type(self.program, &owner, *field)?
+            }
+            ContractExprKind::Unary(UnaryOp::Not, operand) => {
+                self.classify_contract_expr(
+                    function,
+                    key,
+                    operand,
+                    context,
+                    &format!("{path}.operand"),
+                )?;
+                Type::Bool
+            }
+            ContractExprKind::Unary(UnaryOp::Negate, operand) => contract_base_type(
+                self.program,
+                &self.classify_contract_expr(
+                    function,
+                    key,
+                    operand,
+                    context,
+                    &format!("{path}.operand"),
+                )?,
+            )?,
+            ContractExprKind::Binary(operator, left, right) => {
+                let left = self.classify_contract_expr(
+                    function,
+                    key,
+                    left,
+                    context,
+                    &format!("{path}.left"),
+                )?;
+                let right = self.classify_contract_expr(
+                    function,
+                    key,
+                    right,
+                    context,
+                    &format!("{path}.right"),
+                )?;
+                let left = contract_base_type(self.program, &left).unwrap_or(left);
+                let right = contract_base_type(self.program, &right).unwrap_or(right);
+                let supported = left == right
+                    && match operator {
+                        BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::Multiply
+                        | BinaryOp::Divide => matches!(left, Type::Int | Type::Float),
+                        BinaryOp::And | BinaryOp::Or => left == Type::Bool,
+                        BinaryOp::Equal | BinaryOp::NotEqual => {
+                            matches!(left, Type::Bool | Type::Int | Type::Float | Type::Text)
+                        }
+                        BinaryOp::Less
+                        | BinaryOp::LessEqual
+                        | BinaryOp::Greater
+                        | BinaryOp::GreaterEqual => matches!(left, Type::Int | Type::Float),
+                    };
+                if !supported {
+                    self.item(
+                        UnsupportedFeature::Contracts,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                if matches!(
+                    operator,
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+                ) {
+                    left
+                } else {
+                    Type::Bool
+                }
+            }
+            ContractExprKind::IsFinite(value) => {
+                self.classify_contract_expr(
+                    function,
+                    key,
+                    value,
+                    context,
+                    &format!("{path}.value"),
+                )?;
+                Type::Bool
+            }
+            ContractExprKind::Match { scrutinee, arms } => {
+                for (index, arm) in arms.iter().enumerate() {
+                    if !self.admit_contract_pattern_text(
+                        function,
+                        &arm.pattern,
+                        expression.span,
+                        &format!("{path}.arms[{index}].pattern"),
+                    ) {
+                        return None;
+                    }
+                }
+                let scrutinee_ty = self.classify_contract_expr(
+                    function,
+                    key,
+                    scrutinee,
+                    context,
+                    &format!("{path}.scrutinee"),
+                )?;
+                let planned_scrutinee = contract_base_type(self.program, &scrutinee_ty)
+                    .unwrap_or_else(|| scrutinee_ty.clone());
+                if plan_contract_match(
+                    self.program,
+                    &planned_scrutinee,
+                    arms,
+                    context.bindings.len(),
+                )
+                .is_none()
+                {
+                    self.item(
+                        UnsupportedFeature::PatternMatch,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                let mut result = None;
+                for (index, arm) in arms.iter().enumerate() {
+                    let mut nested = context.clone();
+                    let bindings = arm
+                        .bindings
+                        .iter()
+                        .map(|ty| InstanceSubstitution::new(self.program, key).instantiate_type(ty))
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    nested.bindings.extend(bindings);
+                    let arm_ty = self.classify_contract_expr(
+                        function,
+                        key,
+                        &arm.value,
+                        &nested,
+                        &format!("{path}.arms[{index}].value"),
+                    )?;
+                    if result.is_none() {
+                        result = Some(arm_ty);
+                    }
+                }
+                result?
+            }
+        };
+        if !self.supported_value_type(&ty) {
+            self.item(
+                UnsupportedFeature::Contracts,
+                function.id,
+                None,
+                expression.span,
+                path.to_owned(),
+            );
+            return None;
+        }
+        Some(ty)
     }
 
     fn function_item(&mut self, feature: UnsupportedFeature, function: &mir::Function, path: &str) {
@@ -1598,9 +2101,11 @@ impl<'program> Classifier<'program> {
                             );
                             let allowed = index == 0
                                 && mutable_receiver.as_ref() == place_type.as_ref()
-                                && place_type
-                                    .as_ref()
-                                    .is_some_and(|ty| self.supported_record_type(ty));
+                                && place_type.as_ref().is_some_and(|ty| {
+                                    self.supported_record_type(ty)
+                                        || (is_invariant_record_type(self.program, ty)
+                                            && self.aggregates.supports_value_type(ty))
+                                });
                             if !allowed {
                                 self.expression_item(
                                     UnsupportedFeature::InOutArgument,
@@ -1803,12 +2308,26 @@ impl InstanceLookup {
 }
 
 fn summarize_effects(
+    program: &mir::Program,
     function: &mir::Function,
     key: &InstanceKey,
     calls: &[InstanceKey],
 ) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
     scan_effect_block(&function.body, &mut summary);
+    // Preconditions execute at each concrete caller boundary. They make the
+    // caller's operation fallible, never the assumed callee body by itself.
+    if calls.iter().any(|callee| {
+        program
+            .function(callee.source())
+            .is_some_and(|source| !source.call_plan.requires.is_empty())
+    }) {
+        summary.include(Effects::MAY_FAULT);
+    }
+    // Entry/current invariants and postconditions belong to the assumed body.
+    if function.call_plan.receiver_invariant.is_some() || !function.call_plan.ensures.is_empty() {
+        summary.include(Effects::MAY_FAULT);
+    }
     InstanceEffectSummary {
         key: key.clone(),
         local: summary.local,
@@ -2495,9 +3014,32 @@ struct LoweredMatchArm {
     captures: Box<[(LocalId, crate::match_plan::MatchValueId, ValueId)]>,
 }
 
+#[derive(Clone)]
+struct LoweredContractArm {
+    source_arm: usize,
+    block: BlockId,
+    captures: Box<[(LocalId, crate::match_plan::MatchValueId, ValueId)]>,
+}
+
 struct InOutArgumentPlan {
     parameter: usize,
     place: PlacePlan,
+}
+
+#[derive(Clone, Debug)]
+struct ContractOperand {
+    value: ValueId,
+    ty: Type,
+}
+
+#[derive(Clone, Debug)]
+struct ContractContext {
+    receiver: Option<ContractOperand>,
+    result: Option<ContractOperand>,
+    arguments: Vec<ContractOperand>,
+    old_receiver: Option<ContractOperand>,
+    old_arguments: Vec<Option<ContractOperand>>,
+    bindings: Vec<ContractOperand>,
 }
 
 struct FunctionLowerer<'function, 'builder, 'plan> {
@@ -2514,6 +3056,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     fault_block: Option<BlockId>,
     cleanups: Vec<CleanupAction>,
     cleanup_expansions: usize,
+    old_parameters: Vec<ContractOperand>,
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
@@ -2555,6 +3098,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             fault_block: None,
             cleanups: Vec::new(),
             cleanup_expansions: 0,
+            old_parameters: Vec::new(),
         }
     }
 
@@ -2569,14 +3113,37 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .append_block_parameter(entry, ty)
                 .map_err(LoweringError::from)?;
             env = self.environments.set(env, parameter.id, value)?;
+            let instantiated = InstanceSubstitution::new(self.program, self.key)
+                .instantiate_type(&parameter.ty)
+                .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+            self.old_parameters.push(ContractOperand {
+                value,
+                ty: instantiated,
+            });
         }
-        let flow = Flow { block: entry, env };
-        match self.lower_scoped_block(flow, &self.source.body)? {
-            EvalFlow::Continue { flow, value } => self.terminate_exit(
+        let mut flow = Flow { block: entry, env };
+        if self.key.role() == InstanceRole::CheckedRoot {
+            return self.lower_checked_root(flow);
+        }
+        if let Some(contract) = &self.source.call_plan.receiver_invariant {
+            let context = self.contract_context(flow.env, None, false)?;
+            flow = self.lower_contract_check(
                 flow,
-                TerminatorKind::Return(value),
-                self.block_origin(&self.source.body),
-            ),
+                contract,
+                ContractFaultKind::Invariant,
+                contract.span,
+                &context,
+            )?;
+        }
+        match self.lower_scoped_block(flow, &self.source.body)? {
+            EvalFlow::Continue { flow, value } => {
+                let flow = self.lower_exit_contracts(flow, value)?;
+                self.terminate_exit(
+                    flow,
+                    TerminatorKind::Return(value),
+                    self.block_origin(&self.source.body),
+                )
+            }
             EvalFlow::Terminated => Ok(()),
         }
     }
@@ -2655,13 +3222,39 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             })
     }
 
-    fn place_plan(&self, place: &mir::Place) -> Result<PlacePlan, LoweringError> {
-        PlacePlan::build(
-            self.builder.representations(),
-            place,
-            self.local_type(place.local)?,
-        )
-        .map_err(|error| {
+    fn place_plan(&self, place: &mir::Place, usage: PlaceUse) -> Result<PlacePlan, LoweringError> {
+        let root_type = self.local_type(place.local)?;
+        let invariant_receiver = self.source.receiver == Some(mir::Receiver::Mutable)
+            && self
+                .source
+                .params
+                .first()
+                .is_some_and(|receiver| receiver.id == place.local)
+            && self
+                .local_types
+                .get(&place.local)
+                .and_then(|ty| {
+                    InstanceSubstitution::new(self.program, self.key)
+                        .instantiate_type(ty)
+                        .ok()
+                })
+                .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
+        let invariant_read = matches!(usage, PlaceUse::Read | PlaceUse::Move)
+            && self
+                .local_types
+                .get(&place.local)
+                .and_then(|ty| {
+                    InstanceSubstitution::new(self.program, self.key)
+                        .instantiate_type(ty)
+                        .ok()
+                })
+                .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
+        let planned = if invariant_receiver || invariant_read {
+            PlacePlan::build_invariant_receiver(self.builder.representations(), place, root_type)
+        } else {
+            PlacePlan::build(self.builder.representations(), place, root_type)
+        };
+        planned.map_err(|error| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 format!(
@@ -2800,13 +3393,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             parents.push((aggregate, step));
             aggregate = extracted;
         }
-        let mut rebuilt = match self.one_instruction(
+        let mut rebuilt = match self.product_insert(
             flow,
-            InstructionKind::ProductInsert {
-                aggregate,
-                field: leaf.field(),
-                value,
-            },
+            aggregate,
+            leaf.field(),
+            value,
             leaf.parent_type(),
             origin,
         )? {
@@ -2825,13 +3416,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             }
         };
         for (parent, step) in parents.into_iter().rev() {
-            rebuilt = match self.one_instruction(
+            rebuilt = match self.product_insert(
                 flow,
-                InstructionKind::ProductInsert {
-                    aggregate: parent,
-                    field: step.field(),
-                    value: rebuilt,
-                },
+                parent,
+                step.field(),
+                rebuilt,
                 step.parent_type(),
                 origin,
             )? {
@@ -2852,6 +3441,40 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
         flow.env = self.environments.set(flow.env, plan.local(), rebuilt)?;
         Ok(flow)
+    }
+
+    fn product_insert(
+        &mut self,
+        flow: Flow,
+        aggregate: ValueId,
+        field: u32,
+        value: ValueId,
+        ty: ValueTypeId,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let invariant_receiver = self
+            .builder
+            .representations()
+            .value_type(ty)
+            .is_some_and(|value| value.kind() == crate::ValueTypeKind::InvariantProduct);
+        let kind = if invariant_receiver {
+            InstructionKind::InvariantReceiverInsert {
+                aggregate,
+                field,
+                value,
+            }
+        } else {
+            InstructionKind::ProductInsert {
+                aggregate,
+                field,
+                value,
+            }
+        };
+        if invariant_receiver {
+            self.one_trusted_instruction(flow, kind, ty, origin)
+        } else {
+            self.one_instruction(flow, kind, ty, origin)
+        }
     }
 
     fn create_block(&mut self) -> Result<BlockId, LoweringError> {
@@ -2926,6 +3549,1075 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             expression: None,
             span: block.span,
         }
+    }
+
+    fn contract_origin(&self, expression: &ContractExpr) -> Origin {
+        Origin {
+            source_function: self.source.id,
+            expression: None,
+            span: expression.span,
+        }
+    }
+
+    fn contract_context(
+        &self,
+        environment: EnvironmentRoot,
+        result: Option<ValueId>,
+        include_old: bool,
+    ) -> Result<ContractContext, LoweringError> {
+        let mut parameters = Vec::with_capacity(self.source.params.len());
+        for (index, parameter) in self.source.params.iter().enumerate() {
+            let value = self
+                .environments
+                .get(environment, parameter.id)
+                .ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("contract context lost parameter local #{}", parameter.id.0),
+                    )
+                })?;
+            let ty = self
+                .old_parameters
+                .get(index)
+                .ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "contract parameter type snapshot is missing",
+                    )
+                })?
+                .ty
+                .clone();
+            parameters.push(ContractOperand { value, ty });
+        }
+        let (receiver, arguments) = if self.source.receiver.is_some() {
+            let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "receiver contract has no receiver parameter",
+                )
+            })?;
+            (Some(receiver.clone()), arguments.to_vec())
+        } else {
+            (None, parameters)
+        };
+        let (old_receiver, old_arguments) = if include_old {
+            if self.source.receiver.is_some() {
+                let (receiver, arguments) = self.old_parameters.split_first().ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "receiver old-value snapshot is missing",
+                    )
+                })?;
+                (
+                    Some(receiver.clone()),
+                    arguments.iter().cloned().map(Some).collect(),
+                )
+            } else {
+                (
+                    None,
+                    self.old_parameters.iter().cloned().map(Some).collect(),
+                )
+            }
+        } else {
+            (None, Vec::new())
+        };
+        let result = result
+            .map(|value| {
+                InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(&self.source.return_ty)
+                    .map(|ty| ContractOperand { value, ty })
+            })
+            .transpose()
+            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        Ok(ContractContext {
+            receiver,
+            result,
+            arguments,
+            old_receiver,
+            old_arguments,
+            bindings: Vec::new(),
+        })
+    }
+
+    fn lower_checked_root(&mut self, mut flow: Flow) -> Result<(), LoweringError> {
+        if self.source.params.iter().any(|parameter| parameter.mutable) {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "checked artifact root unexpectedly has mutable parameters",
+            ));
+        }
+        let context = self.contract_context(flow.env, None, false)?;
+        for contract in &self.source.call_plan.requires {
+            flow = self.lower_contract_check(
+                flow,
+                contract,
+                ContractFaultKind::Precondition,
+                self.source.span,
+                &context,
+            )?;
+        }
+        let body_key = self.key.clone().assumed_body();
+        let body = self.instances.get(&body_key).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("checked root has no assumed body instance for {body_key}"),
+            )
+        })?;
+        let arguments = self
+            .source
+            .params
+            .iter()
+            .map(|parameter| {
+                self.environments
+                    .get(flow.env, parameter.id)
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("checked root lost parameter local #{}", parameter.id.0),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result_ty = self.type_id(&self.source.return_ty)?;
+        let origin = Origin {
+            source_function: self.source.id,
+            expression: None,
+            span: self.source.span,
+        };
+        let effect = effect_for(self.effects, body)?;
+        if effect.contains(Effects::MAY_FAULT) {
+            let normal = self.create_block()?;
+            let result = self
+                .builder
+                .append_block_parameter(normal, result_ty)
+                .map_err(LoweringError::from)?;
+            let fault = self.fault_target(flow)?;
+            self.terminate(
+                flow.block,
+                TerminatorKind::Invoke {
+                    callee: body,
+                    arguments: arguments.into_boxed_slice(),
+                    normal: ResultTarget::new(normal, []),
+                    unwind: fault,
+                },
+                origin,
+            )?;
+            flow.block = normal;
+            self.terminate_exit(flow, TerminatorKind::Return(result), origin)
+        } else {
+            let results = self
+                .builder
+                .append_instruction(
+                    flow.block,
+                    InstructionKind::DirectCall {
+                        callee: body,
+                        arguments: arguments.into_boxed_slice(),
+                    },
+                    &[result_ty],
+                    origin,
+                )
+                .map_err(LoweringError::from)?;
+            let result = results.first().copied().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "checked-root body call produced no result",
+                )
+            })?;
+            self.terminate_exit(flow, TerminatorKind::Return(result), origin)
+        }
+    }
+
+    fn lower_exit_contracts(
+        &mut self,
+        mut flow: Flow,
+        result: ValueId,
+    ) -> Result<Flow, LoweringError> {
+        if self.source.call_plan.receiver_invariant.is_none()
+            && self.source.call_plan.ensures.is_empty()
+        {
+            return Ok(flow);
+        }
+        // Explicit returns lower the full cleanup suffix while the lexical
+        // plan remains available for sibling paths. Postcondition faults must
+        // not run that already-consumed suffix a second time.
+        let saved_cleanups = std::mem::take(&mut self.cleanups);
+        let lowered = (|| {
+            let context = self.contract_context(flow.env, Some(result), true)?;
+            if let Some(contract) = &self.source.call_plan.receiver_invariant {
+                flow = self.lower_contract_check(
+                    flow,
+                    contract,
+                    ContractFaultKind::Invariant,
+                    contract.span,
+                    &context,
+                )?;
+            }
+            for contract in &self.source.call_plan.ensures {
+                flow = self.lower_contract_check(
+                    flow,
+                    contract,
+                    ContractFaultKind::Postcondition,
+                    contract.span,
+                    &context,
+                )?;
+            }
+            Ok(flow)
+        })();
+        self.cleanups = saved_cleanups;
+        lowered
+    }
+
+    fn lower_contract_check(
+        &mut self,
+        flow: Flow,
+        contract: &Contract,
+        kind: ContractFaultKind,
+        blame_span: Span,
+        context: &ContractContext,
+    ) -> Result<Flow, LoweringError> {
+        let EvalFlow::Continue {
+            flow,
+            value: condition,
+        } = self.lower_contract_expr(flow, &contract.expression, context)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "checked contract expression unexpectedly terminated",
+            ));
+        };
+        let success = self.create_block()?;
+        let fault = self.fault_target(flow)?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::Assert {
+                condition,
+                metadata: ContractFaultMetadata::contract(
+                    kind,
+                    contract.code.clone(),
+                    contract.span,
+                    blame_span,
+                ),
+                success: BlockTarget::new(success, []),
+                fault,
+            },
+            Origin {
+                source_function: self.source.id,
+                expression: None,
+                span: contract.expression.span,
+            },
+        )?;
+        Ok(Flow {
+            block: success,
+            env: flow.env,
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn lower_contract_expr(
+        &mut self,
+        flow: Flow,
+        expression: &ContractExpr,
+        context: &ContractContext,
+    ) -> Result<EvalFlow, LoweringError> {
+        let origin = self.contract_origin(expression);
+        match &expression.kind {
+            ContractExprKind::Constant(constant) => match constant {
+                mir::Constant::Text(value) => self.one_instruction(
+                    flow,
+                    InstructionKind::TextLiteral {
+                        utf8: value.clone().into_boxed_str(),
+                    },
+                    self.type_id(&Type::Text)?,
+                    origin,
+                ),
+                mir::Constant::Unit => self.constant(flow, Constant::Unit, &Type::Unit, origin),
+                mir::Constant::Bool(value) => {
+                    self.constant(flow, Constant::Bool(*value), &Type::Bool, origin)
+                }
+                mir::Constant::Int(value) => {
+                    self.constant(flow, Constant::Int(*value), &Type::Int, origin)
+                }
+                mir::Constant::Float(value) => {
+                    self.constant(flow, Constant::float(*value), &Type::Float, origin)
+                }
+            },
+            ContractExprKind::Value(value) => {
+                let operand = contract_operand(*value, context).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("contract value {value:?} is unavailable"),
+                    )
+                })?;
+                Ok(EvalFlow::Continue {
+                    flow,
+                    value: operand.value,
+                })
+            }
+            ContractExprKind::Binding(index) => {
+                let value = context
+                    .bindings
+                    .get(*index as usize)
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("contract binding #{index} is unavailable"),
+                        )
+                    })?
+                    .value;
+                Ok(EvalFlow::Continue { flow, value })
+            }
+            ContractExprKind::Field(owner, field) => {
+                let operand = self.lower_contract_operand(flow, owner, context)?;
+                let (flow, operand) = self.normalize_contract_operand(operand, origin)?;
+                let aggregate = self.type_id(&operand.ty)?;
+                let field_ty = self.product_field_type(aggregate, *field)?;
+                self.one_instruction(
+                    flow,
+                    InstructionKind::ProductExtract {
+                        aggregate: operand.value,
+                        field: *field,
+                    },
+                    field_ty,
+                    origin,
+                )
+            }
+            ContractExprKind::Unary(operator, operand) => {
+                let operand = self.lower_contract_operand(flow, operand, context)?;
+                let (flow, operand) = self.normalize_contract_operand(operand, origin)?;
+                match (operator, &operand.ty) {
+                    (UnaryOp::Not, Type::Bool) => self.one_instruction(
+                        flow,
+                        InstructionKind::BoolNot {
+                            value: operand.value,
+                        },
+                        self.type_id(&Type::Bool)?,
+                        origin,
+                    ),
+                    (UnaryOp::Negate, Type::Float) => self.one_instruction(
+                        flow,
+                        InstructionKind::FloatNegate {
+                            value: operand.value,
+                        },
+                        self.type_id(&Type::Float)?,
+                        origin,
+                    ),
+                    (UnaryOp::Negate, Type::Int) => {
+                        self.lower_checked_negate(flow, operand.value, origin)
+                    }
+                    _ => Err(self.unsupported_reached("contract unary operation")),
+                }
+            }
+            ContractExprKind::Binary(operator @ (BinaryOp::And | BinaryOp::Or), left, right) => {
+                self.lower_contract_short_circuit(flow, *operator, left, right, expression, context)
+            }
+            ContractExprKind::Binary(operator, left, right) => {
+                let left = self.lower_contract_operand(flow, left, context)?;
+                let (flow, left) = self.normalize_contract_operand(left, origin)?;
+                let right = self.lower_contract_operand(flow, right, context)?;
+                let (flow, right) = self.normalize_contract_operand(right, origin)?;
+                self.lower_contract_binary(flow, *operator, &left, &right, origin)
+            }
+            ContractExprKind::IsFinite(value) => {
+                let operand = self.lower_contract_operand(flow, value, context)?;
+                let (flow, operand) = self.normalize_contract_operand(operand, origin)?;
+                if operand.ty != Type::Float {
+                    return Err(self.unsupported_reached("contract is_finite operand"));
+                }
+                self.lower_contract_is_finite(flow, operand.value, origin)
+            }
+            ContractExprKind::Match { scrutinee, arms } => {
+                self.lower_contract_match(flow, scrutinee, arms, expression, context)
+            }
+        }
+    }
+
+    fn lower_contract_operand(
+        &mut self,
+        flow: Flow,
+        expression: &ContractExpr,
+        context: &ContractContext,
+    ) -> Result<(Flow, ContractOperand), LoweringError> {
+        let ty = contract_expr_type(self.program, expression, &contract_type_context(context))
+            .ok_or_else(|| self.unsupported_reached("contract expression type"))?;
+        let ty = InstanceSubstitution::new(self.program, self.key)
+            .instantiate_type(&ty)
+            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        let EvalFlow::Continue { flow, value } =
+            self.lower_contract_expr(flow, expression, context)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "contract operand unexpectedly terminated",
+            ));
+        };
+        Ok((flow, ContractOperand { value, ty }))
+    }
+
+    fn normalize_contract_operand(
+        &mut self,
+        (mut flow, mut operand): (Flow, ContractOperand),
+        origin: Origin,
+    ) -> Result<(Flow, ContractOperand), LoweringError> {
+        for _ in 0..64 {
+            let Type::Nominal(id, arguments) = &operand.ty else {
+                return Ok((flow, operand));
+            };
+            let definition = self.program.type_def(*id).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("contract operand references missing type #{}", id.0),
+                )
+            })?;
+            let mir::TypeDefKind::Refined { base, .. } = &definition.kind else {
+                return Ok((flow, operand));
+            };
+            if !arguments.is_empty() || definition.type_parameters != 0 {
+                return Err(self.unsupported_reached("generic refined contract operand"));
+            }
+            let base = base.clone();
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.one_instruction(
+                flow,
+                InstructionKind::Unrefine {
+                    value: operand.value,
+                },
+                self.type_id(&base)?,
+                origin,
+            )?
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "contract unrefine unexpectedly terminated",
+                ));
+            };
+            flow = next_flow;
+            operand = ContractOperand { value, ty: base };
+        }
+        Err(self.unsupported_reached("deep refined contract operand"))
+    }
+
+    fn lower_contract_binary(
+        &mut self,
+        flow: Flow,
+        operator: BinaryOp,
+        left: &ContractOperand,
+        right: &ContractOperand,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        if left.ty != right.ty {
+            return Err(self.unsupported_reached("mismatched contract binary operands"));
+        }
+        if left.ty == Type::Int
+            && matches!(
+                operator,
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+            )
+        {
+            let op = match operator {
+                BinaryOp::Add => CheckedIntBinaryOp::Add,
+                BinaryOp::Subtract => CheckedIntBinaryOp::Subtract,
+                BinaryOp::Multiply => CheckedIntBinaryOp::Multiply,
+                BinaryOp::Divide => CheckedIntBinaryOp::Divide,
+                _ => unreachable!(),
+            };
+            return self.lower_checked_binary(flow, op, left.value, right.value, origin);
+        }
+        if left.ty == Type::Float
+            && matches!(
+                operator,
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+            )
+        {
+            let op = match operator {
+                BinaryOp::Add => FloatBinaryOp::Add,
+                BinaryOp::Subtract => FloatBinaryOp::Subtract,
+                BinaryOp::Multiply => FloatBinaryOp::Multiply,
+                BinaryOp::Divide => FloatBinaryOp::Divide,
+                _ => unreachable!(),
+            };
+            return self.one_instruction(
+                flow,
+                InstructionKind::FloatBinary {
+                    op,
+                    left: left.value,
+                    right: right.value,
+                },
+                self.type_id(&Type::Float)?,
+                origin,
+            );
+        }
+        let kind = match &left.ty {
+            Type::Bool => InstructionKind::BoolCompare {
+                predicate: match operator {
+                    BinaryOp::Equal => BoolPredicate::Equal,
+                    BinaryOp::NotEqual => BoolPredicate::NotEqual,
+                    _ => return Err(self.unsupported_reached("contract Bool comparison")),
+                },
+                left: left.value,
+                right: right.value,
+            },
+            Type::Int => InstructionKind::IntCompare {
+                predicate: int_predicate(operator)
+                    .ok_or_else(|| self.unsupported_reached("contract Int comparison"))?,
+                left: left.value,
+                right: right.value,
+            },
+            Type::Float => InstructionKind::FloatCompare {
+                predicate: float_predicate(operator)
+                    .ok_or_else(|| self.unsupported_reached("contract Float comparison"))?,
+                left: left.value,
+                right: right.value,
+            },
+            Type::Text => InstructionKind::TextCompare {
+                predicate: match operator {
+                    BinaryOp::Equal => BoolPredicate::Equal,
+                    BinaryOp::NotEqual => BoolPredicate::NotEqual,
+                    _ => return Err(self.unsupported_reached("contract Text comparison")),
+                },
+                left: left.value,
+                right: right.value,
+            },
+            _ => return Err(self.unsupported_reached("contract aggregate comparison")),
+        };
+        self.one_instruction(flow, kind, self.type_id(&Type::Bool)?, origin)
+    }
+
+    fn lower_contract_short_circuit(
+        &mut self,
+        flow: Flow,
+        operator: BinaryOp,
+        left: &ContractExpr,
+        right: &ContractExpr,
+        expression: &ContractExpr,
+        context: &ContractContext,
+    ) -> Result<EvalFlow, LoweringError> {
+        let EvalFlow::Continue {
+            flow,
+            value: condition,
+        } = self.lower_contract_expr(flow, left, context)?
+        else {
+            return Err(self.unsupported_reached("terminating contract LHS"));
+        };
+        let evaluate = self.create_block()?;
+        let EvalFlow::Continue {
+            flow: right_flow,
+            value: right_value,
+        } = self.lower_contract_expr(
+            Flow {
+                block: evaluate,
+                env: flow.env,
+            },
+            right,
+            context,
+        )?
+        else {
+            return Err(self.unsupported_reached("terminating contract RHS"));
+        };
+        let join = self.create_block()?;
+        let result = self
+            .builder
+            .append_block_parameter(join, self.type_id(&Type::Bool)?)
+            .map_err(LoweringError::from)?;
+        let skip = BlockTarget::new(join, [condition]);
+        let evaluate_target = BlockTarget::new(evaluate, []);
+        let (then_target, else_target) = match operator {
+            BinaryOp::And => (evaluate_target, skip),
+            BinaryOp::Or => (skip, evaluate_target),
+            _ => return Err(self.unsupported_reached("contract short circuit")),
+        };
+        let origin = self.contract_origin(expression);
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition,
+                then_target,
+                else_target,
+            },
+            origin,
+        )?;
+        self.terminate(
+            right_flow.block,
+            TerminatorKind::Jump(BlockTarget::new(join, [right_value])),
+            origin,
+        )?;
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: join,
+                env: flow.env,
+            },
+            value: result,
+        })
+    }
+
+    fn lower_contract_is_finite(
+        &mut self,
+        flow: Flow,
+        value: ValueId,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let EvalFlow::Continue {
+            flow,
+            value: minimum,
+        } = self.constant(flow, Constant::float(-f64::MAX), &Type::Float, origin)?
+        else {
+            return Err(self.unsupported_reached("finite lower constant"));
+        };
+        let EvalFlow::Continue {
+            flow,
+            value: maximum,
+        } = self.constant(flow, Constant::float(f64::MAX), &Type::Float, origin)?
+        else {
+            return Err(self.unsupported_reached("finite upper constant"));
+        };
+        let EvalFlow::Continue { flow, value: lower } = self.one_instruction(
+            flow,
+            InstructionKind::FloatCompare {
+                predicate: FloatPredicate::OrderedGreaterEqual,
+                left: value,
+                right: minimum,
+            },
+            self.type_id(&Type::Bool)?,
+            origin,
+        )?
+        else {
+            return Err(self.unsupported_reached("finite lower comparison"));
+        };
+        let EvalFlow::Continue { flow, value: upper } = self.one_instruction(
+            flow,
+            InstructionKind::FloatCompare {
+                predicate: FloatPredicate::OrderedLessEqual,
+                left: value,
+                right: maximum,
+            },
+            self.type_id(&Type::Bool)?,
+            origin,
+        )?
+        else {
+            return Err(self.unsupported_reached("finite upper comparison"));
+        };
+        let join = self.create_block()?;
+        let result = self
+            .builder
+            .append_block_parameter(join, self.type_id(&Type::Bool)?)
+            .map_err(LoweringError::from)?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition: lower,
+                then_target: BlockTarget::new(join, [upper]),
+                else_target: BlockTarget::new(join, [lower]),
+            },
+            origin,
+        )?;
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: join,
+                env: flow.env,
+            },
+            value: result,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "contract match lowering keeps the shared decision plan, typed captures, and arm join construction in one auditable boundary"
+    )]
+    fn lower_contract_match(
+        &mut self,
+        flow: Flow,
+        scrutinee: &ContractExpr,
+        arms: &[mir::ContractArm],
+        expression: &ContractExpr,
+        context: &ContractContext,
+    ) -> Result<EvalFlow, LoweringError> {
+        let scrutinee = self.lower_contract_operand(flow, scrutinee, context)?;
+        let (flow, scrutinee) =
+            self.normalize_contract_operand(scrutinee, self.contract_origin(expression))?;
+        let plan = plan_contract_match(self.program, &scrutinee.ty, arms, context.bindings.len())
+            .ok_or_else(|| self.unsupported_reached("unplanned contract match"))?;
+        let mut values = vec![None; plan.value_count()];
+        values[0] = Some(scrutinee.value);
+        let mut lowered_arms = BTreeMap::new();
+        for (node, decision) in plan.nodes() {
+            let MatchNode::Arm { arm, captures } = decision else {
+                continue;
+            };
+            let block = self.create_block()?;
+            let mut parameters = Vec::with_capacity(captures.len());
+            for (binding, capture) in captures.iter().copied() {
+                let ty = plan.value_type(capture).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "contract match capture has no planned type",
+                    )
+                })?;
+                let parameter = self
+                    .builder
+                    .append_block_parameter(block, self.type_id(ty)?)
+                    .map_err(LoweringError::from)?;
+                parameters.push((binding, capture, parameter));
+            }
+            lowered_arms.insert(
+                node,
+                LoweredContractArm {
+                    source_arm: *arm,
+                    block,
+                    captures: parameters.into_boxed_slice(),
+                },
+            );
+        }
+        self.lower_contract_match_node(
+            &plan,
+            plan.root(),
+            flow,
+            &values,
+            expression,
+            &lowered_arms,
+        )?;
+        let result_ty =
+            contract_expr_type(self.program, expression, &contract_type_context(context))
+                .ok_or_else(|| self.unsupported_reached("contract match result type"))?;
+        let result_ty = InstanceSubstitution::new(self.program, self.key)
+            .instantiate_type(&result_ty)
+            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        let join = self.create_block()?;
+        let result = self
+            .builder
+            .append_block_parameter(join, self.type_id(&result_ty)?)
+            .map_err(LoweringError::from)?;
+        for lowered in lowered_arms.values().cloned() {
+            let arm = arms.get(lowered.source_arm).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "contract match plan references a missing arm",
+                )
+            })?;
+            let mut nested = context.clone();
+            let binding_base = nested.bindings.len();
+            let mut captures = lowered.captures.to_vec();
+            captures.sort_unstable_by_key(|(binding, _, _)| binding.0);
+            for (offset, declared) in arm.bindings.iter().enumerate() {
+                let expected =
+                    u32::try_from(binding_base.checked_add(offset).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract binding index overflowed",
+                        )
+                    })?)
+                    .map(LocalId)
+                    .map_err(|_| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract binding index exceeded u32",
+                        )
+                    })?;
+                let (_, _, value) = captures
+                    .iter()
+                    .find(|(binding, _, _)| *binding == expected)
+                    .copied()
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract match capture is missing",
+                        )
+                    })?;
+                let ty = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(declared)
+                    .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+                nested.bindings.push(ContractOperand { value, ty });
+            }
+            let EvalFlow::Continue {
+                flow: arm_flow,
+                value,
+            } = self.lower_contract_expr(
+                Flow {
+                    block: lowered.block,
+                    env: flow.env,
+                },
+                &arm.value,
+                &nested,
+            )?
+            else {
+                return Err(self.unsupported_reached("terminating contract match arm"));
+            };
+            self.terminate(
+                arm_flow.block,
+                TerminatorKind::Jump(BlockTarget::new(join, [value])),
+                self.contract_origin(&arm.value),
+            )?;
+        }
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: join,
+                env: flow.env,
+            },
+            value: result,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn lower_contract_match_node(
+        &mut self,
+        plan: &MatchPlan,
+        node: crate::match_plan::MatchNodeId,
+        flow: Flow,
+        values: &[Option<ValueId>],
+        expression: &ContractExpr,
+        lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredContractArm>,
+    ) -> Result<(), LoweringError> {
+        let decision = plan.node(node).cloned().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "contract match decision references a missing node",
+            )
+        })?;
+        let origin = self.contract_origin(expression);
+        match decision {
+            MatchNode::Arm { arm, captures } => {
+                let lowered = lowered_arms.get(&node).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("contract match has no block for arm {arm}"),
+                    )
+                })?;
+                let arguments = captures
+                    .iter()
+                    .map(|(_, capture)| {
+                        values
+                            .get(capture.index())
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| {
+                                LoweringError::defect(
+                                    LoweringDefectCode::InconsistentPlan,
+                                    "contract match capture value is unavailable",
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Jump(BlockTarget::new(lowered.block, arguments)),
+                    origin,
+                )
+            }
+            MatchNode::Constant {
+                value,
+                constant,
+                equal,
+                not_equal,
+            } => {
+                let operand = values
+                    .get(value.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract match constant operand is unavailable",
+                        )
+                    })?;
+                let ty = plan.value_type(value).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "contract match constant has no type",
+                    )
+                })?;
+                let expected = match constant {
+                    mir::Constant::Text(text) => {
+                        let EvalFlow::Continue { flow: next, value } = self.one_instruction(
+                            flow,
+                            InstructionKind::TextLiteral {
+                                utf8: text.into_boxed_str(),
+                            },
+                            self.type_id(&Type::Text)?,
+                            origin,
+                        )?
+                        else {
+                            return Err(self.unsupported_reached("contract Text pattern"));
+                        };
+                        return self.lower_contract_match_constant_branch(
+                            plan,
+                            equal,
+                            not_equal,
+                            next,
+                            values,
+                            expression,
+                            lowered_arms,
+                            InstructionKind::TextCompare {
+                                predicate: BoolPredicate::Equal,
+                                left: operand,
+                                right: value,
+                            },
+                        );
+                    }
+                    mir::Constant::Unit => Constant::Unit,
+                    mir::Constant::Bool(value) => Constant::Bool(value),
+                    mir::Constant::Int(value) => Constant::Int(value),
+                    mir::Constant::Float(value) => Constant::float(value),
+                };
+                let EvalFlow::Continue {
+                    flow,
+                    value: expected,
+                } = self.constant(flow, expected, ty, origin)?
+                else {
+                    return Err(self.unsupported_reached("contract match constant"));
+                };
+                let instruction = match ty {
+                    Type::Bool => InstructionKind::BoolCompare {
+                        predicate: BoolPredicate::Equal,
+                        left: operand,
+                        right: expected,
+                    },
+                    Type::Int => InstructionKind::IntCompare {
+                        predicate: IntPredicate::Equal,
+                        left: operand,
+                        right: expected,
+                    },
+                    Type::Float => InstructionKind::FloatCompare {
+                        predicate: FloatPredicate::OrderedEqual,
+                        left: operand,
+                        right: expected,
+                    },
+                    Type::Unit => {
+                        return self.lower_contract_match_node(
+                            plan,
+                            equal,
+                            flow,
+                            values,
+                            expression,
+                            lowered_arms,
+                        );
+                    }
+                    _ => return Err(self.unsupported_reached("contract constant pattern type")),
+                };
+                self.lower_contract_match_constant_branch(
+                    plan,
+                    equal,
+                    not_equal,
+                    flow,
+                    values,
+                    expression,
+                    lowered_arms,
+                    instruction,
+                )
+            }
+            MatchNode::Sum { value, cases } => {
+                let scrutinee = values
+                    .get(value.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract sum scrutinee is unavailable",
+                        )
+                    })?;
+                let mut lowered_cases = Vec::with_capacity(cases.len());
+                let mut case_flows = Vec::with_capacity(cases.len());
+                for case in &cases {
+                    let block = self.create_block()?;
+                    let mut case_values = values.to_vec();
+                    for payload in case.payload.iter().copied() {
+                        if case_values.len() <= payload.index() {
+                            case_values.resize(payload.index().saturating_add(1), None);
+                        }
+                        let ty = plan.value_type(payload).ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "contract sum payload has no type",
+                            )
+                        })?;
+                        let parameter = self
+                            .builder
+                            .append_block_parameter(block, self.type_id(ty)?)
+                            .map_err(LoweringError::from)?;
+                        case_values[payload.index()] = Some(parameter);
+                    }
+                    lowered_cases.push(SumCase::new(case.variant, block, []));
+                    case_flows.push((case.next, block, case_values));
+                }
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::SumSwitch {
+                        scrutinee,
+                        cases: lowered_cases.into_boxed_slice(),
+                    },
+                    origin,
+                )?;
+                for (next, block, case_values) in case_flows {
+                    self.lower_contract_match_node(
+                        plan,
+                        next,
+                        Flow {
+                            block,
+                            env: flow.env,
+                        },
+                        &case_values,
+                        expression,
+                        lowered_arms,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_contract_match_constant_branch(
+        &mut self,
+        plan: &MatchPlan,
+        equal: crate::match_plan::MatchNodeId,
+        not_equal: crate::match_plan::MatchNodeId,
+        flow: Flow,
+        values: &[Option<ValueId>],
+        expression: &ContractExpr,
+        lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredContractArm>,
+        instruction: InstructionKind,
+    ) -> Result<(), LoweringError> {
+        let origin = self.contract_origin(expression);
+        let EvalFlow::Continue {
+            flow,
+            value: condition,
+        } = self.one_instruction(flow, instruction, self.type_id(&Type::Bool)?, origin)?
+        else {
+            return Err(self.unsupported_reached("contract pattern comparison"));
+        };
+        let equal_block = self.create_block()?;
+        let not_equal_block = self.create_block()?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(equal_block, []),
+                else_target: BlockTarget::new(not_equal_block, []),
+            },
+            origin,
+        )?;
+        self.lower_contract_match_node(
+            plan,
+            equal,
+            Flow {
+                block: equal_block,
+                env: flow.env,
+            },
+            values,
+            expression,
+            lowered_arms,
+        )?;
+        self.lower_contract_match_node(
+            plan,
+            not_equal,
+            Flow {
+                block: not_equal_block,
+                env: flow.env,
+            },
+            values,
+            expression,
+            lowered_arms,
+        )
     }
 
     fn fault_block(&mut self) -> Result<BlockId, LoweringError> {
@@ -3170,7 +4862,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             expression: None,
             span,
         };
-        let place = self.place_plan(&mir::Place::local(local))?;
+        let place = self.place_plan(&mir::Place::local(local), PlaceUse::Read)?;
         let EvalFlow::Continue {
             flow: next_flow,
             value: resource,
@@ -3280,7 +4972,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             expression: None,
             span,
         };
-        let place = self.place_plan(&mir::Place::local(local))?;
+        let place = self.place_plan(&mir::Place::local(local), PlaceUse::InOut)?;
         let EvalFlow::Continue {
             flow: next_flow,
             value: receiver,
@@ -3425,7 +5117,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             } => self.lower_for_range(flow, *local, start, end, body, statement),
             StatementKind::Assign { place, value } => match self.lower_expr(flow, value)? {
                 EvalFlow::Continue { flow, value } => {
-                    let plan = self.place_plan(place)?;
+                    let plan = self.place_plan(place, PlaceUse::Write)?;
                     let flow =
                         self.write_place(flow, &plan, value, self.statement_origin(statement))?;
                     Ok(StatementFlow::Continue(flow))
@@ -3530,6 +5222,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 match lowered {
                     EvalFlow::Continue { flow, value } => {
                         let flow = self.lower_cleanup_suffix(flow, 0)?;
+                        let flow = self.lower_exit_contracts(flow, value)?;
                         self.terminate_exit(flow, TerminatorKind::Return(value), origin)?;
                         Ok(StatementFlow::Terminated)
                     }
@@ -3571,7 +5264,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.constant(flow, constant, &expression.ty, origin)
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
-                let plan = self.place_plan(place)?;
+                let usage = if matches!(expression.kind, ExprKind::Move(_)) {
+                    PlaceUse::Move
+                } else {
+                    PlaceUse::Read
+                };
+                let plan = self.place_plan(place, usage)?;
                 if plan.leaf_type() != self.type_id(&expression.ty)? {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
@@ -4860,7 +6558,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     lowered_arguments.push(value);
                 }
                 CallArgument::InOut(place) => {
-                    let plan = self.place_plan(place)?;
+                    let plan = self.place_plan(place, PlaceUse::InOut)?;
                     let EvalFlow::Continue {
                         flow: next_flow,
                         value,
@@ -4894,6 +6592,49 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     callee.0
                 ),
             ));
+        }
+        if !callee_source.call_plan.requires.is_empty() {
+            let parameters = callee_source
+                .params
+                .iter()
+                .zip(lowered_arguments.iter().copied())
+                .map(|(parameter, value)| {
+                    InstanceSubstitution::new(self.program, &key)
+                        .instantiate_type(&parameter.ty)
+                        .map(|ty| ContractOperand { value, ty })
+                        .map_err(|error| {
+                            instantiation_defect(self.source.id, Some(expression.id), error)
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (receiver, arguments) = if callee_source.receiver.is_some() {
+                let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "contracted receiver call has no receiver argument",
+                    )
+                })?;
+                (Some(receiver.clone()), arguments.to_vec())
+            } else {
+                (None, parameters)
+            };
+            let context = ContractContext {
+                receiver,
+                result: None,
+                arguments,
+                old_receiver: None,
+                old_arguments: Vec::new(),
+                bindings: Vec::new(),
+            };
+            for contract in &callee_source.call_plan.requires {
+                flow = self.lower_contract_check(
+                    flow,
+                    contract,
+                    ContractFaultKind::Precondition,
+                    expression.span,
+                    &context,
+                )?;
+            }
         }
         let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(

@@ -851,7 +851,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn lexical_cleanup_closes_real_check_build_test_and_run_commands() {
+fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(include_str!(
         "../../../fixtures/lcir-lexical-cleanup/main.loom"
     ));

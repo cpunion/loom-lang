@@ -51,8 +51,8 @@ pub use ids::{
     BlockId, InstanceId, InstructionId, ProductReprId, ReprId, SumReprId, ValueId, ValueTypeId,
 };
 pub use instance::{
-    INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceWitnessArgument,
-    PlannedInstance,
+    INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceRole,
+    InstanceWitnessArgument, PlannedInstance,
 };
 pub use instance_closure::{INSTANCE_CLOSURE_MAX_CALL_EDGES, INSTANCE_CLOSURE_MAX_INSTANCES};
 pub use ir::{

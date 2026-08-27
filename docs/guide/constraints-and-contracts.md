@@ -121,7 +121,9 @@ impl Range {
 }
 ```
 
-- `requires` checks a caller obligation at entry.
+- `requires` checks a caller obligation after every call argument is evaluated
+  and immediately before control enters the callee. A failure reports the
+  concrete call expression as its blame site.
 - `ensures` checks the returned logical value through `result`.
 - `invariant` checks nominal record state at construction and method boundaries.
 - `assert` checks a fact at its source position.
@@ -133,6 +135,14 @@ If the compiler independently proves a contract clause from established facts,
 it omits that runtime check. It does not assume a clause merely because the
 clause itself says the condition is true. Unknown or disproven clauses remain
 in checked MIR so both interpreter and LLVM executions observe the same fault.
+
+For an inherent method, the receiver invariant is checked at callee entry. On
+a normal tail or explicit `return`, Loom first runs every active lexical
+cleanup in LIFO order, then checks the current receiver invariant, then the
+`ensures` clauses in source order. A cleanup fault therefore remains primary
+and exit contracts cannot observe a value that was never returned. The callee
+body may assume its preconditions have already passed; Loom does not repeat
+them inside the body.
 
 ## Entry snapshots with `old`
 
@@ -162,17 +172,19 @@ be snapshotted.
 
 Contract expressions use an intentionally closed, effect-restricted subset.
 They include literals, parameters, fields, `self`, `result`, valid `old`
-expressions, Boolean logic, comparisons, Float arithmetic, exhaustive matching,
-and the compiler-known pure predicate `standard.float.is_finite`.
+expressions, Boolean logic, comparisons, checked `Int` arithmetic, Float
+arithmetic, exhaustive matching, and the compiler-known pure predicate
+`standard.float.is_finite`.
 
 User function calls, indexing, assignment, I/O, checked construction, and other
-potentially effectful operations are rejected in a contract. Checked `Int`
-arithmetic is also excluded because it can fault. `Int` literals and comparisons
-remain valid. Unary Int negation is checked as in ordinary code, so negating
-the minimum Int produces a `RuntimeFault` rather than a contract failure.
+potentially effectful operations are rejected in a contract. Integer `+`, `-`,
+`*`, `/`, and unary negation use the same checked operations as ordinary code.
+Overflow and division by zero remain their original `RuntimeFault`; only a
+predicate that evaluates to `false` produces the clause's precise contract
+fault.
 
-This restriction keeps contracts executable without requiring a general effect
-or termination system.
+This restriction keeps contracts executable without requiring a general
+effect or termination system while preserving ordinary arithmetic faults.
 
 ## Failure model
 

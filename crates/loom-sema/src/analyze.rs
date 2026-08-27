@@ -3273,15 +3273,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     None
                 };
                 if let Some(numeric) = numeric {
-                    if self.environment.contract != ContractMode::None
-                        && numeric == BuiltinType::Int
-                    {
-                        self.error_at(
-                            "InvalidContractExpression",
-                            "Int arithmetic is not total and cannot appear in a contract",
-                            expression,
-                        );
-                    }
                     self.types().builtin(numeric)
                 } else {
                     self.error_at(
@@ -8697,7 +8688,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         if !valid {
             self.error_at(
                 "InvalidContractExpression",
-                "expression is outside the pure, total contract predicate subset",
+                "expression is outside the pure, effect-restricted contract predicate subset",
                 expression,
             );
         }

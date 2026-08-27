@@ -26,6 +26,24 @@ fn join(left Text, right Text) Text { left.concat(right) }
 
 fn collectPressure() Text { join("small", "pressure") }
 
+fn retainContract(input Option[Text], pressure Text) Option[Text]
+    requires match input {
+        Some("Keep") => true
+        Some(_) => false
+        None => false
+    }
+    ensures match result {
+        Some(current) => match old(input) {
+            Some(previous) => current == previous
+            None => false
+        }
+        None => false
+    }
+{
+    discard pressure.length()
+    input
+}
+
 fn retainOption(input Option[Text], takeInput Bool) Option[Text] {
     let fallback = Some("Fallback")
     let selected = if takeInput { input } else { fallback }
@@ -110,6 +128,8 @@ fn pointerFree(input Plain) Int {
 
 fn verify() Result[Unit, Problem] {
     let kept = join("K", "eep")
+    let contracted = retainContract(Some(kept), collectPressure())
+    let fromContract = optionText(contracted)
     let optional = retainOption(Some(kept), true)
     let fromOption = optionText(optional)
     let outcome = retainResult(Ok(Pair { left = kept, right = kept }))
@@ -121,7 +141,7 @@ fn verify() Result[Unit, Problem] {
     let fromAlias = nestedPair(holder.state)
     let fromNestedOption = nestedPair(retainNested(Nested.Optional(Some(kept)), true))
     let fromNestedResult = nestedPair(retainNested(Nested.Outcome(Ok(Pair { left = kept, right = kept })), true))
-    if fromOption == "Keep" && fromResult.left == "Keep" && fromResult.right == "Keep" && fromEnvelope == "Keep" && fromAlias.left == "Keep" && fromAlias.right == "Keep" && fromNestedOption.left == "Keep" && fromNestedOption.right == "Keep" && fromNestedResult.left == "Keep" && fromNestedResult.right == "Keep" && pointerFree(Plain.One(42)) == 42 {
+    if fromContract == "Keep" && fromOption == "Keep" && fromResult.left == "Keep" && fromResult.right == "Keep" && fromEnvelope == "Keep" && fromAlias.left == "Keep" && fromAlias.right == "Keep" && fromNestedOption.left == "Keep" && fromNestedOption.right == "Keep" && fromNestedResult.left == "Keep" && fromNestedResult.right == "Keep" && pointerFree(Plain.One(42)) == 42 {
         Ok(Unit)
     } else {
         Err(Problem.WrongText)

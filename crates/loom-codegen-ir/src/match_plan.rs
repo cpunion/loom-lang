@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use loom_mir::{self as mir, LocalId, Pattern, Type, TypeId, VariantId};
+use loom_mir::{self as mir, ContractArm, LocalId, Pattern, Type, TypeId, VariantId};
 
 use crate::aggregate_plan::closed_enum_variants;
 
@@ -111,6 +111,7 @@ struct Planner<'program> {
     arm_nodes: BTreeMap<(usize, Vec<(LocalId, MatchValueId)>), MatchNodeId>,
     reserved_nodes: usize,
     planning_work: usize,
+    allow_text_constants: bool,
 }
 
 pub(crate) fn plan_match(
@@ -118,15 +119,57 @@ pub(crate) fn plan_match(
     scrutinee: &Type,
     arms: &[mir::MatchArm],
 ) -> Option<MatchPlan> {
-    if arms.is_empty() || arms.len() > DIRECT_MATCH_MAX_PATTERN_NODES || !patterns_fit_budget(arms)
+    let inputs = arms
+        .iter()
+        .map(|arm| (&arm.pattern, arm.bindings.clone()))
+        .collect::<Vec<_>>();
+    plan_match_inputs(program, scrutinee, &inputs, false)
+}
+
+/// Plans a contract match using lexical binding indexes as synthetic locals.
+/// The resulting decision graph is identical to an executable match plan;
+/// lowering maps the synthetic local number back to the contract binding SSA
+/// slot and never materializes a universal environment.
+pub(crate) fn plan_contract_match(
+    program: &mir::Program,
+    scrutinee: &Type,
+    arms: &[ContractArm],
+    binding_base: usize,
+) -> Option<MatchPlan> {
+    let inputs = arms
+        .iter()
+        .map(|arm| {
+            let bindings = (0..arm.bindings.len())
+                .map(|offset| {
+                    binding_base
+                        .checked_add(offset)
+                        .and_then(|index| u32::try_from(index).ok())
+                        .map(LocalId)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((&arm.pattern, bindings))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    plan_match_inputs(program, scrutinee, &inputs, true)
+}
+
+fn plan_match_inputs(
+    program: &mir::Program,
+    scrutinee: &Type,
+    arms: &[(&Pattern, Vec<LocalId>)],
+    allow_text_constants: bool,
+) -> Option<MatchPlan> {
+    if arms.is_empty()
+        || arms.len() > DIRECT_MATCH_MAX_PATTERN_NODES
+        || !patterns_fit_budget(arms.iter().map(|(pattern, _)| *pattern))
     {
         return None;
     }
 
     let mut rows = Vec::with_capacity(arms.len());
-    for (arm_index, arm) in arms.iter().enumerate() {
-        let mut bindings = arm.bindings.iter().copied();
-        let pattern = annotate_pattern(&arm.pattern, &mut bindings)?;
+    for (arm_index, (pattern, binding_ids)) in arms.iter().enumerate() {
+        let mut bindings = binding_ids.iter().copied();
+        let pattern = annotate_pattern(pattern, &mut bindings)?;
         if bindings.next().is_some() {
             return None;
         }
@@ -144,6 +187,7 @@ pub(crate) fn plan_match(
         arm_nodes: BTreeMap::new(),
         reserved_nodes: 0,
         planning_work: 0,
+        allow_text_constants,
     };
     let root = planner.compile(rows, vec![MatchValueId(0)])?;
     let cfg_blocks = planner.nodes.iter().try_fold(1_usize, |blocks, node| {
@@ -163,8 +207,8 @@ pub(crate) fn plan_match(
     })
 }
 
-fn patterns_fit_budget(arms: &[mir::MatchArm]) -> bool {
-    let mut pending = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
+fn patterns_fit_budget<'pattern>(patterns: impl Iterator<Item = &'pattern Pattern>) -> bool {
+    let mut pending = patterns.collect::<Vec<_>>();
     let mut nodes = 0_usize;
     while let Some(pattern) = pending.pop() {
         nodes = nodes.saturating_add(1);
@@ -246,7 +290,7 @@ impl Planner<'_> {
                 self.compile(rows, columns)
             }
             PlannedPattern::Constant(constant) => {
-                if !constant_matches_type(&constant, &ty) {
+                if !constant_matches_type(&constant, &ty, self.allow_text_constants) {
                     return None;
                 }
                 if matches!(&constant, mir::Constant::Float(value) if value.is_nan()) {
@@ -449,14 +493,14 @@ fn row_cost(row: &Row) -> Option<usize> {
     Some(nodes)
 }
 
-fn constant_matches_type(constant: &mir::Constant, ty: &Type) -> bool {
+fn constant_matches_type(constant: &mir::Constant, ty: &Type, allow_text_constants: bool) -> bool {
     matches!(
         (constant, ty),
         (mir::Constant::Unit, Type::Unit)
             | (mir::Constant::Bool(_), Type::Bool)
             | (mir::Constant::Int(_), Type::Int)
             | (mir::Constant::Float(_), Type::Float)
-    )
+    ) || (allow_text_constants && matches!((constant, ty), (mir::Constant::Text(_), Type::Text)))
 }
 
 #[expect(

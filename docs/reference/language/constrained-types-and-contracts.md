@@ -181,39 +181,40 @@ The subset accepts:
 - `old(...)` in `ensures`;
 - unary numeric and Boolean operators;
 - Boolean operators, equality, and numeric comparisons;
-- Float arithmetic;
+- checked Int arithmetic and Float arithmetic;
 - exhaustive `match` expressions whose contents remain in the subset;
 - the imported total predicate `standard.float.is_finite`.
 
-Binary Int arithmetic is excluded because checked overflow and division by zero
-would make it non-total. User function calls, method calls, mutation, I/O,
-record or collection construction, blocks, `if`, `.await`, `?`, `return`, and
-task operations are not contract expressions. A contract may read an immutable
-local in scope at an `assert`, but not a mutable `var`.
-
-Unary Int negation remains checked as it is in ordinary code. Negating the
-minimum Int therefore produces a `RuntimeFault`; it is not reported as a
-contract violation.
+Int `+`, `-`, `*`, `/`, and unary negation remain checked as they are in
+ordinary code. Overflow and division by zero therefore produce their original
+`RuntimeFault`; they are not reported as contract violations. Only a completed
+predicate whose value is `false` produces the clause's contract fault. User
+function calls, method calls, mutation, I/O, record or collection construction,
+blocks, `if`, `.await`, `?`, `return`, and task operations are not contract
+expressions. A contract may read an immutable local in scope at an `assert`,
+but not a mutable `var`.
 
 ## Checking order
 
-For a function, the observable order is:
+For a closed-world function call, the observable order is:
 
 ```text
-requires -> old snapshots -> body -> ensures
+evaluate arguments -> requires -> old snapshots -> body -> lexical cleanup -> ensures
 ```
 
 For an inherent or concept method, receiver invariants surround the same
 sequence:
 
 ```text
-entry invariant -> requires -> old snapshots -> body -> exit invariant -> ensures
+evaluate receiver and arguments -> requires -> entry invariant -> old snapshots
+-> body -> lexical cleanup -> exit invariant -> ensures
 ```
 
 If the body returns normally through either a tail expression or `return`, the
-exit checks run. An `Err` is a normal return and therefore also runs them. When
-both the exit invariant and postcondition would fail, the earlier invariant
-check determines the reported fault.
+lexical cleanup suffix runs before exit checks. An `Err` is a normal return and
+therefore also follows this sequence. A cleanup fault remains primary and no
+exit contract runs. When both the exit invariant and postcondition would fail,
+the earlier invariant check determines the reported fault.
 
 Conformance calls use the concept requirement's contract and the concrete
 receiver's invariant. Static dispatch, interface parameters, and first-class

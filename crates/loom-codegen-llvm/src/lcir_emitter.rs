@@ -3320,6 +3320,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 aggregate,
                 field,
                 value,
+            }
+            | InstructionKind::InvariantReceiverInsert {
+                aggregate,
+                field,
+                value,
             } => one(self
                 .backend
                 .builder

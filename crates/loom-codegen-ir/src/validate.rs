@@ -1771,16 +1771,48 @@ impl<'a> Validator<'a> {
                 aggregate,
                 field,
                 value,
+            }
+            | InstructionKind::InvariantReceiverInsert {
+                aggregate,
+                field,
+                value,
             } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
-                if aggregate_type
+                let aggregate_kind = aggregate_type
                     .and_then(|ty| self.program.representations.value_type(ty))
-                    .is_some_and(|ty| ty.kind() != ValueTypeKind::Direct)
-                {
+                    .map(crate::ValueType::kind);
+                let valid_kind = match &instruction.kind {
+                    InstructionKind::ProductInsert { .. } => {
+                        aggregate_kind == Some(ValueTypeKind::Direct)
+                    }
+                    InstructionKind::InvariantReceiverInsert { .. } => {
+                        aggregate_kind == Some(ValueTypeKind::InvariantProduct)
+                            && aggregate_type.is_some_and(|aggregate_type| {
+                                function.signature.inout_params().iter().any(|parameter| {
+                                    usize::try_from(*parameter)
+                                        .ok()
+                                        .and_then(|index| function.signature.params().get(index))
+                                        .copied()
+                                        == Some(aggregate_type)
+                                })
+                            })
+                    }
+                    _ => false,
+                };
+                if !valid_kind {
+                    let message = match &instruction.kind {
+                        InstructionKind::ProductInsert { .. } => {
+                            "product insertion cannot mutate a transparent or invariant-protected semantic value"
+                        }
+                        InstructionKind::InvariantReceiverInsert { .. } => {
+                            "invariant receiver insertion requires a declared invariant inout receiver"
+                        }
+                        _ => unreachable!(),
+                    };
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.aggregate"),
-                        "product insertion cannot mutate a transparent or invariant-protected semantic value",
+                        message,
                     );
                 }
                 let expected_field = aggregate_type

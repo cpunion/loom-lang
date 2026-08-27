@@ -542,7 +542,9 @@ impl FunctionBuilder<'_> {
     ) -> Result<Box<[ValueId]>, BuildError> {
         if matches!(
             kind,
-            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+            InstructionKind::RefineProven { .. }
+                | InstructionKind::InvariantRecordProven { .. }
+                | InstructionKind::InvariantReceiverInsert { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,
@@ -565,7 +567,9 @@ impl FunctionBuilder<'_> {
     ) -> Result<Box<[ValueId]>, BuildError> {
         if !matches!(
             kind,
-            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+            InstructionKind::RefineProven { .. }
+                | InstructionKind::InvariantRecordProven { .. }
+                | InstructionKind::InvariantReceiverInsert { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,

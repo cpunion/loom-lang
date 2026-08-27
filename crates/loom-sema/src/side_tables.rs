@@ -228,7 +228,7 @@ pub enum ConstructionCheck {
     Runtime,
 }
 
-/// Whether a pure, total contract predicate must still execute at runtime.
+/// Whether a pure, effect-restricted contract predicate must still execute at runtime.
 /// A disproven predicate remains `Runtime`: unlike invalid checked
 /// construction, an assertion or callable contract may intentionally expose a
 /// faulting path and must retain its blame/reporting behavior.

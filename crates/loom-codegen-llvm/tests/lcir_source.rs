@@ -1420,6 +1420,9 @@ fn managed_sum_leaves_relocate_only_for_the_active_variant() {
     let program = compile_source(&source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+    assert!(dump.contains("contract PostconditionFault"), "{dump}");
     let interpreted = Interpreter::new(&program).run_tests();
     assert!(
         interpreted
@@ -1450,6 +1453,28 @@ fn managed_sum_leaves_relocate_only_for_the_active_variant() {
         assert!(
             retain_option.contains(required),
             "Option[Text] root flow omitted `{required}`:\n{retain_option}"
+        );
+    }
+
+    let retain_contract = emitted_lcir_function(&native.ir, &artifact, "retainContract");
+    for required in ["sum.switch.tag", "text.compare.same_length"] {
+        assert!(
+            retain_contract.contains(required),
+            "Text-bearing contract match omitted `{required}`:\n{retain_contract}"
+        );
+    }
+    let verify = emitted_lcir_function(&native.ir, &artifact, "verify");
+    for required in [
+        ".s1f0",
+        "managed.root.sum.variant.active",
+        "managed.root.reload",
+        "managed.root.rebuild.active.sum",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            verify.contains(required),
+            "forced-GC contract argument omitted `{required}`:\n{verify}"
         );
     }
 
@@ -2359,7 +2384,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn contract_int_negation_overflow_matches_interpreter_and_legacy() {
+fn contract_int_negation_overflow_matches_interpreter_lcir_and_legacy() {
     let source = r"module contract_int_negation
 
 fn guarded(value Int) Unit
@@ -2449,9 +2474,461 @@ pub fn assertMain() Unit {
             entry,
             &format!("legacy-contract-int-negation-{entry}"),
         );
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let lcir = emit_and_run_lcir_machine_fault(
+            &artifact,
+            &format!("lcir-contract-int-negation-{entry}"),
+        );
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
         assert!(!legacy.status.success(), "{entry}: {legacy:?}");
         assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
     }
+}
+
+#[test]
+fn checked_contract_binary_overflow_and_short_circuit_match_all_backends() {
+    let source = r"module contract_checked_binary
+
+fn overflow(value Int) Unit
+    requires value + 1 > 0
+{
+    Unit
+}
+
+fn shortCircuit(value Int) Unit
+    requires true || value + 1 > 0
+{
+    Unit
+}
+
+pub fn overflowMain() Unit {
+    overflow(9223372036854775807)
+    Unit
+}
+
+pub fn shortCircuitMain() Unit {
+    shortCircuit(9223372036854775807)
+    Unit
+}
+";
+    let program = compile_source(source);
+    let overflow = source_function(&program, "overflow");
+    let operation = match &overflow.call_plan.requires[0].expression.kind {
+        ContractExprKind::Binary(_, left, _) => left.as_ref(),
+        other => panic!("unexpected checked contract: {other:?}"),
+    };
+    let expected = integer_overflow_fault(&operation.span);
+    assert_eq!(
+        serde_json::to_value(
+            interpret_run(&program, "overflowMain").expect_err("contract overflow")
+        )
+        .expect("serialize contract overflow"),
+        expected
+    );
+    let overflow_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "overflowMain".into(),
+        },
+    );
+    let overflow_lcir =
+        emit_and_run_lcir_machine_fault(&overflow_artifact, "lcir-contract-binary-overflow");
+    let overflow_legacy = emit_and_run_legacy_machine_fault(
+        &program,
+        "overflowMain",
+        "legacy-contract-binary-overflow",
+    );
+    assert_eq!(machine_fault(&overflow_lcir.output), expected);
+    assert_eq!(machine_fault(&overflow_legacy), expected);
+
+    assert_eq!(interpret_run(&program, "shortCircuitMain"), Ok(Value::Unit));
+    let safe_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "shortCircuitMain".into(),
+        },
+    );
+    let safe_lcir = emit_and_run_lcir_machine_fault(&safe_artifact, "lcir-contract-short-circuit");
+    let safe_legacy = emit_and_run_legacy_machine_fault(
+        &program,
+        "shortCircuitMain",
+        "legacy-contract-short-circuit",
+    );
+    assert!(safe_lcir.output.status.success(), "{:?}", safe_lcir.output);
+    assert!(safe_legacy.status.success(), "{safe_legacy:?}");
+    assert_eq!(safe_lcir.output.stdout, safe_legacy.stdout);
+}
+
+#[test]
+fn contract_precondition_blame_matches_each_closed_world_call_and_checked_root() {
+    let source = r"module contract_blame
+
+fn positive(value Int) Unit
+    requires value > 0
+{
+    Unit
+}
+
+fn allArgumentsBeforeRequires(first Int, later Int) Unit
+    requires first > 0
+{
+    discard later
+    Unit
+}
+
+pub fn callerMain() Unit {
+    positive(0)
+    Unit
+}
+
+pub fn rootMain() Unit
+    requires false
+{
+    Unit
+}
+
+pub fn argumentFaultMain() Unit {
+    allArgumentsBeforeRequires(0, 1 / 0)
+}
+";
+    let program = compile_source(source);
+
+    for entry in ["callerMain", "rootMain"] {
+        let interpreted =
+            serde_json::to_value(interpret_run(&program, entry).expect_err("contract must reject"))
+                .expect("serialize interpreter contract fault");
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let dump = dump_program(artifact.program());
+        if entry == "rootMain" {
+            assert!(dump.contains("checked-root source="), "{dump}");
+        }
+        let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-contract-{entry}"));
+        let legacy =
+            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-contract-{entry}"));
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert_eq!(machine_fault(&lcir.output), interpreted, "LCIR {entry}");
+        assert_eq!(machine_fault(&legacy), interpreted, "legacy {entry}");
+    }
+
+    let caller = source_function(&program, "callerMain");
+    let call_span = caller
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            StatementKind::Evaluate(Expr {
+                kind: ExprKind::Call { .. },
+                span,
+                ..
+            }) => Some(*span),
+            _ => None,
+        })
+        .expect("caller expression span");
+    let failure = serde_json::to_value(
+        interpret_run(&program, "callerMain").expect_err("caller precondition fault"),
+    )
+    .expect("serialize caller precondition fault");
+    assert_eq!(failure["fault"]["blameSpan"], serde_json::json!(call_span));
+    assert_ne!(call_span, caller.span);
+
+    let argument_failure = serde_json::to_value(
+        interpret_run(&program, "argumentFaultMain")
+            .expect_err("the later argument must fault before the precondition"),
+    )
+    .expect("serialize argument-evaluation fault");
+    assert_eq!(argument_failure["fault"]["code"], "IntegerDivisionByZero");
+    let argument_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "argumentFaultMain".into(),
+        },
+    );
+    let argument_lcir =
+        emit_and_run_lcir_machine_fault(&argument_artifact, "lcir-contract-argument-order");
+    let argument_legacy = emit_and_run_legacy_machine_fault(
+        &program,
+        "argumentFaultMain",
+        "legacy-contract-argument-order",
+    );
+    assert_eq!(
+        machine_fault(&argument_lcir.output)["code"],
+        argument_failure["fault"]["code"]
+    );
+    assert_eq!(
+        machine_fault(&argument_legacy)["fault"]["code"],
+        argument_failure["fault"]["code"]
+    );
+}
+
+#[test]
+fn mutable_receiver_old_current_and_cleanup_order_match_all_backends() {
+    let source = r"module contract_mutable_receiver
+
+record Boxed { value Int }
+
+fn requireEqual(actual Int, expected Int) Unit {
+    assert actual == expected
+    Unit
+}
+
+impl Boxed {
+    method replaceAfterCleanup(mut self, target Int) Unit
+        ensures old(self.value) == 1
+        ensures self.value == target
+    {
+        self.value = 0
+        defer {
+            self.value = target
+        }
+        return Unit
+    }
+}
+
+record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Counter {
+    method increase(mut self, amount Int) Unit
+        requires amount >= 0
+        ensures old(self.value) == 2
+        ensures self.value == 5
+    {
+        self.value = self.value + amount
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    var boxed = Boxed { value = 1 }
+    boxed.replaceAfterCleanup(7)
+    requireEqual(boxed.value, 7)
+
+    var counter = Counter { value = 2 }
+    counter.increase(3)
+    requireEqual(counter.value, 5)
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("contract PostconditionFault"), "{dump}");
+    assert!(dump.contains("contract InvariantFault"), "{dump}");
+    assert!(dump.contains("invariant_receiver.insert"), "{dump}");
+    assert!(dump.contains("writebacks"), "{dump}");
+
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-contract-mutable-receiver");
+    let legacy =
+        emit_and_run_legacy_machine_fault(&program, "main", "legacy-contract-mutable-receiver");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
+}
+
+#[test]
+fn cleanup_fault_precedes_the_postcondition_and_matches_all_backends() {
+    let source = r"module contract_cleanup_fault
+
+fn failDuringCleanup() Unit
+    ensures false
+{
+    defer {
+        discard 1 / 0
+    }
+    Unit
+}
+
+pub fn main() Unit {
+    failDuringCleanup()
+}
+";
+    let program = compile_source(source);
+    let interpreted = serde_json::to_value(
+        interpret_run(&program, "main").expect_err("cleanup must fault before the postcondition"),
+    )
+    .expect("serialize cleanup fault");
+    assert_eq!(interpreted["fault"]["code"], "IntegerDivisionByZero");
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("contract PostconditionFault"), "{dump}");
+    assert!(dump.contains("checked_int.divide"), "{dump}");
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-contract-cleanup-fault");
+    let legacy =
+        emit_and_run_legacy_machine_fault(&program, "main", "legacy-contract-cleanup-fault");
+    let lcir_fault = machine_fault(&lcir.output);
+    assert_eq!(lcir_fault["code"], interpreted["fault"]["code"]);
+    assert_eq!(
+        lcir_fault["sourceSpan"]["file"],
+        interpreted["fault"]["span"]["file"]
+    );
+    assert_eq!(
+        lcir_fault["sourceSpan"]["start"],
+        interpreted["fault"]["span"]["range"]["start"]
+    );
+    assert_eq!(
+        lcir_fault["sourceSpan"]["end"],
+        interpreted["fault"]["span"]["range"]["end"]
+    );
+    let legacy_fault = machine_fault(&legacy);
+    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
+    assert_eq!(
+        legacy_fault["fault"]["message"],
+        interpreted["fault"]["message"]
+    );
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
+}
+
+#[test]
+fn nested_contract_matches_and_static_concept_calls_match_all_backends() {
+    let source = r"module contract_static_match
+
+concept Source {
+    method first(self, allowed Bool) Option[Int]
+        requires allowed
+        ensures match result {
+            Some(value) => value >= 0
+            None => true
+        }
+}
+
+record Number { value Int }
+
+impl Source for Number {
+    method first(self, allowed Bool) Option[Int] {
+        if allowed { Some(self.value) } else { None }
+    }
+}
+
+fn read[T: Source](source T) Bool {
+    match source.first(true) {
+        Some(value) => value == 7
+        None => false
+    }
+}
+
+enum Problem { Failed }
+
+fn keep(value Option[Int]) Result[Option[Int], Problem]
+    ensures match result {
+        Ok(option) => match option {
+            Some(number) => number >= 0
+            None => true
+        }
+        Err(_) => true
+    }
+{
+    Ok(value)
+}
+
+pub fn main() Unit {
+    let staticOk = read(Number { value = 7 })
+    let nestedOk = match keep(Some(3)) {
+        Ok(Some(number)) => number == 3
+        Ok(None) => false
+        Err(_) => false
+    }
+    if staticOk && nestedOk { Unit } else {
+        discard 1 / 0
+        Unit
+    }
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.matches("sum.switch").count() >= 4, "{dump}");
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+    assert!(dump.contains("contract PostconditionFault"), "{dump}");
+    assert!(dump.contains("witnesses=[Concrete#"), "{dump}");
+
+    let lcir = emit_and_run_lcir(&artifact, "lcir-contract-static-match");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-contract-static-match");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
+}
+
+#[test]
+fn managed_text_product_remains_typed_and_live_through_a_contract_check() {
+    let source = r#"module contract_managed_product
+
+record Label { value Text }
+
+fn accept(label Label, pressure Text) Unit
+    requires label.value == "Keep"
+{
+    discard pressure.length()
+    Unit
+}
+
+pub fn main() Unit {
+    let label = Label { value = "K".concat("eep") }
+    accept(label, "x".concat("y"))
+    Unit
+}
+"#;
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("text.compare.equal"), "{dump}");
+    let lcir = emit_and_run_lcir(&artifact, "lcir-contract-managed-product");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-contract-managed-product");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(
+        lcir.ir.contains("loom_gc_typed_root_push_v1"),
+        "{}",
+        lcir.ir
+    );
+    assert!(!lcir.ir.contains("loom_gc_root_push_v1"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
 
 #[test]
