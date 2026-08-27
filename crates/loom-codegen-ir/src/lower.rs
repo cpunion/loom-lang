@@ -435,21 +435,6 @@ pub fn lower_typed_artifact(
         })?;
         classifier.classify_function(source, key);
     }
-    for root in &selected.ordered {
-        let source = mir.function(*root).ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::SourceGraph,
-                format!("selected root function #{} disappeared", root.0),
-            )
-        })?;
-        if source.is_async && !source.call_plan.requires.is_empty() {
-            classifier.function_item(
-                UnsupportedFeature::AsyncFunction,
-                source,
-                &format!("function[{}].async_root_requires", source.id.0),
-            );
-        }
-    }
     if !classifier.items.is_empty() {
         return Ok(LoweringOutcome::Unsupported(SupportReport {
             items: classifier.items,
@@ -475,10 +460,9 @@ pub fn lower_typed_artifact(
         .iter()
         .map(|source| {
             let body = InstanceKey::monomorphic(*source);
-            if mir
-                .function(*source)
-                .is_some_and(|function| !function.call_plan.requires.is_empty())
-            {
+            if mir.function(*source).is_some_and(|function| {
+                !function.is_async && !function.call_plan.requires.is_empty()
+            }) {
                 InstanceKey::checked_root(body)
             } else {
                 body
@@ -733,7 +717,12 @@ pub fn lower_typed_artifact(
                     ))
                 })
                 .collect::<Result<Vec<_>, LoweringError>>()?;
-            Some(CoroutinePlan::new(output, suspensions))
+            let plan = CoroutinePlan::new(output, suspensions);
+            Some(if source.call_plan.requires.is_empty() {
+                plan
+            } else {
+                plan.with_caller_span()
+            })
         } else {
             None
         };
@@ -3534,6 +3523,12 @@ fn summarize_effects(
     let mut summary = EffectSummary::default();
     if function.is_async {
         summary.include(Effects::NEEDS_EXECUTOR);
+        // Calling an async function only constructs its Task. Entry
+        // preconditions run when that Task starts, so their fault capability
+        // belongs to the coroutine rather than leaking into its creator.
+        if !function.call_plan.requires.is_empty() {
+            summary.include(Effects::MAY_FAULT);
+        }
     }
     scan_effect_block(program, &function.body, &mut summary);
     let substitution = InstanceSubstitution::new(program, key);
@@ -3576,12 +3571,13 @@ fn summarize_effects(
     }) {
         summary.include(Effects::MAY_COLLECT);
     }
-    // Preconditions execute at each concrete caller boundary. They make the
-    // caller's operation fallible, never the assumed callee body by itself.
+    // Synchronous preconditions execute at each concrete caller boundary.
+    // Async preconditions execute in the child coroutine and were accounted
+    // for above, so Task construction remains non-fallible source control.
     if calls.iter().any(|callee| {
         program
             .function(callee.source())
-            .is_some_and(|source| !source.call_plan.requires.is_empty())
+            .is_some_and(|source| !source.is_async && !source.call_plan.requires.is_empty())
     }) {
         summary.include(Effects::MAY_FAULT);
     }
@@ -3592,7 +3588,15 @@ fn summarize_effects(
     InstanceEffectSummary {
         key: key.clone(),
         local: summary.local,
-        calls: calls.to_vec().into_boxed_slice(),
+        calls: calls
+            .iter()
+            .filter(|callee| {
+                program
+                    .function(callee.source())
+                    .is_some_and(|source| !source.is_async)
+            })
+            .cloned()
+            .collect(),
     }
 }
 
@@ -4755,6 +4759,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 &context,
             )?;
         }
+        if self.source.is_async && !self.source.call_plan.requires.is_empty() {
+            let context = self.contract_context(flow.env, None, false)?;
+            for contract in &self.source.call_plan.requires {
+                flow = self.lower_async_precondition(flow, contract, &context)?;
+            }
+        }
         match self.lower_scoped_block(flow, &self.source.body)? {
             EvalFlow::Continue { flow, value } => {
                 let flow = self.lower_exit_contracts(flow, value)?;
@@ -5428,6 +5438,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         blame_span: Span,
         context: &ContractContext,
     ) -> Result<Flow, LoweringError> {
+        self.lower_contract_check_with_metadata(
+            flow,
+            contract,
+            FaultMetadata::contract(ContractFaultMetadata::contract(
+                kind,
+                contract.code.clone(),
+                contract.span,
+                blame_span,
+            )),
+            context,
+        )
+    }
+
+    fn lower_async_precondition(
+        &mut self,
+        flow: Flow,
+        contract: &Contract,
+        context: &ContractContext,
+    ) -> Result<Flow, LoweringError> {
+        self.lower_contract_check_with_metadata(
+            flow,
+            contract,
+            FaultMetadata::contract(ContractFaultMetadata::coroutine_precondition(
+                contract.code.clone(),
+                contract.span,
+            )),
+            context,
+        )
+    }
+
+    fn lower_contract_check_with_metadata(
+        &mut self,
+        flow: Flow,
+        contract: &Contract,
+        metadata: FaultMetadata,
+        context: &ContractContext,
+    ) -> Result<Flow, LoweringError> {
         let EvalFlow::Continue {
             flow,
             value: condition,
@@ -5444,12 +5491,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow.block,
             TerminatorKind::Assert {
                 condition,
-                metadata: FaultMetadata::contract(ContractFaultMetadata::contract(
-                    kind,
-                    contract.code.clone(),
-                    contract.span,
-                    blame_span,
-                )),
+                metadata,
                 success: BlockTarget::new(success, []),
                 fault,
             },
@@ -10095,7 +10137,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        if !callee_source.call_plan.requires.is_empty() {
+        if !callee_source.is_async && !callee_source.call_plan.requires.is_empty() {
             let parameters = callee_source
                 .params
                 .iter()

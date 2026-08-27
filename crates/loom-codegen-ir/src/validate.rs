@@ -1649,6 +1649,39 @@ impl<'a> Validator<'a> {
             return;
         };
 
+        let has_caller_blame_precondition = function.blocks().iter().any(|block| {
+            let metadata = match block.terminator().map(Terminator::kind) {
+                Some(
+                    TerminatorKind::Assert { metadata, .. } | TerminatorKind::Fault { metadata },
+                ) => Some(metadata),
+                _ => None,
+            };
+            matches!(
+                metadata,
+                Some(crate::FaultMetadata::Contract(metadata))
+                    if metadata.kind() == crate::ContractFaultKind::Precondition
+                        && metadata.blame()
+                            == crate::ContractFaultBlame::CoroutineCallSite
+            )
+        });
+        if plan.carries_caller_span() != has_caller_blame_precondition {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.caller_span"),
+                if plan.carries_caller_span() {
+                    "a coroutine may carry its caller span only when at least one precondition uses coroutine-call-site blame"
+                } else {
+                    "a coroutine precondition using coroutine-call-site blame requires its plan to carry the caller span"
+                },
+            );
+        }
+        if plan.carries_caller_span() {
+            self.validate_contract_fault_span(
+                function.origin().span,
+                &format!("{base}.origin.span"),
+            );
+        }
+
         if plan.output() != function.signature().result() {
             self.error(
                 ValidationCode::InvalidCoroutinePlan,
@@ -3473,6 +3506,15 @@ impl<'a> Validator<'a> {
                         "task.create requires a checked coroutine instance",
                     );
                 }
+                if callee
+                    .coroutine()
+                    .is_some_and(crate::CoroutinePlan::carries_caller_span)
+                {
+                    self.validate_contract_fault_span(
+                        instruction.origin().span,
+                        &format!("{path}.origin.span"),
+                    );
+                }
                 if !callee.signature().inout_params().is_empty() {
                     self.error(
                         ValidationCode::CallShape,
@@ -4269,11 +4311,11 @@ impl<'a> Validator<'a> {
                 );
                 self.validate_target(function, success, format!("{path}.success"));
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
-                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
+                self.validate_fault_metadata(function, metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
             TerminatorKind::Fault { metadata } => {
-                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
+                self.validate_fault_metadata(function, metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "fault");
             }
             TerminatorKind::ResumeFault => {
@@ -4517,23 +4559,51 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_fault_metadata(&mut self, metadata: &crate::FaultMetadata, path: &str) {
+    fn validate_fault_metadata(
+        &mut self,
+        function: &Function,
+        metadata: &crate::FaultMetadata,
+        path: &str,
+    ) {
         if let crate::FaultMetadata::Contract(metadata) = metadata {
-            self.validate_contract_fault_metadata(metadata, path);
+            self.validate_contract_fault_metadata(function, metadata, path);
         }
     }
 
     fn validate_contract_fault_metadata(
         &mut self,
+        function: &Function,
         metadata: &crate::ContractFaultMetadata,
         path: &str,
     ) {
         let user_code_in_budget = self.validate_contract_fault_text(metadata, path);
-        for (name, span) in [
-            ("contract_span", metadata.contract_span()),
-            ("blame_span", metadata.blame_span()),
-        ] {
-            self.validate_contract_fault_span(span, &format!("{path}.{name}"));
+        self.validate_contract_fault_span(
+            metadata.contract_span(),
+            &format!("{path}.contract_span"),
+        );
+        match metadata.blame() {
+            crate::ContractFaultBlame::Static(span) => {
+                self.validate_contract_fault_span(span, &format!("{path}.blame_span"));
+            }
+            crate::ContractFaultBlame::CoroutineCallSite => {
+                if metadata.kind() != crate::ContractFaultKind::Precondition {
+                    self.error(
+                        ValidationCode::FaultMetadata,
+                        format!("{path}.blame_span"),
+                        "only PreconditionFault may blame the coroutine call site",
+                    );
+                }
+                if !function
+                    .coroutine()
+                    .is_some_and(crate::CoroutinePlan::carries_caller_span)
+                {
+                    self.error(
+                        ValidationCode::FaultMetadata,
+                        format!("{path}.blame_span"),
+                        "coroutine-call-site blame requires a coroutine plan carrying the caller span",
+                    );
+                }
+            }
         }
 
         match metadata.kind() {
@@ -4615,7 +4685,7 @@ impl<'a> Validator<'a> {
                 "AssertionFault message must be `assertion was not satisfied`",
             );
         }
-        if metadata.contract_span() != metadata.blame_span() {
+        if metadata.blame() != crate::ContractFaultBlame::Static(metadata.contract_span()) {
             self.error(
                 ValidationCode::FaultMetadata,
                 format!("{path}.blame_span"),
@@ -4665,7 +4735,7 @@ impl<'a> Validator<'a> {
             );
         }
         if metadata.kind() != crate::ContractFaultKind::Precondition
-            && metadata.contract_span() != metadata.blame_span()
+            && metadata.blame() != crate::ContractFaultBlame::Static(metadata.contract_span())
         {
             self.error(
                 ValidationCode::FaultMetadata,
@@ -5510,10 +5580,13 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
     effects
 }
 
-/// Computes the least transitive function effects from operation and call
-/// edges. Operations in active cleanup can only preserve the primary fault or
-/// suppress a secondary one, so those paths strip only `MAY_FAULT`; runtime,
-/// collection, executor, and suspension capabilities still propagate.
+/// Computes the least transitive function effects from operations and
+/// synchronous call edges. `TaskCreate` is an ownership transfer into a new
+/// coroutine, not execution of the child body, so child fault, collection, and
+/// suspension capabilities never propagate into the creator. Operations in
+/// active cleanup can only preserve the primary fault or suppress a secondary
+/// one, so those paths strip only `MAY_FAULT`; runtime, collection, executor,
+/// and suspension capabilities still propagate across synchronous calls.
 fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>]) -> Vec<Effects> {
     let function_count = program.functions.len();
     let mut reverse_calls = vec![Vec::new(); function_count];
@@ -5540,10 +5613,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 };
                 effects[caller] =
                     effects[caller].union(instruction_direct_effects(instruction.kind()));
-                if let InstructionKind::DirectCall { callee, .. }
-                | InstructionKind::TaskCreate {
-                    coroutine: callee, ..
-                } = instruction.kind()
+                if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
                     && let Some(callee) = canonical_function_index(program, *callee)
                 {
                     reverse_calls[callee].push(EffectCaller {

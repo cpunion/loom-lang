@@ -980,7 +980,7 @@ fn async_generic_contract_fixture_has_a_complete_contract_aware_lcir_test_route(
 }
 
 #[test]
-fn async_root_preconditions_fail_closed_before_checked_wrapper_lowering() {
+fn async_root_preconditions_lower_into_the_checked_task_entry() {
     let source = r"module async_root_contract
 
 pub async fn main() Unit
@@ -990,13 +990,69 @@ pub async fn main() Unit
     Unit
 }
 ";
-    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-        panic!("async root preconditions require a dedicated checked coroutine wrapper")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("an async root precondition must lower into its Task entry")
     };
-    assert!(report.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::AsyncFunction
-            && item.path().ends_with(".async_root_requires")
-    }));
+    let root = artifact.run_root().expect("run root");
+    let root = artifact.function(root).expect("root function");
+    assert!(
+        root.coroutine()
+            .expect("root coroutine")
+            .carries_caller_span()
+    );
+    assert!(root.effects().contains(Effects::MAY_FAULT));
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("caller_span=carried"), "{dump}");
+    assert!(
+        dump.contains("contract PreconditionFault")
+            && dump.contains("blame_span=coroutine_call_site"),
+        "{dump}"
+    );
+    assert!(!dump.contains("checked-root source="), "{dump}");
+}
+
+#[test]
+fn task_creation_does_not_inherit_child_body_collection_effects() {
+    let source = r#"module async_effect_boundary
+
+async fn child(value Int) Int
+    requires value > 0
+{
+    discard "left".concat("right").length()
+    value
+}
+
+pub async fn main() Unit {
+    let value = child(1).await
+    assert value == 1
+    Unit
+}
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a contracted collecting child must lower through typed LCIR")
+    };
+    let child = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("child"))
+        .expect("child coroutine");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main coroutine");
+
+    assert!(child.effects().contains(Effects::MAY_COLLECT));
+    assert!(child.effects().contains(Effects::MAY_FAULT));
+    assert!(
+        child
+            .coroutine()
+            .expect("child coroutine plan")
+            .carries_caller_span()
+    );
+    assert!(!main.effects().contains(Effects::MAY_COLLECT));
+    assert!(main.effects().contains(Effects::MAY_FAULT));
+    assert!(main.effects().contains(Effects::MAY_SUSPEND));
 }
 
 #[test]

@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 29")?;
+    writeln!(output, "lcir 30")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -127,7 +127,11 @@ pub fn write_program_with_options(
             .expect("checked LCIR function has an entry block");
         write!(output, " entry={entry} effects={}", function.effects())?;
         if let Some(coroutine) = function.coroutine() {
-            write!(output, " coroutine output={} states=[", coroutine.output())?;
+            write!(output, " coroutine output={}", coroutine.output())?;
+            if coroutine.carries_caller_span() {
+                output.write_str(" caller_span=carried")?;
+            }
+            output.write_str(" states=[")?;
             for (index, suspension) in coroutine.suspensions().iter().enumerate() {
                 if index != 0 {
                     write!(output, ", ")?;
@@ -895,7 +899,10 @@ fn write_contract_fault(
     output.write_str(" contract_span=")?;
     write_span(output, metadata.contract_span())?;
     output.write_str(" blame_span=")?;
-    write_span(output, metadata.blame_span())
+    match metadata.blame() {
+        crate::ContractFaultBlame::Static(span) => write_span(output, span),
+        crate::ContractFaultBlame::CoroutineCallSite => output.write_str("coroutine_call_site"),
+    }
 }
 
 fn write_span(output: &mut impl Write, span: loom_core::Span) -> fmt::Result {

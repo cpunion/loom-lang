@@ -293,6 +293,7 @@ impl Function {
 pub struct CoroutinePlan {
     output: ValueTypeId,
     suspensions: Box<[CoroutineSuspension]>,
+    carries_caller_span: bool,
 }
 
 impl CoroutinePlan {
@@ -301,7 +302,17 @@ impl CoroutinePlan {
         Self {
             output,
             suspensions: suspensions.into(),
+            carries_caller_span: false,
         }
+    }
+
+    /// Adds the compiler-private source span of the `TaskCreate` call to the
+    /// coroutine frame. A checked plan may carry it only when a precondition
+    /// fault in this function uses [`ContractFaultBlame::CoroutineCallSite`].
+    #[must_use]
+    pub const fn with_caller_span(mut self) -> Self {
+        self.carries_caller_span = true;
+        self
     }
 
     #[must_use]
@@ -312,6 +323,11 @@ impl CoroutinePlan {
     #[must_use]
     pub const fn suspensions(&self) -> &[CoroutineSuspension] {
         &self.suspensions
+    }
+
+    #[must_use]
+    pub const fn carries_caller_span(&self) -> bool {
+        self.carries_caller_span
     }
 }
 
@@ -1059,19 +1075,36 @@ impl ContractFaultKind {
     }
 }
 
+/// Source location blamed when a contract fails.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractFaultBlame {
+    /// A span known statically in the current LCIR function.
+    Static(Span),
+    /// The source span carried from the `TaskCreate` instruction which
+    /// instantiated the current coroutine.
+    CoroutineCallSite,
+}
+
+impl From<Span> for ContractFaultBlame {
+    fn from(span: Span) -> Self {
+        Self::Static(span)
+    }
+}
+
 /// Complete diagnostic identity for one source contract-fault origin.
 ///
-/// LCIR stores concrete spans. A precondition check therefore carries the
-/// exact closed-world call-site span as `blame_span`; all other kinds use their
-/// contract or assertion span. Independent validation checks those canonical
-/// relationships and the current language-defined message schema.
+/// A synchronous precondition stores its exact closed-world call-site span.
+/// An asynchronous precondition instead names the compiler-private call-site
+/// span carried in its coroutine frame. All other kinds use their contract or
+/// assertion span. Independent validation checks those canonical relationships
+/// and the current language-defined message schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractFaultMetadata {
     kind: ContractFaultKind,
     user_code: Option<String>,
     message: String,
     contract_span: Span,
-    blame_span: Span,
+    blame: ContractFaultBlame,
 }
 
 impl ContractFaultMetadata {
@@ -1083,14 +1116,14 @@ impl ContractFaultMetadata {
         user_code: Option<String>,
         message: impl Into<String>,
         contract_span: Span,
-        blame_span: Span,
+        blame: impl Into<ContractFaultBlame>,
     ) -> Self {
         Self {
             kind,
             user_code,
             message: message.into(),
             contract_span,
-            blame_span,
+            blame: blame.into(),
         }
     }
 
@@ -1100,11 +1133,24 @@ impl ContractFaultMetadata {
         kind: ContractFaultKind,
         user_code: impl Into<String>,
         contract_span: Span,
-        blame_span: Span,
+        blame: impl Into<ContractFaultBlame>,
     ) -> Self {
         let user_code = user_code.into();
         let message = format!("contract `{user_code}` was not satisfied");
-        Self::new(kind, Some(user_code), message, contract_span, blame_span)
+        Self::new(kind, Some(user_code), message, contract_span, blame)
+    }
+
+    /// Constructs the canonical payload for a precondition checked inside an
+    /// asynchronous callee. The exact blame span is supplied by the
+    /// coroutine's `TaskCreate` call site at run time.
+    #[must_use]
+    pub fn coroutine_precondition(user_code: impl Into<String>, contract_span: Span) -> Self {
+        Self::contract(
+            ContractFaultKind::Precondition,
+            user_code,
+            contract_span,
+            ContractFaultBlame::CoroutineCallSite,
+        )
     }
 
     /// Constructs the canonical payload for a source `assert` statement.
@@ -1140,8 +1186,18 @@ impl ContractFaultMetadata {
     }
 
     #[must_use]
-    pub const fn blame_span(&self) -> Span {
-        self.blame_span
+    pub const fn blame(&self) -> ContractFaultBlame {
+        self.blame
+    }
+
+    /// Returns the statically known blame span, or `None` when a coroutine
+    /// obtains the span from its creating call at run time.
+    #[must_use]
+    pub const fn blame_span(&self) -> Option<Span> {
+        match self.blame {
+            ContractFaultBlame::Static(span) => Some(span),
+            ContractFaultBlame::CoroutineCallSite => None,
+        }
     }
 }
 
