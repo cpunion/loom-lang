@@ -59,25 +59,41 @@ Task, drive it to a terminal state, take the exact result, and destroy the
 executor. Cleanup is encoded entirely in LCIR control flow: this slice adds no
 runtime cleanup stack, runtime symbol, or runtime ABI revision.
 
-Current typed coverage includes non-inout coroutines with direct
-scalar/refined/product/Text parameters, results, and live values, plus closed
-sums whose payload graph uses those shapes and nonempty fixed-arity
-heterogeneous `Task.all`. Lexical `defer` and admitted `scoped` resources may
-remain active across suspension. The collision-free carrier gives managed sums
-one static union of exact pointer offsets, and pack leaves inactive pointer
-lanes zero. This applies equally to coroutine parameters, suspension rows,
-completed Task results, and exact stored-join tuple results without changing
-typed-task v1. A fallible callback creates one activation-local fault context
-attached to its executor. Checked arithmetic, assertions, ordinary fallible
-invokes, caller-side preconditions, and callee-side postconditions record only
-the first fault on the active Task. Await propagates a child's `Faulted` or
-`Cancelled` state; it never converts either state into a source `Result`. Task
-handles may be live only as suspension bookkeeping.
+Current typed coverage includes coroutines without explicit mutable parameters
+whose parameters, results, and live values use direct scalar/refined/product/Text
+shapes or closed sums over those shapes, plus nonempty fixed-arity
+heterogeneous `Task.all`. A synchronous callee may still use Loom's functional
+inout ABI. The coroutine caller applies every normal or fault writeback to its
+current SSA environment before continuing; on fault, this happens before the
+coroutine's active lexical cleanup suffix. The coroutine itself does not expose
+an inout Task result or alias the caller's storage.
 
-Selected async roots with `requires`, async inout/writeback, raw readiness,
-dynamically sized Task joins,
-`Task.settled`, `Task.any`, `Task.race`, List/TextMap frame values, and dynamic
-concepts still select the complete legacy route.
+A dynamic View parameter enters an async Task frame as an independent by-value
+copy, even when the coroutine calls one of its mutable methods. Synchronous
+mutable dispatch updates that frame-local copy, leaving the value used to create
+the Task unchanged. When a reachable dynamic concept has exactly one closed
+nongeneric witness, the planner erases the View recursively to its concrete
+representation in coroutine parameters, results, products, sums, and live
+suspension rows. Finite or open dynamic Views
+do not acquire a coroutine-frame representation; here finite means a catalog
+with multiple exact witnesses rather than the erased unique-witness case.
+
+Lexical `defer` and admitted `scoped` resources may remain active across
+suspension. The collision-free carrier gives managed sums one static union of
+exact pointer offsets, and pack leaves inactive pointer lanes zero. This applies
+equally to coroutine parameters, suspension rows, completed Task results, and
+exact stored-join tuple results without changing typed-task v1. A fallible
+callback creates one activation-local fault context attached to its executor.
+Checked arithmetic, assertions, ordinary fallible invokes, caller-side
+preconditions, and callee-side postconditions record only the first fault on the
+active Task. Await propagates a child's `Faulted` or `Cancelled` state; it never
+converts either state into a source `Result`. Task handles may be live only as
+suspension bookkeeping.
+
+Selected async roots with `requires`, explicit mutable coroutine parameters,
+raw readiness, dynamically sized Task joins, `Task.settled`, `Task.any`,
+`Task.race`, List/TextMap frame values, and finite-catalog or open
+dynamic-concept frame values still select the complete legacy route.
 
 ## Runtime and executor
 

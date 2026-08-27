@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Write as _, process::Command, time::Duration};
 
 use loom_codegen_ir::{
-    CheckedIntBinaryOp, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
+    CheckedIntBinaryOp, Effects, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
     LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
     UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
 };
@@ -603,7 +603,7 @@ pub async fn main() Unit {
 }
 
 #[test]
-fn async_local_inout_calls_fail_closed_before_writeback_lowering() {
+fn async_local_inout_calls_reuse_synchronous_functional_writeback() {
     let source = r"module async_local_inout
 
 record Counter { value Int }
@@ -621,12 +621,364 @@ pub async fn main() Unit {
     Unit
 }
 ";
-    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-        panic!("async local writeback requires a later dedicated slice")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a synchronous inout call inside a coroutine must use typed LCIR")
     };
-    assert!(report.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::AsyncFunction && item.path().contains("async_inout")
+    let update = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("update"))
+        .expect("synchronous update instance");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("async main instance");
+    assert_eq!(update.signature().inout_params(), [0]);
+    assert!(main.signature().inout_params().is_empty());
+    assert!(main.coroutine().is_some());
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::DirectCall { callee, .. }
+            if callee == &update.id() && instruction.results().len() == 2
+    )));
+}
+
+#[test]
+fn async_mutable_view_parameters_are_independent_task_frame_values() {
+    let source = r"module async_owned_view
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Counter { value Int }
+
+impl Source for Counter {
+    method next(mut self) Int {
+        self.value = 1
+        self.value
+    }
+}
+
+async fn takeOwned(source Source) Int {
+    source.next()
+}
+
+pub async fn main() Unit {
+    let original = Counter { value = 0 }
+    let observed = takeOwned(original).await
+    assert observed == 1
+    assert original.value == 0
+    Unit
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a unique mutable View must enter an async frame by value")
+    };
+    let next = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("next"))
+        .expect("synchronous dynamic requirement implementation");
+    let take_owned = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("takeOwned"))
+        .expect("owned-View coroutine");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("async main instance");
+
+    assert_eq!(next.signature().inout_params(), [0]);
+    assert!(take_owned.signature().inout_params().is_empty());
+    assert!(take_owned.coroutine().is_some());
+    assert_eq!(
+        take_owned.signature().params(),
+        &next.signature().params()[..1]
+    );
+    assert!(take_owned.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::DirectCall { callee, .. }
+            if callee == &next.id() && instruction.results().len() == 2
+    )));
+    assert!(take_owned.blocks().iter().all(|block| {
+        block
+            .terminator()
+            .is_none_or(|terminator| terminator.writebacks().is_empty())
     }));
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskCreate {
+            coroutine,
+            arguments,
+        } if coroutine == &take_owned.id()
+            && arguments.len() == 1
+            && instruction.results().len() == 1
+    )));
+}
+
+#[test]
+fn async_nested_unique_views_are_physicalized_at_every_frame_node() {
+    let source = r"module async_nested_owned_view
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Counter { value Int }
+record Envelope { source dyn Source }
+
+impl Source for Counter {
+    method next(mut self) Int {
+        self.value = 7
+        self.value
+    }
+}
+
+async fn takeNested(envelope Envelope) Int {
+    var source = envelope.source
+    source.next()
+}
+
+pub async fn main() Unit {
+    let original = Counter { value = 0 }
+    let observed = takeNested(Envelope { source = original }).await
+    assert observed == 7
+    assert original.value == 0
+    Unit
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a nested unique View must physicalize throughout the coroutine frame")
+    };
+    let take_nested = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("takeNested"))
+        .expect("nested owned-View coroutine");
+    assert!(take_nested.coroutine().is_some());
+    assert!(take_nested.signature().inout_params().is_empty());
+    assert!(
+        take_nested
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::DirectCall { .. } if instruction.results().len() == 2
+            ))
+    );
+}
+
+#[test]
+fn async_finite_and_open_views_remain_atomic_signature_fallback() {
+    let finite = r"module async_finite_view
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record First { value Int }
+record Second { value Int }
+
+impl Source for First {
+    method next(mut self) Int { self.value }
+}
+
+impl Source for Second {
+    method next(mut self) Int { self.value }
+}
+
+async fn takeOwned(source Source) Int {
+    source.next()
+}
+
+pub async fn main() Unit {
+    let first = takeOwned(First { value = 1 }).await
+    let second = takeOwned(Second { value = 2 }).await
+    assert first == 1
+    assert second == 2
+    Unit
+}
+";
+    let open = r"module async_open_view
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Boxed[T] { value T }
+
+impl[T] Source for Boxed[T] {
+    method next(mut self) Int { 1 }
+}
+
+async fn takeOwned(source Source) Int {
+    source.next()
+}
+
+pub async fn main() Unit {
+    let observed = takeOwned(Boxed { value = 1 }).await
+    assert observed == 1
+    Unit
+}
+";
+    let nested_finite = r"module async_nested_finite_view
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record First { value Int }
+record Second { value Int }
+record Envelope { source dyn Source }
+
+impl Source for First {
+    method next(mut self) Int { self.value }
+}
+
+impl Source for Second {
+    method next(mut self) Int { self.value }
+}
+
+async fn takeNested(envelope Envelope) Int {
+    var source = envelope.source
+    source.next()
+}
+
+pub async fn main() Unit {
+    let first = takeNested(Envelope { source = First { value = 1 } }).await
+    let second = takeNested(Envelope { source = Second { value = 2 } }).await
+    assert first == 1
+    assert second == 2
+    Unit
+}
+";
+    let unique_with_list = r"module async_unique_view_with_list
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Boxed { values List[Int] }
+
+impl Source for Boxed {
+    method next(mut self) Int { self.values.length() }
+}
+
+async fn takeOwned(source Source) Int {
+    source.next()
+}
+
+pub async fn main() Unit {
+    let observed = takeOwned(Boxed { values = [1] }).await
+    assert observed == 1
+    Unit
+}
+";
+
+    for (label, source) in [
+        ("finite", finite),
+        ("open", open),
+        ("nested finite", nested_finite),
+        ("unique with List", unique_with_list),
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("{label} dynamic coroutine frame must remain atomic fallback")
+        };
+        assert!(
+            report
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::SignatureType),
+            "{label}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn async_fault_cleanup_reads_the_synchronous_callee_writeback() {
+    let source = r"module async_fault_writeback
+
+record Counter { value Int }
+
+impl Counter {
+    method updateThenFail(mut self) Unit {
+        self.value = 42
+        assert false
+        Unit
+    }
+}
+
+pub async fn main() Unit {
+    var counter = Counter { value = 0 }
+    defer {
+        let cleaned = counter.value
+        assert cleaned == 42
+    }
+    Task.sleep(0).await
+    counter.updateThenFail()
+    Unit
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("fault-edge inout writeback must compose with async cleanup")
+    };
+    let update = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("updateThenFail"))
+        .expect("fallible synchronous update instance");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("async main instance");
+    assert_eq!(update.signature().inout_params(), [0]);
+    assert!(update.effects().contains(Effects::MAY_FAULT));
+    assert!(main.effects().contains(Effects::MAY_FAULT));
+    assert!(main.effects().contains(Effects::MAY_SUSPEND));
+    assert!(main.signature().inout_params().is_empty());
+
+    let unwind = main
+        .blocks()
+        .iter()
+        .find_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::Invoke { callee, unwind, .. }) if callee == &update.id() => {
+                    Some(unwind.block)
+                }
+                _ => None,
+            },
+        )
+        .expect("fallible inout invoke");
+    let writeback_bridge = main.block(unwind).expect("writeback bridge");
+    let [writeback] = writeback_bridge.params() else {
+        panic!("fault edge must receive exactly the mutable receiver writeback")
+    };
+    let cleanup = match writeback_bridge
+        .terminator()
+        .map(loom_codegen_ir::Terminator::kind)
+    {
+        Some(TerminatorKind::Jump(target)) => target.block,
+        terminator => panic!("writeback bridge must enter cleanup: {terminator:?}"),
+    };
+    let cleanup = main.block(cleanup).expect("fault cleanup block");
+    assert!(cleanup.instructions().iter().any(|instruction| {
+        main.instruction(*instruction).is_some_and(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::ProductExtract { aggregate, field: 0 }
+                    if aggregate == writeback
+            )
+        })
+    }));
+    assert!(matches!(
+        cleanup.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::Assert { .. })
+    ));
 }
 
 #[test]
@@ -4119,6 +4471,88 @@ fn checked_non_regular_spiral_fixture() -> loom_mir::CheckedProgram {
     .expect("bounded MIR validation must accept Spiral[Int].Done(0)")
 }
 
+fn checked_non_regular_spiral_coroutine_fixture() -> loom_mir::CheckedProgram {
+    use loom_core::Span;
+    use loom_mir::{
+        Block, CallPlan, CallTarget, Expr, ExprKind, Function, FunctionId, Statement,
+        StatementKind, SuspensionPoint, Type,
+    };
+
+    let span = Span::default();
+    let mut program = checked_non_regular_spiral_fixture().into_program();
+    let mut child = program.functions.remove(0);
+    let StatementKind::Evaluate(done) = child.body.statements.remove(0).kind else {
+        panic!("the manual Spiral fixture must construct one value")
+    };
+    let spiral_int = done.ty.clone();
+    child.id = FunctionId(1);
+    child.name = "manual.child".into();
+    child.is_async = true;
+    child.return_ty = spiral_int.clone();
+    child.body.statements.clear();
+    child.body.tail = Some(Box::new(done));
+    child
+        .renumber_expr_ids()
+        .expect("number raw async child fixture");
+
+    let task = Expr::new(
+        ExprKind::Call {
+            target: CallTarget::Direct(child.id),
+            type_arguments: Vec::new(),
+            arguments: Vec::new(),
+            witnesses: Vec::new(),
+        },
+        Type::Task(Box::new(spiral_int.clone())),
+        span,
+    );
+    let awaited = Expr::new(
+        ExprKind::Await {
+            state: 1,
+            task: Box::new(task),
+        },
+        spiral_int,
+        span,
+    );
+    let mut main = Function {
+        id: FunctionId(0),
+        name: "manual.main".into(),
+        span,
+        type_parameters: 0,
+        is_async: true,
+        suspension_points: vec![SuspensionPoint {
+            state: 1,
+            span,
+            live_locals: Vec::new(),
+        }],
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(awaited),
+                span,
+            }],
+            tail: Some(Box::new(Expr::new(
+                ExprKind::Constant(loom_mir::Constant::Unit),
+                Type::Unit,
+                span,
+            ))),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids()
+        .expect("number raw async root fixture");
+    program.functions = vec![main, child];
+    program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
+    program
+        .into_checked()
+        .expect("bounded MIR validation must accept the non-regular async fixture")
+}
+
 #[test]
 fn non_regular_generic_sum_lowering_child() {
     if std::env::var_os(NON_REGULAR_SUM_LOWERING_CHILD_ENV).is_none() {
@@ -4141,6 +4575,25 @@ fn non_regular_generic_sum_lowering_child() {
             .items()
             .iter()
             .any(|item| item.feature() == UnsupportedFeature::NominalValue),
+        "{report:?}"
+    );
+
+    let coroutine = lower_typed_artifact(
+        &checked_non_regular_spiral_coroutine_fixture(),
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("bounded coroutine-frame classification");
+    let LoweringOutcome::Unsupported(report) = coroutine else {
+        panic!("a non-regular coroutine frame must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
         "{report:?}"
     );
 }
