@@ -42,6 +42,24 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now carries `MAY_FAULT` through cleanup-free, non-inout stackless
+  coroutines. Checked arithmetic, assertions, ordinary fallible invokes, and
+  caller-side `requires` or callee-side `ensures` report their exact primary
+  source/contract metadata on the active Task; an awaiting parent inherits the
+  Task's `Faulted` or `Cancelled` state instead of manufacturing a source
+  `Result`. Closed sums, including managed `Result[Text, E]`, remain ordinary
+  completed values. The collision-free sum carrier supplies exact static
+  pointer offsets for parameters, suspension rows, and completed Task results;
+  inactive pointer lanes remain zero. The `lcir-fallible-async` fixture proves
+  `Ok` and `Err` completion, active-tag shadow-root rebuilds, completed-result
+  and parent-frame relocation under two independent allocation-pressure
+  phases, child-fault inheritance, sibling cancellation, balanced typed root
+  frames on every callback exit, both native route policies,
+  interpreter/legacy/typed differential behavior, Linux/MSVC objects, 32-bit
+  fail-closed behavior, and real `check/build/test/run`. This uses the existing
+  typed-task and fault-context runtime ABI while advancing the compiler-private
+  identity to LCIR dump 23, artifact schema 24, native-object domain v20, and
+  LLVM object-cache domain v25.
 - Typed LCIR now lowers the first complete stackless-coroutine slice instead of
   routing it through the universal emitter. Infallible async functions whose
   parameters, results, and suspension-live values have direct scalar, product,
@@ -56,9 +74,9 @@ artifact, or runtime compatibility.
   second child, and forced moving-GC relocation of a parent Text root while its
   child runs. A zero join-suspend result now preserves the current `Running`
   activation and removes its redundant ready-queue entry before inline result
-  taking. Fallible async, cleanup across suspension, sleep/readiness, Task
-  joins, sum/List/TextMap frame values, and dynamic concepts remain the reviewed
-  Core03 legacy allowance. Together with the previously deferred
+  taking. Async cleanup, inout/writeback, sleep/readiness, Task combinators,
+  List/TextMap frame values and dynamic concepts remain the
+  reviewed Core03 legacy allowance. Together with the previously deferred
   typed-TextMap vocabulary, this advances the LCIR dump to 20, artifact
   identity to schema 21, native-object domain to v17, and LLVM object-cache
   domain to v22. The existing typed-task v1 and native runtime ABI are

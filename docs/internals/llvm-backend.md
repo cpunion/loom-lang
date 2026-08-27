@@ -440,7 +440,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v19` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v20` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -452,7 +452,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v24` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v25` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -465,6 +465,16 @@ uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, suspension edges, and exact frame-root rows, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
+For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
+fault context whose validated context pointer is the attached executor. The
+existing context-raise ABI records the first source/runtime/contract fault on
+the active Task. Normal return still publishes the exact typed value, including
+a managed `Result`; fault and cancellation return distinct scheduler step codes
+and never pack a source sum. The general collision-free sum carrier gives
+coroutine parameters, live rows, and completed results one static union of
+managed-pointer offsets whose inactive lanes are zero. Callback-local typed
+shadow roots are popped once on every completed, pending, faulted, cancelled,
+or invalid-state exit. This adds no runtime symbol or typed-task ABI revision.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

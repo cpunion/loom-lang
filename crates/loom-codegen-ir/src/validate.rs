@@ -1484,14 +1484,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InvalidCoroutinePlan,
                 format!("{base}.signature.inout"),
-                "the first typed-coroutine slice does not admit inout parameters",
-            );
-        }
-        if function.effects().contains(Effects::MAY_FAULT) {
-            self.error(
-                ValidationCode::InvalidCoroutinePlan,
-                format!("{base}.effects"),
-                "the first typed-coroutine slice requires an infallible coroutine body",
+                "typed coroutine plans do not admit inout parameters",
             );
         }
         if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
@@ -1514,7 +1507,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.frame_type[{index}]"),
-                    "typed coroutine parameter/result slots are limited to direct scalar, product, and Text values",
+                    "typed coroutine parameter/result slots require closed direct values without task handles",
                 );
             }
         }
@@ -1557,7 +1550,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
                         format!("{base}.coroutine.suspension[{index}].live[{live_index}]"),
-                        "typed coroutine live slots are limited to direct scalar, product, Text, and Task-handle values",
+                        "typed coroutine live slots require closed direct values or a top-level Task handle",
                     );
                 }
             }
@@ -1606,10 +1599,10 @@ impl<'a> Validator<'a> {
     }
 
     fn coroutine_frame_type_supported(&self, root: ValueTypeId, allow_task_handle: bool) -> bool {
-        let mut pending = vec![root];
+        let mut pending = vec![(root, allow_task_handle)];
         let mut seen = BTreeSet::new();
-        while let Some(ty) = pending.pop() {
-            if !seen.insert(ty) {
+        while let Some((ty, task_handle_allowed)) = pending.pop() {
+            if !seen.insert((ty, task_handle_allowed)) {
                 continue;
             }
             let Some(value_type) = self.program.representations.value_type(ty) else {
@@ -1623,7 +1616,7 @@ impl<'a> Validator<'a> {
                     }
                 }
                 Some(Repr::TaskHandle) => {
-                    if !allow_task_handle {
+                    if !task_handle_allowed {
                         return false;
                     }
                 }
@@ -1631,9 +1624,20 @@ impl<'a> Validator<'a> {
                     let Some(product) = self.program.representations.product(*product) else {
                         return false;
                     };
-                    pending.extend(product.fields().iter().copied());
+                    pending.extend(product.fields().iter().copied().map(|field| (field, false)));
                 }
-                Some(Repr::Uninhabited | Repr::Sum(_)) | None => return false,
+                Some(Repr::Sum(sum)) => {
+                    let Some(sum) = self.program.representations.sum(*sum) else {
+                        return false;
+                    };
+                    pending.extend(
+                        sum.variants()
+                            .iter()
+                            .flat_map(|variant| variant.fields().iter().copied())
+                            .map(|field| (field, false)),
+                    );
+                }
+                Some(Repr::Uninhabited) | None => return false,
             }
         }
         true
@@ -2847,16 +2851,6 @@ impl<'a> Validator<'a> {
                         ValidationCode::CallShape,
                         format!("{path}.coroutine"),
                         "task.create does not admit an inout coroutine signature",
-                    );
-                }
-                if self
-                    .exact_effect(coroutine_id)
-                    .is_some_and(|effects| effects.contains(Effects::MAY_FAULT))
-                {
-                    self.error(
-                        ValidationCode::CallShape,
-                        format!("{path}.coroutine"),
-                        "the first typed task.create slice requires an infallible coroutine",
                     );
                 }
                 if function.coroutine().is_none() {

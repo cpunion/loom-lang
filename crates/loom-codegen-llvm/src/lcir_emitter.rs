@@ -2141,9 +2141,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         base: u64,
         offsets: &mut BTreeSet<u64>,
     ) -> Result<(), CodegenError> {
-        let mut pending = vec![(root, base, 0_usize)];
+        if !self.coroutine_frame_contains_managed_pointer(root)? {
+            return Ok(());
+        }
+        for offset in self.managed_element_offsets(root)? {
+            offsets.insert(base.checked_add(offset).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "typed coroutine root offset overflowed")
+            })?);
+        }
+        Ok(())
+    }
+
+    fn coroutine_frame_contains_managed_pointer(
+        &self,
+        root: ValueTypeId,
+    ) -> Result<bool, CodegenError> {
+        let mut pending = vec![(root, 0_usize)];
         let mut visited = 0_usize;
-        while let Some((ty, base, depth)) = pending.pop() {
+        while let Some((ty, depth)) = pending.pop() {
             visited = visited.saturating_add(1);
             if visited > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
                 || depth > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
@@ -2153,23 +2168,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     "typed coroutine root projection exceeds its structural budget",
                 ));
             }
-            let value_type = self
-                .artifact
-                .representations()
-                .value_type(ty)
-                .ok_or_else(|| {
-                    CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}"))
-                })?;
-            match self
-                .artifact
-                .representations()
-                .repr(value_type.repr())
-                .copied()
-            {
-                Some(Repr::ManagedPointer) => {
-                    offsets.insert(base);
-                }
-                Some(Repr::Product(product)) => {
+            match self.coroutine_frame_repr(ty)? {
+                Repr::ManagedPointer => return Ok(true),
+                Repr::Product(product) => {
                     let fields = self
                         .artifact
                         .representations()
@@ -2181,37 +2182,30 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                             )
                         })?
                         .fields();
-                    let physical = self.llvm_type(ty)?.into_struct_type();
-                    for (index, field) in fields.iter().copied().enumerate().rev() {
-                        let index = u32::try_from(index).map_err(|_| {
-                            CodegenError::new(
-                                "ProgramTooLarge",
-                                "too many coroutine product fields",
-                            )
-                        })?;
-                        let field_offset = self
-                            .target_data
-                            .offset_of_element(&physical, index)
-                            .ok_or_else(|| {
-                                CodegenError::new(
-                                    "LlvmAbiDefect",
-                                    "coroutine product field has no target offset",
-                                )
-                            })?;
-                        pending.push((
-                            field,
-                            base.checked_add(field_offset).ok_or_else(|| {
-                                CodegenError::new(
-                                    "ProgramTooLarge",
-                                    "typed coroutine root offset overflowed",
-                                )
-                            })?,
-                            depth.saturating_add(1),
-                        ));
+                    pending.extend(
+                        fields
+                            .iter()
+                            .copied()
+                            .map(|field| (field, depth.saturating_add(1))),
+                    );
+                }
+                Repr::Sum(sum) => {
+                    let sum = self.artifact.representations().sum(sum).ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("missing LCIR sum representation {sum}"),
+                        )
+                    })?;
+                    for field in sum
+                        .variants()
+                        .iter()
+                        .flat_map(|variant| variant.fields().iter().copied())
+                    {
+                        pending.push((field, depth.saturating_add(1)));
                     }
                 }
-                Some(Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText | Repr::TaskHandle) => {}
-                Some(Repr::Uninhabited | Repr::Sum(_)) | None => {
+                Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText | Repr::TaskHandle => {}
+                Repr::Uninhabited => {
                     return Err(CodegenError::new(
                         "LlvmAbiDefect",
                         format!("unsupported typed coroutine frame type {ty}"),
@@ -2219,7 +2213,20 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 }
             }
         }
-        Ok(())
+        Ok(false)
+    }
+
+    fn coroutine_frame_repr(&self, ty: ValueTypeId) -> Result<Repr, CodegenError> {
+        let value_type = self
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
+        self.artifact
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR repr {ty}")))
     }
 
     fn emit_i64_array(
@@ -4442,6 +4449,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
         }
         if self.coroutine.is_some() {
+            self.prepare_coroutine_fault_context()?;
             return self.prepare_coroutine_dispatch(entry, entry_block);
         }
         for (parameter_index, value_id) in entry_block.params().iter().copied().enumerate() {
@@ -4472,6 +4480,41 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             self.fault_context = Some(value.into_pointer_value());
         }
+        Ok(())
+    }
+
+    fn prepare_coroutine_fault_context(&mut self) -> Result<(), CodegenError> {
+        if !self.source.effects().contains(Effects::MAY_FAULT) {
+            return Ok(());
+        }
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "coroutine fault context has no frame plan")
+        })?;
+        self.backend.builder.position_at_end(coroutine.prologue);
+        let context = self
+            .backend
+            .builder
+            .build_alloca(self.backend.fault_context_type, "fault.context")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(context, self.backend.fault_context_type.const_zero())
+            .map_err(builder_error)?;
+        let runtime_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                self.backend.fault_context_type,
+                context,
+                0,
+                "fault.context.runtime.pointer",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(runtime_pointer, coroutine.executor)
+            .map_err(builder_error)?;
+        self.fault_context = Some(context);
         Ok(())
     }
 

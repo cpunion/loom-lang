@@ -388,6 +388,14 @@ domain to `loom-lcir-native-object-v19`, and the CLI object-cache domain to
 the monotonic identity boundary prevents a checked artifact or native object
 planned with the old overlapping carrier from sharing the corrected domain.
 
+Managed closed sums in checked coroutine parameters, suspension rows, and
+completed results then advance the artifact identity to schema 24, the dump to
+`lcir 23`, the LCIR native-object domain to `loom-lcir-native-object-v20`, and
+the CLI object-cache domain to `loom-llvm-object-cache-v25`. The coroutine
+descriptor reuses the carrier plan's static union of pointer offsets and exact
+per-state bitmaps. Inactive lanes are already zero after packing, so typed-task
+v1 and the native runtime ABI do not change.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -400,10 +408,16 @@ LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
-signatures, plus infallible async signatures and suspension frames limited to
-direct scalar/refined/product/Text shapes. It includes bounded direct generic
-calls whose concrete types use those representations. Concrete static concept
-calls use the selected witness method directly, including conditional proof
+signatures. Cleanup-free, non-inout async signatures and suspension frames may
+also use direct scalar/refined/product/Text shapes and closed sums whose payload
+graphs contain those shapes. These coroutines preserve `MAY_FAULT` from checked
+operations, assertions, ordinary fallible invokes, and cleanup-free child
+contracts. A source `Result[T, E]`, including a managed-Text result, is an
+ordinary completed value; Task `Faulted` and `Cancelled` states remain control
+outcomes. Selected async roots with `requires` and async inout/writeback still
+fail closed before LCIR creation. Coverage includes bounded direct generic calls
+whose concrete types use those representations. Concrete static concept calls
+use the selected witness method directly, including conditional proof
 applications and normalized associated bindings. A unique closed dynamic
 witness is erased to its concrete type. Two or more artifact-closed exact
 witnesses use checked `dyn.construct` and `dyn.switch` operations backed by one
@@ -915,7 +929,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 22` text includes
+text even when the graphs are otherwise equivalent. The `lcir 23` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -966,7 +980,13 @@ two-state coroutine with a live Task handle and deterministic immediate-ready
 second child, scalar/Text/product results, exact managed frame bitmaps, parent
 Text relocation while a child allocates beyond the initial 64 KiB collection
 threshold, run/test root lifecycle, interpreter/legacy/typed differential
-execution, and Linux/MSVC objects.
+execution, and Linux/MSVC objects. Fallible coroutine regressions additionally
+cover managed `Result[Text, E]` completion, exact completed and suspension
+carrier offsets/bitmaps, active-tag shadow-root rebuilds, inactive zero lanes,
+two-stage forced relocation, checked invokes, assertions, cleanup-free
+preconditions and postconditions, exact primary-fault inheritance, sibling
+cancellation, and balanced typed callback roots on completed, pending, faulted,
+and cancelled exits.
 Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.

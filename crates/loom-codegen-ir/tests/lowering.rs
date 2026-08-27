@@ -143,6 +143,161 @@ fn typed_task_handles_fail_closed_on_a_32_bit_target() {
 }
 
 #[test]
+fn fallible_async_calls_contracts_and_pointer_free_results_lower_atomically() {
+    let source = r"module fallible_async
+
+enum Problem { Wrong }
+
+fn checkedDivide(value Int, divisor Int) Int { value / divisor }
+
+async fn outcome(value Int) Result[Int, Problem] { Ok(value) }
+
+async fn checkedAnswer(value Int, divisor Int) Int
+    requires divisor != 0
+    ensures result == 42
+{
+    assert value == 84
+    checkedDivide(value, divisor)
+}
+
+pub async fn main() Unit {
+    let completed = outcome(7).await
+    let answer = checkedAnswer(84, 2).await
+    match completed {
+        Ok(value) => {
+            assert value == 7 && answer == 42
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("fallible pointer-free Result coroutine must lower through typed LCIR")
+    };
+    let checked_answer = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("checkedAnswer"))
+        .expect("checkedAnswer instance");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert!(checked_answer.coroutine().is_some());
+    assert!(
+        checked_answer
+            .effects()
+            .contains(loom_codegen_ir::Effects::MAY_FAULT)
+    );
+    assert!(main.effects().contains(loom_codegen_ir::Effects::MAY_FAULT));
+    assert_eq!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .len(),
+        2
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "task.create",
+        "task.await",
+        "invoke",
+        "contract PreconditionFault",
+        "contract PostconditionFault",
+        "resume_fault",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+}
+
+#[test]
+fn async_root_preconditions_fail_closed_before_checked_wrapper_lowering() {
+    let source = r"module async_root_contract
+
+pub async fn main() Unit
+    requires false
+    ensures false
+{
+    Unit
+}
+";
+    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+        panic!("async root preconditions require a dedicated checked coroutine wrapper")
+    };
+    assert!(report.items().iter().any(|item| {
+        item.feature() == UnsupportedFeature::AsyncFunction
+            && item.path().ends_with(".async_root_requires")
+    }));
+}
+
+#[test]
+fn managed_sum_coroutine_frames_lower_with_exact_direct_types() {
+    let source = r#"module managed_result_async
+
+enum Problem { Wrong }
+
+async fn child() Result[Text, Problem] { Ok("man".concat("aged")) }
+
+pub async fn main() Unit {
+    match child().await {
+        Ok(text) => {
+            discard text.length()
+            Unit
+        }
+        Err(_) => Unit
+    }
+    Unit
+}
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("collision-free managed sum coroutine frame must lower atomically")
+    };
+    let child = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("child"))
+        .expect("managed Result child instance");
+    let plan = child.coroutine().expect("managed Result coroutine plan");
+    assert_eq!(plan.output(), child.signature().result());
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("sum"), "{dump}");
+}
+
+#[test]
+fn async_local_inout_calls_fail_closed_before_writeback_lowering() {
+    let source = r"module async_local_inout
+
+record Counter { value Int }
+
+impl Counter {
+    method update(mut self) Unit {
+        self.value = 42
+        Unit
+    }
+}
+
+pub async fn main() Unit {
+    var counter = Counter { value = 0 }
+    counter.update()
+    Unit
+}
+";
+    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+        panic!("async local writeback requires a later dedicated slice")
+    };
+    assert!(report.items().iter().any(|item| {
+        item.feature() == UnsupportedFeature::AsyncFunction && item.path().contains("async_inout")
+    }));
+}
+
+#[test]
 fn task_creation_in_sync_functions_fails_closed_before_emission() {
     for source in [
         r"module sync_task_create
