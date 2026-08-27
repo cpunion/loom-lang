@@ -15,13 +15,13 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `21` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `12` |
-| LCIR artifact identity | schema `13` |
-| LCIR native-object domain | `loom-lcir-native-object-v9` |
+| LCIR textual dump | version `13` |
+| LCIR artifact identity | schema `14` |
+| LCIR native-object domain | `loom-lcir-native-object-v10` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v14` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v15` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `11` |
+| Native runtime ABI component | `12` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -45,8 +45,8 @@ Dynamic `Text.concat` makes those typed root facilities part of generated LCIR.
 An artifact containing concat or a Text-bearing tuple/record uses one
 `ManagedPointer` provenance mode for all Text. Products remain unboxed exact
 SSA aggregates; only their deterministic Text leaves receive stable root cells
-when the aggregate is live after a collecting operation. This advances the
-current LCIR dump to 12, artifact schema to 13, native-object domain to v9, and
+when the aggregate is live after a collecting operation. This advanced the
+LCIR dump to 12, artifact schema to 13, native-object domain to v9, and
 object-cache domain to v14. The concat helper previously advanced the native
 runtime component to `10` and the exact identity components to `text-v2` and
 `runtime-v4`; product leaf rooting reuses that typed-shadow-stack v1 wire and
@@ -68,6 +68,15 @@ cleanup RuntimeFault; invalid callback statuses, missing fault records, and
 scheduler-topology violations remain runtime defects and are never laundered
 into cancellation.
 
+Direct lexical cleanup advances the LCIR dump to 13, artifact schema to 14,
+native-object domain to v10, and object-cache domain to v15. These boundaries
+encode assertion cleanup edges, compiler-expanded LIFO cleanup suffixes, and
+typed resource-close control flow. Static-concept disposal and deferred blocks
+use existing typed calls and add no runtime ABI. Canonical File/Socket disposal
+adds `typed-resource-v1` and advances the native runtime component to 12 with
+`runtime-v6`. The close helper receives one exact handle cell; it neither
+constructs a universal value nor drives an executor.
+
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity. Current typed source lowering
 emits effect-free and `MAY_FAULT` functions, and dynamic Text concat emits the
@@ -80,8 +89,9 @@ Typed LCIR fault metadata adds canonical contract-fault kinds, bounded text,
 and concrete contract/blame spans to dumps and artifact identity. LLVM emits
 the existing contract diagnostic wire schema from that checked data. The four
 compiler-private LCIR/object-cache boundaries advance, while the native runtime
-ABI and source-language behavior remain unchanged; source contract and
-assertion lowering still selects atomic fallback.
+ABI and source-language behavior remain unchanged. Source assertions now use
+that metadata on direct lexical cleanup paths; source contracts still select
+atomic fallback until their placements are materialized.
 
 Concrete static-concept resolution adds no physical ABI. The compiler-private
 domains advance because the planner now normalizes associated projections,

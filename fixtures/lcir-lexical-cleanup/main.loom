@@ -1,0 +1,63 @@
+module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        assert self.value > 0
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+fn requireEqual(actual Int, expected Int) Unit {
+    assert actual == expected
+    Unit
+}
+
+fn exercise() Unit {
+    var order = 0
+    {
+        defer {
+            order = order * 10 + 1
+        }
+        defer {
+            order = order * 10 + 2
+        }
+        Unit
+    }
+    requireEqual(order, 21)
+
+    if true {
+        defer {
+            order = 34
+        }
+        Unit
+    } else {
+        order = 99
+        Unit
+    }
+    requireEqual(order, 34)
+
+    scoped resource = Resource { value = 7 }
+    Unit
+}
+
+pub fn main() Unit {
+    exercise()
+}
+
+test fn lexicalCleanup() Unit {
+    exercise()
+}

@@ -2274,6 +2274,51 @@ impl<'a> Validator<'a> {
                 }
                 self.require_may_fault_effect(function, &path, "invoke");
             }
+            TerminatorKind::ResourceClose {
+                resource,
+                normal,
+                fault,
+                ..
+            } => {
+                let resource_type = function.value(*resource).map(super::ir::Value::ty);
+                let int_type = self.scalar_type(&Type::Int);
+                let valid_resource = resource_type.is_some_and(|ty| {
+                    self.program
+                        .representations
+                        .value_type(ty)
+                        .is_some_and(|value_type| {
+                            value_type.kind() == ValueTypeKind::Direct
+                                && matches!(value_type.semantic(), Type::Nominal(_, arguments) if arguments.is_empty())
+                        }) && matches!((self.product_fields(ty), int_type), (Some(fields), Some(int)) if fields == [int])
+                });
+                if resource_type.is_some() && !valid_resource {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.resource"),
+                        "typed resource close requires a direct monomorphic one-Int resource product",
+                    );
+                }
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[self.scalar_type(&Type::Unit), resource_type],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(
+                    function,
+                    fault,
+                    &[resource_type],
+                    &format!("{path}.fault"),
+                );
+                self.require_may_fault_effect(function, &path, "typed resource close");
+                if !function.effects.contains(Effects::NEEDS_RUNTIME) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "typed resource close requires the function's NEEDS_RUNTIME effect",
+                    );
+                }
+            }
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -3200,6 +3245,12 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                     if propagates_fault =>
                 {
                     effects[caller] = effects[caller].union(Effects::MAY_FAULT);
+                }
+                TerminatorKind::ResourceClose { .. } => {
+                    effects[caller] = effects[caller].union(Effects::NEEDS_RUNTIME);
+                    if propagates_fault {
+                        effects[caller] = effects[caller].union(Effects::MAY_FAULT);
+                    }
                 }
                 TerminatorKind::Invoke { callee, .. } => {
                     if let Some(callee) = canonical_function_index(program, *callee) {

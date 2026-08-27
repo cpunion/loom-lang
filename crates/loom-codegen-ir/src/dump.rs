@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 12")?;
+    writeln!(output, "lcir 13")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -404,6 +404,21 @@ fn write_terminator(
             write!(output, ", unwind ")?;
             write_unwind_target(output, unwind, writebacks)
         }
+        TerminatorKind::ResourceClose {
+            kind,
+            resource,
+            normal,
+            fault,
+        } => {
+            let kind = match kind {
+                crate::ResourceKind::File => "file",
+                crate::ResourceKind::Socket => "socket",
+            };
+            write!(output, "resource.close.{kind} %{resource}, normal ")?;
+            write_result_target(output, normal, 1)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 1)
+        }
         TerminatorKind::Assert {
             condition,
             metadata,
@@ -623,6 +638,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerOverflow => "IntegerOverflow",
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
+        crate::FaultCode::ResourceClose => "ResourceCloseFault",
     }
 }
 

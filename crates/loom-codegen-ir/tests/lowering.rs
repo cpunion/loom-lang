@@ -2,12 +2,17 @@ use std::{collections::BTreeMap, fmt::Write as _, process::Command, time::Durati
 
 use loom_codegen_ir::{
     CheckedIntBinaryOp, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
-    LoweringOutcome, SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature,
-    artifact_identity, dump_program, lower_typed_artifact,
+    LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
+    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
 };
-use loom_core::FileId;
+use loom_core::{FileId, Span};
 use loom_hir::{SourceUnit, lower_files};
 use loom_lowering::lower_to_mir;
+use loom_mir::{
+    Block, CallPlan, Constant, ConstructionMode, Expr, ExprKind, FieldDef, Function, FunctionId,
+    LocalDecl, LocalId, PreludeIds, Program, ScopedDisposal, Statement, StatementKind, Type,
+    TypeDef, TypeDefKind, TypeId,
+};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 use wait_timeout::ChildExt as _;
@@ -56,6 +61,148 @@ fn complete_dump(source: &str) -> String {
         panic!("source should be completely supported: {outcome:?}")
     };
     dump_program(artifact.program())
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the hand-built canonical File fixture keeps MIR identity and cleanup-edge evidence local"
+)]
+fn builtin_scoped_file_cleanup_lowers_to_one_typed_runtime_edge() {
+    let span = Span::default();
+    let file_id = TypeId(9);
+    let file = Type::Nominal(file_id, Vec::new());
+    let mut types = (0_u32..9)
+        .map(|id| TypeDef {
+            id: TypeId(id),
+            name: format!("Placeholder{id}"),
+            span,
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: Vec::new(),
+                invariant: None,
+            },
+        })
+        .collect::<Vec<_>>();
+    types.push(TypeDef {
+        id: file_id,
+        name: "File".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "raw".into(),
+                ty: Type::Int,
+                span,
+            }],
+            invariant: None,
+        },
+    });
+    let mut program = Program {
+        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
+        types,
+        functions: vec![Function {
+            id: FunctionId(0),
+            name: "manual.main".into(),
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: vec![LocalDecl {
+                id: LocalId(0),
+                name: "file".into(),
+                ty: file.clone(),
+                mutable: true,
+                span,
+            }],
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Scoped {
+                        local: LocalId(0),
+                        value: Expr::new(
+                            ExprKind::Record {
+                                ty: file_id,
+                                type_arguments: Vec::new(),
+                                fields: vec![Expr::new(
+                                    ExprKind::Constant(Constant::Int(-1)),
+                                    Type::Int,
+                                    span,
+                                )],
+                                construction: ConstructionMode::Plain,
+                            },
+                            file,
+                            span,
+                        ),
+                        disposal: ScopedDisposal::FileClose,
+                    },
+                    span,
+                }],
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::Constant(Constant::Unit),
+                    Type::Unit,
+                    span,
+                ))),
+                span,
+            },
+            call_plan: CallPlan::default(),
+        }],
+        prelude: PreludeIds {
+            file: Some(file_id),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    program
+        .renumber_expr_ids()
+        .expect("number resource fixture");
+    let program = program
+        .into_checked()
+        .expect("resource fixture is valid checked MIR");
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed resource cleanup") else {
+        panic!("canonical File cleanup must be in typed LCIR coverage")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("resource.close.file").count(), 1, "{dump}");
+    assert!(dump.contains("effects=may_fault+needs_runtime"), "{dump}");
+    assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
+fn direct_cleanup_depth_has_a_stable_program_too_large_boundary() {
+    let cleanups = "    defer { Unit }\n".repeat(1_025);
+    let source =
+        format!("module cleanup_budget\n\npub fn main() Unit {{\n{cleanups}    Unit\n}}\n");
+    let mir = compile(&source);
+    let error = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect_err("unbounded direct cleanup expansion must be rejected");
+    assert_eq!(
+        error.code(),
+        LoweringErrorCode::ResourceLimit(ResourceLimitCode::ProgramTooLarge)
+    );
+    assert!(
+        error
+            .message()
+            .contains("1024-action direct lexical cleanup depth"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2388,8 +2535,8 @@ pub fn main() Unit {
 }
 
 #[test]
-fn assert_and_defer_are_stably_unsupported_until_cleanup_ladders_exist() {
-    let mir = compile(
+fn assert_and_defer_lower_to_direct_lexical_cleanup_control_flow() {
+    let dump = complete_dump(
         r"module cleanup
 
 fn check(condition Bool) Unit {
@@ -2404,30 +2551,9 @@ pub fn main() Unit {
 }
 ",
     );
-    let outcome = lower_typed_artifact(
-        &mir,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("classify cleanup");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("cleanup forms must not be partially lowered")
-    };
-    let features = report
-        .items()
-        .iter()
-        .map(loom_codegen_ir::UnsupportedItem::feature)
-        .collect::<Vec<_>>();
-    assert!(
-        features.contains(&UnsupportedFeature::DeferredCleanup),
-        "{features:?}"
-    );
-    assert!(
-        features.contains(&UnsupportedFeature::AssertionCleanup),
-        "{features:?}"
-    );
+    assert!(dump.contains("assert "), "{dump}");
+    assert!(dump.contains("contract AssertionFault"), "{dump}");
+    assert!(dump.contains("resume_fault"), "{dump}");
 }
 
 #[test]

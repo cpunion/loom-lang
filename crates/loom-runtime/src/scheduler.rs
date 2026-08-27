@@ -13,10 +13,12 @@ use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, GC_MAX_OBJECT_ALIGNMENT,
     GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
     LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedTaskCallback, LoomTypedTaskFaultView,
-    LoomWitnessInstance, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
-    TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
-    TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST,
-    VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    LoomWitnessInstance, TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
+    TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+    TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
+    TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY, TYPED_TASK_OK,
+    TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
+    VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
 use crate::gc::{
@@ -72,6 +74,14 @@ impl IoResourceKind {
 
     const fn is_file(self) -> bool {
         matches!(self, Self::File)
+    }
+
+    const fn from_typed_kind(kind: u32) -> Option<Self> {
+        match kind {
+            TYPED_RESOURCE_KIND_FILE => Some(Self::File),
+            TYPED_RESOURCE_KIND_SOCKET => Some(Self::Socket),
+            _ => None,
+        }
     }
 }
 const RESULT_TYPE: u64 = 1;
@@ -3390,13 +3400,27 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
         return WAIT_OK;
     }
     let executor = unsafe { &mut *executor };
+    if close_resource_handle(Some(executor), handle, kind).is_err() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    unsafe { (*node).value.words[3] = INVALID_HANDLE.cast_unsigned() };
+    WAIT_OK
+}
+
+fn close_resource_handle(
+    executor: Option<&mut LoomExecutor>,
+    handle: i64,
+    kind: IoResourceKind,
+) -> io::Result<()> {
     let mut owned = None;
-    for task in &mut executor.tasks {
-        if let Some(index) = task.owned_result_resources.iter().position(|candidate| {
-            candidate.handle_bits() == handle && candidate.is_file() == kind.is_file()
-        }) {
-            owned = Some(task.owned_result_resources.swap_remove(index));
-            break;
+    if let Some(executor) = executor {
+        for task in &mut executor.tasks {
+            if let Some(index) = task.owned_result_resources.iter().position(|candidate| {
+                candidate.handle_bits() == handle && candidate.is_file() == kind.is_file()
+            }) {
+                owned = Some(task.owned_result_resources.swap_remove(index));
+                break;
+            }
         }
     }
     if let Some(owned) = owned {
@@ -3404,12 +3428,56 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     } else {
         // SAFETY: a well-formed externally transferred File/Socket value owns
         // its raw handle when it is no longer tracked by a runtime task.
-        if unsafe { close_untracked(handle, kind.is_file()) }.is_err() {
-            return WAIT_INVALID_ARGUMENT;
-        }
+        unsafe { close_untracked(handle, kind.is_file()) }?;
     }
-    unsafe { (*node).value.words[3] = INVALID_HANDLE.cast_unsigned() };
-    WAIT_OK
+    Ok(())
+}
+
+/// Closes one exact typed File/Socket record in place.
+///
+/// The current generated-code interval must already own `runtime`. This call
+/// performs no scheduling and never constructs the legacy universal value
+/// envelope. An attached executor is consulted only as an ownership registry
+/// for a handle returned by an async IO task.
+#[unsafe(export_name = "loom_runtime_resource_close_typed_v1")]
+pub unsafe extern "C" fn resource_close_typed_v1(
+    runtime: *mut LoomRuntime,
+    kind: u32,
+    handle: *mut i64,
+) -> i32 {
+    if runtime.is_null()
+        || handle.is_null()
+        || !(handle as usize).is_multiple_of(align_of::<i64>())
+        || crate::gc::active_runtime_pointer() != runtime
+    {
+        return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
+    }
+    let Some(kind) = IoResourceKind::from_typed_kind(kind) else {
+        return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
+    };
+    let current = unsafe { *handle };
+    if current == INVALID_HANDLE {
+        return TYPED_RESOURCE_CLOSE_OK;
+    }
+    // SAFETY: equality with the thread-local active runtime proves this is the
+    // live runtime installed for the complete generated-code interval.
+    let executor = unsafe { (*runtime).attached_executor_pointer() }.cast::<LoomExecutor>();
+    let executor = if executor.is_null() {
+        None
+    } else {
+        // SAFETY: runtime attachment owns this stable executor pointer and the
+        // generated-code interval serializes runtime/executor mutation.
+        let executor = unsafe { &mut *executor };
+        if executor.runtime_pointer() != runtime {
+            return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
+        }
+        Some(executor)
+    };
+    if close_resource_handle(executor, current, kind).is_err() {
+        return TYPED_RESOURCE_CLOSE_FAILED;
+    }
+    unsafe { *handle = INVALID_HANDLE };
+    TYPED_RESOURCE_CLOSE_OK
 }
 
 #[unsafe(export_name = "loom_task_from_wait_source")]
@@ -4982,12 +5050,96 @@ mod resource_ownership_tests {
         }
     }
 
+    #[test]
+    fn typed_resource_close_rejects_invalid_or_inactive_boundaries() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let mut handle = INVALID_HANDLE;
+        unsafe {
+            assert_eq!(
+                resource_close_typed_v1(ptr::null_mut(), TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, ptr::null_mut()),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                resource_close_typed_v1(runtime, 0, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
     fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let client = TcpStream::connect(address)?;
         let (server, _) = listener.accept()?;
         Ok((client, server))
+    }
+
+    #[test]
+    fn typed_resource_close_directly_closes_and_writes_back_an_untracked_socket() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let (socket, mut peer) = socket_pair().expect("create socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+        let mut handle = crate::platform::socket_handle_bits(&socket);
+        std::mem::forget(socket);
+
+        unsafe {
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_peer_closed(&mut peer);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_removes_async_ownership_without_scheduling() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+        let mut handle = crate::platform::socket_handle_bits(&socket);
+
+        unsafe {
+            let task = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!task.is_null());
+            crate::gc::enter_executor(executor);
+            assert_eq!(
+                store_resource_result(task, SOCKET_TYPE, socket.into()),
+                TASK_COMPLETED
+            );
+            assert_eq!((*task).owned_result_resources.len(), 1);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert!((*task).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+            crate::gc::leave_executor();
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
     }
 
     fn assert_peer_still_connected(peer: &mut TcpStream) {

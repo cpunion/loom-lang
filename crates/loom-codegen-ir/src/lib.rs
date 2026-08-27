@@ -59,8 +59,8 @@ pub use ir::{
     Block, BlockTarget, BoolPredicate, CONTRACT_FAULT_TEXT_MAX_BYTES, CheckedIntBinaryOp, Constant,
     ContractFaultKind, ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin, Program,
-    ResultTarget, Signature, SumCase, Terminator, TerminatorKind, UnwindTarget, Value,
-    ValueDefinition,
+    ResourceKind, ResultTarget, Signature, SumCase, Terminator, TerminatorKind, UnwindTarget,
+    Value, ValueDefinition,
 };
 pub use lower::{
     InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,

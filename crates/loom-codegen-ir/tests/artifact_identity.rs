@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_managed_text_products() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 13);
+fn identity_schema_is_pinned_after_typed_resource_cleanup() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 14);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,8 +559,8 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 13,
-        "managed Text leaves in unboxed products advance the compiler-private identity schema"
+        ARTIFACT_IDENTITY_SCHEMA, 14,
+        "typed resource cleanup advances the identity schema after managed Text products"
     );
 }
 

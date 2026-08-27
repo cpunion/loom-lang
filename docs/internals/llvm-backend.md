@@ -53,10 +53,11 @@ Source contracts remain outside that routing slice. Hand-built LCIR now carries
 canonical assertion, precondition, postcondition, and invariant fault metadata,
 including bounded user code, message, contract span, and concrete blame span.
 The LLVM emitter preserves the existing contract-channel JSON schema exactly.
-The direct source lowerer still reports contracts and assertions as
-`Unsupported` until it can materialize call-site precondition blame and complete
-all normal, return, fault, and cleanup paths. The vocabulary does not permit a
-partial source route.
+The direct source lowerer emits assertions with their exact source metadata and
+routes assertion faults through the active lexical cleanup suffix. Source
+contracts remain `Unsupported` until call-site precondition blame and the other
+contract placements are materialized. The vocabulary does not permit a partial
+contract route.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
@@ -234,6 +235,30 @@ scheduler, suspension, or catchable fault channel. `Text.get`, other dynamic
 Text producers, Text inside a sum or transparent/refined carrier, and managed
 lists remain atomic whole-artifact fallback.
 
+## Direct lexical cleanup
+
+LCIR contains the already expanded control flow for `defer`, `scoped`, and
+source assertions. The LLVM emitter never reconstructs lexical scope and never
+allocates a runtime cleanup stack. Each normal block exit, return, or fault edge
+enters its statically emitted newest-first suffix. If cleanup starts with a
+fault active, a later cleanup fault is suppressed while older cleanups continue
+and the original fault remains primary.
+
+Static-concept disposal is an ordinary monomorphic direct call or fallible
+invoke with functional receiver writeback. Canonical File and Socket disposal
+uses `loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)`. The
+handle cell is allocated once in the LLVM entry block for each syntactic close,
+so a cleanup edge executed by a loop cannot grow the stack. The helper closes
+the exact owned handle, writes the invalid-handle sentinel only on success, and
+does not schedule, enqueue, suspend, or drive an executor. Its normal and fault
+edges rebuild the exact resource value before the next cleanup action. There is
+no universal `loom.Value`, indirect witness call, or synchronous executor route.
+
+Managed return values captured before a deferred collecting call remain normal
+LCIR SSA liveness. The root planner expands their Text-bearing product leaves,
+and the emitter rebuilds the product after relocation before returning it; no
+cleanup-specific GC representation is needed.
+
 ## Direct LCIR closed sums
 
 LLVM derives every sum layout from the checked `SumRepr` and target data. A
@@ -286,7 +311,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v9` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v10` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -298,7 +323,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v14` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v15` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -308,7 +333,10 @@ The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.
 Product leaf rooting reuses that exact typed-shadow-stack v1 wire and therefore
-does not advance the current runtime ABI component 11 or `runtime-v5`.
+did not advance runtime ABI component 11 or `runtime-v5`. Typed File/Socket
+close now adds `typed-resource-v1` and advances the current runtime ABI
+component to 12 with `runtime-v6`; deferred and static-concept cleanup adds no
+runtime ABI.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

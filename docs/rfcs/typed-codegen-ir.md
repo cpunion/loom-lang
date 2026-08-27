@@ -33,7 +33,8 @@ native specializations. Managed values other than direct Text values and
 Text-bearing products,
 unsupported or recursive enums,
 runtime-checked constraints, concepts, contracts,
-cleanup, async, and private-list paths still repeat representation, proof,
+cleanup shapes outside the direct lexical slice, async, and private-list paths
+still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
 emitter. Some legacy functions may acquire universal, checked-native, and
 assumption-specialized bodies.
@@ -216,6 +217,10 @@ assert condition, contract metadata
     success target(forwarded...)
     fault target(forwarded...)
 
+resource_close kind, resource
+    normal target(Unit, resource_writeback; forwarded...)
+    fault target(resource_writeback; forwarded...)
+
 fault runtime code | contract metadata
 
 resume_fault
@@ -233,8 +238,20 @@ blame spans. A precondition can blame its materialized call site; every other
 kind must blame its own contract/assertion span. Independent validation rejects
 forged combinations and applies a 4 KiB UTF-8 limit to each text field before
 dumping or LLVM global/detail encoding. This exact vocabulary does not itself
-enable source contract lowering: source contracts and assertions remain atomic
-fallback until call-site placement and cleanup control flow are complete.
+enable source contract lowering: source assertions are direct and traverse
+their active cleanup suffix, while source contracts remain atomic fallback
+until call-site placement is complete.
+
+`defer` and `scoped` are expanded by the MIR-to-LCIR lowerer, not represented by
+a runtime cleanup stack. Registration happens at statement reachability, and a
+scoped initializer must complete before its disposer becomes active. Each
+lexical block expands its suffix newest-first on normal completion, return, and
+fault. A first fault remains primary; faults raised by cleanup are suppressed
+while every older cleanup still runs. Static-concept disposal uses a closed
+typed call with receiver writeback. File and Socket use the typed
+`resource_close` edge form. LCIR has no suspension opcode in this slice, and
+validation rejects any cleanup call graph that invents a suspension effect or
+calls a suspending exact callee.
 
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not
@@ -310,7 +327,14 @@ leaves, aggregate uses are reconstructed from post-safepoint reloads, and every
 nonempty frame is popped on all source exits. Root-map ABI-limit excess is
 `ProgramTooLarge`, not fallback. No universal root chain or executor
 participates in this path. Product leaf rooting reuses typed-shadow-stack v1 and
-does not change the current runtime ABI component 11 or `runtime-v5`.
+did not change runtime ABI component 11 or `runtime-v5`.
+
+Typed File and Socket cleanup calls
+`loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)` directly.
+It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
+`runtime-v6`. The handle cell is a fixed LLVM entry allocation, not a runtime
+cleanup node, and the helper neither constructs a universal value nor enters
+the executor. Static-concept and deferred cleanup require no new runtime ABI.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

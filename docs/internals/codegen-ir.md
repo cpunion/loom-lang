@@ -255,6 +255,13 @@ schema 13, the dump to `lcir 12`, the LCIR native-object domain to
 `loom-llvm-object-cache-v14`. The existing typed-shadow-stack v1 descriptor,
 frame, bitmap, push, and pop wire is sufficient, so native runtime ABI component
 11 and its `runtime-v5` identity do not change.
+Direct lexical cleanup then advances the artifact identity to schema 14, the
+dump to `lcir 13`, the LCIR native-object domain to
+`loom-lcir-native-object-v10`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v15`. Typed File and Socket disposal adds the
+`typed-resource-v1` boundary and advances the native runtime ABI component to
+12 with `runtime-v6`; deferred blocks and statically selected concept disposal
+need no runtime cleanup representation.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -314,9 +321,32 @@ runtime; suspension implies an executor, which implies an active runtime.
 `MAY_FAULT` intentionally implies none of those capabilities because checked
 scalar faults use only the local fault context. `TextConcat` is the current
 collecting opcode and contributes `MAY_COLLECT`; typed source lowering still
-has no executor or suspending opcode. Cleanup
-registration and assertions are conservatively unsupported together until
-their complete normal/return/fault ladders can be emitted.
+has no executor or suspending opcode. Assertions, deferred blocks, and scoped
+disposal lower into direct lexical CFG. Source contracts remain unsupported
+until their call-site placement is materialized.
+
+The lowerer maintains a compiler-only cleanup list while translating one
+lexical block. It registers a `defer` when its statement is reached and a
+`scoped` value only after its initializer has completed and the local has been
+bound. Normal block completion, explicit return, and every fault target expand
+the active suffix newest-first. Expansion exposes only older actions while an
+action is lowered, so a cleanup fault preserves an existing primary fault,
+suppresses later cleanup faults, and still executes every older action. Branch
+bodies are independent lexical scopes; they cannot leak registrations into a
+join. At most 1,024 actions may be simultaneously active in a function and at
+most 65,536 action expansions may be materialized. Exceeding either bound is a
+stable `ProgramTooLarge` error rather than fallback.
+
+Scoped concept disposal is closed through the already selected concrete
+witness method and uses the ordinary direct or fallible typed call ABI. A
+mutable receiver is written back on both normal and unwind edges. Canonical
+File and Socket disposal uses the `ResourceClose` terminator: it carries one
+exact nominal resource value, returns `Unit` plus the closed resource on its
+normal edge, and returns the resource writeback on its fault edge. LLVM calls
+the typed close ABI directly; it does not construct a universal `Value`, a
+runtime cleanup stack, or an executor. MIR rejects suspension in cleanup, and
+LCIR independently rejects a suspending exact callee or an invented suspension
+effect in the resulting cleanup graph.
 
 When any reachable instance contains `TextConcat` or a tuple/record containing
 Text, representation planning selects `ManagedPointer` for every `Text` in the
@@ -363,8 +393,8 @@ position. An infallible call returns the leaf writeback directly. A fallible
 call gives both its normal block and a dedicated fault bridge the same typed
 leaf writeback; each edge reconstructs the complete root before continuing or
 requesting the enclosing fault target. This ordering keeps the SSA environment
-ready for cleanup observation even though cleanup lowering itself remains a
-separate unsupported slice.
+ready for lexical cleanup observation, including receiver writeback performed
+by a scoped disposer.
 
 Lowering constructs canonical SSA directly: a single continuing branch does
 not gain a join, values already dominating every predecessor do not gain
@@ -484,7 +514,8 @@ The current instruction set is deliberately small:
 
 The current terminators include jump, conditional branch, return, terminal
 fault, checked integer negate/add/subtract/multiply/divide, assertion,
-fallible `invoke`, and `resume_fault`. A checked operation or invoke has a
+fallible `invoke`, typed File/Socket `resource.close`, and `resume_fault`. A
+checked operation or invoke has a
 `ResultTarget`: the source result exists only on the normal edge, followed by
 ordered inout writebacks and separately forwarded arguments. An invoke's
 `UnwindTarget` carries only its inout writebacks before forwarded arguments and
@@ -502,8 +533,8 @@ an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
 Managed values other than direct Text values in products, open or managed enums,
-runtime-checked refined values, dynamic dispatch, cleanup registration and
-ordering, and coroutine control flow are not implemented. The current CFG
+runtime-checked refined values, dynamic dispatch, source contract placement,
+and coroutine control flow are not implemented. The current CFG
 represents direct products, concrete closed sums, both direct Text modes, and
 the scalar operations and fault-state transitions which later slices use.
 Here “refined values” means runtime-checked or otherwise unproved values;
@@ -551,9 +582,13 @@ not repair a malformed program. Current checks include:
   budgets, concat operand/result types and collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
 - implicit result/writeback parameter shape and type on normal and fault edges;
+- exact nominal one-handle File/Socket resource shape, typed close
+  result/writeback edges, and required runtime/fault capabilities;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal transitive effect closure across the complete call graph,
   including capability implications and active-cleanup fault masking;
+- no suspending exact callee in a synchronous cleanup graph and no invented
+  suspension capability without an LCIR suspension operation;
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
@@ -579,9 +614,11 @@ lowerer. The production automatic route consumes only the resulting checked
 artifact when the complete reachable graph is supported. Source contracts
 remain `Unsupported`: LCIR now has their exact diagnostic vocabulary, but the
 source lowerer does not yet materialize preconditions at closed-world call
-sites or build the required contract/assertion cleanup ladders. Atomic fallback
-therefore preserves the existing interpreter and legacy-native behavior rather
-than partially enabling the new representation.
+sites. Source assertions are supported and keep their exact assertion span and
+metadata while their fault edge traverses the same lexical cleanup suffix as
+any other fault. Atomic fallback preserves existing interpreter and
+legacy-native contract behavior rather than partially enabling contract
+placement.
 
 `ContractFaultMetadata` distinguishes assertion, precondition, postcondition,
 and invariant faults. Named contracts carry their source code and the derived
@@ -602,11 +639,11 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 12` text includes
+text even when the graphs are otherwise equivalent. The `lcir 13` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block and ordered effect set,
 typed runtime/contract fault identity, managed-pointer representations and
-`text.concat`, and the checked value type of every
+`text.concat`, typed resource-close edges, and the checked value type of every
 block parameter and instruction result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
@@ -622,7 +659,9 @@ inputs, the direct representation catalog, aggregate and match-planner budgets a
 large-catalog lookup behavior, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
-cleanup paths, recursive effect closure, stable fallible dumps, optional
+cleanup paths, lexical LIFO expansion, primary-fault preservation, exact
+assertion metadata, typed scoped resource writeback, cleanup depth limits,
+recursive effect closure, stable fallible dumps, optional
 origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
 dumps for structurally different recursive and iterative Fibonacci programs,
 plus zero-cost proven refinements and invariant records. Generic regressions
@@ -634,7 +673,8 @@ representation rejection on 32-bit layouts, exact direct calls and generic
 identity flow, content comparison, dynamic concat, exact live-after root maps,
 linear worklist convergence on a large loop, deterministic nested-product leaf
 projections, phis, calls, dead edges, forced relocation and alias rebuilds,
-pointer-free product frame omission, host execution, Linux/MSVC object
+cleanup-crossing returns under forced relocation, pointer-free product frame
+omission, host execution, Linux/MSVC object
 emission, and atomic fallback for derived Text or pointer-bearing sums.
 Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement

@@ -34,7 +34,7 @@ const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 const RUNTIME_BUNDLE_ENV: &str = "LOOM_RUNTIME_BUNDLE";
 const LINKER_ENV: &str = "LOOM_CC";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v14";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v15";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2868,7 +2868,7 @@ mod tests {
     fn llvm_object_cache_domain_is_pinned() {
         assert_eq!(
             super::LLVM_OBJECT_CACHE_DOMAIN,
-            "loom-llvm-object-cache-v14"
+            "loom-llvm-object-cache-v15"
         );
     }
 
