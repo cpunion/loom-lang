@@ -6230,3 +6230,289 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
         assert!(object.is_file(), "missing typed async object for {target}");
     }
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps fallible coroutine effects, ordinary Result values, exact child-fault inheritance, root lifecycles, and cross-target objects together"
+)]
+fn fallible_typed_async_results_and_faults_close_the_native_route() {
+    let source = include_str!("../../../fixtures/lcir-fallible-async/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .expect("prepare fallible typed-async route");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+
+    let unsupported = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify fallible typed async for 32-bit target");
+    assert!(
+        matches!(unsupported, LoweringOutcome::Unsupported(_)),
+        "typed Tasks must fail closed outside the pinned 64-bit ABI: {unsupported:?}"
+    );
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let checked_answer = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("checkedAnswer"))
+        .expect("checkedAnswer coroutine");
+    let verify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verify"))
+        .expect("verify coroutine");
+    assert!(checked_answer.coroutine().is_some());
+    assert!(checked_answer.effects().contains(Effects::MAY_FAULT));
+    let verify_plan = verify.coroutine().expect("verify coroutine plan");
+    assert_eq!(
+        verify_plan
+            .suspensions()
+            .iter()
+            .map(loom_codegen_ir::CoroutineSuspension::state)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(verify.effects().contains(Effects::MAY_FAULT));
+    assert!(verify_plan.suspensions()[2].live().iter().any(|ty| {
+        artifact
+            .representations()
+            .value_type(*ty)
+            .and_then(|value| artifact.representations().repr(value.repr()))
+            .is_some_and(|repr| matches!(repr, Repr::Sum(_)))
+    }));
+    assert!(verify_plan.suspensions()[2].live().iter().any(|ty| {
+        artifact
+            .representations()
+            .value_type(*ty)
+            .and_then(|value| artifact.representations().repr(value.repr()))
+            == Some(&Repr::ManagedPointer)
+    }));
+
+    let dump = dump_program(artifact.program());
+    for required in [
+        "effects=may_fault+needs_runtime+may_collect+needs_executor coroutine",
+        "invoke",
+        "contract PreconditionFault",
+        "contract PostconditionFault",
+        "resume_fault",
+        "task.await state",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+
+    let lcir = emit_and_run_lcir(&artifact, "source-fallible-typed-async");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-fallible-typed-async");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    for required in [
+        "%loom.lcir.FaultContext = type",
+        "fault.context.runtime.pointer",
+        "loom_context_raise_fault_v1",
+        "loom_task_report_fault",
+        "task.await.faulted",
+        "task.await.cancelled",
+        "loom_typed_task_publish_result_v1",
+        "loom_typed_task_take_result_v1",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}`:\n{}",
+            lcir.ir
+        );
+    }
+    let mut rooted_callbacks = 0_usize;
+    for function in lcir.ir.split("\ndefine ").filter(|function| {
+        function.contains("loom.lcir.coroutine.resume.")
+            && function.contains("loom_gc_typed_root_push_v1")
+    }) {
+        rooted_callbacks += 1;
+        let returns = function
+            .lines()
+            .filter(|line| line.trim_start().starts_with("ret i32 "))
+            .count();
+        let pops = function
+            .matches("call i32 @loom_gc_typed_root_pop_v1")
+            .count();
+        assert!(
+            returns > 0,
+            "rooted coroutine has no terminal return:\n{function}"
+        );
+        assert_eq!(
+            pops, returns,
+            "every rooted coroutine callback exit must pop exactly once:\n{function}"
+        );
+    }
+    assert!(
+        rooted_callbacks > 0,
+        "fixture emitted no rooted callback:\n{}",
+        lcir.ir
+    );
+
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-fallible-typed-async-tests");
+    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-fallible-typed-async-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
+    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
+    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create fallible async target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "fallible-async.obj"
+        } else {
+            "fallible-async.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit fallible async object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing fallible async object for {target}"
+        );
+    }
+
+    let fault_source = r"module fallible_async_faults
+
+fn increment(value Int) Int { value + 1 }
+
+async fn overflowChild() Int { increment(9223372036854775807) }
+
+async fn linger(depth Int) Int {
+    if depth > 0 {
+        linger(depth - 1).await
+    } else {
+        0
+    }
+}
+
+pub async fn runtimeMain() Unit {
+    let failed = overflowChild()
+    let sibling = linger(8)
+    discard failed.await
+    discard sibling.await
+    Unit
+}
+
+async fn assertionChild() Unit {
+    assert false
+    Unit
+}
+
+pub async fn assertionMain() Unit {
+    assertionChild().await
+}
+
+async fn required(value Int) Unit
+    requires value > 0
+{
+    Unit
+}
+
+async fn preconditionParent() Unit {
+    required(0).await
+}
+
+pub async fn preconditionMain() Unit {
+    preconditionParent().await
+}
+
+async fn wrongAnswer() Int
+    ensures result == 42
+{
+    41
+}
+
+pub async fn postconditionMain() Unit {
+    discard wrongAnswer().await
+    Unit
+}
+
+";
+    let fault_program = compile_source(fault_source);
+    for entry in [
+        "runtimeMain",
+        "assertionMain",
+        "preconditionMain",
+        "postconditionMain",
+    ] {
+        let expected = serde_json::to_value(
+            interpret_run(&fault_program, entry).expect_err("async child must fault"),
+        )
+        .expect("serialize interpreter async fault");
+        let artifact = lower_source_artifact(
+            &fault_program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        if entry == "runtimeMain" {
+            let parent = artifact
+                .functions()
+                .iter()
+                .find(|function| function.name().ends_with("runtimeMain"))
+                .expect("runtime fault parent coroutine");
+            let plan = parent.coroutine().expect("runtime fault coroutine plan");
+            assert_eq!(plan.suspensions().len(), 2);
+            assert!(plan.suspensions()[0].live().iter().any(|ty| {
+                artifact
+                    .representations()
+                    .value_type(*ty)
+                    .and_then(|value| artifact.representations().repr(value.repr()))
+                    == Some(&Repr::TaskHandle)
+            }));
+        }
+        let lcir =
+            emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-fallible-async-{entry}"));
+        let legacy = emit_and_run_legacy_machine_fault(
+            &fault_program,
+            entry,
+            &format!("legacy-fallible-async-{entry}"),
+        );
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
+        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
+        assert!(
+            lcir.ir.contains("loom_task_report_fault"),
+            "{entry}: {}",
+            lcir.ir
+        );
+        assert!(lcir.ir.contains("ret i32 2"), "{entry}: {}", lcir.ir);
+        assert!(lcir.ir.contains("ret i32 3"), "{entry}: {}", lcir.ir);
+    }
+}

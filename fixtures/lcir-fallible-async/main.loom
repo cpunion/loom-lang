@@ -1,0 +1,59 @@
+module lcir_fallible_async
+
+enum Problem { Wrong }
+
+fn checkedDivide(value Int, divisor Int) Int {
+    value / divisor
+}
+
+async fn outcome(value Int, succeeds Bool) Result[Int, Problem] {
+    if succeeds { Ok(value) } else { Err(Problem.Wrong) }
+}
+
+async fn checkedAnswer(value Int, divisor Int) Int
+    requires divisor != 0
+    ensures result == 42
+{
+    var pressure = "x"
+    for index in 0..17 {
+        discard index
+        pressure = pressure.concat(pressure)
+    }
+    let pressureLength = pressure.length()
+    assert pressureLength == 131072
+    checkedDivide(value, divisor)
+}
+
+async fn verify() Bool {
+    let marker = "typed".concat(" result")
+    let completed = outcome(7, true).await
+    let rejected = outcome(0, false).await
+    let answer = checkedAnswer(84, 2).await
+    match completed {
+        Ok(value) => match rejected {
+            Ok(_) => false
+            Err(_) => {
+                let decorated = marker.concat("!")
+                let duplicated = marker.concat(marker)
+                decorated == "typed result!" &&
+                    duplicated == "typed resulttyped result" &&
+                    value == 7 && answer == 42
+            }
+        }
+        Err(_) => false
+    }
+}
+
+pub async fn main() {
+    let valid = verify().await
+    assert valid
+    Unit
+}
+
+test async fn fallibleTaskAndResult() Result[Unit, Problem] {
+    if verify().await {
+        Ok(Unit)
+    } else {
+        Err(Problem.Wrong)
+    }
+}

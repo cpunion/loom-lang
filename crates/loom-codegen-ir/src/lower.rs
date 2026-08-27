@@ -435,6 +435,21 @@ pub fn lower_typed_artifact(
         })?;
         classifier.classify_function(source, key);
     }
+    for root in &selected.ordered {
+        let source = mir.function(*root).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                format!("selected root function #{} disappeared", root.0),
+            )
+        })?;
+        if source.is_async && !source.call_plan.requires.is_empty() {
+            classifier.function_item(
+                UnsupportedFeature::AsyncFunction,
+                source,
+                &format!("function[{}].async_root_requires", source.id.0),
+            );
+        }
+    }
     if !classifier.items.is_empty() {
         return Ok(LoweringOutcome::Unsupported(SupportReport {
             items: classifier.items,
@@ -505,21 +520,6 @@ pub fn lower_typed_artifact(
         }
     }
     let effects = solve_effects(summaries)?;
-    let unsupported_async = effects.entries().iter().find_map(|entry| {
-        let function = mir.function(entry.key.source())?;
-        (function.is_async && entry.effects.contains(Effects::MAY_FAULT)).then(|| UnsupportedItem {
-            feature: UnsupportedFeature::AsyncFunction,
-            function: function.id,
-            expression: None,
-            span: function.span,
-            path: format!("function[{}].fallible_coroutine", function.id.0),
-        })
-    });
-    if let Some(item) = unsupported_async {
-        return Ok(LoweringOutcome::Unsupported(SupportReport {
-            items: vec![item],
-        }));
-    }
     let mut builder = ProgramBuilder::new(target);
     if managed_text {
         builder
@@ -1380,13 +1380,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             program: &mir::Program,
             ty: &Type,
             allow_task_handle: bool,
+            inside_sum: bool,
             active: &mut BTreeSet<Type>,
         ) -> bool {
             match ty {
-                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
+                Type::Unit | Type::Bool | Type::Int | Type::Float => true,
+                Type::Text => !inside_sum,
                 Type::Tuple(elements) => elements
                     .iter()
-                    .all(|element| visit(program, element, false, active)),
+                    .all(|element| visit(program, element, false, inside_sum, active)),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
@@ -1395,9 +1397,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     let supported = if let Some(fields) = concrete_any_record_fields(program, ty) {
                         fields
                             .iter()
-                            .all(|field| visit(program, field, false, active))
+                            .all(|field| visit(program, field, false, inside_sum, active))
                     } else if let Some(base) = concrete_refined_base(program, ty) {
-                        visit(program, &base, false, active)
+                        visit(program, &base, false, inside_sum, active)
+                    } else if let Some(variants) = closed_enum_variants(program, ty) {
+                        variants.iter().all(|variant| {
+                            variant
+                                .iter()
+                                .all(|payload| visit(program, payload, false, true, active))
+                        })
                     } else {
                         false
                     };
@@ -1414,7 +1422,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
         }
 
-        visit(self.program, ty, allow_task_handle, &mut BTreeSet::new())
+        visit(
+            self.program,
+            ty,
+            allow_task_handle,
+            false,
+            &mut BTreeSet::new(),
+        )
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
@@ -1583,7 +1597,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
             }
         }
-        let mutable_pod_receiver = function.receiver == Some(mir::Receiver::Mutable)
+        let mutable_pod_receiver = !function.is_async
+            && function.receiver == Some(mir::Receiver::Mutable)
             && function
                 .params
                 .first()
@@ -1607,7 +1622,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         }
         for (index, parameter) in function.params.iter().enumerate() {
             let path = format!("{base}.params[{index}]");
-            let supported_inout_receiver = index == 0
+            let supported_inout_receiver = !function.is_async
+                && index == 0
                 && function.receiver == Some(mir::Receiver::Mutable)
                 && InstanceSubstitution::new(self.program, key)
                     .instantiate_type(&parameter.ty)
@@ -2747,14 +2763,33 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             })
                         })
                 });
+                let callee_has_inout = callee_key.as_ref().is_some_and(|callee_key| {
+                    self.program
+                        .function(callee_key.source())
+                        .is_some_and(|callee| {
+                            callee.params.iter().any(|parameter| {
+                                parameter.mutable
+                                    || InstanceSubstitution::new(self.program, callee_key)
+                                        .instantiate_type(&parameter.ty)
+                                        .is_ok_and(|ty| is_mutable_view(&ty))
+                            })
+                        })
+                });
+                if function.is_async && callee_has_inout {
+                    self.expression_item(
+                        UnsupportedFeature::AsyncFunction,
+                        function,
+                        expression,
+                        &format!("{path}.async_inout"),
+                    );
+                }
                 if callee_key.as_ref().is_some_and(|callee_key| {
                     self.program
                         .function(callee_key.source())
                         .is_some_and(|callee| {
                             callee.is_async
                                 && (!function.is_async
-                                    || callee.params.iter().any(|parameter| parameter.mutable)
-                                    || !callee.call_plan.requires.is_empty())
+                                    || callee.params.iter().any(|parameter| parameter.mutable))
                         })
                 }) {
                     self.expression_item(
@@ -2777,6 +2812,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             }
                         }
                         CallArgument::InOut(place) => {
+                            if function.is_async {
+                                self.expression_item(
+                                    UnsupportedFeature::AsyncFunction,
+                                    function,
+                                    expression,
+                                    &format!("{path}.arguments[{index}].async_inout"),
+                                );
+                            }
                             let place_type = self.projected_place(
                                 function,
                                 key,
@@ -9354,28 +9397,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        if callee_source.is_async {
-            if !inout_arguments.is_empty() || !callee_source.call_plan.requires.is_empty() {
-                return Err(self.unsupported_reached(
-                    "async Task creation with inout arguments or preconditions",
-                ));
-            }
-            let instance = self.instances.get(&key).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    format!("async call target #{} has no LCIR instance", callee.0),
-                )
-            })?;
-            return self.one_instruction(
-                flow,
-                InstructionKind::TaskCreate {
-                    coroutine: instance,
-                    arguments: lowered_arguments.into_boxed_slice(),
-                },
-                self.type_id(&expression.ty)?,
-                origin,
-            );
-        }
         if !callee_source.call_plan.requires.is_empty() {
             let parameters = callee_source
                 .params
@@ -9419,6 +9440,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     &context,
                 )?;
             }
+        }
+        if callee_source.is_async {
+            if !inout_arguments.is_empty() {
+                return Err(self.unsupported_reached("async Task creation with inout arguments"));
+            }
+            let instance = self.instances.get(&key).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("async call target #{} has no LCIR instance", callee.0),
+                )
+            })?;
+            return self.one_instruction(
+                flow,
+                InstructionKind::TaskCreate {
+                    coroutine: instance,
+                    arguments: lowered_arguments.into_boxed_slice(),
+                },
+                self.type_id(&expression.ty)?,
+                origin,
+            );
         }
         let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(

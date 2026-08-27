@@ -38,15 +38,16 @@ const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
+const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
-    reason: "Task.sleep, static/dynamic joins, async fault/cleanup, and dynamic concept frames are not yet represented in typed LCIR",
+    reason: "Task.sleep, static/dynamic joins, async cleanup, and dynamic concept frames are not yet represented in typed LCIR",
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
-    reason: "Task.sleep, joins/cancellation, generic async contracts, and fault propagation are not yet complete in typed LCIR",
+    reason: "Task.sleep, join/cancellation combinators, generic coroutine frames/contracts, and async cleanup are not yet complete in typed LCIR",
 };
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
@@ -369,8 +370,22 @@ fn main() {
         &runtime,
         &mut report.gates,
         &mut report.native_routes,
+        TYPED_ASYNC_FIXTURE,
+        "typed-async",
     ) {
         report.failures.push(format!("typed-async: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        FALLIBLE_TYPED_ASYNC_FIXTURE,
+        "fallible-typed-async",
+    ) {
+        report
+            .failures
+            .push(format!("fallible-typed-async: {error}"));
     }
     match run_c3_repository(
         &workspace,
@@ -581,8 +596,10 @@ fn typed_async_gate(
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
     routes: &mut Vec<NativeRouteEvidence>,
+    fixture: &str,
+    scenario: &str,
 ) -> Result<(), String> {
-    let project = workspace.join(TYPED_ASYNC_FIXTURE);
+    let project = workspace.join(fixture);
     let snapshot = AnalysisHost::new(&project)
         .map_err(|error| error.to_string())?
         .snapshot()
@@ -600,7 +617,7 @@ fn typed_async_gate(
         &executable,
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
-        "typed-async.main",
+        format!("{scenario}.main"),
         NativeRouteExpectation::Lcir,
         routes,
     )?;
@@ -609,13 +626,13 @@ fn typed_async_gate(
         &tests,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
-        "typed-async.tests",
+        format!("{scenario}.tests"),
         NativeRouteExpectation::Lcir,
         routes,
     )?;
     upper_gate(
         gates,
-        "typed-async.native-build",
+        &format!("{scenario}.native-build"),
         build_started.elapsed(),
         NATIVE_BUILD_BUDGET,
     );
@@ -624,7 +641,7 @@ fn typed_async_gate(
     let output = Command::new(&executable)
         .current_dir(&project)
         .output()
-        .map_err(|error| format!("execute typed async fixture: {error}"))?;
+        .map_err(|error| format!("execute {scenario} fixture: {error}"))?;
     if !output.status.success() || output.stdout != b"Unit\n" {
         return Err(format!(
             "native main mismatch: status={:?}, stdout={}, stderr={}",
@@ -636,7 +653,7 @@ fn typed_async_gate(
     let output = Command::new(&tests)
         .current_dir(&project)
         .output()
-        .map_err(|error| format!("execute typed async tests: {error}"))?;
+        .map_err(|error| format!("execute {scenario} tests: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success()
         || stdout.lines().count() != program.tests.len()
@@ -651,7 +668,7 @@ fn typed_async_gate(
     }
     upper_gate(
         gates,
-        "typed-async.native-execution",
+        &format!("{scenario}.native-execution"),
         run_started.elapsed(),
         EXECUTION_BUDGET,
     );
