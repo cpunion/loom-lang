@@ -164,9 +164,12 @@ publication, definitions and block parameters update those cells, and
 post-safepoint aggregate uses are rebuilt from reloaded leaves.
 An edge argument is live only when the paired explicit successor parameter is
 live, and a call result cannot be live at its own safepoint. No live-across
-managed leaves means no typed frame. Synchronous concat/get uses a runtime but
-constructs no executor. Text inside transparent/refined carriers, managed
-lists, and other dynamic producers remain outside the current typed LCIR slice.
+managed leaves means no typed frame. Synchronous concat/get and concrete closed
+List allocation use a runtime but construct no executor. A collecting List
+site roots and reloads its old backing and managed element; repeated pointer
+offsets precisely cover every used or zeroed capacity cell. Text inside
+transparent/refined carriers and other dynamic producers remain outside the
+current typed LCIR slice.
 
 ## Source semantics
 

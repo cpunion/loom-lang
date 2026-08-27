@@ -1213,7 +1213,7 @@ impl<'a> Validator<'a> {
         loop {
             let mut next = vec![top.clone(); function.blocks().len()];
             let mut seen = vec![false; function.blocks().len()];
-            next[entry.index()] = inputs[entry.index()].clone();
+            next[entry.index()].clone_from(&inputs[entry.index()]);
             seen[entry.index()] = true;
             for (block_index, block) in function.blocks().iter().enumerate() {
                 if !reachable.get(block_index).copied().unwrap_or(false) {
@@ -1234,8 +1234,9 @@ impl<'a> Validator<'a> {
                         continue;
                     }
                     if seen[edge.target] {
-                        for (current, incoming) in
-                            next[edge.target].iter_mut().zip(edge.states.iter().copied())
+                        for (current, incoming) in next[edge.target]
+                            .iter_mut()
+                            .zip(edge.states.iter().copied())
                         {
                             *current = current.meet(incoming);
                         }
@@ -1256,21 +1257,13 @@ impl<'a> Validator<'a> {
             if !reachable.get(block_index).copied().unwrap_or(false) {
                 continue;
             }
-            let transfer = transfer_list_ownership(
-                function,
-                block,
-                &inputs[block_index],
-                &list_values,
-                true,
-            );
+            let transfer =
+                transfer_list_ownership(function, block, &inputs[block_index], &list_values, true);
             for issue in transfer.issues {
                 if reported.insert((issue.instruction, issue.value, issue.message)) {
                     self.error(
                         ValidationCode::InvalidListUniqueness,
-                        format!(
-                            "{base}.instruction[{}].list",
-                            issue.instruction.index()
-                        ),
+                        format!("{base}.instruction[{}].list", issue.instruction.index()),
                         issue.message,
                     );
                 }
@@ -3883,6 +3876,10 @@ fn apply_list_use(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ownership transfer keeps instruction sequencing and edge moves in one auditable fixed-point operation"
+)]
 fn transfer_list_ownership(
     function: &Function,
     block: &crate::Block,
@@ -4028,11 +4025,7 @@ fn transfer_list_ownership(
         _ => {}
     }
     for writeback in terminator.writebacks().iter().copied() {
-        if list_values
-            .get(writeback.index())
-            .copied()
-            .unwrap_or(false)
-        {
+        if list_values.get(writeback.index()).copied().unwrap_or(false) {
             states[writeback.index()] = ListOwnership::Shared;
         }
     }
@@ -4045,21 +4038,13 @@ fn transfer_list_ownership(
         let mut edge_states = states.clone();
         let implicit = target_block.params().len().saturating_sub(arguments.len());
         for parameter in target_block.params().iter().copied().take(implicit) {
-            if list_values
-                .get(parameter.index())
-                .copied()
-                .unwrap_or(false)
-            {
+            if list_values.get(parameter.index()).copied().unwrap_or(false) {
                 edge_states[parameter.index()] = ListOwnership::Shared;
             }
         }
         let mut counts = BTreeMap::<ValueId, usize>::new();
         for argument in arguments.iter().copied() {
-            if list_values
-                .get(argument.index())
-                .copied()
-                .unwrap_or(false)
-            {
+            if list_values.get(argument.index()).copied().unwrap_or(false) {
                 *counts.entry(argument).or_default() += 1;
             }
         }
@@ -4068,11 +4053,7 @@ fn transfer_list_ownership(
             .copied()
             .zip(target_block.params().iter().copied().skip(implicit))
         {
-            if !list_values
-                .get(parameter.index())
-                .copied()
-                .unwrap_or(false)
-            {
+            if !list_values.get(parameter.index()).copied().unwrap_or(false) {
                 continue;
             }
             let incoming = states
@@ -4110,17 +4091,14 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
-        | TerminatorKind::CheckedIntBinary { normal, fault, .. } => vec![
+        | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+        | TerminatorKind::ResourceClose { normal, fault, .. } => vec![
             (normal.block, &normal.arguments),
             (fault.block, &fault.arguments),
         ],
         TerminatorKind::Invoke { normal, unwind, .. } => vec![
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
-        ],
-        TerminatorKind::ResourceClose { normal, fault, .. } => vec![
-            (normal.block, &normal.arguments),
-            (fault.block, &fault.arguments),
         ],
         TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, &success.arguments),
@@ -4454,6 +4432,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one manual graph keeps the valid loop phi and forged entry-alias certificate adjacent"
+    )]
     fn unique_list_certificate_accepts_loop_phi_and_rejects_entry_alias() {
         let origin = Origin::synthetic(MirFunctionId(90));
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));

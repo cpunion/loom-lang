@@ -3881,12 +3881,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::ListConstruct { elements } => {
                 one(self.emit_list_construct(instruction, elements)?.into())
             }
-            InstructionKind::ListAppend { list, value } => {
-                one(self.emit_list_append(instruction, *list, *value, false)?.into())
-            }
-            InstructionKind::ListAppendUnique { list, value } => {
-                one(self.emit_list_append(instruction, *list, *value, true)?.into())
-            }
+            InstructionKind::ListAppend { list, value } => one(self
+                .emit_list_append(instruction, *list, *value, false)?
+                .into()),
+            InstructionKind::ListAppendUnique { list, value } => one(self
+                .emit_list_append(instruction, *list, *value, true)?
+                .into()),
             InstructionKind::ListLength { list } => one(self.emit_list_length(*list)?.into()),
             InstructionKind::ListGet { list, index } => {
                 let result =
@@ -4582,12 +4582,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 appended,
                 "list.append.unique.element",
             )?;
-            let length_pointer = self.list_field_pointer(
-                &layout,
-                old_object,
-                0,
-                "list.append.unique.store_length",
-            )?;
+            let length_pointer =
+                self.list_field_pointer(&layout, old_object, 0, "list.append.unique.store_length")?;
             self.backend
                 .builder
                 .build_store(length_pointer, new_length)

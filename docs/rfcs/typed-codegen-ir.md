@@ -150,9 +150,9 @@ Exact backwards SSA liveness expands a live aggregate to deterministic guarded
 leaf cells and a deduplicated bitmap state for every collecting site. Values
 are live after the call, so its not-yet-defined result is excluded; explicit
 edge arguments map only to live explicit destination parameters. Empty plans
-emit no frame. Other dynamic
-producers, Text inside transparent/refined carriers, and managed lists remain
-whole-artifact fallback. Literal planning is bounded to
+emit no frame. Other dynamic producers and Text inside transparent/refined
+carriers remain whole-artifact fallback. Concrete closed managed Lists are
+direct repeated allocations. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
@@ -356,11 +356,12 @@ It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
 cleanup node, and the helper neither constructs a universal value nor enters
 the executor. Static-concept and deferred cleanup require no new runtime ABI.
 
-The runtime subsequently adds a bounded repeated-element descriptor without
-changing LCIR structure. This additive `typed-repeated-v1` symbol advances the
+The runtime subsequently adds a bounded repeated-element descriptor. This
+additive `typed-repeated-v1` symbol advances the
 native component to 13 with `runtime-v7` and the collector identity to
-`gc-v9`. List lowering may consume it directly; fixed typed objects retain the
-existing v1 allocator wire.
+`gc-v9`. Monomorphized List lowering consumes it directly while fixed typed
+objects retain the existing v1 allocator wire; no later List-specific runtime
+ABI change is needed.
 
 A following additive Text helper stages one selected scalar before allocating
 its direct result. `loom_runtime_text_get_typed_v1` advances Text identity to

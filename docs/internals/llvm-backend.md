@@ -253,8 +253,26 @@ is an emission-time `ProgramTooLarge` error and cannot select legacy fallback.
 The harness creates only a synchronous runtime when the root's exact effects
 require one. Managed concat/get introduces no universal root chain, executor,
 scheduler, suspension, or catchable fault channel. Other dynamic Text
-producers, Text inside a transparent/refined carrier, and managed lists remain
-atomic whole-artifact fallback.
+producers and Text inside a transparent/refined carrier remain atomic
+whole-artifact fallback.
+
+## Direct managed Lists
+
+A concrete closed `List[T]` is a direct managed pointer. Null is the canonical
+empty value; nonempty objects contain `{ length, capacity }` followed by
+target-data-sized, aligned element storage. LLVM recursively derives the
+sorted, deduplicated union of exact managed-pointer byte offsets for each
+element, including products, sums, and nested Lists, and supplies that
+descriptor to `loom_gc_typed_repeated_alloc_v1`. Inactive sum pointer bytes and
+unused capacity remain zero.
+
+Ordinary append preserves value semantics by allocating and copying. A
+validated `ListAppendUnique` may write the next element and then length in
+place when the nonnull backing has capacity; growth remains a collecting
+allocate/reload/copy path with geometric capacity. The root row includes the
+old List and managed element even when dead afterward, and reloads both after
+relocation. Length and get do not allocate, and get constructs the canonical
+`Option[T]` sum directly.
 
 ## Direct lexical cleanup
 
@@ -332,7 +350,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v13` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v14` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -344,13 +362,13 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v18` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v19` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata and source-contract placement, direct managed
-Text semantics, managed leaves inside unboxed products and closed sums, and
-lexical cleanup.
+Text semantics, managed leaves inside unboxed products and closed sums,
+monomorphized managed Lists and uniqueness certificates, and lexical cleanup.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

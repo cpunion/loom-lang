@@ -2492,7 +2492,8 @@ fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
                 arguments,
                 ..
             } = &expression.kind
-            && let [CallArgument::InOut(receiver), CallArgument::Value(value)] = arguments.as_slice()
+            && let [CallArgument::InOut(receiver), CallArgument::Value(value)] =
+                arguments.as_slice()
             && receiver.local == local
             && receiver.projection.is_empty()
             && !expr_mentions_local(value, local)
@@ -2527,8 +2528,14 @@ fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool 
             *loop_local == local
                 || expr_mentions_local(start, local)
                 || expr_mentions_local(end, local)
-                || body.statements.iter().any(|statement| statement_mentions_local(statement, local))
-                || body.tail.as_deref().is_some_and(|tail| expr_mentions_local(tail, local))
+                || body
+                    .statements
+                    .iter()
+                    .any(|statement| statement_mentions_local(statement, local))
+                || body
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
         }
         StatementKind::Assign { place, value } => {
             place.local == local || expr_mentions_local(value, local)
@@ -2554,14 +2561,18 @@ fn expr_mentions_local(expression: &mir::Expr, local: LocalId) -> bool {
     match &expression.kind {
         ExprKind::Constant(_) => false,
         ExprKind::Copy(place) | ExprKind::Move(place) => place.local == local,
-        ExprKind::Tuple(values) | ExprKind::List(values) | ExprKind::TaskJoin { arguments: values, .. } => {
-            values.iter().any(|value| expr_mentions_local(value, local))
-        }
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => values.iter().any(|value| expr_mentions_local(value, local)),
         ExprKind::Unary(_, value)
         | ExprKind::Refine { value, .. }
         | ExprKind::Unrefine(value)
         | ExprKind::Await { task: value, .. }
-        | ExprKind::Sleep { milliseconds: value } => expr_mentions_local(value, local),
+        | ExprKind::Sleep {
+            milliseconds: value,
+        } => expr_mentions_local(value, local),
         ExprKind::Binary(_, left, right) => {
             expr_mentions_local(left, local) || expr_mentions_local(right, local)
         }
@@ -2604,9 +2615,9 @@ fn expr_mentions_local(expression: &mir::Expr, local: LocalId) -> bool {
                     .iter()
                     .any(|arm| expr_mentions_local(&arm.value, local))
         }
-        ExprKind::Record { fields, .. } => fields
-            .iter()
-            .any(|field| expr_mentions_local(field, local)),
+        ExprKind::Record { fields, .. } => {
+            fields.iter().any(|field| expr_mentions_local(field, local))
+        }
         ExprKind::Variant { payload, .. } => payload
             .iter()
             .any(|value| expr_mentions_local(value, local)),
@@ -4868,17 +4879,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         ty: ValueTypeId,
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
-        let unique_append = match &kind {
-            InstructionKind::ListAppendUnique { list, value } => {
-                self.share_list_value(*value);
-                Some(*list)
+        let unique_append = if let InstructionKind::ListAppendUnique { list, value } = &kind {
+            self.share_list_value(*value);
+            Some(*list)
+        } else {
+            for operand in kind.operands() {
+                self.share_list_value(operand);
             }
-            _ => {
-                for operand in kind.operands() {
-                    self.share_list_value(operand);
-                }
-                None
-            }
+            None
         };
         let results = self
             .builder
@@ -6731,6 +6739,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return match builtin {
                 mir::Builtin::TextLength
                 | mir::Builtin::TextConcat
+                | mir::Builtin::TextGet
                 | mir::Builtin::TextContains => {
                     self.lower_text_builtin(flow, *builtin, arguments, expression)
                 }

@@ -147,8 +147,9 @@ guard sum publication, definitions and phis publish the projections, and later
 aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
 are exact and results are excluded at their defining safepoint. Functions with
 no live-across managed leaf emit no frame. Other dynamic producers, Text inside
-transparent/refined carriers, and managed lists remain complete legacy
-fallback.
+transparent/refined carriers, and other unsupported managed shapes remain
+complete legacy fallback. Concrete closed Lists instead use direct managed
+pointers and typed repeated descriptors.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving
@@ -218,7 +219,7 @@ safepoint; the arena is still marked and swept.
 
 ## Specialized local storage
 
-The LLVM backend currently has a narrow non-escaping local `List[Int]` layout
+The legacy LLVM route retains a narrow non-escaping local `List[Int]` layout
 using contiguous `i64` storage with length and capacity. It applies only when a
 closed-world use scan proves no copy, escape, generic/witness boundary,
 suspension, or cleanup hazard. All other list shapes use the complete generic

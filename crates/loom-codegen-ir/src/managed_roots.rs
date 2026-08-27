@@ -324,11 +324,10 @@ fn collect_safepoint_values(
             let list_allocation = matches!(
                 instruction.kind(),
                 InstructionKind::ListAppend { .. } | InstructionKind::ListAppendUnique { .. }
-            )
-                || matches!(
-                    instruction.kind(),
-                    InstructionKind::ListConstruct { elements } if !elements.is_empty()
-                );
+            ) || matches!(
+                instruction.kind(),
+                InstructionKind::ListConstruct { elements } if !elements.is_empty()
+            );
             let collecting = matches!(
                 instruction.kind(),
                 InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }

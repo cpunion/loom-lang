@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `16` |
-| LCIR artifact identity | schema `17` |
-| LCIR native-object domain | `loom-lcir-native-object-v13` |
+| LCIR textual dump | version `17` |
+| LCIR artifact identity | schema `18` |
+| LCIR native-object domain | `loom-lcir-native-object-v14` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v18` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v19` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `14` |
@@ -129,6 +129,15 @@ checks current receiver invariants and postconditions only after lexical
 cleanup. Checked contract arithmetic and its original runtime faults use
 existing control flow. This changes no physical value ABI, runtime symbol, or
 native runtime ABI component.
+
+Monomorphized managed List lowering advances the LCIR dump to 17, artifact
+schema to 18, native-object domain to v14, and object-cache domain to v19.
+Concrete closed `List[T]` values use one direct managed pointer and exact
+target-data-derived repeated descriptors. `ListAppendUnique` additionally
+encodes an independently checked ownership certificate for capacity reuse.
+The implementation consumes the existing `typed-repeated-v1` allocator and
+typed shadow stack, so native runtime ABI component 14, `runtime-v8`, and
+`gc-v9` do not change.
 
 Concrete static-concept resolution adds no physical ABI. The compiler-private
 domains advance because the planner now normalizes associated projections,

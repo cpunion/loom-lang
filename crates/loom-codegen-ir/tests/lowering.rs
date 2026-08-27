@@ -2993,6 +2993,19 @@ pub fn main() Unit {
         matches!(lower_run(managed), LoweringOutcome::Complete(_)),
         "a closed sum with exact managed leaves must lower as one LCIR artifact"
     );
+    let list_sum = r"module list_sum
+
+enum Values { Items(List[Int]) }
+
+pub fn main() Unit {
+    discard Values.Items(List[Int]())
+    Unit
+}
+";
+    assert!(
+        matches!(lower_run(list_sum), LoweringOutcome::Complete(_)),
+        "a closed sum containing a concrete List must lower as one LCIR artifact"
+    );
 
     for source in [
         r"module recursive_sum
@@ -3004,15 +3017,6 @@ enum Chain {
 
 pub fn main() Unit {
     discard Chain.End
-    Unit
-}
-",
-        r"module list_sum
-
-enum Values { Items(List[Int]) }
-
-pub fn main() Unit {
-    discard Values.Items(List[Int]())
     Unit
 }
 ",
