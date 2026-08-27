@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_text_map_operations() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 25);
+fn identity_schema_is_pinned_after_typed_task_sleep() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 26);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,8 +559,8 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 25,
-        "typed TextMap operations and their exact equality CFG are artifact identity inputs"
+        ARTIFACT_IDENTITY_SCHEMA, 26,
+        "typed Task.sleep control flow and timer ABI are artifact identity inputs"
     );
 }
 

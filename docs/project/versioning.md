@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `24` |
-| LCIR artifact identity | schema `25` |
-| LCIR native-object domain | `loom-lcir-native-object-v21` |
+| LCIR textual dump | version `25` |
+| LCIR artifact identity | schema `26` |
+| LCIR native-object domain | `loom-lcir-native-object-v22` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v26` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v27` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `15` |
+| Native runtime ABI component | `16` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -206,6 +206,15 @@ native-object domain to v21, and LLVM object-cache domain to v26. Removal
 reuses `typed-repeated-v1`; containment, lookup, and equality allocate no map
 storage. No runtime symbol or universal value is added, so native runtime ABI
 component 15, `runtime-v9`, and `gc-v9` remain unchanged.
+
+Checked typed `Task.sleep` advances the LCIR dump to 25, artifact schema to 26,
+native-object domain to v22, and LLVM object-cache domain to v27. The artifact
+records the normalized millisecond operand and explicit normal/fault control
+flow. The additive `loom_typed_timer_task_create_v1(executor, deadline_ns)`
+factory creates a zero-root typed `Task[Unit]` over the established reactor and
+advances the native runtime ABI component to 16 with `typed-timer-v1` and
+`runtime-v10`. The existing `typed-task-v1`, `wait-v1`, `text-v3`, and `gc-v9`
+components remain unchanged.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

@@ -328,8 +328,10 @@ do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
 closure over direct, invoke, and Task-creation edges. `TextConcat` and
-`TextGet` are collecting opcodes. `TaskCreate` and `AwaitTask` are the checked
-executor/suspension operations for the admitted coroutine slice.
+`TextGet` are collecting opcodes. `TaskCreate` requires an executor and
+`AwaitTask` suspends the active coroutine. The explicit fallible `TaskSleep`
+terminator requires `MAY_FAULT` and `NEEDS_EXECUTOR`, but does not itself add
+`MAY_SUSPEND` or `MAY_COLLECT`.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -359,10 +361,13 @@ parameters, one child/live row per suspension, and result. An immutable
 typed-task descriptor publishes exact managed-leaf byte offsets and per-state
 bitmaps. The callback dispatches state zero to the LCIR entry, later states
 through the structured join-step ABI, and publishes completion through
-typed-task v1. The current boundary is infallible and non-inout, with direct
-scalar/refined/product/Text frame values; sums, Lists, TextMaps, dynamic
-concepts, cleanup across suspension, sleep/readiness, and Task joins remain
-whole-artifact fallback.
+typed-task v1. `TaskSleep` accepts normalized `Int` milliseconds only inside
+that checked coroutine boundary, returns a first-class typed `Task[Unit]` on
+its normal edge, and preserves canonical negative-duration or overflow faults
+on its fault edge. A source `Duration` is normalized through product extraction
+before this terminator. The remaining fallback boundary includes async inout,
+Lists, TextMaps, dynamic-concept frame values, cleanup across suspension, raw
+readiness, and Task joins.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
@@ -410,6 +415,15 @@ canonical direct Text pointer only after initialization and uses one closed
 status domain. It advances native component 15 with `format-float-v1` and
 `runtime-v9` while retaining `text-v3`, `gc-v9`, and both typed allocation
 wires.
+
+Typed sleep adds the narrow
+`loom_typed_timer_task_create_v1(executor, deadline_ns)` factory. The compiler
+checks millisecond-to-nanosecond multiplication and monotonic deadline addition
+before calling it. The runtime creates a zero-root typed `Task[Unit]`, registers
+the existing one-shot timer `WaitSource`, publishes Unit after readiness, and
+removes the registration on cancellation. This advances native component 16
+with `typed-timer-v1` and `runtime-v10`; typed-task v1 and wait v1 remain
+unchanged.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

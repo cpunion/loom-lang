@@ -143,6 +143,8 @@ Task.sleep(10).await
 ```
 
 `Task.sleep` accepts a non-negative millisecond `Int` or a `Duration`.
+Constructing the timer returns immediately with a first-class task; the suffix
+`.await` is the suspension point.
 Loom source has no raw-handle readiness constructor. File and socket operations
 expose typed tasks and preserve the scoped resource that owns the platform
 handle.

@@ -1,0 +1,57 @@
+module lcir_typed_sleep
+
+import standard.time.milliseconds
+
+async fn allocationPressure() Bool {
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
+}
+
+async fn waitInt(delay Int) Unit {
+    let timer = Task.sleep(delay)
+    let marker = "typed ".concat("int")
+    timer.await
+    assert marker == "typed int"
+    Unit
+}
+
+async fn waitDuration(delay Int) Int {
+    let duration = milliseconds(delay)
+    let timer = Task.sleep(duration)
+    let marker = "typed ".concat("duration")
+    timer.await
+    assert marker == "typed duration"
+    42
+}
+
+pub async fn main() Unit {
+    let immediate = Task.sleep(0)
+    let integer = waitInt(1)
+    let duration = waitDuration(1)
+    let pressure = allocationPressure()
+    immediate.await
+    integer.await
+    let answer = duration.await
+    let survived = pressure.await
+    assert answer == 42
+    assert survived
+    Unit
+}
+
+test async fn sleepsWithIntAndDuration() Unit {
+    let immediate = Task.sleep(0)
+    let integer = waitInt(1)
+    let duration = waitDuration(1)
+    let pressure = allocationPressure()
+    immediate.await
+    integer.await
+    let answer = duration.await
+    let survived = pressure.await
+    assert answer == 42
+    assert survived
+    Unit
+}

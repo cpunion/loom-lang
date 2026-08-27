@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 15;
+pub const RUNTIME_ABI_VERSION: u32 = 16;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -15,7 +15,7 @@ pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/format-float-v1/runtime-v9/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-timer-v1/typed-resource-v1/format-float-v1/runtime-v10/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -44,6 +44,11 @@ pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
 
 /// Hard byte limit for each copied component of a typed Task fault.
 pub const TYPED_TASK_MAX_FAULT_TEXT_BYTES: u64 = 64 * 1024;
+
+/// Creates and publishes one zero-root typed `Task[Unit]` which becomes ready
+/// at the supplied absolute monotonic deadline. The returned null pointer
+/// reports allocation, context, or unpublished-construction failure.
+pub const TYPED_TIMER_TASK_CREATE_SYMBOL: &str = "loom_typed_timer_task_create_v1";
 
 /// Zeroed typed allocator taking `(descriptor, allocation_size, output)`.
 ///
@@ -463,12 +468,13 @@ mod tests {
         TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
         TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
         TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
-        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, WITNESS_ABI_VERSION,
+        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID,
+        TYPED_TIMER_TASK_CREATE_SYMBOL, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 15);
+        assert_eq!(RUNTIME_ABI_VERSION, 16);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -505,11 +511,15 @@ mod tests {
         assert_eq!(TYPED_RESOURCE_CLOSE_OK, 0);
         assert_eq!(TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, 1);
         assert_eq!(TYPED_RESOURCE_CLOSE_FAILED, 2);
+        assert_eq!(
+            TYPED_TIMER_TASK_CREATE_SYMBOL,
+            "loom_typed_timer_task_create_v1"
+        );
         assert_eq!(WITNESS_ABI_VERSION, 1);
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/format-float-v1/runtime-v9/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-timer-v1/typed-resource-v1/format-float-v1/runtime-v10/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 

@@ -3262,6 +3262,62 @@ impl<'a> Validator<'a> {
                     format!("{path}.value"),
                 );
             }
+            TerminatorKind::TaskSleep {
+                milliseconds,
+                normal,
+                fault,
+            } => {
+                self.require_known_value_type(
+                    function,
+                    *milliseconds,
+                    self.scalar_type(&Type::Int),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.milliseconds"),
+                );
+                let task_unit = self
+                    .program
+                    .representations
+                    .type_id(&Type::Task(Box::new(Type::Unit)));
+                let canonical_task_unit = task_unit.is_some_and(|ty| {
+                    self.program
+                        .representations
+                        .value_type(ty)
+                        .is_some_and(|value_type| {
+                            value_type.semantic() == &Type::Task(Box::new(Type::Unit))
+                                && self.program.representations.repr(value_type.repr())
+                                    == Some(&Repr::TaskHandle)
+                        })
+                });
+                if !canonical_task_unit {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.normal"),
+                        "task.sleep result requires the canonical Task[Unit] task-handle representation",
+                    );
+                }
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[canonical_task_unit.then_some(task_unit).flatten()],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
+                if function.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "task.sleep is only valid in a checked coroutine",
+                    );
+                }
+                self.require_may_fault_effect(function, &path, "task.sleep");
+                if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "task.sleep requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
             TerminatorKind::AwaitTask {
                 state,
                 task,
@@ -4670,8 +4726,13 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 {
                     effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                 }
-                TerminatorKind::ResourceClose { .. } => {
-                    effects[caller] = effects[caller].union(Effects::NEEDS_RUNTIME);
+                TerminatorKind::TaskSleep { .. } | TerminatorKind::ResourceClose { .. } => {
+                    let required = if matches!(terminator.kind(), TerminatorKind::TaskSleep { .. }) {
+                        Effects::NEEDS_EXECUTOR
+                    } else {
+                        Effects::NEEDS_RUNTIME
+                    };
+                    effects[caller] = effects[caller].union(required);
                     if propagates_fault {
                         effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                     }
@@ -5086,6 +5147,7 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             .collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+        | TerminatorKind::TaskSleep { normal, fault, .. }
         | TerminatorKind::ResourceClose { normal, fault, .. } => vec![
             (normal.block, &normal.arguments),
             (fault.block, &fault.arguments),

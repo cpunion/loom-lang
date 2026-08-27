@@ -267,6 +267,12 @@ published only after complete initialization. This advances the native runtime
 component to 15 with `format-float-v1` and `runtime-v9`; `text-v3`, `gc-v9`,
 and both typed allocation wires remain unchanged.
 
+The additive `loom_typed_timer_task_create_v1(executor, deadline_ns)` helper
+returns the established opaque typed Task handle. Its `Task[Unit]` frame has no
+managed roots and its result has zero size, so it adds no source-value layout.
+The helper advances the native runtime component to 16 with `typed-timer-v1`
+and `runtime-v10`; typed-task v1 and wait v1 remain unchanged.
+
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
 arena because generated hidden arguments can retain their address across a

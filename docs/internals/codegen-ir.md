@@ -398,6 +398,16 @@ descriptor reuses the carrier plan's static union of pointer offsets and exact
 per-state bitmaps. Inactive lanes are already zero after packing, so typed-task
 v1 and the native runtime ABI do not change.
 
+Typed TextMap containment, removal, indexed entries, and structural equality
+then advance the artifact identity to schema 25, the dump to `lcir 24`, the
+LCIR native-object domain to `loom-lcir-native-object-v21`, and the CLI
+object-cache domain to `loom-llvm-object-cache-v26`. Checked `Task.sleep` next
+advances those boundaries to schema 26, `lcir 25`, native-object v22, and
+object-cache v27. Its explicit fallible terminator and normalized millisecond
+operand participate in the checked artifact identity. The narrow typed timer
+factory advances the runtime ABI to component 16 with `typed-timer-v1` and
+`runtime-v10`; typed-task v1 and wait v1 remain unchanged.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -413,12 +423,13 @@ structural tuple, closed-record, concrete closed-enum, and established refined
 signatures. Cleanup-free, non-inout async signatures and suspension frames may
 also use direct scalar/refined/product/Text shapes and closed sums whose payload
 graphs contain those shapes. These coroutines preserve `MAY_FAULT` from checked
-operations, assertions, ordinary fallible invokes, and cleanup-free child
-contracts. A source `Result[T, E]`, including a managed-Text result, is an
-ordinary completed value; Task `Faulted` and `Cancelled` states remain control
-outcomes. Selected async roots with `requires` and async inout/writeback still
-fail closed before LCIR creation. Coverage includes bounded direct generic calls
-whose concrete types use those representations. Concrete static concept calls
+operations, assertions, ordinary fallible invokes, cleanup-free child
+contracts, and checked timer construction. A source `Result[T, E]`, including a
+managed-Text result, is an ordinary completed value; Task `Faulted` and
+`Cancelled` states remain control outcomes. Selected async roots with `requires`
+and async inout/writeback still fail closed before LCIR creation. Coverage
+includes bounded direct generic calls whose concrete types use those
+representations. Concrete static concept calls
 use the selected witness method directly, including conditional proof
 applications and normalized associated bindings. A unique closed dynamic
 witness is erased to its concrete type. Two or more artifact-closed exact
@@ -428,11 +439,11 @@ assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
-recursion. Finite checks, integer/float parsing, float formatting, and Duration
-construction/extraction also lower directly. Plain record construction,
-whole-value copy and move, nested field
-read/write, tuple/record nesting, product block parameters, parameters,
-returns, and loop-carried products lower directly to SSA. Compile-time-proven
+recursion. Finite checks, integer/float parsing, float formatting, Duration
+construction/extraction, and async `Task.sleep` also lower directly. Plain
+record construction, whole-value copy and move, nested field read/write,
+tuple/record nesting, product block parameters, parameters, returns, and
+loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown refined
 predicates and record invariants remain normal `Result[..., ConstraintError]`
@@ -471,10 +482,12 @@ runtime; suspension implies an executor, which implies an active runtime.
 scalar faults use only the local fault context. A caller gains `MAY_FAULT`
 when it executes an unknown precondition; the assumed callee body does not gain
 that effect merely because it declares `requires`. `TextConcat` and `TextGet`
-are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` and the
-`AwaitTask` terminator contribute the checked executor and suspension
-capabilities for the admitted async slice. Assertions, deferred blocks, and
-scoped disposal lower into direct lexical CFG.
+are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
+`NEEDS_EXECUTOR`, while the `AwaitTask` terminator contributes `MAY_SUSPEND`.
+`TaskSleep` contributes `MAY_FAULT` and `NEEDS_EXECUTOR`, but neither
+`MAY_SUSPEND` nor `MAY_COLLECT`: it constructs a first-class Task and does not
+wait for it. Assertions, deferred blocks, and scoped disposal lower into direct
+lexical CFG.
 
 Supported source contracts also lower directly. Every ordinary closed-world
 call evaluates all arguments and inout reads before it checks `requires` at the
@@ -599,6 +612,16 @@ terminal, so the runtime removes the redundant wake-up, keeps the active parent
 callback. Any other status is a runtime/compiler defect. Ordinary expression
 evaluation never creates or runs a synchronous executor.
 
+`TaskSleep` is a separate explicit fallible terminator admitted only inside a
+checked coroutine. Its input is canonical `Int` milliseconds; a source
+`Duration` is normalized first with `ProductExtract`. The normal edge receives
+the canonical `Task[Unit]` handle, while the fault edge preserves the source
+origin. LLVM rejects a negative duration, checks the signed conversion from
+milliseconds to nanoseconds, reads the monotonic clock, checks the unsigned
+deadline addition, and then calls
+`loom_typed_timer_task_create_v1(executor, deadline_ns)`. Task creation itself
+does not suspend; a later `AwaitTask` does.
+
 LLVM derives a target-laid-out frame containing state, parameters, one
 child/live row per suspension, and the typed result. It emits one immutable
 typed-task descriptor with exact managed-leaf byte offsets and a bitmap for
@@ -611,18 +634,17 @@ terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
 
 The current source boundary is deliberately smaller than the runtime ABI:
-coroutines must be infallible and have no inout parameters; parameter, result,
-and live frame values are limited to direct scalar/refined/product/Text shapes,
-with Task handles additionally allowed only in suspension-live rows. Sum,
-List, TextMap, dynamic-concept, sleep/readiness, Task-join, cancellation-source,
-and cleanup-crossing suspension forms remain atomic whole-artifact fallback.
+coroutines have no inout parameters or cleanup crossing suspension; parameter,
+result, and live frame values are limited to direct scalar/refined/product/Text
+shapes and admitted closed sums, with Task handles additionally allowed only in
+suspension-live rows. List, TextMap, dynamic-concept frame values, raw readiness,
+Task joins, and cancellation sources remain atomic whole-artifact fallback.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
 an async caller.
-The callback already forwards child fault/cancel terminal states without
-turning them into source `Result` values, but source programs cannot reach
-those paths until the corresponding checked control-flow slice exists.
+The callback forwards child fault/cancel terminal states without turning them
+into source `Result` values.
 
 The LLVM layout planner applies one collision-free rule to every payload-bearing
 tagged sum. Target data supplies each payload's size, alignment, and recursive
@@ -944,13 +966,13 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 24` text includes
+text even when the graphs are otherwise equivalent. The `lcir 25` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
-typed coroutine plans and Task control flow, typed runtime/contract fault
-identity including proof-replay and Duration guards, closed parse operations,
-and managed Float formatting,
+typed coroutine plans and Task control flow, including fallible `task.sleep`,
+typed runtime/contract fault identity including proof-replay and Duration
+guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, typed resource-close edges, transient

@@ -14,7 +14,9 @@ use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
-    INVALID_DURATION_FAULT_MESSAGE,
+    INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
+    INVALID_SLEEP_DURATION_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -2553,15 +2555,15 @@ impl<'program> Interpreter<'program> {
                 };
                 if milliseconds < 0 {
                     return Err(EvalAbort::from(self.runtime_fault(
-                        "InvalidSleepDuration",
-                        "Task.sleep duration cannot be negative",
+                        INVALID_SLEEP_DURATION_FAULT_CODE,
+                        INVALID_SLEEP_DURATION_FAULT_MESSAGE,
                         expression.span,
                     )));
                 }
                 let nanoseconds = milliseconds.checked_mul(1_000_000).ok_or_else(|| {
                     EvalAbort::from(self.runtime_fault(
-                        "SleepDurationOverflow",
-                        "Task.sleep duration exceeds the timer range",
+                        SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+                        SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
                         expression.span,
                     ))
                 })?;
@@ -2569,8 +2571,8 @@ impl<'program> Interpreter<'program> {
                     .checked_add(Duration::from_nanos(nanoseconds.cast_unsigned()))
                     .ok_or_else(|| {
                         EvalAbort::from(self.runtime_fault(
-                            "SleepDurationOverflow",
-                            "Task.sleep deadline exceeds the timer range",
+                            SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+                            SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
                             expression.span,
                         ))
                     })?;
