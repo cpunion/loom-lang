@@ -572,7 +572,7 @@ pub fn lower_typed_artifact(
             .enumerate()
             .filter_map(|(index, parameter)| {
                 let instantiated = substitution.instantiate_type(&parameter.ty).ok()?;
-                (parameter.mutable || is_mutable_view(&instantiated))
+                is_functional_inout_parameter(function, parameter, &instantiated)
                     .then(|| u32::try_from(index).ok())
                     .flatten()
             })
@@ -876,6 +876,17 @@ fn awaited_source_outputs(task: &mir::Expr) -> Option<Vec<Type>> {
 
 const fn is_mutable_view(ty: &Type) -> bool {
     matches!(ty, Type::View { mutable: true, .. })
+}
+
+/// Functional writeback is a synchronous call boundary. Async parameters are
+/// copied into their Task frame and mutate only that independent logical
+/// value, including the short-form mutable interface parameter.
+const fn is_functional_inout_parameter(
+    function: &mir::Function,
+    parameter: &mir::LocalDecl,
+    ty: &Type,
+) -> bool {
+    !function.is_async && (parameter.mutable || is_mutable_view(ty))
 }
 
 fn select_roots(
@@ -1398,36 +1409,40 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     fn supported_coroutine_frame_type(&self, ty: &Type, allow_task_handle: bool) -> bool {
         fn visit(
             program: &mir::Program,
+            dyn_concepts: &DynConceptPlan,
             ty: &Type,
             allow_task_handle: bool,
             active: &mut BTreeSet<Type>,
         ) -> bool {
-            match ty {
+            let Some(ty) = dyn_concepts.physical_type(ty) else {
+                return false;
+            };
+            match &ty {
                 Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
                 Type::Tuple(elements) => elements
                     .iter()
-                    .all(|element| visit(program, element, false, active)),
+                    .all(|element| visit(program, dyn_concepts, element, false, active)),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
                         return false;
                     }
-                    let supported = if let Some(fields) = concrete_any_record_fields(program, ty) {
+                    let supported = if let Some(fields) = concrete_any_record_fields(program, &ty) {
                         fields
                             .iter()
-                            .all(|field| visit(program, field, false, active))
-                    } else if let Some(base) = concrete_refined_base(program, ty) {
-                        visit(program, &base, false, active)
-                    } else if let Some(variants) = closed_enum_variants(program, ty) {
+                            .all(|field| visit(program, dyn_concepts, field, false, active))
+                    } else if let Some(base) = concrete_refined_base(program, &ty) {
+                        visit(program, dyn_concepts, &base, false, active)
+                    } else if let Some(variants) = closed_enum_variants(program, &ty) {
                         variants.iter().all(|variant| {
                             variant
                                 .iter()
-                                .all(|payload| visit(program, payload, false, active))
+                                .all(|payload| visit(program, dyn_concepts, payload, false, active))
                         })
                     } else {
                         false
                     };
-                    active.remove(ty);
+                    active.remove(&ty);
                     supported
                 }
                 Type::Never
@@ -1440,7 +1455,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
         }
 
-        visit(self.program, ty, allow_task_handle, &mut BTreeSet::new())
+        visit(
+            self.program,
+            self.dyn_concepts,
+            ty,
+            allow_task_handle,
+            &mut BTreeSet::new(),
+        )
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
@@ -2768,26 +2789,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             })
                         })
                 });
-                let callee_has_inout = callee_key.as_ref().is_some_and(|callee_key| {
-                    self.program
-                        .function(callee_key.source())
-                        .is_some_and(|callee| {
-                            callee.params.iter().any(|parameter| {
-                                parameter.mutable
-                                    || InstanceSubstitution::new(self.program, callee_key)
-                                        .instantiate_type(&parameter.ty)
-                                        .is_ok_and(|ty| is_mutable_view(&ty))
-                            })
-                        })
-                });
-                if function.is_async && callee_has_inout {
-                    self.expression_item(
-                        UnsupportedFeature::AsyncFunction,
-                        function,
-                        expression,
-                        &format!("{path}.async_inout"),
-                    );
-                }
                 if callee_key.as_ref().is_some_and(|callee_key| {
                     self.program
                         .function(callee_key.source())
@@ -2817,14 +2818,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             }
                         }
                         CallArgument::InOut(place) => {
-                            if function.is_async {
-                                self.expression_item(
-                                    UnsupportedFeature::AsyncFunction,
-                                    function,
-                                    expression,
-                                    &format!("{path}.arguments[{index}].async_inout"),
-                                );
-                            }
                             let place_type = self.projected_place(
                                 function,
                                 key,
@@ -4481,7 +4474,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 substitution
                     .instantiate_type(&parameter.ty)
                     .ok()
-                    .is_some_and(|ty| parameter.mutable || is_mutable_view(&ty))
+                    .is_some_and(|ty| is_functional_inout_parameter(source, parameter, &ty))
                     .then_some(parameter.id)
             })
             .collect::<Vec<_>>()
@@ -9728,7 +9721,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 InstanceSubstitution::new(self.program, &key)
                     .instantiate_type(&parameter.ty)
                     .ok()
-                    .is_some_and(|ty| parameter.mutable || is_mutable_view(&ty))
+                    .is_some_and(|ty| is_functional_inout_parameter(callee_source, parameter, &ty))
                     .then_some(index)
             })
             .collect::<Vec<_>>();
