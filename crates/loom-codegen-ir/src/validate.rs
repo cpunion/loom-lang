@@ -2036,7 +2036,8 @@ impl<'a> Validator<'a> {
     /// terminal capabilities, whereas every following parameter is an ordinary
     /// forwarded live value. Requiring the takes as an ordered instruction
     /// prefix makes it impossible for checked LCIR to drop a terminal child,
-    /// delay its retirement, or clear it from a later join row before capture.
+    /// delay its retirement, or clear it from a later join row before capture;
+    /// the general affine Task transfer separately rejects every repeated take.
     fn validate_terminal_task_take_prefix(
         &mut self,
         function: &Function,

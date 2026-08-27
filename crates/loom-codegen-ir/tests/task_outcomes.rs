@@ -37,6 +37,7 @@ enum TakePrefix {
     Partial,
     Reversed,
     NonPrefix,
+    Duplicate,
 }
 
 struct OutcomeProgram {
@@ -471,6 +472,9 @@ fn terminal_prefix_program(mode: AwaitMode, prefix: TakePrefix) -> Program {
             TakePrefix::Missing => Vec::new(),
             TakePrefix::Partial => vec![0],
             TakePrefix::Reversed => (0..terminal_tasks.len()).rev().collect(),
+            TakePrefix::Duplicate => (0..terminal_tasks.len())
+                .chain(std::iter::once(0))
+                .collect(),
         };
         for index in take_order {
             function
@@ -566,6 +570,21 @@ fn race_terminal_task_takes_reject_missing_and_non_prefix_rows() {
                     && error.message().contains("exact parameter order")
             }),
             "missing ordered-prefix diagnostic for {prefix:?}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn terminal_task_take_prefix_rejects_duplicate_capture_after_the_complete_prefix() {
+    for mode in [AwaitMode::Settled, AwaitMode::Race] {
+        let errors = validate_program(&terminal_prefix_program(mode, TakePrefix::Duplicate))
+            .expect_err("duplicate terminal capture must fail");
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::InvalidTaskOwnership
+                    && error.message().contains("consumed more than once")
+            }),
+            "missing duplicate-capture diagnostic for {mode:?}: {errors:?}"
         );
     }
 }
