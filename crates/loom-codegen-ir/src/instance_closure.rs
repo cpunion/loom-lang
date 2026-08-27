@@ -110,11 +110,21 @@ impl<'key> InstanceSubstitution<'key> {
         type_arguments: &[Type],
         witnesses: &[WitnessRef],
     ) -> Result<InstanceKey, InstantiationError> {
-        let types = self.instantiate_types(type_arguments)?;
+        let type_nodes = self.preflight_types(type_arguments)?;
+        let witness_nodes = self.preflight_witnesses(witnesses)?;
+        if type_nodes
+            .checked_add(witness_nodes)
+            .is_none_or(|nodes| nodes > INSTANCE_KEY_STRUCTURE_BUDGET)
+        {
+            return Err(InstantiationError::StructureBudget);
+        }
+        let types = type_arguments
+            .iter()
+            .map(|ty| self.clone_type(ty, true))
+            .collect::<Result<Vec<_>, _>>()?;
         if types.iter().any(type_has_open_component) {
             return Err(InstantiationError::UnboundTypeParameter);
         }
-        self.preflight_witnesses(witnesses)?;
         let witnesses = witnesses
             .iter()
             .map(|witness| self.clone_witness(witness))
@@ -125,7 +135,7 @@ impl<'key> InstanceSubstitution<'key> {
         Ok(key)
     }
 
-    fn preflight_types(&self, roots: &[Type]) -> Result<(), InstantiationError> {
+    fn preflight_types(&self, roots: &[Type]) -> Result<usize, InstantiationError> {
         enum Node<'a> {
             Source(&'a Type),
             Concrete(&'a Type),
@@ -193,7 +203,7 @@ impl<'key> InstanceSubstitution<'key> {
                 | Type::Error => {}
             }
         }
-        Ok(())
+        Ok(scheduled)
     }
 
     fn clone_type(&self, ty: &Type, substitute: bool) -> Result<Type, InstantiationError> {
@@ -248,7 +258,7 @@ impl<'key> InstanceSubstitution<'key> {
         })
     }
 
-    fn preflight_witnesses(&self, roots: &[WitnessRef]) -> Result<(), InstantiationError> {
+    fn preflight_witnesses(&self, roots: &[WitnessRef]) -> Result<usize, InstantiationError> {
         enum Node<'a> {
             Source(&'a WitnessRef),
             Concrete(&'a InstanceWitnessArgument),
@@ -294,7 +304,7 @@ impl<'key> InstanceSubstitution<'key> {
                 }
             }
         }
-        Ok(())
+        Ok(scheduled)
     }
 
     fn clone_witness(
@@ -367,6 +377,31 @@ struct CallSite {
     path: String,
 }
 
+struct CallCollector {
+    remaining: usize,
+    calls: Vec<CallSite>,
+}
+
+impl CallCollector {
+    fn reserve(
+        &mut self,
+        function: &mir::Function,
+        expression: &mir::Expr,
+        path: &str,
+    ) -> Result<(), InstanceClosureUnsupported> {
+        if self.calls.len() >= self.remaining {
+            return Err(InstanceClosureUnsupported {
+                kind: InstanceClosureUnsupportedKind::InstanceBudget,
+                function: function.id,
+                expression: Some(expression.id),
+                span: expression.span,
+                path: format!("{path}.instance"),
+            });
+        }
+        Ok(())
+    }
+}
+
 enum VisitTask {
     Enter {
         key: InstanceKey,
@@ -402,7 +437,7 @@ pub(crate) fn plan_instance_closure(
     let mut active_sources = BTreeMap::<FunctionId, String>::new();
     let mut entries = Vec::new();
     let mut instance_calls = BTreeMap::new();
-    let mut call_edges = 0_usize;
+    let mut remaining_call_edges = INSTANCE_CLOSURE_MAX_CALL_EDGES;
 
     while let Some(task) = tasks.pop() {
         match task {
@@ -461,30 +496,11 @@ pub(crate) fn plan_instance_closure(
                     .function(key.source())
                     .ok_or(InstanceClosureError::MissingFunction(key.source()))?;
                 require_instance_arity(function, &key)?;
-                let calls = match collect_instance_calls(function, &key)? {
+                let calls = match collect_instance_calls(function, &key, remaining_call_edges)? {
                     Ok(calls) => calls,
                     Err(issue) => return Ok(InstanceClosureOutcome::Unsupported(issue)),
                 };
-                call_edges = call_edges.saturating_add(calls.len());
-                if call_edges > INSTANCE_CLOSURE_MAX_CALL_EDGES {
-                    let offending = calls.last().cloned().or(site).unwrap_or(CallSite {
-                        key: key.clone(),
-                        function: function.id,
-                        expression: ExprId::UNASSIGNED,
-                        span: function.span,
-                        path: format!("function[{}]", function.id.0),
-                    });
-                    return Ok(InstanceClosureOutcome::Unsupported(
-                        InstanceClosureUnsupported {
-                            kind: InstanceClosureUnsupportedKind::InstanceBudget,
-                            function: offending.function,
-                            expression: (offending.expression != ExprId::UNASSIGNED)
-                                .then_some(offending.expression),
-                            span: offending.span,
-                            path: offending.path,
-                        },
-                    ));
-                }
+                remaining_call_edges = remaining_call_edges.saturating_sub(calls.len());
                 active_sources.insert(key.source(), identity.clone());
                 states.insert(identity.clone(), VisitState::Visiting);
                 entries.push(key.clone());
@@ -542,26 +558,35 @@ fn require_instance_arity(
 fn collect_instance_calls(
     function: &mir::Function,
     key: &InstanceKey,
+    remaining: usize,
 ) -> Result<Result<Vec<CallSite>, InstanceClosureUnsupported>, InstanceClosureError> {
-    let mut calls = Vec::new();
+    let mut collector = CallCollector {
+        remaining,
+        calls: Vec::new(),
+    };
     let substitution = InstanceSubstitution::new(key);
     let result = scan_block(
         function,
         &function.body,
         &format!("function[{}].body", function.id.0),
         &substitution,
-        &mut calls,
+        &mut collector,
     );
-    Ok(result.map(|_| calls))
+    Ok(result.map(|_| collector.calls))
 }
 
 fn instantiation_issue(
     function: &mir::Function,
     expression: &mir::Expr,
     path: &str,
+    error: InstantiationError,
 ) -> InstanceClosureUnsupported {
     InstanceClosureUnsupported {
-        kind: InstanceClosureUnsupportedKind::Instantiation,
+        kind: if error == InstantiationError::StructureBudget {
+            InstanceClosureUnsupportedKind::InstanceBudget
+        } else {
+            InstanceClosureUnsupportedKind::Instantiation
+        },
         function: function.id,
         expression: Some(expression.id),
         span: expression.span,
@@ -576,7 +601,7 @@ fn scan_block(
     block: &mir::Block,
     path: &str,
     substitution: &InstanceSubstitution<'_>,
-    calls: &mut Vec<CallSite>,
+    calls: &mut CallCollector,
 ) -> ScanResult {
     for (index, statement) in block.statements.iter().enumerate() {
         if !scan_statement(
@@ -600,7 +625,7 @@ fn scan_statement(
     statement: &mir::Statement,
     path: &str,
     substitution: &InstanceSubstitution<'_>,
-    calls: &mut Vec<CallSite>,
+    calls: &mut CallCollector,
 ) -> ScanResult {
     match &statement.kind {
         StatementKind::Let { value, .. }
@@ -657,7 +682,7 @@ fn scan_expr(
     expression: &mir::Expr,
     path: &str,
     substitution: &InstanceSubstitution<'_>,
-    calls: &mut Vec<CallSite>,
+    calls: &mut CallCollector,
 ) -> ScanResult {
     let continues = match &expression.kind {
         ExprKind::Constant(_)
@@ -776,10 +801,11 @@ fn scan_expr(
                 }
             }
             if let CallTarget::Direct(callee) | CallTarget::Inherent(callee) = target {
+                calls.reserve(function, expression, path)?;
                 let key = substitution
                     .call_key(*callee, type_arguments, witnesses)
-                    .map_err(|_| instantiation_issue(function, expression, path))?;
-                calls.push(CallSite {
+                    .map_err(|error| instantiation_issue(function, expression, path, error))?;
+                calls.calls.push(CallSite {
                     key,
                     function: function.id,
                     expression: expression.id,
@@ -798,7 +824,7 @@ fn scan_exprs(
     expressions: &[mir::Expr],
     path: &str,
     substitution: &InstanceSubstitution<'_>,
-    calls: &mut Vec<CallSite>,
+    calls: &mut CallCollector,
 ) -> ScanResult {
     for (index, expression) in expressions.iter().enumerate() {
         if !scan_expr(
@@ -876,6 +902,20 @@ mod tests {
             InstanceSubstitution::new(&key)
                 .instantiate_type(&Type::Parameter(0))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn call_key_preflights_the_combined_type_and_witness_budget() {
+        let key = InstanceKey::monomorphic(FunctionId(0));
+        let types = [Type::Tuple(vec![Type::Int; 127])];
+        let witnesses = [WitnessRef::Apply {
+            witness: WitnessId(9),
+            arguments: vec![WitnessRef::Concrete(WitnessId(7)); 128],
+        }];
+        assert_eq!(
+            InstanceSubstitution::new(&key).call_key(FunctionId(1), &types, &witnesses),
+            Err(InstantiationError::StructureBudget)
         );
     }
 }
