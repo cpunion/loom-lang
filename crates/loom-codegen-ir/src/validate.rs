@@ -2729,13 +2729,11 @@ impl<'a> Validator<'a> {
                 );
                 self.validate_target(function, success, format!("{path}.success"));
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
-                self.validate_contract_fault_metadata(metadata, &format!("{path}.metadata"));
+                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
             TerminatorKind::Fault { metadata } => {
-                if let crate::FaultMetadata::Contract(metadata) = metadata {
-                    self.validate_contract_fault_metadata(metadata, &format!("{path}.metadata"));
-                }
+                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "fault");
             }
             TerminatorKind::ResumeFault => {
@@ -2967,6 +2965,12 @@ impl<'a> Validator<'a> {
                 path,
                 format!("{operation} requires the function's MAY_FAULT effect"),
             );
+        }
+    }
+
+    fn validate_fault_metadata(&mut self, metadata: &crate::FaultMetadata, path: &str) {
+        if let crate::FaultMetadata::Contract(metadata) = metadata {
+            self.validate_contract_fault_metadata(metadata, path);
         }
     }
 

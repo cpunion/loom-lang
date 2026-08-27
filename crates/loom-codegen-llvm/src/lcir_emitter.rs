@@ -40,7 +40,10 @@ use loom_codegen_ir::{
     ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
     TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
-use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_core::runtime_fault::{
+    ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+};
 use loom_mir::Type;
 use loom_runtime_abi::{
     GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
@@ -5430,7 +5433,13 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 metadata,
                 success,
                 fault,
-            } => self.emit_assert(self.int(*condition)?, metadata, success, fault),
+            } => self.emit_assert(
+                self.int(*condition)?,
+                metadata,
+                terminator.origin(),
+                success,
+                fault,
+            ),
             TerminatorKind::Fault { metadata } => {
                 match metadata {
                     FaultMetadata::Runtime(code) => {
@@ -5826,7 +5835,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn emit_assert(
         &mut self,
         condition: IntValue<'ctx>,
-        metadata: &ContractFaultMetadata,
+        metadata: &FaultMetadata,
+        origin: Origin,
         success: &BlockTarget,
         fault: &UnwindTarget,
     ) -> Result<(), CodegenError> {
@@ -5841,7 +5851,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_conditional_branch(condition, self.block(success.block)?, report)
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(report);
-        self.emit_contract_fault(metadata)?;
+        match metadata {
+            FaultMetadata::Runtime(code) => self.emit_source_fault(*code, origin)?,
+            FaultMetadata::Contract(metadata) => self.emit_contract_fault(metadata)?,
+        }
         self.unwind_branch(fault)
     }
 
@@ -6885,11 +6898,14 @@ impl<'ctx> Backend<'ctx, '_> {
     ) -> Result<(), CodegenError> {
         let (code, message) = fault_properties(fault);
         let display = format!("{code}: {message}");
-        // Integer overflow is a shared language fault, so expose the same
-        // stable RuntimeFault payload as the interpreter and legacy emitter.
-        // Other LCIR fault families retain their existing private detail until
-        // their language-level diagnostic contracts are specified separately.
-        let detail = if fault == FaultCode::IntegerOverflow {
+        // Language-defined fault families expose the same stable RuntimeFault
+        // payload as the interpreter and legacy emitter. Other LCIR-private
+        // families retain their existing backend detail until their source
+        // diagnostic contracts are specified separately.
+        let detail = if matches!(
+            fault,
+            FaultCode::IntegerOverflow | FaultCode::ArtifactProofRejected
+        ) {
             serde_json::json!({
                 "channel": "runtime",
                 "fault": {
@@ -7065,6 +7081,10 @@ impl<'ctx> Backend<'ctx, '_> {
 
 fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
     match code {
+        FaultCode::ArtifactProofRejected => (
+            ARTIFACT_PROOF_REJECTED_FAULT_CODE,
+            ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+        ),
         FaultCode::IntegerOverflow => (INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE),
         FaultCode::IntegerDivisionByZero => ("IntegerDivisionByZero", "integer division by zero"),
         FaultCode::IntegerDivisionOverflow => {

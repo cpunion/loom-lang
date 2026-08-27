@@ -82,6 +82,13 @@ artifact, or runtime compatibility.
   collection counts, or nested business data. This advances interpreted MIR to
   version 23; persistent-cache schema 3 remains valid because checked-MIR cache
   envelopes independently carry the artifact version.
+- Nongeneric portable refined and invariant proof rechecks now remain on the
+  typed LCIR route. The embedded predicate executes before nominal publication,
+  rejection produces the canonical `ArtifactProofRejected` `RuntimeFault` with
+  the exact construction span, and lexical cleanup uses the existing typed
+  fault edge. This advances the LCIR dump to 18, artifact identity to schema
+  19, LCIR native-object domain to v15, and LLVM object-cache domain to v20;
+  the runtime ABI is unchanged.
 - Typed LCIR now places source contracts at explicit checked boundaries.
   Closed-world calls evaluate every argument before checking `requires` with
   exact call-expression blame, then enter an assumed body whose receiver

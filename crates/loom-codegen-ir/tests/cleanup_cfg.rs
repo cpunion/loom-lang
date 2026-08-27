@@ -1,12 +1,16 @@
 use loom_codegen_ir::{
-    BlockTarget, Constant, ContractFaultMetadata, Effects, InstructionKind, Origin, Program,
-    ProgramBuilder, ResourceKind, ResultTarget, Signature, TargetLayout, Terminator,
+    BlockTarget, Constant, ContractFaultMetadata, Effects, FaultMetadata, InstructionKind, Origin,
+    Program, ProgramBuilder, ResourceKind, ResultTarget, Signature, TargetLayout, Terminator,
     TerminatorKind, UnwindTarget, ValidationCode, dump_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
 fn origin(function: u32) -> Origin {
     Origin::synthetic(FunctionId(function))
+}
+
+fn assertion_metadata(function: u32) -> FaultMetadata {
+    FaultMetadata::contract(ContractFaultMetadata::assertion(origin(function).span))
 }
 
 fn resource_program(fields: &[Type], effects: Effects) -> Program {
@@ -163,7 +167,7 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
                 Terminator::new(
                     TerminatorKind::Assert {
                         condition,
-                        metadata: ContractFaultMetadata::assertion(origin(1).span),
+                        metadata: assertion_metadata(1),
                         success: BlockTarget::new(normal, []),
                         fault: UnwindTarget::new(cleanup, []),
                     },
@@ -211,7 +215,6 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
     program
         .finish_checked()
         .expect("active close success and secondary fault both preserve the primary");
-
     // LCIR has no suspension operation. Advertising suspension on this same
     // cleanup graph cannot smuggle it through validation as an unused effect.
     let suspending = Effects::MAY_FAULT

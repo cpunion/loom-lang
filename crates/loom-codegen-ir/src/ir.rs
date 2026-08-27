@@ -765,6 +765,7 @@ impl UnwindTarget {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultCode {
+    ArtifactProofRejected,
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
@@ -1036,11 +1037,11 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         fault: UnwindTarget,
     },
-    /// Continues through `success` when true or activates the checked contract
-    /// fault metadata and enters `fault` when false.
+    /// Continues through `success` when true or activates the checked fault
+    /// metadata and enters `fault` when false.
     Assert {
         condition: ValueId,
-        metadata: ContractFaultMetadata,
+        metadata: FaultMetadata,
         success: BlockTarget,
         fault: UnwindTarget,
     },

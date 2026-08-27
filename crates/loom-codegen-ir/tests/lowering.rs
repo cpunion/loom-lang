@@ -543,7 +543,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn portable_proof_rechecks_select_one_atomic_legacy_fallback() {
+fn portable_nongeneric_proof_rechecks_lower_to_typed_fault_guards() {
     let source = r"module portable_proof_fallback
 
 type Money = Float where self >= 0.0
@@ -607,16 +607,25 @@ pub fn main() Unit {
         TargetLayout::new(64).expect("test target"),
     )
     .expect("classify decoded proof replay");
-    let LoweringOutcome::Unsupported(report) = decoded_outcome else {
-        panic!("one reachable Recheck must select fallback for the complete artifact")
+    let LoweringOutcome::Complete(decoded_artifact) = decoded_outcome else {
+        panic!("nongeneric proof rechecks must remain on the typed LCIR route")
     };
-    assert!(!report.is_empty());
+    let decoded_dump = dump_program(decoded_artifact.program());
+    assert_eq!(
+        decoded_dump
+            .matches("runtime ArtifactProofRejected")
+            .count(),
+        4,
+        "{decoded_dump}"
+    );
+    assert_eq!(
+        decoded_dump.matches("refine.proven").count(),
+        3,
+        "{decoded_dump}"
+    );
     assert!(
-        report
-            .items()
-            .iter()
-            .all(|item| { item.feature() == UnsupportedFeature::SerializedProofRecheck }),
-        "{report:?}"
+        decoded_dump.contains("invariant_record.proven"),
+        "{decoded_dump}"
     );
 }
 

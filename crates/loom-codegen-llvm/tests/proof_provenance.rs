@@ -19,7 +19,7 @@ use loom_mir::{
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 mod support;
-use support::emit_native;
+use support::{emit_native, link_native_object};
 
 fn compile_source(source: &str) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create proof source project");
@@ -124,7 +124,8 @@ fn native_json_failure(
 ) -> serde_json::Value {
     let executable = directory.join(stem);
     let options = EmitOptions::run(entry).with_optimization(OptimizationProfile::Release);
-    emit_native(program, &executable, &options).expect("emit proof replay failure");
+    let route = emit_automatic_executable(program, &executable, options);
+    assert_eq!(route, NativeRouteKind::Lcir);
     let output = Command::new(executable)
         .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
@@ -138,8 +139,22 @@ fn native_json_failure(
         .expect("native proof failure has a structured record")
 }
 
+fn emit_automatic_executable(
+    program: &CheckedProgram,
+    executable: &std::path::Path,
+    options: EmitOptions,
+) -> NativeRouteKind {
+    let object = executable.with_extension("o");
+    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
+        .expect("prepare automatic proof route");
+    let route = prepared.route_kind();
+    emit_prepared_native_object(&prepared, &object).expect("emit prepared proof object");
+    link_native_object(&object, executable).expect("link prepared proof executable");
+    route
+}
+
 #[test]
-fn decoded_refinement_proof_rechecks_before_interpreter_or_legacy_execution() {
+fn decoded_refinement_proof_rechecks_before_interpreter_or_typed_execution() {
     let source = r"module proof_provenance
 
 type Positive = Float where self >= 0.0
@@ -202,8 +217,8 @@ pub fn main() Unit {
     .expect("prepare decoded proof artifact");
     assert_eq!(
         prepared.route_kind(),
-        NativeRouteKind::Legacy,
-        "LCIR must fail closed for proof rechecks rather than erase them"
+        NativeRouteKind::Lcir,
+        "nongeneric proof replay must use an explicit typed LCIR fault guard"
     );
 
     let decoded_ir = directory.path().join("decoded.ll");
@@ -211,17 +226,16 @@ pub fn main() Unit {
     let mut decoded_options =
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release);
     decoded_options.emit_ir = Some(decoded_ir.clone());
-    emit_native(&decoded, &decoded_executable, &decoded_options)
-        .expect("emit decoded proof recheck through legacy LLVM");
+    assert_eq!(
+        emit_automatic_executable(&decoded, &decoded_executable, decoded_options),
+        NativeRouteKind::Lcir
+    );
     let decoded_llvm = std::fs::read_to_string(decoded_ir).expect("read decoded proof LLVM IR");
     assert!(
         decoded_llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE),
         "{decoded_llvm}"
     );
-    assert!(
-        decoded_llvm.contains("artifact.proof.recheck"),
-        "{decoded_llvm}"
-    );
+    assert!(!decoded_llvm.contains("loom.Value"), "{decoded_llvm}");
     let output = Command::new(decoded_executable)
         .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
@@ -271,29 +285,25 @@ pub fn main() Unit {
     assert_canonical_proof_failure(&failure, expected_span);
 
     let directory = tempfile::tempdir().expect("create record proof output");
+    let prepared = prepare_native_object(
+        &decoded,
+        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare record proof replay");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
     let debug_executable = directory.path().join("record-proof-debug");
     let debug_ir = directory.path().join("record-proof-debug.ll");
     let mut debug_options =
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
     debug_options.emit_ir = Some(debug_ir.clone());
-    emit_native(&decoded, &debug_executable, &debug_options)
-        .expect("emit debuggable record proof replay");
-    let llvm = std::fs::read_to_string(debug_ir).expect("read record proof replay LLVM IR");
-    let proof = llvm
-        .find("artifact.proof.rejected")
-        .expect("proof decision remains explicit before optimization");
-    let accepted = proof
-        + llvm[proof..]
-            .find("operation.pass")
-            .expect("proof replay has an accepted block");
-    let publish = accepted
-        + llvm[accepted..]
-            .find("move.value")
-            .expect("accepted candidate is published to the destination");
-    assert!(
-        proof < accepted && accepted < publish,
-        "the candidate must be checked before destination publication:\n{llvm}"
+    assert_eq!(
+        emit_automatic_executable(&decoded, &debug_executable, debug_options),
+        NativeRouteKind::Lcir
     );
+    let llvm = std::fs::read_to_string(debug_ir).expect("read record proof replay LLVM IR");
+    assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
     assert_eq!(
         native_json_failure(&decoded, &entry, directory.path(), "record-proof"),
         serde_json::to_value(&failure).expect("serialize interpreted record proof failure")

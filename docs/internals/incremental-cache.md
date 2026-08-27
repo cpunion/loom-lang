@@ -81,7 +81,8 @@ and contract mode. A checked-MIR cache hit still runs the artifact decoder and
 MIR validator before execution or code generation. Proof-bearing checked MIR is
 not published; a forged or legacy proof-bearing payload loads as a miss. Source
 reanalysis reconstructs the same fresh `Proven` MIR as a cold build instead of
-permanently degrading a warm build to `Recheck` and the legacy route.
+permanently replacing its process-local proof with portable `Recheck`. Supported
+nongeneric replay is typed LCIR; generic or unsupported replay remains legacy.
 
 ## Native object reuse
 

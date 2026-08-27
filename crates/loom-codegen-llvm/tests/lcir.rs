@@ -1564,12 +1564,12 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
                     41,
                     TerminatorKind::Assert {
                         condition,
-                        metadata: ContractFaultMetadata::contract(
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::contract(
                             ContractFaultKind::Postcondition,
                             "test.beta",
                             origin(41).span,
                             origin(41).span,
-                        ),
+                        )),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },

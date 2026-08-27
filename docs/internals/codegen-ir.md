@@ -329,7 +329,13 @@ Monomorphized managed Lists then advance the artifact identity to schema 18,
 the dump to `lcir 17`, the native-object domain to
 `loom-lcir-native-object-v14`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v19`. The existing runtime ABI component 14 and
-`typed-repeated-v1` wire are unchanged.
+`typed-repeated-v1` wire are unchanged. Typed nongeneric proof replay then
+advances the artifact identity to schema 19, the dump to `lcir 18`, the LCIR
+native-object domain to `loom-lcir-native-object-v15`, and the CLI object-cache
+domain to `loom-llvm-object-cache-v20`. `Assert` now carries either canonical contract or
+runtime fault metadata, allowing `ArtifactProofRejected` to share the exact
+typed unwind and lexical-cleanup path. No runtime symbol, physical value
+representation, or runtime ABI component changes.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -358,10 +364,12 @@ refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown refined
 predicates and record invariants remain normal `Result[..., ConstraintError]`
 constructions and select whole-artifact fallback. A portable MIR proof replay
-(`ConstructionMode::Recheck`) also selects one explicit
-`SerializedProofRecheck` fallback for the complete artifact; it can never be
-translated to `RefineProven` or `InvariantRecordProven`. Enum construction
-uses `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
+(`ConstructionMode::Recheck`) for a nongeneric refined type or invariant
+record re-evaluates the embedded predicate in typed LCIR, raises the canonical
+`ArtifactProofRejected` runtime fault on rejection, and creates the established
+nominal value only in the accepted block. Generic proof replay remains an
+explicit `SerializedProofRecheck` fallback. Enum construction uses
+`SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
 subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
 payload edge parameters at each sum decision. Every selected source arm has
@@ -662,8 +670,11 @@ boundary: exact base/result types, protected construction kind, protection on
 every representation alternative, representation identity, and the usual SSA
 rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
 fresh frontend conclusion for predicate truth. Portable MIR decoding replaces
-it with `Recheck`; support classification rejects that mode before allocating
-LCIR, and the complete artifact uses the checking legacy route.
+it with `Recheck`. For supported nongeneric shapes the lowerer reconstructs the
+typed predicate CFG and emits an explicit runtime-fault guard before the
+crate-private established-value instruction. The raw builder still cannot mint
+that instruction, and a rejected path has no nominal SSA value. Unsupported
+generic or value shapes select the complete checking legacy route.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
@@ -743,11 +754,12 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 16` text includes
+text even when the graphs are otherwise equivalent. The `lcir 18` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
-typed runtime/contract fault identity, managed-pointer representations and
+typed runtime/contract fault identity including proof-replay guards,
+managed-pointer representations and
 `text.concat`, `text.get`, typed resource-close edges, transient
 protected-receiver updates, and the checked value type of every block parameter
 and instruction result. Representation semantic
