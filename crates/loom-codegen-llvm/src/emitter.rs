@@ -31,8 +31,9 @@ use loom_core::runtime_fault::{
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, Statement,
-    StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, ScopedDisposal,
+    Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId,
+    WitnessRef,
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, SHADOW_STACK_ABI_VERSION,
@@ -202,7 +203,8 @@ fn block_contains_await(block: &Block) -> bool {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => expression_contains_await(value),
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => expression_contains_await(value),
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
@@ -4470,10 +4472,10 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     native_int_lists: BTreeMap<LocalId, PointerValue<'ctx>>,
     old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
     body_done: inkwell::basic_block::BasicBlock<'ctx>,
-    cleanups: RefCell<Vec<Block>>,
+    cleanups: RefCell<Vec<CleanupAction>>,
     cancellation_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     invalid_state_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
-    cancellation_cleanups: RefCell<BTreeMap<u32, Vec<Block>>>,
+    cancellation_cleanups: RefCell<BTreeMap<u32, Vec<CleanupAction>>>,
     unwind_status: Cell<Option<u64>>,
     gc_root_frame: Option<PointerValue<'ctx>>,
     gc_root_setup: Option<inkwell::basic_block::BasicBlock<'ctx>>,
@@ -4484,6 +4486,16 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     gc_live_local_roots: RefCell<BTreeSet<usize>>,
     gc_temporary_roots: RefCell<Vec<usize>>,
     gc_root_states: RefCell<Vec<Vec<usize>>>,
+}
+
+#[derive(Clone)]
+enum CleanupAction {
+    Deferred(Block),
+    Scoped {
+        local: LocalId,
+        disposal: ScopedDisposal,
+        span: Span,
+    },
 }
 
 struct NativeInOutRecord<'ctx> {
@@ -6286,9 +6298,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .set_debug_location(self.function, block.span.file.0, block.span.range.start);
         let cleanup_base = self.cleanups.borrow().len();
         for statement in &block.statements {
-            if let StatementKind::Defer(cleanup) = &statement.kind {
-                self.cleanups.borrow_mut().push(cleanup.clone());
-                continue;
+            match &statement.kind {
+                StatementKind::Defer(cleanup) => {
+                    self.cleanups
+                        .borrow_mut()
+                        .push(CleanupAction::Deferred(cleanup.clone()));
+                    continue;
+                }
+                StatementKind::Scoped {
+                    local, disposal, ..
+                } => {
+                    if !self.emit_statement(statement)? {
+                        self.cleanups.borrow_mut().truncate(cleanup_base);
+                        return Ok(false);
+                    }
+                    self.cleanups.borrow_mut().push(CleanupAction::Scoped {
+                        local: *local,
+                        disposal: disposal.clone(),
+                        span: statement.span,
+                    });
+                    continue;
+                }
+                _ => {}
             }
             if !self.emit_statement(statement)? {
                 self.cleanups.borrow_mut().truncate(cleanup_base);
@@ -6313,13 +6344,20 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         self.emit_cleanup_sequence(&cleanups)
     }
 
-    fn emit_cleanup_sequence(&self, cleanups: &[Block]) -> Result<(), CodegenError> {
+    fn emit_cleanup_sequence(&self, cleanups: &[CleanupAction]) -> Result<(), CodegenError> {
         let saved = self.cleanups.replace(cleanups.to_vec());
         for (index, cleanup) in cleanups.iter().enumerate().rev() {
             self.cleanups.replace(cleanups[..index].to_vec());
             let root_scope = self.gc_root_scope();
             let ignored = self.alloc_typed_value(&Type::Unit, "cleanup");
-            let result = self.emit_block(cleanup, ignored);
+            let result = match cleanup {
+                CleanupAction::Deferred(block) => self.emit_block(block, ignored),
+                CleanupAction::Scoped {
+                    local,
+                    disposal,
+                    span,
+                } => self.emit_scoped_disposal(*local, disposal, *span, ignored),
+            };
             self.end_gc_root_scope(root_scope);
             if let Err(error) = result {
                 self.cleanups.replace(saved);
@@ -6335,6 +6373,36 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         self.cleanups.replace(saved);
         Ok(())
+    }
+
+    fn emit_scoped_disposal(
+        &self,
+        local: LocalId,
+        disposal: &ScopedDisposal,
+        span: Span,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let target = match disposal {
+            ScopedDisposal::StaticConcept {
+                requirement,
+                witness,
+                dispatch_type,
+            } => CallTarget::StaticConcept {
+                requirement: *requirement,
+                witness: witness.clone(),
+                dispatch_type: dispatch_type.clone(),
+            },
+            ScopedDisposal::FileClose => CallTarget::Builtin(Builtin::FileClose),
+            ScopedDisposal::SocketClose => CallTarget::Builtin(Builtin::SocketClose),
+        };
+        let site = Expr::new(ExprKind::Constant(Constant::Unit), Type::Unit, span);
+        self.emit_call(
+            &site,
+            &target,
+            &[CallArgument::InOut(Place::local(local))],
+            &[],
+            destination,
+        )
     }
 
     fn emit_all_cleanups(&self) -> Result<(), CodegenError> {
@@ -6373,6 +6441,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 } else {
                     self.emit_expr(value, destination)
                 }
+            }
+            StatementKind::Scoped { local, value, .. } => {
+                let destination = self.local(*local)?;
+                self.activate_gc_local(*local);
+                self.emit_expr(value, destination)
             }
             StatementKind::LetTuple { locals, value } => {
                 let tuple = self.alloc_typed_value(&value.ty, "tuple.binding");
@@ -8851,9 +8924,28 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .set_debug_location(self.function, block.span.file.0, block.span.range.start);
         let cleanup_base = self.cleanups.borrow().len();
         for statement in &block.statements {
-            if let StatementKind::Defer(cleanup) = &statement.kind {
-                self.cleanups.borrow_mut().push(cleanup.clone());
-                continue;
+            match &statement.kind {
+                StatementKind::Defer(cleanup) => {
+                    self.cleanups
+                        .borrow_mut()
+                        .push(CleanupAction::Deferred(cleanup.clone()));
+                    continue;
+                }
+                StatementKind::Scoped {
+                    local, disposal, ..
+                } => {
+                    if !self.emit_statement(statement)? {
+                        self.cleanups.borrow_mut().truncate(cleanup_base);
+                        return Ok(false);
+                    }
+                    self.cleanups.borrow_mut().push(CleanupAction::Scoped {
+                        local: *local,
+                        disposal: disposal.clone(),
+                        span: statement.span,
+                    });
+                    continue;
+                }
+                _ => {}
             }
             if !self.emit_statement(statement)? {
                 self.cleanups.borrow_mut().truncate(cleanup_base);

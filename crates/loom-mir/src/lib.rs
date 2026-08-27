@@ -92,6 +92,19 @@ pub struct PreludeIds {
     pub io_error_kind: Option<TypeId>,
     #[serde(default)]
     pub log_level: Option<TypeId>,
+    /// Canonical `standard.resource.Dispose` concept, when that module is
+    /// present in the checked program.
+    #[serde(default)]
+    pub dispose_concept: Option<ConceptId>,
+    /// Canonical `Dispose.dispose(mut self) Unit` requirement.
+    #[serde(default)]
+    pub dispose_requirement: Option<RequirementId>,
+    /// Canonical empty `standard.resource.MustScope` marker concept.
+    #[serde(default)]
+    pub must_scope_concept: Option<ConceptId>,
+    /// Canonical empty `standard.resource.NoSuspend` marker concept.
+    #[serde(default)]
+    pub no_suspend_concept: Option<ConceptId>,
 }
 
 impl Program {
@@ -471,6 +484,14 @@ pub enum StatementKind {
         local: LocalId,
         value: Expr,
     },
+    /// Evaluates and binds one value, then atomically registers its selected
+    /// lexical-scope disposal. The initializer completes before registration,
+    /// so an initializer fault never disposes an uninitialized local.
+    Scoped {
+        local: LocalId,
+        value: Expr,
+        disposal: ScopedDisposal,
+    },
     /// Destructures a fixed tuple into locals in source order.
     LetTuple {
         locals: Vec<LocalId>,
@@ -495,6 +516,23 @@ pub enum StatementKind {
     /// registered blocks in LIFO order on every observable scope exit.
     Defer(Block),
     Return(Option<Expr>),
+}
+
+/// Statically selected cleanup for one [`StatementKind::Scoped`] binding.
+///
+/// This remains first-class in portable MIR so independent validation can
+/// distinguish an authorized lexical cleanup from an arbitrary user call to
+/// `Dispose.dispose`, `File.close`, or `Socket.close`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopedDisposal {
+    StaticConcept {
+        requirement: RequirementId,
+        witness: WitnessRef,
+        dispatch_type: Type,
+    },
+    FileClose,
+    SocketClose,
 }
 
 /// Checked-construction disposition fixed by semantic analysis.
@@ -699,6 +737,7 @@ impl<'function> ExprPreorder<'function> {
     fn push_statement(&mut self, statement: &'function Statement) {
         match &statement.kind {
             StatementKind::Let { value, .. }
+            | StatementKind::Scoped { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. } => {
                 self.pending.push(ExprWalkNode::Expr(value));
@@ -843,6 +882,7 @@ impl ExprIdAssigner {
     fn assign_statement(&mut self, statement: &mut Statement) -> Result<(), ExprIdOverflow> {
         match &mut statement.kind {
             StatementKind::Let { value, .. }
+            | StatementKind::Scoped { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. } => self.assign_expr(value),
             StatementKind::ForRange {

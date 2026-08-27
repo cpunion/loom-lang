@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `21` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
 | LCIR textual dump | version `11` |
@@ -30,6 +30,10 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
+
+Interpreted MIR version 21 replaces the lossy synthesized `Let` plus `Defer`
+encoding of `scoped` with an atomic scoped-initialization and disposal record.
+Version 20 is intentionally rejected rather than inferred or upgraded.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC
@@ -132,7 +136,7 @@ the local compiler cache instead rebuilds proof-bearing semantic and MIR layers
 from source so a warm build retains the cold build's route and eliminated
 checks.
 
-MIR version `20` defines projected `Move` as an ownership transfer of the
+MIR version `21` defines projected `Move` as an ownership transfer of the
 selected leaf that consumes the complete root local. It deliberately does not
 introduce partially initialized aggregates or a wire-compatible interpretation
 for version `19` artifacts.

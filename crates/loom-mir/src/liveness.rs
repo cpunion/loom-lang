@@ -210,8 +210,14 @@ impl LiveSetArena {
 
 #[derive(Clone, Copy)]
 struct Cleanup<'mir> {
-    block: &'mir Block,
+    action: CleanupAction<'mir>,
     older: Option<CleanupId>,
+}
+
+#[derive(Clone, Copy)]
+enum CleanupAction<'mir> {
+    Block(&'mir Block),
+    Scoped(LocalId),
 }
 
 struct CfgBuilder<'mir> {
@@ -305,7 +311,7 @@ impl<'mir> CfgBuilder<'mir> {
         }
         for cleanup_id in missing.into_iter().rev() {
             let cleanup = self.cleanups[cleanup_id];
-            entry = self.build_block(cleanup.block, entry, cleanup.older);
+            entry = self.build_cleanup(cleanup, entry);
             self.unwind_entries[cleanup_id] = Some(entry);
         }
         entry
@@ -320,11 +326,16 @@ impl<'mir> CfgBuilder<'mir> {
         let mut active_cleanup = outer_cleanup;
         let mut block_cleanups = Vec::new();
         for statement in &block.statements {
-            if let StatementKind::Defer(cleanup) = &statement.kind {
+            let action = match &statement.kind {
+                StatementKind::Defer(cleanup) => Some(CleanupAction::Block(cleanup)),
+                StatementKind::Scoped { local, .. } => Some(CleanupAction::Scoped(*local)),
+                _ => None,
+            };
+            if let Some(action) = action {
                 let cleanup_id = self.cleanups.len();
                 debug_assert!(active_cleanup.is_none_or(|older| older < cleanup_id));
                 self.cleanups.push(Cleanup {
-                    block: cleanup,
+                    action,
                     older: active_cleanup,
                 });
                 self.unwind_entries.push(None);
@@ -340,14 +351,27 @@ impl<'mir> CfgBuilder<'mir> {
         });
 
         for statement in block.statements.iter().rev() {
-            if let StatementKind::Defer(cleanup) = &statement.kind {
+            if matches!(
+                &statement.kind,
+                StatementKind::Defer(_) | StatementKind::Scoped { .. }
+            ) {
                 let Some(cleanup_id) = active_cleanup else {
                     continue;
                 };
                 let registered = self.cleanups[cleanup_id];
-                debug_assert!(std::ptr::eq(registered.block, cleanup));
+                match (&statement.kind, registered.action) {
+                    (StatementKind::Defer(cleanup), CleanupAction::Block(registered)) => {
+                        debug_assert!(std::ptr::eq(registered, cleanup));
+                    }
+                    (StatementKind::Scoped { local, .. }, CleanupAction::Scoped(registered)) => {
+                        debug_assert_eq!(*local, registered);
+                    }
+                    _ => debug_assert!(false, "registered cleanup kind changed"),
+                }
                 active_cleanup = registered.older;
-                continue;
+                if matches!(&statement.kind, StatementKind::Defer(_)) {
+                    continue;
+                }
             }
             entry = self.build_statement(statement, entry, active_cleanup);
         }
@@ -362,9 +386,19 @@ impl<'mir> CfgBuilder<'mir> {
             // in a cleanup sees only older registrations, avoiding a self-edge;
             // MIR validation rejects such control flow independently.
             let cleanup = self.cleanups[*cleanup_id];
-            entry = self.build_block(cleanup.block, entry, cleanup.older);
+            entry = self.build_cleanup(cleanup, entry);
         }
         entry
+    }
+
+    fn build_cleanup(&mut self, cleanup: Cleanup<'mir>, continuation: NodeId) -> NodeId {
+        match cleanup.action {
+            CleanupAction::Block(block) => self.build_block(block, continuation, cleanup.older),
+            // Dispose is an inout use. Both its normal and fault exits continue
+            // with the same older cleanup suffix, so one liveness successor is
+            // sufficient while still keeping the resource live.
+            CleanupAction::Scoped(local) => self.node([local], [local], [continuation]),
+        }
     }
 
     fn build_statement(
@@ -374,7 +408,7 @@ impl<'mir> CfgBuilder<'mir> {
         active_cleanup: Option<CleanupId>,
     ) -> NodeId {
         match &statement.kind {
-            StatementKind::Let { local, value } => {
+            StatementKind::Let { local, value } | StatementKind::Scoped { local, value, .. } => {
                 let store = self.node([], [*local], [continuation]);
                 self.build_expr(value, store, active_cleanup)
             }
@@ -696,7 +730,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallTarget, Constant, Expr, ExprKind, FunctionId, Pattern, Statement, TaskJoinMode, TypeId,
+        CallTarget, Constant, Expr, ExprKind, FunctionId, Pattern, ScopedDisposal, Statement,
+        TaskJoinMode, TypeId,
     };
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
@@ -1093,6 +1128,32 @@ mod tests {
         let liveness = analyze_suspension_liveness(&body);
         assert_eq!(liveness[&1], [first]);
         assert_eq!(liveness[&2], [first, second]);
+    }
+
+    #[test]
+    fn scoped_initializer_suspension_does_not_register_its_own_cleanup() {
+        let older = LocalId(0);
+        let initializing = LocalId(1);
+        let body = Block {
+            statements: vec![
+                defer(read_cleanup(older)),
+                Statement {
+                    kind: StatementKind::Scoped {
+                        local: initializing,
+                        value: sleep_await(1),
+                        disposal: ScopedDisposal::FileClose,
+                    },
+                    span: Span::default(),
+                },
+            ],
+            tail: Some(Box::new(expression(
+                ExprKind::Constant(Constant::Unit),
+                Type::Unit,
+            ))),
+            span: Span::default(),
+        };
+
+        assert_eq!(analyze_suspension_liveness(&body)[&1], [older]);
     }
 
     #[test]

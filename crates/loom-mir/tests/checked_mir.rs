@@ -9,9 +9,9 @@ use loom_mir::{
     ContractExpr, ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function,
     FunctionId, INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode,
     Pattern, Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    RequirementWitnessParam, Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind,
-    TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
-    decode_interpreted_artifact, decode_interpreted_executable_artifact,
+    RequirementWitnessParam, ScopedDisposal, Statement, StatementKind, SuspensionPoint, Type,
+    TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessParam,
+    WitnessRef, decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
 };
 use wait_timeout::ChildExt as _;
@@ -45,6 +45,10 @@ fn constant(value: Constant, ty: Type) -> Expr {
 
 fn copy(id: u32, ty: Type) -> Expr {
     expr(ExprKind::Copy(Place::local(LocalId(id))), ty)
+}
+
+fn move_local(id: u32, ty: Type) -> Expr {
+    expr(ExprKind::Move(Place::local(LocalId(id))), ty)
 }
 
 fn copy_place(place: Place, ty: Type) -> Expr {
@@ -136,6 +140,156 @@ fn raw_handle_type(id: u32, name: &str) -> TypeDef {
             }],
             invariant: None,
         },
+    }
+}
+
+fn resource_type() -> Type {
+    Type::Nominal(TypeId(0), Vec::new())
+}
+
+fn resource_value(raw: i64) -> Expr {
+    expr(
+        ExprKind::Record {
+            ty: TypeId(0),
+            type_arguments: Vec::new(),
+            fields: vec![constant(Constant::Int(raw), Type::Int)],
+            construction: ConstructionMode::Plain,
+        },
+        resource_type(),
+    )
+}
+
+fn scoped_resource(local: u32, raw: i64) -> Statement {
+    Statement {
+        kind: StatementKind::Scoped {
+            local: LocalId(local),
+            value: resource_value(raw),
+            disposal: ScopedDisposal::StaticConcept {
+                requirement: RequirementId(0),
+                witness: WitnessRef::Concrete(WitnessId(0)),
+                dispatch_type: resource_type(),
+            },
+        },
+        span: span(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bool) -> Program {
+    main.id = FunctionId(1);
+    "main".clone_into(&mut main.name);
+    let mut dispose = function(
+        0,
+        vec![local(0, resource_type(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    "dispose".clone_into(&mut dispose.name);
+    dispose.receiver = Some(Receiver::Mutable);
+    for (index, function) in extra.iter_mut().enumerate() {
+        function.id = FunctionId(u32::try_from(index + 2).expect("test function id"));
+    }
+    let mut functions = vec![dispose, main];
+    functions.extend(extra);
+    let mut witnesses = vec![
+        Witness {
+            id: WitnessId(0),
+            concept: ConceptId(0),
+            concrete: resource_type(),
+            methods: BTreeMap::from([(RequirementId(0), FunctionId(0))]),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        },
+        Witness {
+            id: WitnessId(1),
+            concept: ConceptId(1),
+            concrete: resource_type(),
+            methods: BTreeMap::new(),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        },
+    ];
+    if no_suspend {
+        witnesses.push(Witness {
+            id: WitnessId(2),
+            concept: ConceptId(2),
+            concrete: resource_type(),
+            methods: BTreeMap::new(),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        });
+    }
+    Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Resource".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        concepts: vec![
+            ConceptDef {
+                id: ConceptId(0),
+                name: "Dispose".to_owned(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: vec![RequirementId(0)],
+            },
+            ConceptDef {
+                id: ConceptId(1),
+                name: "MustScope".to_owned(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+            ConceptDef {
+                id: ConceptId(2),
+                name: "NoSuspend".to_owned(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+        ],
+        requirements: vec![RequirementDef {
+            id: RequirementId(0),
+            concept: ConceptId(0),
+            name: "dispose".to_owned(),
+            span: span(),
+            receiver: Some(Receiver::Mutable),
+            method_type_parameters: 0,
+            params: vec![RequirementType::SelfType],
+            return_ty: RequirementType::Unit,
+            witness_params: Vec::new(),
+        }],
+        functions,
+        witnesses,
+        exports: BTreeMap::from([("main".to_owned(), FunctionId(1))]),
+        prelude: PreludeIds {
+            dispose_concept: Some(ConceptId(0)),
+            dispose_requirement: Some(RequirementId(0)),
+            must_scope_concept: Some(ConceptId(1)),
+            no_suspend_concept: Some(ConceptId(2)),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
     }
 }
 
@@ -1795,7 +1949,1413 @@ fn resource_close_requires_an_inout_place() {
         unreachable!();
     };
     arguments[0] = CallArgument::InOut(Place::local(LocalId(0)));
-    validate_program(&program).expect("resource close through inout place");
+    let errors = validation_errors(&program);
+    assert!(errors.contains(MirValidationCode::ObligationShape));
+}
+
+#[test]
+fn scoped_statement_and_canonical_resource_ids_round_trip_in_artifact_twenty_one() {
+    let main = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![scoped_resource(0, 7)],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let checked = resource_program(main, Vec::new(), false)
+        .into_checked()
+        .expect("canonical scoped MIR");
+    let encoded = encode_interpreted_artifact(&checked).expect("encode scoped artifact");
+    let decoded = decode_interpreted_artifact(&encoded).expect("decode scoped artifact");
+    assert_eq!(decoded.prelude.dispose_concept, Some(ConceptId(0)));
+    assert_eq!(decoded.prelude.must_scope_concept, Some(ConceptId(1)));
+    assert!(matches!(
+        decoded.functions[1].body.statements[0].kind,
+        StatementKind::Scoped {
+            disposal: ScopedDisposal::StaticConcept { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn artifact_twenty_does_not_cross_the_scoped_mir_boundary() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(20);
+    value["program"] = serde_json::json!("artifact 20 erased scoped registration intent");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("artifact 20 must fail before its body is decoded");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected: 21,
+            found: 20
+        }
+    ));
+}
+
+#[test]
+fn forged_resource_marker_prelude_ids_fail_closed() {
+    let main = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![scoped_resource(0, 1)],
+            tail: None,
+            span: span(),
+        },
+    );
+    let mut program = resource_program(main, Vec::new(), false);
+    program.prelude.must_scope_concept = Some(ConceptId(0));
+    assert!(validation_errors(&program).contains(MirValidationCode::ConceptShape));
+
+    program.prelude.must_scope_concept = Some(ConceptId(1));
+    program.prelude.dispose_requirement = None;
+    assert!(validation_errors(&program).contains(MirValidationCode::ConceptShape));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_rejects_every_must_scope_escape_surface() {
+    let ordinary_let = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), false)],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Let {
+                    local: LocalId(0),
+                    value: resource_value(1),
+                },
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let discarded = function(
+        1,
+        Vec::new(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(resource_value(2)),
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let copied = function(
+        1,
+        vec![local(0, resource_type(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(copy(0, resource_type())),
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let returned = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        resource_type(),
+        Block {
+            statements: vec![
+                scoped_resource(0, 3),
+                Statement {
+                    kind: StatementKind::Return(Some(copy(0, resource_type()))),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let container = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 4),
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Tuple(vec![copy(0, resource_type())]),
+                        Type::Tuple(vec![resource_type()]),
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    for (name, main) in [
+        ("ordinary Let", ordinary_let),
+        ("discard", discarded),
+        ("copy", copied),
+        ("return", returned),
+        ("container", container),
+    ] {
+        let errors = validation_errors(&resource_program(main, Vec::new(), false));
+        assert!(
+            errors.contains(MirValidationCode::ObligationShape),
+            "{name}: {errors:?}"
+        );
+    }
+
+    let sink = function(
+        2,
+        vec![local(0, resource_type(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: None,
+            span: span(),
+        },
+    );
+    let ordinary_argument = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 5),
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::Direct(FunctionId(2)),
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::Value(copy(0, resource_type()))],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&resource_program(ordinary_argument, vec![sink], false));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error.message.contains("ordinary argument")
+    }));
+
+    let manual_dispose = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 6),
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::StaticConcept {
+                                requirement: RequirementId(0),
+                                witness: WitnessRef::Concrete(WitnessId(0)),
+                                dispatch_type: resource_type(),
+                            },
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&resource_program(manual_dispose, Vec::new(), false));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error.message.contains("only be invoked by a Scoped")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_resource_exemptions_apply_only_to_the_exact_expression_root() {
+    let nested_evaluate = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 10),
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Binary(
+                            BinaryOp::Equal,
+                            Box::new(copy(0, resource_type())),
+                            Box::new(copy(0, resource_type())),
+                        ),
+                        Type::Bool,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&resource_program(nested_evaluate, Vec::new(), false));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape && error.path.contains("expression.left")
+    }));
+
+    let nested_initializer = function(
+        1,
+        Vec::new(),
+        vec![
+            local(0, resource_type(), true),
+            local(1, resource_type(), true),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 11),
+                Statement {
+                    kind: StatementKind::Scoped {
+                        local: LocalId(1),
+                        value: expr(
+                            ExprKind::Block(Block {
+                                statements: vec![
+                                    Statement {
+                                        kind: StatementKind::Evaluate(expr(
+                                            ExprKind::Call {
+                                                target: CallTarget::Direct(FunctionId(2)),
+                                                type_arguments: Vec::new(),
+                                                arguments: vec![CallArgument::Value(copy(
+                                                    0,
+                                                    resource_type(),
+                                                ))],
+                                                witnesses: Vec::new(),
+                                            },
+                                            Type::Unit,
+                                        )),
+                                        span: span(),
+                                    },
+                                    Statement {
+                                        kind: StatementKind::Evaluate(expr(
+                                            ExprKind::Tuple(vec![copy(0, resource_type())]),
+                                            Type::Tuple(vec![resource_type()]),
+                                        )),
+                                        span: span(),
+                                    },
+                                ],
+                                tail: Some(Box::new(expr(
+                                    ExprKind::If {
+                                        condition: Box::new(expr(
+                                            ExprKind::Binary(
+                                                BinaryOp::Equal,
+                                                Box::new(copy(0, resource_type())),
+                                                Box::new(copy(0, resource_type())),
+                                            ),
+                                            Type::Bool,
+                                        )),
+                                        then_branch: Block {
+                                            statements: Vec::new(),
+                                            tail: Some(Box::new(resource_value(12))),
+                                            span: span(),
+                                        },
+                                        else_branch: Block {
+                                            statements: Vec::new(),
+                                            tail: Some(Box::new(resource_value(13))),
+                                            span: span(),
+                                        },
+                                    },
+                                    resource_type(),
+                                ))),
+                                span: span(),
+                            }),
+                            resource_type(),
+                        ),
+                        disposal: ScopedDisposal::StaticConcept {
+                            requirement: RequirementId(0),
+                            witness: WitnessRef::Concrete(WitnessId(0)),
+                            dispatch_type: resource_type(),
+                        },
+                    },
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let sink = function(
+        2,
+        vec![local(0, resource_type(), false)],
+        vec![local(1, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Scoped {
+                    local: LocalId(1),
+                    value: copy(0, resource_type()),
+                    disposal: ScopedDisposal::StaticConcept {
+                        requirement: RequirementId(0),
+                        witness: WitnessRef::Concrete(WitnessId(0)),
+                        dispatch_type: resource_type(),
+                    },
+                },
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&resource_program(nested_initializer, vec![sink], false));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error
+                .path
+                .contains("value.block.statements[0].expression.arguments[0]")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error
+                .path
+                .contains("value.block.statements[1].expression.elements[0]")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error.path.contains("value.block.tail.condition.left")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_rejects_move_based_resource_escape_surfaces() {
+    let direct_return = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        resource_type(),
+        Block {
+            statements: vec![
+                scoped_resource(0, 20),
+                Statement {
+                    kind: StatementKind::Return(Some(move_local(0, resource_type()))),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let tail_return = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        resource_type(),
+        Block {
+            statements: vec![scoped_resource(0, 21)],
+            tail: Some(Box::new(move_local(0, resource_type()))),
+            span: span(),
+        },
+    );
+    let tuple_return = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Tuple(vec![resource_type()]),
+        Block {
+            statements: vec![scoped_resource(0, 22)],
+            tail: Some(Box::new(expr(
+                ExprKind::Tuple(vec![move_local(0, resource_type())]),
+                Type::Tuple(vec![resource_type()]),
+            ))),
+            span: span(),
+        },
+    );
+    let list_return = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::List(Box::new(resource_type())),
+        Block {
+            statements: vec![scoped_resource(0, 23)],
+            tail: Some(Box::new(expr(
+                ExprKind::List(vec![move_local(0, resource_type())]),
+                Type::List(Box::new(resource_type())),
+            ))),
+            span: span(),
+        },
+    );
+    let ordinary_let = function(
+        1,
+        Vec::new(),
+        vec![
+            local(0, resource_type(), true),
+            local(1, resource_type(), false),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 24),
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: move_local(0, resource_type()),
+                    },
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    for (name, main) in [
+        ("direct Return", direct_return),
+        ("tail return", tail_return),
+        ("tuple return", tuple_return),
+        ("list return", list_return),
+        ("ordinary Let", ordinary_let),
+    ] {
+        let errors = validation_errors(&resource_program(main, Vec::new(), false));
+        assert!(
+            errors.contains(MirValidationCode::ObligationShape),
+            "{name}: {errors:?}"
+        );
+    }
+
+    let wrapper = TypeId(1);
+    let mut record_program = resource_program(
+        function(
+            1,
+            Vec::new(),
+            vec![local(0, resource_type(), true)],
+            Type::Nominal(wrapper, Vec::new()),
+            Block {
+                statements: vec![scoped_resource(0, 25)],
+                tail: Some(Box::new(expr(
+                    ExprKind::Record {
+                        ty: wrapper,
+                        type_arguments: Vec::new(),
+                        fields: vec![move_local(0, resource_type())],
+                        construction: ConstructionMode::Plain,
+                    },
+                    Type::Nominal(wrapper, Vec::new()),
+                ))),
+                span: span(),
+            },
+        ),
+        Vec::new(),
+        false,
+    );
+    record_program.types.push(TypeDef {
+        id: wrapper,
+        name: "Wrapper".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "resource".to_owned(),
+                ty: resource_type(),
+                span: span(),
+            }],
+            invariant: None,
+        },
+    });
+    assert!(validation_errors(&record_program).contains(MirValidationCode::ObligationShape));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_rejects_fresh_must_scope_results_at_every_function_sink() {
+    let returning = |value: Expr, explicit: bool| {
+        let return_ty = value.ty.clone();
+        let (statements, tail) = if explicit {
+            (
+                vec![Statement {
+                    kind: StatementKind::Return(Some(value)),
+                    span: span(),
+                }],
+                None,
+            )
+        } else {
+            (Vec::new(), Some(Box::new(value)))
+        };
+        function(
+            1,
+            Vec::new(),
+            Vec::new(),
+            return_ty,
+            Block {
+                statements,
+                tail,
+                span: span(),
+            },
+        )
+    };
+    let assert_main_sink = |program: Program, expected_path: &str| {
+        let errors = validation_errors(&program);
+        assert!(
+            errors.iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == expected_path
+                    && error.message.contains("transfer it into Scoped")
+            }),
+            "{expected_path}: {errors:?}"
+        );
+    };
+
+    assert_main_sink(
+        resource_program(returning(resource_value(30), true), Vec::new(), false),
+        "functions[1].body.statements[0].value",
+    );
+    assert_main_sink(
+        resource_program(returning(resource_value(31), false), Vec::new(), false),
+        "functions[1].body.tail",
+    );
+
+    for (name, value, explicit) in [
+        (
+            "tuple",
+            expr(
+                ExprKind::Tuple(vec![resource_value(32)]),
+                Type::Tuple(vec![resource_type()]),
+            ),
+            true,
+        ),
+        (
+            "list",
+            expr(
+                ExprKind::List(vec![resource_value(33)]),
+                Type::List(Box::new(resource_type())),
+            ),
+            false,
+        ),
+    ] {
+        let program = resource_program(returning(value, explicit), Vec::new(), false);
+        let errors = validation_errors(&program);
+        assert!(
+            errors.iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path.starts_with("functions[1].body")
+                    && error.message.contains("transfer it into Scoped")
+            }),
+            "{name}: {errors:?}"
+        );
+    }
+
+    let producer = returning(resource_value(34), false);
+    for explicit in [true, false] {
+        let call = expr(
+            ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(2)),
+                type_arguments: Vec::new(),
+                arguments: Vec::new(),
+                witnesses: Vec::new(),
+            },
+            resource_type(),
+        );
+        let program = resource_program(returning(call, explicit), vec![producer.clone()], false);
+        let expected = if explicit {
+            "functions[1].body.statements[0].value"
+        } else {
+            "functions[1].body.tail"
+        };
+        assert_main_sink(program, expected);
+    }
+
+    let carrier = TypeId(1);
+    let carrier_ty = Type::Nominal(carrier, Vec::new());
+    let mut record_program = resource_program(
+        returning(
+            expr(
+                ExprKind::Record {
+                    ty: carrier,
+                    type_arguments: Vec::new(),
+                    fields: vec![resource_value(35)],
+                    construction: ConstructionMode::Plain,
+                },
+                carrier_ty.clone(),
+            ),
+            false,
+        ),
+        Vec::new(),
+        false,
+    );
+    record_program.types.push(TypeDef {
+        id: carrier,
+        name: "Carrier".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "resource".to_owned(),
+                ty: resource_type(),
+                span: span(),
+            }],
+            invariant: None,
+        },
+    });
+    assert_main_sink(record_program, "functions[1].body.tail");
+
+    let mut variant_program = resource_program(
+        returning(
+            expr(
+                ExprKind::Variant {
+                    ty: carrier,
+                    type_arguments: Vec::new(),
+                    variant: VariantId(0),
+                    payload: vec![resource_value(36)],
+                },
+                carrier_ty.clone(),
+            ),
+            true,
+        ),
+        Vec::new(),
+        false,
+    );
+    variant_program.types.push(TypeDef {
+        id: carrier,
+        name: "Carrier".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![VariantDef {
+                id: VariantId(0),
+                name: "Some".to_owned(),
+                payload: vec![resource_type()],
+                span: span(),
+            }],
+        },
+    });
+    assert_main_sink(variant_program, "functions[1].body.statements[0].value");
+
+    let mut refined_program = resource_program(
+        returning(
+            expr(
+                ExprKind::Refine {
+                    ty: carrier,
+                    value: Box::new(resource_value(37)),
+                    construction: ConstructionMode::Proven,
+                },
+                carrier_ty,
+            ),
+            false,
+        ),
+        Vec::new(),
+        false,
+    );
+    refined_program.types.push(TypeDef {
+        id: carrier,
+        name: "RefinedResource".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Refined {
+            base: resource_type(),
+            predicate: Contract {
+                code: "always".to_owned(),
+                span: span(),
+                expression: ContractExpr {
+                    kind: ContractExprKind::Constant(Constant::Bool(true)),
+                    span: span(),
+                },
+            },
+        },
+    });
+    assert_main_sink(refined_program, "functions[1].body.tail");
+}
+
+#[test]
+fn portable_mir_rejects_scoping_a_non_owning_resource_receiver() {
+    for receiver in [Receiver::Readonly, Receiver::Mutable] {
+        let mutable = receiver == Receiver::Mutable;
+        let mut receiver_method = function(
+            2,
+            vec![local(0, resource_type(), mutable)],
+            vec![local(1, resource_type(), true)],
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Scoped {
+                        local: LocalId(1),
+                        value: copy(0, resource_type()),
+                        disposal: ScopedDisposal::StaticConcept {
+                            requirement: RequirementId(0),
+                            witness: WitnessRef::Concrete(WitnessId(0)),
+                            dispatch_type: resource_type(),
+                        },
+                    },
+                    span: span(),
+                }],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        receiver_method.receiver = Some(receiver);
+        let receiver_argument = if mutable {
+            CallArgument::InOut(Place::local(LocalId(0)))
+        } else {
+            CallArgument::Value(copy(0, resource_type()))
+        };
+        let main = function(
+            1,
+            Vec::new(),
+            vec![local(0, resource_type(), true)],
+            Type::Unit,
+            Block {
+                statements: vec![
+                    scoped_resource(0, 38),
+                    Statement {
+                        kind: StatementKind::Evaluate(expr(
+                            ExprKind::Call {
+                                target: CallTarget::Direct(FunctionId(2)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![receiver_argument],
+                                witnesses: Vec::new(),
+                            },
+                            Type::Unit,
+                        )),
+                        span: span(),
+                    },
+                ],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        let errors = resource_program(main, vec![receiver_method], false)
+            .into_checked()
+            .expect_err("a callee cannot acquire ownership by copying its receiver into Scoped");
+        assert!(
+            errors.iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == "functions[2].body.statements[0].value"
+                    && error.message.contains("non-owning method receiver")
+            }),
+            "{receiver:?}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn canonical_file_cannot_be_rescoped_through_a_non_owning_receiver_without_markers() {
+    let file = TypeId(0);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let file_value = || {
+        expr(
+            ExprKind::Record {
+                ty: file,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(41), Type::Int)],
+                construction: ConstructionMode::Plain,
+            },
+            file_ty.clone(),
+        )
+    };
+    let scoped_file = |local: u32, value: Expr| Statement {
+        kind: StatementKind::Scoped {
+            local: LocalId(local),
+            value,
+            disposal: ScopedDisposal::FileClose,
+        },
+        span: span(),
+    };
+
+    for receiver in [Receiver::Readonly, Receiver::Mutable] {
+        let mutable = receiver == Receiver::Mutable;
+        let mut receiver_method = function(
+            1,
+            vec![local(0, file_ty.clone(), mutable)],
+            vec![local(1, file_ty.clone(), true)],
+            Type::Unit,
+            Block {
+                statements: vec![scoped_file(1, copy(0, file_ty.clone()))],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        receiver_method.receiver = Some(receiver);
+        let receiver_argument = if mutable {
+            CallArgument::InOut(Place::local(LocalId(0)))
+        } else {
+            CallArgument::Value(copy(0, file_ty.clone()))
+        };
+        let main = function(
+            0,
+            Vec::new(),
+            vec![local(0, file_ty.clone(), true)],
+            Type::Unit,
+            Block {
+                statements: vec![
+                    scoped_file(0, file_value()),
+                    Statement {
+                        kind: StatementKind::Evaluate(expr(
+                            ExprKind::Call {
+                                target: CallTarget::Inherent(FunctionId(1)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![receiver_argument],
+                                witnesses: Vec::new(),
+                            },
+                            Type::Unit,
+                        )),
+                        span: span(),
+                    },
+                ],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        let program = Program {
+            types: vec![raw_handle_type(file.0, "File")],
+            functions: vec![main, receiver_method],
+            exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
+            prelude: PreludeIds {
+                file: Some(file),
+                ..PreludeIds::default()
+            },
+            ..Program::default()
+        };
+        assert!(program.prelude.must_scope_concept.is_none());
+        let errors = program
+            .into_checked()
+            .expect_err("a borrowed File receiver cannot acquire a second FileClose cleanup");
+        assert!(
+            errors.iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == "functions[1].body.statements[0].value"
+                    && error.message.contains("non-owning method receiver")
+            }),
+            "{receiver:?}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn canonical_file_owning_parameter_may_transfer_into_scoped() {
+    let file = TypeId(0);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let owner = function(
+        0,
+        vec![local(0, file_ty.clone(), false)],
+        vec![local(1, file_ty.clone(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Scoped {
+                    local: LocalId(1),
+                    value: copy(0, file_ty),
+                    disposal: ScopedDisposal::FileClose,
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        types: vec![raw_handle_type(file.0, "File")],
+        functions: vec![owner],
+        prelude: PreludeIds {
+            file: Some(file),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    })
+    .expect("an ordinary parameter owns its File and may transfer it into Scoped");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_rejects_non_place_resource_receiver_roots() {
+    for kind in ["File", "Socket", "Custom"] {
+        let mut prelude = PreludeIds::default();
+        let (concepts, witnesses) = match kind {
+            "File" => {
+                prelude.file = Some(TypeId(0));
+                (Vec::new(), Vec::new())
+            }
+            "Socket" => {
+                prelude.socket = Some(TypeId(0));
+                (Vec::new(), Vec::new())
+            }
+            "Custom" => {
+                prelude.must_scope_concept = Some(ConceptId(0));
+                (
+                    vec![ConceptDef {
+                        id: ConceptId(0),
+                        name: "MustScope".to_owned(),
+                        span: span(),
+                        dynamic: false,
+                        associated_types: Vec::new(),
+                        requirements: Vec::new(),
+                    }],
+                    vec![Witness {
+                        id: WitnessId(0),
+                        concept: ConceptId(0),
+                        concrete: resource_type(),
+                        methods: BTreeMap::new(),
+                        associated: BTreeMap::new(),
+                        type_parameters: 0,
+                        prerequisites: Vec::new(),
+                    }],
+                )
+            }
+            _ => unreachable!(),
+        };
+        let make_program = |functions| Program {
+            types: vec![raw_handle_type(0, kind)],
+            concepts: concepts.clone(),
+            functions,
+            witnesses: witnesses.clone(),
+            prelude,
+            ..Program::default()
+        };
+        let mut receiver_method = function(
+            1,
+            vec![local(0, resource_type(), false)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        receiver_method.receiver = Some(Receiver::Readonly);
+        let receiver_call = |value| {
+            expr(
+                ExprKind::Call {
+                    target: CallTarget::Inherent(FunctionId(1)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(value)],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            )
+        };
+        let make_main = |value| {
+            function(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Type::Unit,
+                Block {
+                    statements: vec![Statement {
+                        kind: StatementKind::Evaluate(receiver_call(value)),
+                        span: span(),
+                    }],
+                    tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                    span: span(),
+                },
+            )
+        };
+        let assert_receiver_error = |program: Program, root: &str| {
+            let errors = validation_errors(&program);
+            assert!(
+                errors.iter().any(|error| {
+                    error.code == MirValidationCode::ObligationShape
+                        && error.path == "functions[0].body.statements[0].expression.arguments[0]"
+                        && error.message.contains("complete active scoped binding")
+                }),
+                "{kind} {root}: {errors:?}"
+            );
+        };
+
+        assert_receiver_error(
+            make_program(vec![make_main(resource_value(50)), receiver_method.clone()]),
+            "fresh",
+        );
+
+        let producer = function(
+            2,
+            Vec::new(),
+            Vec::new(),
+            resource_type(),
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(resource_value(51))),
+                span: span(),
+            },
+        );
+        let call_result = expr(
+            ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(2)),
+                type_arguments: Vec::new(),
+                arguments: Vec::new(),
+                witnesses: Vec::new(),
+            },
+            resource_type(),
+        );
+        assert_receiver_error(
+            make_program(vec![
+                make_main(call_result),
+                receiver_method.clone(),
+                producer,
+            ]),
+            "call",
+        );
+
+        let task_ty = Type::Task(Box::new(resource_type()));
+        let awaited = expr(
+            ExprKind::Await {
+                state: 1,
+                task: Box::new(move_local(0, task_ty.clone())),
+            },
+            resource_type(),
+        );
+        let mut asynchronous = function(
+            0,
+            vec![local(0, task_ty, false)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(receiver_call(awaited)),
+                    span: span(),
+                }],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        asynchronous.is_async = true;
+        asynchronous.suspension_points = loom_mir::analyze_suspension_liveness(&asynchronous.body)
+            .into_iter()
+            .map(|(state, live_locals)| SuspensionPoint {
+                state,
+                span: span(),
+                live_locals,
+            })
+            .collect();
+        assert_receiver_error(make_program(vec![asynchronous, receiver_method]), "await");
+    }
+}
+
+#[test]
+fn canonical_file_obligation_propagates_through_composite_places_without_markers() {
+    let file = TypeId(0);
+    let wrapper = TypeId(1);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let wrapper_ty = Type::Nominal(wrapper, Vec::new());
+    let sink = function(
+        1,
+        vec![local(0, wrapper_ty.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let main = function(
+        0,
+        Vec::new(),
+        vec![local(0, wrapper_ty.clone(), false)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: expr(
+                            ExprKind::Record {
+                                ty: wrapper,
+                                type_arguments: Vec::new(),
+                                fields: vec![expr(
+                                    ExprKind::Record {
+                                        ty: file,
+                                        type_arguments: Vec::new(),
+                                        fields: vec![constant(Constant::Int(42), Type::Int)],
+                                        construction: ConstructionMode::Plain,
+                                    },
+                                    file_ty.clone(),
+                                )],
+                                construction: ConstructionMode::Plain,
+                            },
+                            wrapper_ty.clone(),
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::Direct(FunctionId(1)),
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::Value(move_local(0, wrapper_ty.clone()))],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let program = Program {
+        types: vec![
+            raw_handle_type(file.0, "File"),
+            TypeDef {
+                id: wrapper,
+                name: "FileBox".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "file".to_owned(),
+                        ty: file_ty,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        functions: vec![main, sink],
+        exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
+        prelude: PreludeIds {
+            file: Some(file),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(program.prelude.must_scope_concept.is_none());
+    let errors = program
+        .into_checked()
+        .expect_err("a File obligation cannot escape through a composite ordinary argument");
+    assert!(
+        errors.iter().any(|error| {
+            error.code == MirValidationCode::ObligationShape
+                && error.path == "functions[0].body.statements[1].expression.arguments[0]"
+        }),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn projected_inout_resource_checks_use_the_final_place_type() {
+    let file = TypeId(0);
+    let wrapper = TypeId(1);
+    let file_ty = Type::Nominal(file, Vec::new());
+    let wrapper_ty = Type::Nominal(wrapper, Vec::new());
+    let mut touch_int = function(
+        1,
+        vec![local(0, Type::Int, true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    touch_int.receiver = Some(Receiver::Mutable);
+    let mut touch_file = function(
+        2,
+        vec![local(0, file_ty.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    touch_file.receiver = Some(Receiver::Mutable);
+    let make_main = |field: u32, target: u32| {
+        let mut main = function(
+            0,
+            vec![local(0, wrapper_ty.clone(), true)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Call {
+                            target: CallTarget::Inherent(FunctionId(target)),
+                            type_arguments: Vec::new(),
+                            arguments: vec![CallArgument::InOut(Place {
+                                local: LocalId(0),
+                                projection: vec![field],
+                            })],
+                            witnesses: Vec::new(),
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                }],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        main.receiver = Some(Receiver::Mutable);
+        main
+    };
+    let make_program = |main| Program {
+        types: vec![
+            raw_handle_type(file.0, "File"),
+            TypeDef {
+                id: wrapper,
+                name: "Wrapper".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![
+                        FieldDef {
+                            name: "ordinary".to_owned(),
+                            ty: Type::Int,
+                            span: span(),
+                        },
+                        FieldDef {
+                            name: "resource".to_owned(),
+                            ty: file_ty.clone(),
+                            span: span(),
+                        },
+                    ],
+                    invariant: None,
+                },
+            },
+        ],
+        functions: vec![main, touch_int.clone(), touch_file.clone()],
+        prelude: PreludeIds {
+            file: Some(file),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+
+    validate_program(&make_program(make_main(0, 1)))
+        .expect("a resource container's ordinary projected field remains an ordinary place");
+    let errors = validation_errors(&make_program(make_main(1, 2)));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error.path == "functions[0].body.statements[0].expression.arguments[0]"
+            && error.message.contains("complete active scoped binding")
+    }));
+}
+
+#[test]
+fn canonical_file_obligation_budget_exhaustion_fails_closed_without_marker_proofs() {
+    const NON_RESOURCE_LEAVES: usize = 4_096;
+
+    for with_marker in [false, true] {
+        let file = TypeId(0);
+        let file_ty = Type::Nominal(file, Vec::new());
+        let mut element_types = vec![Type::Int; NON_RESOURCE_LEAVES];
+        element_types.push(file_ty.clone());
+        let return_ty = Type::Tuple(element_types);
+
+        let mut elements = (0..NON_RESOURCE_LEAVES)
+            .map(|_| constant(Constant::Int(0), Type::Int))
+            .collect::<Vec<_>>();
+        elements.push(expr(
+            ExprKind::Record {
+                ty: file,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(42), Type::Int)],
+                construction: ConstructionMode::Plain,
+            },
+            file_ty,
+        ));
+
+        let concepts = with_marker
+            .then(|| ConceptDef {
+                id: ConceptId(0),
+                name: "MustScope".to_owned(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            })
+            .into_iter()
+            .collect();
+        let program = Program {
+            types: vec![raw_handle_type(file.0, "File")],
+            concepts,
+            functions: vec![function(
+                0,
+                Vec::new(),
+                Vec::new(),
+                return_ty.clone(),
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(expr(ExprKind::Tuple(elements), return_ty))),
+                    span: span(),
+                },
+            )],
+            prelude: PreludeIds {
+                file: Some(file),
+                must_scope_concept: with_marker.then_some(ConceptId(0)),
+                ..PreludeIds::default()
+            },
+            ..Program::default()
+        };
+
+        let errors = validate_program(&program)
+            .expect_err("resource analysis budget exhaustion must fail closed");
+        assert!(
+            errors.iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == "functions[0].body.tail"
+            }),
+            "with_marker={with_marker}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn portable_mir_rejects_no_suspend_resource_across_await() {
+    let mut main = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(0, 9),
+                Statement {
+                    kind: StatementKind::Evaluate(sleep_await(1)),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    main.is_async = true;
+    main.suspension_points = vec![SuspensionPoint {
+        state: 1,
+        span: span(),
+        live_locals: vec![LocalId(0)],
+    }];
+    let errors = validation_errors(&resource_program(main, Vec::new(), true));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::SuspensionShape && error.message.contains("NoSuspend")
+    }));
 }
 
 fn float_program(bits: u64) -> CheckedProgram {
@@ -2070,7 +3630,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 20);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 21);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);

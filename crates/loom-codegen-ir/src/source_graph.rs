@@ -485,6 +485,39 @@ fn scan_block_with_flow<'mir>(
                     false
                 }
             }
+            StatementKind::Scoped {
+                local,
+                value,
+                disposal,
+            } => {
+                let witnesses = expression_witnesses(value, flow);
+                if scan_expr(value, edges, flow, active_cleanups) {
+                    flow.set(*local, witnesses);
+                    match disposal {
+                        loom_mir::ScopedDisposal::StaticConcept {
+                            requirement,
+                            witness,
+                            ..
+                        } => {
+                            collect_witness(witness, &mut edges.witnesses);
+                            if let Some(witness) = concrete_witness(witness) {
+                                edges.concrete_methods.insert((witness, *requirement));
+                            } else {
+                                edges.dynamic.insert(*requirement);
+                            }
+                        }
+                        loom_mir::ScopedDisposal::FileClose => {
+                            edges.builtins.insert(Builtin::FileClose);
+                        }
+                        loom_mir::ScopedDisposal::SocketClose => {
+                            edges.builtins.insert(Builtin::SocketClose);
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             StatementKind::LetTuple { locals, value } => {
                 let (continues, elements) = match &value.kind {
                     ExprKind::Tuple(elements) if elements.len() == locals.len() => {

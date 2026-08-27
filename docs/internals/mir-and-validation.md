@@ -25,6 +25,12 @@ mode, and dispatch carries explicit proof references.
 Expression IDs form a dense, deterministic preorder within each function.
 They are not source AST identities.
 
+`StatementKind::Scoped` preserves resource lifetime intent as a first-class MIR
+operation. It contains the initializer and either a statically resolved
+`Dispose.dispose` proof or the canonical File/Socket close action. The cleanup
+is registered only after initialization succeeds, belongs to the current
+lexical block, and shares one LIFO stack with `defer`.
+
 ## Validation boundary
 
 `Program::into_checked` consumes unchecked MIR and returns `CheckedProgram`
@@ -51,7 +57,9 @@ Validation covers:
 - concept definitions, requirement schemas, witnesses, associated bindings,
   prerequisites, and method slots;
 - error-type confinement and source nesting limits;
-- Task obligations, suspension shapes, and exact live-slot maps.
+- Task obligations, suspension shapes, and exact live-slot maps;
+- canonical `Dispose`, `MustScope`, and `NoSuspend` prelude identities, plus
+  independent affine resource-flow and cleanup-stack validation.
 
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
@@ -149,7 +157,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `20`;
+- artifact version `21`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
@@ -158,7 +166,7 @@ numeric encodings, the entry, and the complete MIR program.
 
 Portable library artifacts use a separate versioned envelope (`.loomlib`
 version `1`) around checked MIR and package/public-interface metadata. Its
-nested checked-MIR envelope is version `20` and uses the construction
+nested checked-MIR envelope is version `21` and uses the construction
 proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project

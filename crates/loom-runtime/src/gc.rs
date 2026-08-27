@@ -372,6 +372,9 @@ fn enter_runtime(runtime: *mut LoomRuntime) -> bool {
         return false;
     }
     if current_depth == 0 {
+        // SAFETY: the successful active_depth transition above gives this
+        // thread the outer generated-code interval for this runtime.
+        unsafe { (*runtime).begin_sync_fault_scope() };
         ACTIVE_RUNTIME.with(|active| active.set(runtime));
     }
     // SAFETY: the successful atomic transition either acquired an inactive

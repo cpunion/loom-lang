@@ -7,8 +7,8 @@ use loom_mir::{
     ConceptId, Constant, ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue,
     Expr, ExprId, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MirValidationCode,
     Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness,
-    WitnessId, WitnessRef,
+    ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef,
+    VariantId, Witness, WitnessId, WitnessRef,
 };
 
 fn checked(mut program: Program) -> CheckedProgram {
@@ -48,6 +48,292 @@ fn copy(place: Place, ty: Type) -> Expr {
         ty,
         span: span(),
     }
+}
+
+#[allow(clippy::too_many_lines)]
+fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgram {
+    let resource = Type::Nominal(TypeId(0), Vec::new());
+    let resource_value = |raw| Expr {
+        id: ExprId::UNASSIGNED,
+        kind: ExprKind::Record {
+            ty: TypeId(0),
+            type_arguments: Vec::new(),
+            fields: vec![constant(Constant::Int(raw), Type::Int)],
+            construction: ConstructionMode::Plain,
+        },
+        ty: resource.clone(),
+        span: span(),
+    };
+    let scoped = |local, raw| Statement {
+        kind: StatementKind::Scoped {
+            local: LocalId(local),
+            value: resource_value(raw),
+            disposal: ScopedDisposal::StaticConcept {
+                requirement: RequirementId(0),
+                witness: WitnessRef::Concrete(WitnessId(0)),
+                dispatch_type: resource.clone(),
+            },
+        },
+        span: span(),
+    };
+    let raw = || {
+        copy(
+            Place {
+                local: LocalId(0),
+                projection: vec![0],
+            },
+            Type::Int,
+        )
+    };
+    let equals = |value| Expr {
+        id: ExprId::UNASSIGNED,
+        kind: ExprKind::Binary(
+            BinaryOp::Equal,
+            Box::new(raw()),
+            Box::new(constant(Constant::Int(value), Type::Int)),
+        ),
+        ty: Type::Bool,
+        span: span(),
+    };
+    let assertion_fault = Expr {
+        id: ExprId::UNASSIGNED,
+        kind: ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Assert {
+                    condition: constant(Constant::Bool(false), Type::Bool),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        }),
+        ty: Type::Unit,
+        span: span(),
+    };
+    let integer_fault = Expr {
+        id: ExprId::UNASSIGNED,
+        kind: ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Binary(
+                        BinaryOp::Divide,
+                        Box::new(constant(Constant::Int(1), Type::Int)),
+                        Box::new(constant(Constant::Int(0), Type::Int)),
+                    ),
+                    ty: Type::Int,
+                    span: span(),
+                }),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        }),
+        ty: Type::Unit,
+        span: span(),
+    };
+    let dispose = Function {
+        id: FunctionId(0),
+        name: "standard.resource.Resource.dispose".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, "self", resource.clone(), true)],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: Some(Receiver::Mutable),
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
+                kind: ExprKind::If {
+                    condition: Box::new(equals(0)),
+                    then_branch: Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                        span: span(),
+                    },
+                    else_branch: Block {
+                        statements: Vec::new(),
+                        tail: Some(Box::new(Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::If {
+                                condition: Box::new(equals(1)),
+                                then_branch: Block {
+                                    statements: Vec::new(),
+                                    tail: Some(Box::new(assertion_fault)),
+                                    span: span(),
+                                },
+                                else_branch: Block {
+                                    statements: Vec::new(),
+                                    tail: Some(Box::new(integer_fault)),
+                                    span: span(),
+                                },
+                            },
+                            ty: Type::Unit,
+                            span: span(),
+                        })),
+                        span: span(),
+                    },
+                },
+                ty: Type::Unit,
+                span: span(),
+            })),
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    };
+    let main = Function {
+        id: FunctionId(1),
+        name: "main".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: vec![
+            local(0, "outer", resource.clone(), true),
+            local(1, "inner", resource.clone(), true),
+        ],
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![
+                scoped(0, outer_raw),
+                Statement {
+                    kind: StatementKind::Evaluate(Expr {
+                        id: ExprId::UNASSIGNED,
+                        kind: ExprKind::Block(Block {
+                            statements: vec![scoped(1, inner_raw)],
+                            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                            span: span(),
+                        }),
+                        ty: Type::Unit,
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    };
+    checked(Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "standard.resource.Resource".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".into(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        concepts: vec![
+            ConceptDef {
+                id: ConceptId(0),
+                name: "Dispose".into(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: vec![RequirementId(0)],
+            },
+            ConceptDef {
+                id: ConceptId(1),
+                name: "MustScope".into(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+            ConceptDef {
+                id: ConceptId(2),
+                name: "NoSuspend".into(),
+                span: span(),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+        ],
+        requirements: vec![RequirementDef {
+            id: RequirementId(0),
+            concept: ConceptId(0),
+            name: "dispose".into(),
+            span: span(),
+            receiver: Some(Receiver::Mutable),
+            method_type_parameters: 0,
+            params: vec![RequirementType::SelfType],
+            return_ty: RequirementType::Unit,
+            witness_params: Vec::new(),
+        }],
+        functions: vec![dispose, main],
+        witnesses: vec![
+            Witness {
+                id: WitnessId(0),
+                concept: ConceptId(0),
+                concrete: resource.clone(),
+                methods: BTreeMap::from([(RequirementId(0), FunctionId(0))]),
+                associated: BTreeMap::new(),
+                type_parameters: 0,
+                prerequisites: Vec::new(),
+            },
+            Witness {
+                id: WitnessId(1),
+                concept: ConceptId(1),
+                concrete: resource,
+                methods: BTreeMap::new(),
+                associated: BTreeMap::new(),
+                type_parameters: 0,
+                prerequisites: Vec::new(),
+            },
+        ],
+        prelude: PreludeIds {
+            dispose_concept: Some(ConceptId(0)),
+            dispose_requirement: Some(RequirementId(0)),
+            must_scope_concept: Some(ConceptId(1)),
+            no_suspend_concept: Some(ConceptId(2)),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    })
+}
+
+#[test]
+fn scoped_cleanups_are_lexical_lifo_and_preserve_the_primary_fault() {
+    let program = scoped_cleanup_fault_program(1, 0);
+    let mut interpreter = Interpreter::new(&program);
+    let failure = interpreter
+        .invoke(FunctionId(1), Vec::new(), span())
+        .expect_err("the outer lexical cleanup must still run after the inner cleanup");
+    assert!(matches!(
+        failure,
+        ExecutionFailure::Contract { fault }
+            if fault.code == "AssertionFault"
+    ));
+
+    let program = scoped_cleanup_fault_program(1, 2);
+    let mut interpreter = Interpreter::new(&program);
+    let failure = interpreter
+        .invoke(FunctionId(1), Vec::new(), span())
+        .expect_err("both lexical cleanups fault");
+    assert!(
+        matches!(
+            &failure,
+            ExecutionFailure::Runtime { fault }
+                if fault.code == "IntegerDivisionByZero"
+        ),
+        "{failure:?}"
+    );
 }
 
 #[test]

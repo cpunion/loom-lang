@@ -2895,12 +2895,12 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 20);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 21);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         assert!(
             context
                 .frontend_identity
-                .ends_with("/loom.interpreted-mir-20"),
+                .ends_with("/loom.interpreted-mir-21"),
             "{}",
             context.frontend_identity
         );
