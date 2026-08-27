@@ -1604,7 +1604,7 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
         .collect::<Vec<_>>()
         .join(", ");
     let pressure = format!(
-        "record Wide {{\n    text Text\n{fields}\n}}\n\nfn forcedLists() Bool {{\n    let kept = join(\"Rel\", \"ocated\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = [{repeated}]\n    let alias = values\n    values.add(wide)\n    let trigger = [{repeated}]\n    (trigger.length() == 129\n        && values.length() == 130\n        && alias.length() == 129\n        && match values.get(129) {{ Some(item) => item.text == \"Relocated\", None => false }}\n        && match alias.get(0) {{ Some(item) => item.text == \"Relocated\", None => false }})\n}}\n\n"
+        "record Wide {{\n    text Text\n{fields}\n}}\n\nfn forcedLists() Bool {{\n    let kept = join(\"Rel\", \"ocated\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = [{repeated}]\n    let alias = values\n    values.add(wide)\n    let trigger = [{repeated}]\n    (trigger.length() == 129\n        && values.length() == 130\n        && alias.length() == 129\n        && match values.get(129) {{ Some(item) => item.text == \"Relocated\", None => false }}\n        && match alias.get(0) {{ Some(item) => item.text == \"Relocated\", None => false }})\n}}\n\nfn uniqueForcedLists() Bool {{\n    let kept = join(\"Uni\", \"que\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = List[Wide]()\n    for index in 0..130 {{\n        values.add(wide)\n        Unit\n    }}\n    (values.length() == 130\n        && match values.get(0) {{ Some(item) => item.text == \"Unique\", None => false }}\n        && match values.get(129) {{ Some(item) => item.text == \"Unique\", None => false }})\n}}\n\n"
     );
     let source = include_str!("../../../fixtures/lcir-managed-lists/main.loom")
         .replace(
@@ -1613,7 +1613,7 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
         )
         .replace(
             "    verdict(\n",
-            "    verdict(\n        forcedLists()\n        && ",
+            "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
         );
     let program = compile_source(&source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -1629,6 +1629,7 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
     for required in [
         "list.construct",
         "list.append",
+        "list.append.unique",
         "list.length",
         "list.get",
         "sum.switch",
@@ -1673,6 +1674,54 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
             native.ir
         );
     }
+
+    let unique = emitted_lcir_function(&native.ir, &artifact, "uniqueForcedLists");
+    for required in [
+        "list.append.unique.can_reuse",
+        "list.append.unique.reuse",
+        "list.append.unique.grow",
+        "managed.root.reload",
+    ] {
+        assert!(unique.contains(required), "missing `{required}`:\n{unique}");
+    }
+    assert_eq!(
+        unique.matches("@loom_gc_typed_repeated_alloc_v1").count(),
+        1,
+        "one loop append site must contain one conditional allocator call:\n{unique}"
+    );
+    let shared = emitted_lcir_function(&native.ir, &artifact, "forcedLists");
+    assert!(
+        !shared.contains("list.append.unique.reuse"),
+        "the aliased append must remain immutable:\n{shared}"
+    );
+
+    let release_directory = tempfile::tempdir().expect("create release List directory");
+    let release_object = release_directory.path().join("managed-lists-release.o");
+    let release_ir_path = release_directory.path().join("managed-lists-release.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &release_object,
+        &NativeObjectOptions {
+            emit_ir: Some(release_ir_path.clone()),
+            optimization: OptimizationProfile::Release,
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit release managed-List object");
+    let release_ir = std::fs::read_to_string(release_ir_path).expect("read release List IR");
+    let release_unique = emitted_lcir_function(&release_ir, &artifact, "uniqueForcedLists");
+    assert_eq!(
+        release_unique
+            .matches("@loom_gc_typed_repeated_alloc_v1")
+            .count(),
+        1,
+        "release loop must retain one conditional allocator call site:\n{release_unique}"
+    );
+    assert!(
+        release_unique.contains("list.append.unique.can_reuse")
+            || (release_unique.contains("icmp") && release_unique.contains("br i1")),
+        "release IR lost the capacity reuse guard:\n{release_unique}"
+    );
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create managed-List target directory");

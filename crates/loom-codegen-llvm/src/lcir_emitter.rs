@@ -3881,9 +3881,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::ListConstruct { elements } => {
                 one(self.emit_list_construct(instruction, elements)?.into())
             }
-            InstructionKind::ListAppend { list, value }
-            | InstructionKind::ListAppendUnique { list, value } => {
-                one(self.emit_list_append(instruction, *list, *value)?.into())
+            InstructionKind::ListAppend { list, value } => {
+                one(self.emit_list_append(instruction, *list, *value, false)?.into())
+            }
+            InstructionKind::ListAppendUnique { list, value } => {
+                one(self.emit_list_append(instruction, *list, *value, true)?.into())
             }
             InstructionKind::ListLength { list } => one(self.emit_list_length(*list)?.into()),
             InstructionKind::ListGet { list, index } => {
@@ -4467,6 +4469,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         instruction: &Instruction,
         list: ValueId,
         value: ValueId,
+        unique: bool,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let result = instruction
             .results()
@@ -4533,15 +4536,131 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             )
             .map_err(builder_error)?
             .into_int_value();
-        let object = self.allocate_list(
+        if unique {
+            let source = self.current_block()?;
+            let function = source.get_parent().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "List.append has no function")
+            })?;
+            let reuse = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.reuse");
+            let grow = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.grow");
+            let merge = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.merge");
+            let non_null = self
+                .backend
+                .builder
+                .build_is_not_null(old_object, "list.append.unique.non_null")
+                .map_err(builder_error)?;
+            let has_capacity = self
+                .backend
+                .builder
+                .build_not(needs_growth, "list.append.unique.has_capacity")
+                .map_err(builder_error)?;
+            let can_reuse = self
+                .backend
+                .builder
+                .build_and(non_null, has_capacity, "list.append.unique.can_reuse")
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_conditional_branch(can_reuse, reuse, grow)
+                .map_err(builder_error)?;
+
+            self.backend.builder.position_at_end(reuse);
+            let appended = self.value(value)?;
+            self.store_list_element(
+                &layout,
+                old_object,
+                old_length,
+                appended,
+                "list.append.unique.element",
+            )?;
+            let length_pointer = self.list_field_pointer(
+                &layout,
+                old_object,
+                0,
+                "list.append.unique.store_length",
+            )?;
+            self.backend
+                .builder
+                .build_store(length_pointer, new_length)
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(merge)
+                .map_err(builder_error)?;
+            let reuse_end = self.current_block()?;
+
+            self.backend.builder.position_at_end(grow);
+            let object = self.emit_allocating_list_append(
+                instruction,
+                list,
+                value,
+                result,
+                ty,
+                &layout,
+                old_length,
+                new_length,
+                new_capacity,
+            )?;
+            self.backend
+                .builder
+                .build_unconditional_branch(merge)
+                .map_err(builder_error)?;
+            let grow_end = self.current_block()?;
+
+            self.backend.builder.position_at_end(merge);
+            let object_phi = self
+                .backend
+                .builder
+                .build_phi(self.backend.ptr_type, "list.append.unique.result")
+                .map_err(builder_error)?;
+            object_phi.add_incoming(&[(&old_object, reuse_end), (&object, grow_end)]);
+            return Ok(object_phi.as_basic_value().into_pointer_value());
+        }
+
+        self.emit_allocating_list_append(
+            instruction,
+            list,
+            value,
+            result,
             ty,
             &layout,
+            old_length,
+            new_length,
+            new_capacity,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_allocating_list_append(
+        &self,
+        instruction: &Instruction,
+        list: ValueId,
+        value: ValueId,
+        result: ValueId,
+        ty: ValueTypeId,
+        layout: &ListLayout<'ctx>,
+        old_length: IntValue<'ctx>,
+        new_length: IntValue<'ctx>,
+        new_capacity: IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let object = self.allocate_list(
+            ty,
+            layout,
             new_capacity,
             result,
             ManagedSafepoint::Instruction(instruction.id()),
             "list.append",
         )?;
-        self.store_list_header(&layout, object, new_length, new_capacity)?;
+        self.store_list_header(layout, object, new_length, new_capacity)?;
 
         // Reload the old base only after allocation. Selecting the fresh object
         // for an empty/null source keeps even zero-byte memcpy away from null.
@@ -4560,8 +4679,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             )
             .map_err(builder_error)?
             .into_pointer_value();
-        let source = self.list_field_pointer(&layout, copy_source, 2, "list.append.source")?;
-        let destination = self.list_field_pointer(&layout, object, 2, "list.append.destination")?;
+        let source = self.list_field_pointer(layout, copy_source, 2, "list.append.source")?;
+        let destination = self.list_field_pointer(layout, object, 2, "list.append.destination")?;
         let copy_bytes = self
             .backend
             .builder
@@ -4585,7 +4704,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             )
             .map_err(builder_error)?;
         let appended = self.value(value)?;
-        self.store_list_element(&layout, object, old_length, appended, "list.append.element")?;
+        self.store_list_element(layout, object, old_length, appended, "list.append.element")?;
         Ok(object)
     }
 
