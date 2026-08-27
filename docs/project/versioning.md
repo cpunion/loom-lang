@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `21` |
-| LCIR artifact identity | schema `22` |
-| LCIR native-object domain | `loom-lcir-native-object-v18` |
+| LCIR textual dump | version `22` |
+| LCIR artifact identity | schema `23` |
+| LCIR native-object domain | `loom-lcir-native-object-v19` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v23` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v24` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `15` |
@@ -181,15 +181,16 @@ typed shadow stack, so native runtime ABI component 14, `runtime-v8`, and
 Collision-free closed-sum carrier planning adds no opcode or runtime entry
 point. The checked representation graph already identifies each exact sum;
 the LLVM target-data plan now assigns variant offsets by pointer/non-pointer
-byte class so repeated descriptors remain precise. The backend build
-fingerprint includes this planner implementation and invalidates cached native
-objects produced by the old overlapping layout. Existing `typed-repeated-v1`,
-typed shadow-stack, Text, and GC wires are reused, so the current LCIR dump,
-artifact schema, native-object domain, object-cache domain, and native runtime
-ABI component do not change for this emitter-only correction. Canonical Json
-is admitted through its List/TextMap cycle breakers and remains 24 bytes on
-supported 64-bit targets. Json equality and typed parse/format are separate
-versioning decisions.
+byte class so repeated descriptors remain precise. Target-specific carrier
+offsets remain emitter-private, but the compiler-private boundary advances
+monotonically from finite dynamic catalogs: LCIR dump 22, artifact schema 23,
+native-object domain v19, and LLVM object-cache domain v24 prevent a checked
+artifact or native object planned with the old overlapping carrier from
+sharing the corrected domain. Existing `typed-repeated-v1`, typed shadow-stack,
+Text, and GC wires are reused, so native runtime ABI component 15 does not
+change. Canonical Json is admitted through its List/TextMap cycle breakers and
+remains 24 bytes on supported 64-bit targets. Json equality and typed
+parse/format are separate versioning decisions.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

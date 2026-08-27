@@ -77,8 +77,10 @@ artifact, or runtime compatibility.
   object emission, 32-bit fail-closed classification, and real
   `check/build/test/run`. The implementation reuses the existing repeated
   allocator and shadow stack; it adds no universal value, executor, registry,
-  or runtime symbol. Json equality, parsing, and formatting remain separate
-  typed-LCIR slices.
+  or runtime symbol. The compiler-private identity advances monotonically to
+  LCIR dump 22, artifact schema 23, native-object domain v19, and LLVM
+  object-cache domain v24. Json equality, parsing, and formatting remain
+  separate typed-LCIR slices.
 - Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
   `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;

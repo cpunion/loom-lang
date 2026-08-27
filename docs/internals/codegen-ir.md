@@ -372,7 +372,6 @@ Task handle/creation, suspension edge, and exact frame-root rows are encoded
 directly in the dump. TextMap reuses `typed-repeated-v1`; coroutines reuse
 typed-task v1 and the existing scheduler/join ABI. Native runtime component 15,
 `runtime-v9`, `text-v3`, and `gc-v9` therefore remain unchanged.
-
 Artifact-closed finite dynamic catalogs then advance the artifact identity to
 schema 22, the dump to `lcir 21`, the LCIR native-object domain to
 `loom-lcir-native-object-v18`, and the CLI object-cache domain to
@@ -381,6 +380,13 @@ exact box through the existing typed fixed-object allocator. `dyn.switch`
 validates and branches over the complete ordered candidate catalog, with one
 exact concrete payload block parameter per arm. The runtime ABI remains
 component 15.
+
+Collision-free closed-sum carrier planning then advances the compiler-private
+artifact identity to schema 23, the dump to `lcir 22`, the LCIR native-object
+domain to `loom-lcir-native-object-v19`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v24`. Target byte offsets remain emitter-private, but
+the monotonic identity boundary prevents a checked artifact or native object
+planned with the old overlapping carrier from sharing the corrected domain.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -904,7 +910,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 21` text includes
+text even when the graphs are otherwise equivalent. The `lcir 22` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
