@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 28")?;
+    writeln!(output, "lcir 29")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -414,6 +414,9 @@ fn write_instruction(
             write_arguments(output, tasks)?;
             write!(output, ")")
         }
+        InstructionKind::TaskOutcomeTake { task } => {
+            write!(output, "task.outcome_take %{task}")
+        }
     }
 }
 
@@ -536,8 +539,8 @@ fn write_terminator(
             write_arguments(output, tasks)?;
             write!(output, "), normal ")?;
             let result_count = match mode {
-                AwaitMode::All => tasks.len(),
-                AwaitMode::Any => 1,
+                AwaitMode::All | AwaitMode::Settled => tasks.len(),
+                AwaitMode::Any | AwaitMode::Race => 1,
             };
             write_await_result_target(output, normal, result_count)?;
             write!(output, ", fault ")?;
@@ -635,6 +638,8 @@ const fn await_mode_name(mode: AwaitMode) -> &'static str {
     match mode {
         AwaitMode::All => "all",
         AwaitMode::Any => "any",
+        AwaitMode::Settled => "settled",
+        AwaitMode::Race => "race",
     }
 }
 

@@ -9,13 +9,14 @@ use std::slice;
 use loom_runtime_abi::{
     GC_INVALID_ARGUMENT, GC_OK, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
     LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
-    LoomGcObjectDescriptor, LoomLayoutDescriptor, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
-    TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, VALUE_SLOT_WORDS,
-    VALUE_TAG_TEXT, VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR,
-    VALUE_WORD_TAG, VALUE_WORD_WITNESS,
+    LoomGcObjectDescriptor, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
+    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE,
+    TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
+    VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
+    VALUE_WORD_WITNESS,
 };
 
-use crate::gc::allocate_typed_object;
+use crate::gc::{allocate_typed_object, typed_root_pop_v1, typed_root_push_v1};
 use crate::scheduler::ValueSlot;
 
 /// The one process-wide descriptor referenced by dynamic and literal Text
@@ -194,6 +195,89 @@ pub(crate) unsafe fn allocate_typed_text(
         output.write(allocated);
     }
     GC_OK
+}
+
+/// Publishes two independent managed Text values while keeping the first
+/// allocation live across the second allocation's moving-GC safepoint.
+///
+/// The byte slices must remain stable for the complete call. Scheduler-owned
+/// typed fault strings satisfy that contract because Task storage is not part
+/// of the moving heap. Output cells are cleared on every recoverable failure.
+pub(crate) unsafe fn allocate_typed_text_pair(
+    first: &[u8],
+    second: &[u8],
+    first_output: *mut *mut c_void,
+    second_output: *mut *mut c_void,
+) -> i32 {
+    let output_aligned = |output: *mut *mut c_void| {
+        !output.is_null() && output.addr().is_multiple_of(align_of::<*mut c_void>())
+    };
+    if !output_aligned(first_output)
+        || !output_aligned(second_output)
+        || first_output == second_output
+    {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe {
+        first_output.write(ptr::null_mut());
+        second_output.write(ptr::null_mut());
+    }
+    let (Ok(first_text), Ok(second_text)) =
+        (std::str::from_utf8(first), std::str::from_utf8(second))
+    else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let (Ok(first_scalars), Ok(second_scalars)) = (
+        u64::try_from(first_text.chars().count()),
+        u64::try_from(second_text.chars().count()),
+    ) else {
+        return GC_INVALID_ARGUMENT;
+    };
+
+    let live_bitmaps = [3_u64];
+    let descriptor = LoomGcTypedRootDescriptor {
+        abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+        flags: 0,
+        slot_count: 2,
+        state_count: 1,
+        live_bitmap_words: 1,
+        live_bitmaps: live_bitmaps.as_ptr(),
+    };
+    let slots = [
+        first_output.cast::<c_void>(),
+        second_output.cast::<c_void>(),
+    ];
+    let mut frame = LoomGcTypedRootFrame {
+        abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+        flags: 0,
+        state: 0,
+        descriptor: &raw const descriptor,
+        slots: slots.as_ptr(),
+        previous: ptr::null_mut(),
+    };
+    let push_status = unsafe { typed_root_push_v1(&raw mut frame) };
+    if push_status != GC_OK {
+        return push_status;
+    }
+
+    let first_status = unsafe { allocate_typed_text(first, first_scalars, first_output) };
+    let status = if first_status == GC_OK {
+        unsafe { allocate_typed_text(second, second_scalars, second_output) }
+    } else {
+        first_status
+    };
+    if unsafe { typed_root_pop_v1(&raw mut frame) } != GC_OK {
+        // Returning would leave the active root chain pointing into this stack
+        // frame, so a root protocol defect is necessarily process-fatal.
+        std::process::abort();
+    }
+    if status != GC_OK {
+        unsafe {
+            first_output.write(ptr::null_mut());
+            second_output.write(ptr::null_mut());
+        }
+    }
+    status
 }
 
 /// Allocates a managed Text object after validating UTF-8 and caching its

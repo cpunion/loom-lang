@@ -445,23 +445,250 @@ pub async fn main() Unit {
             .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
     );
 
-    let settled = r"module settled_task_join
+    let terminal = r#"module terminal_task_joins
+
+async fn child(value Int) Int { value }
+async fn label() Text { "two" }
+
+pub async fn main() Unit {
+    discard Task.settled(child(1), label()).await
+    discard Task.race(child(1), child(2)).await
+}
+"#;
+    let LoweringOutcome::Complete(terminal) = lower_run(terminal) else {
+        panic!("immediately awaited fixed Task.settled/race must lower through typed LCIR")
+    };
+    let main = terminal
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(instruction.kind(), InstructionKind::TaskOutcomeTake { .. })
+            })
+            .count(),
+        3,
+        "settled takes every terminal child and race takes only its winner"
+    );
+    let dump = dump_program(terminal.program());
+    assert!(dump.contains("await_tasks settled state 1"), "{dump}");
+    assert!(dump.contains("await_tasks race state 2"), "{dump}");
+}
+
+#[test]
+fn sole_nonempty_task_list_literals_expand_to_fixed_rows_without_input_list_values() {
+    let source = r"module static_task_list_joins
 
 async fn child(value Int) Int { value }
 
 pub async fn main() Unit {
-    discard Task.settled(child(1), child(2)).await
+    discard Task.all([child(1), child(2)]).await
+    discard Task.any([child(3), child(4)]).await
+    discard Task.settled([child(5), child(6)]).await
+    discard Task.race([child(7), child(8)]).await
 }
 ";
-    let LoweringOutcome::Unsupported(settled) = lower_run(settled) else {
-        panic!("Task.settled must remain one whole-artifact fallback")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("all four sole nonempty Task List literals must lower as fixed rows")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let awaits = main
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::AwaitTasks {
+                    mode,
+                    tasks,
+                    normal,
+                    ..
+                }) => {
+                    let result_width = match mode {
+                        AwaitMode::All | AwaitMode::Settled => tasks.len(),
+                        AwaitMode::Any | AwaitMode::Race => 1,
+                    };
+                    let result_types = main
+                        .block(normal.block)
+                        .expect("await normal block")
+                        .params()
+                        .iter()
+                        .take(result_width)
+                        .map(|parameter| {
+                            main.value(*parameter)
+                                .and_then(|value| artifact.representations().value_type(value.ty()))
+                                .map(|value| value.semantic().clone())
+                                .expect("await normal parameter type")
+                        })
+                        .collect::<Vec<_>>();
+                    Some((*mode, tasks.len(), result_types))
+                }
+                _ => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(
+        awaits,
+        [
+            (AwaitMode::All, 2, vec![Type::Int, Type::Int]),
+            (AwaitMode::Any, 2, vec![Type::Int]),
+            (
+                AwaitMode::Settled,
+                2,
+                vec![
+                    Type::Task(Box::new(Type::Int)),
+                    Type::Task(Box::new(Type::Int)),
+                ],
+            ),
+            (AwaitMode::Race, 2, vec![Type::Task(Box::new(Type::Int))],),
+        ]
+    );
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(instruction.kind(), InstructionKind::ListConstruct { .. })
+            })
+            .count(),
+        2,
+        "only all/settled output Lists are materialized; no input List[Task] exists in LCIR"
+    );
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(instruction.kind(), InstructionKind::TaskOutcomeTake { .. })
+            })
+            .count(),
+        3
+    );
+    assert!(
+        main.instructions().iter().all(|instruction| {
+            !matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. })
+        })
+    );
+    assert!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .iter()
+            .all(|suspension| suspension.awaited().len() == 2)
+    );
+}
+
+#[test]
+fn empty_and_stored_task_list_joins_remain_whole_artifact_fallbacks() {
+    let empty = r"module empty_task_list_join
+
+pub async fn main() Unit {
+    discard Task.all(List[Task[Int]]()).await
+}
+";
+    let LoweringOutcome::Unsupported(empty) = lower_run(empty) else {
+        panic!("an empty Task List must not masquerade as a fixed runtime-length join")
+    };
+    assert!(empty.items().iter().any(|item| {
+        matches!(
+            item.feature(),
+            UnsupportedFeature::TaskOperation | UnsupportedFeature::Suspension
+        )
+    }));
+
+    let stored = r"module stored_task_list_join
+
+async fn child(value Int) Int { value }
+
+pub async fn main() Unit {
+    let pending = Task.all([child(1), child(2)])
+    discard pending.await
+}
+";
+    let LoweringOutcome::Unsupported(stored) = lower_run(stored) else {
+        panic!("a stored List join must remain a first-class dynamic-List fallback")
     };
     assert!(
-        settled
+        stored
             .items()
             .iter()
-            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+            .any(|item| item.feature() == UnsupportedFeature::TaskOperation)
     );
+}
+
+#[test]
+fn task_fault_accessors_lower_to_direct_product_extracts() {
+    let source = r"module task_fault_accessors
+
+async fn broken() Int {
+    assert false
+    0
+}
+
+async fn child() Int { 1 }
+
+pub async fn main() Unit {
+    let outcome = Task.race([broken(), child()]).await
+    match outcome {
+        Completed(_) => Unit
+        Faulted(fault) => {
+            discard fault.code()
+            discard fault.message()
+            Unit
+        }
+        Cancelled => Unit
+    }
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("canonical TaskFault code/message accessors must lower through typed LCIR")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let fields = main
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::ProductExtract { field, .. } => Some(*field),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(fields.contains(&0), "TaskFault.code must extract field 0");
+    assert!(
+        fields.contains(&1),
+        "TaskFault.message must extract field 1"
+    );
+}
+
+#[test]
+fn core03_task_list_joins_are_complete_for_run_and_tests() {
+    let program = compile(include_str!("../../../examples/core03/tasks.loom"));
+    for (route, request) in [
+        (
+            "run",
+            SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+        ),
+        ("tests", SourceArtifactRequest::Tests),
+    ] {
+        let outcome = lower_typed_artifact(
+            &program,
+            &request,
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect("lower Core03 tasks artifact");
+        let LoweringOutcome::Complete(_) = outcome else {
+            panic!("Core03 {route} must have zero LCIR fallback items: {outcome:?}")
+        };
+    }
 }
 
 #[test]

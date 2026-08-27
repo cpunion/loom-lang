@@ -743,6 +743,12 @@ impl ArtifactValidator<'_> {
                             let result_index = match mode {
                                 AwaitMode::All => Some(index),
                                 AwaitMode::Any => (index == 0).then_some(0),
+                                // These modes inject affine terminal Task
+                                // handles, not child Text values. The explicit
+                                // task.outcome_take instruction requires the
+                                // managed Text representation and therefore
+                                // never participates in this immortal proof.
+                                AwaitMode::Settled | AwaitMode::Race => None,
                             };
                             if output_is_text
                                 && let Some(result_index) = result_index
@@ -760,8 +766,8 @@ impl ArtifactValidator<'_> {
                             normal.block,
                             &normal.arguments,
                             match mode {
-                                AwaitMode::All => tasks.len(),
-                                AwaitMode::Any => 1,
+                                AwaitMode::All | AwaitMode::Settled => tasks.len(),
+                                AwaitMode::Any | AwaitMode::Race => 1,
                             },
                         );
                         mark_text_target(

@@ -37,7 +37,8 @@ use loom_codegen_ir::{
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
     ManagedRootPlan, ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr,
-    ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
+    ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
     TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
     plan_managed_roots,
 };
@@ -57,15 +58,16 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
     GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
     PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_PENDING,
-    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
-    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
+    TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND,
+    TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
     TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
     TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
     TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
     TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
     TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -4502,6 +4504,26 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn typed_task_take_outcome(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_TASK_TAKE_OUTCOME_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_TASK_TAKE_OUTCOME_SYMBOL, function_type, None)
+            })
+    }
+
     fn take_typed_task_result_exact(
         &self,
         child: PointerValue<'ctx>,
@@ -6653,7 +6675,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
         self.backend.builder.position_at_end(faulted);
         match plan_row.mode() {
-            AwaitMode::All => self.activate_coroutine_fault()?,
+            AwaitMode::All | AwaitMode::Settled | AwaitMode::Race => {
+                self.activate_coroutine_fault()?;
+            }
             AwaitMode::Any => self.activate_coroutine_any_fault(origin)?,
         }
         self.emit_coroutine_live_branch(
@@ -6673,8 +6697,17 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.emit_coroutine_step_return(TASK_FAULTED)?;
 
         self.backend.builder.position_at_end(completed);
-        if plan_row.mode() == AwaitMode::Any {
-            return self.emit_coroutine_any_result(plan_row, layout_row, normal);
+        match plan_row.mode() {
+            AwaitMode::Any => {
+                return self.emit_coroutine_any_result(plan_row, layout_row, normal);
+            }
+            AwaitMode::Race => {
+                return self.emit_coroutine_race_handle(plan_row, layout_row, normal);
+            }
+            AwaitMode::Settled => {
+                return self.emit_coroutine_settled_handles(plan_row, layout_row, normal);
+            }
+            AwaitMode::All => {}
         }
         let mut values = Vec::with_capacity(
             layout_row
@@ -6814,6 +6847,166 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 plan_row,
                 layout_row,
                 "task.await.any.live",
+            )?);
+            let predecessor = self.current_block()?;
+            self.add_basic_incoming(normal.block, &values, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(normal.block)?)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
+    fn emit_coroutine_settled_handles(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        normal: &ResultTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Task.settled resume has no active frame")
+        })?;
+        if plan_row.mode() != AwaitMode::Settled
+            || plan_row.awaited().is_empty()
+            || layout_row.child_fields.len() != plan_row.awaited().len()
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "Task.settled state {} has an invalid checked child row",
+                    plan_row.state()
+                ),
+            ));
+        }
+        let mut values = Vec::with_capacity(
+            layout_row
+                .child_fields
+                .len()
+                .saturating_add(layout_row.live_fields.len()),
+        );
+        for (field, index) in layout_row.child_fields.iter().copied().zip(0_u32..) {
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    &format!("task.await.settled.child.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            values.push(
+                self.backend
+                    .builder
+                    .build_load(
+                        self.backend.ptr_type,
+                        child_pointer,
+                        &format!("task.await.settled.child.{index}"),
+                    )
+                    .map_err(builder_error)?,
+            );
+        }
+        values.extend(self.load_coroutine_live_values(
+            plan_row,
+            layout_row,
+            "task.await.settled.live",
+        )?);
+        let predecessor = self.current_block()?;
+        self.add_basic_incoming(normal.block, &values, predecessor)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(self.block(normal.block)?)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_coroutine_race_handle(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        normal: &ResultTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Task.race resume has no active frame")
+        })?;
+        if plan_row.mode() != AwaitMode::Race
+            || plan_row.awaited().is_empty()
+            || layout_row.child_fields.len() != plan_row.awaited().len()
+            || plan_row
+                .awaited()
+                .iter()
+                .any(|output| output != &plan_row.awaited()[0])
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "Task.race state {} has an invalid checked child row",
+                    plan_row.state()
+                ),
+            ));
+        }
+        let winner = call_int(
+            &self.backend.builder,
+            self.backend.task_join_winner(),
+            &[coroutine.task.into()],
+            "task.await.race.winner",
+        )?;
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.race.invalid_winner");
+        let cases = layout_row
+            .child_fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let index = u64::try_from(index).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "Task.race has too many fixed children")
+                })?;
+                Ok((
+                    self.backend.context.i64_type().const_int(index, false),
+                    self.backend
+                        .context
+                        .append_basic_block(self.function, &format!("task.await.race.{index}")),
+                ))
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+        self.backend
+            .builder
+            .build_switch(winner, invalid, &cases)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        self.emit_coroutine_step_return(TASK_FAULTED)?;
+
+        for (field, (_, case)) in layout_row.child_fields.iter().copied().zip(cases) {
+            self.backend.builder.position_at_end(case);
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    "task.await.race.child.pointer",
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .backend
+                .builder
+                .build_load(
+                    self.backend.ptr_type,
+                    child_pointer,
+                    "task.await.race.child",
+                )
+                .map_err(builder_error)?;
+            let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
+            values.push(child);
+            values.extend(self.load_coroutine_live_values(
+                plan_row,
+                layout_row,
+                "task.await.race.live",
             )?);
             let predecessor = self.current_block()?;
             self.add_basic_incoming(normal.block, &values, predecessor)?;
@@ -7049,6 +7242,276 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         }
     }
 
+    /// Consumes one terminal typed child and constructs the exact closed
+    /// `TaskOutcome[T]` selected by its terminal state. The runtime owns the
+    /// only allocating part of this boundary: copying a fault's code and
+    /// message into two managed Text leaves while rooting the first across the
+    /// second allocation. The resulting sum is ordinary LCIR SSA and is
+    /// published into the function's precise root cells before any later
+    /// collecting instruction executes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the checked outcome ABI is emitted as one auditable terminal-state switch"
+    )]
+    fn emit_task_outcome_take(
+        &self,
+        instruction: &Instruction,
+        task: ValueId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let task_ty = self
+            .source
+            .value(task)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "TaskOutcome.take task is missing"))?
+            .ty();
+        let representations = self.backend.artifact.representations();
+        let output = representations
+            .value_type(task_ty)
+            .and_then(|task| match task.semantic() {
+                Type::Task(output) => representations.type_id(output),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "TaskOutcome.take operand is not a canonical typed Task handle",
+                )
+            })?;
+        let outcome = instruction
+            .results()
+            .first()
+            .and_then(|result| self.source.value(*result))
+            .map(loom_codegen_ir::Value::ty)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "TaskOutcome.take result is missing")
+            })?;
+        let fault = self
+            .backend
+            .sum_repr(outcome)?
+            .variants()
+            .get(usize::try_from(TASK_OUTCOME_FAULTED_VARIANT).map_err(|_| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "TaskOutcome Faulted variant overflows usize",
+                )
+            })?)
+            .and_then(|variant| variant.fields().first())
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "TaskOutcome.take result has no canonical Faulted payload",
+                )
+            })?;
+
+        let output_physical = self.backend.llvm_type(output)?;
+        let output_size = self.backend.target_data.get_abi_size(&output_physical);
+        let output_alignment =
+            u64::from(self.backend.target_data.get_abi_alignment(&output_physical));
+        let output_storage = (output_size != 0)
+            .then(|| {
+                self.backend
+                    .builder
+                    .build_alloca(output_physical, "task.outcome.value.storage")
+                    .map_err(builder_error)
+            })
+            .transpose()?;
+        let code_output = self
+            .backend
+            .builder
+            .build_alloca(self.backend.ptr_type, "task.outcome.code.output")
+            .map_err(builder_error)?;
+        let message_output = self
+            .backend
+            .builder
+            .build_alloca(self.backend.ptr_type, "task.outcome.message.output")
+            .map_err(builder_error)?;
+        for cell in [code_output, message_output] {
+            self.backend
+                .builder
+                .build_store(cell, self.backend.ptr_type.const_null())
+                .map_err(builder_error)?;
+        }
+
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_take_outcome(),
+            &[
+                self.value(task)?.into_pointer_value().into(),
+                output_storage
+                    .unwrap_or_else(|| self.backend.ptr_type.const_null())
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(output_size, false)
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(output_alignment, false)
+                    .into(),
+                code_output.into(),
+                message_output.into(),
+            ],
+            "task.outcome.take",
+        )?;
+
+        let completed = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.outcome.completed");
+        let faulted = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.outcome.faulted");
+        let cancelled = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.outcome.cancelled");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.outcome.invalid");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.outcome.merge");
+        self.backend
+            .builder
+            .build_switch(
+                status,
+                invalid,
+                &[
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_COMPLETED as u64, false),
+                        completed,
+                    ),
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_FAULTED as u64, false),
+                        faulted,
+                    ),
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_CANCELLED as u64, false),
+                        cancelled,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], "task.outcome.invalid.trap")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(completed);
+        let completed_payload = if let Some(storage) = output_storage {
+            self.backend
+                .builder
+                .build_load(output_physical, storage, "task.outcome.completed.value")
+                .map_err(builder_error)?
+        } else {
+            self.backend.zero(output)?
+        };
+        let completed_value = self.emit_sum_construct_values(
+            outcome,
+            TASK_OUTCOME_COMPLETED_VARIANT,
+            &[completed_payload],
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+        let completed_predecessor = completed;
+
+        self.backend.builder.position_at_end(faulted);
+        let code = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.ptr_type,
+                code_output,
+                "task.outcome.fault.code",
+            )
+            .map_err(builder_error)?;
+        let message = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.ptr_type,
+                message_output,
+                "task.outcome.fault.message",
+            )
+            .map_err(builder_error)?;
+        let fault_type = self.backend.llvm_type(fault)?.into_struct_type();
+        let fault_value = self
+            .backend
+            .builder
+            .build_insert_value(
+                fault_type.get_undef(),
+                code,
+                0,
+                "task.outcome.fault.code.insert",
+            )
+            .map_err(builder_error)?
+            .into_struct_value();
+        let fault_value = self
+            .backend
+            .builder
+            .build_insert_value(fault_value, message, 1, "task.outcome.fault.message.insert")
+            .map_err(builder_error)?
+            .into_struct_value();
+        let faulted_value = self.emit_sum_construct_values(
+            outcome,
+            TASK_OUTCOME_FAULTED_VARIANT,
+            &[fault_value.into()],
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+        let faulted_predecessor = faulted;
+
+        self.backend.builder.position_at_end(cancelled);
+        let cancelled_value =
+            self.emit_sum_construct_values(outcome, TASK_OUTCOME_CANCELLED_VARIANT, &[])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+        let cancelled_predecessor = cancelled;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.llvm_type(outcome)?, "task.outcome.value")
+            .map_err(builder_error)?;
+        phi.add_incoming(&[
+            (&completed_value, completed_predecessor),
+            (&faulted_value, faulted_predecessor),
+            (&cancelled_value, cancelled_predecessor),
+        ]);
+        Ok(phi.as_basic_value())
+    }
+
     fn emit_coroutine_step_return(&self, step: i32) -> Result<(), CodegenError> {
         self.pop_root_frame()?;
         self.backend
@@ -7198,6 +7661,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             InstructionKind::TaskJoinAll { tasks } => {
                 one(self.emit_task_join_all(instruction, tasks)?.into())
+            }
+            InstructionKind::TaskOutcomeTake { task } => {
+                one(self.emit_task_outcome_take(instruction, *task)?)
             }
             InstructionKind::TextConcat { left, right } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
@@ -10787,7 +11253,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
         let runtime_mode = match mode {
             AwaitMode::All => TASK_JOIN_ALL,
+            AwaitMode::Settled => TASK_JOIN_SETTLED,
             AwaitMode::Any => TASK_JOIN_ANY,
+            AwaitMode::Race => TASK_JOIN_RACE,
         };
         let prepared = call_int(
             &self.backend.builder,

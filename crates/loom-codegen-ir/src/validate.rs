@@ -7,8 +7,9 @@ use loom_mir::Type;
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
-    SumTagRepr, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId,
-    ValueTypeId, ValueTypeKind,
+    SumTagRepr, TASK_FAULT_TYPE_ID, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
+    TASK_OUTCOME_FAULTED_VARIANT, TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget,
+    Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -1861,6 +1862,238 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// Validates the complete compiler/runtime contract for consuming one
+    /// terminal typed child. The nominal ids and ordered physical fields are
+    /// intentionally rechecked here: a target backend may construct the sum
+    /// directly only after this boundary proves that it is the canonical
+    /// `TaskOutcome[T]` backed by the canonical `TaskFault` and managed Text.
+    #[allow(clippy::too_many_lines)]
+    fn validate_task_outcome_take(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        task: ValueId,
+        path: &str,
+    ) {
+        if !Self::task_outcome_take_has_terminal_provenance(function, instruction, task) {
+            self.error(
+                ValidationCode::InvalidTaskOwnership,
+                format!("{path}.task"),
+                "task.outcome_take operand must be a leading normal block parameter produced by exactly one settled or race await_tasks edge",
+            );
+        }
+        let output = self.task_output_type(function, task);
+        if function.value(task).is_some() && output.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task"),
+                "task.outcome_take operand must be a canonical concrete Task handle",
+            );
+        }
+        let output_semantic = output.and_then(|output| {
+            self.program
+                .representations
+                .value_type(output)
+                .map(crate::ValueType::semantic)
+                .cloned()
+        });
+        let outcome_semantic = output_semantic
+            .as_ref()
+            .map(|output| Type::Nominal(TASK_OUTCOME_TYPE_ID, vec![output.clone()]));
+        let expected_outcome = outcome_semantic
+            .as_ref()
+            .and_then(|semantic| self.program.representations.type_id(semantic));
+        if output_semantic.is_some() && expected_outcome.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "task.outcome_take requires the canonical Nominal#7[T] result type",
+            );
+        }
+        self.require_results(function, instruction, &[expected_outcome], path);
+
+        let result_ty = instruction
+            .results()
+            .first()
+            .and_then(|result| function.value(*result))
+            .map(Value::ty);
+        if let (Some(result_ty), Some(outcome_semantic)) = (result_ty, outcome_semantic.as_ref()) {
+            let canonical_result = self
+                .program
+                .representations
+                .value_type(result_ty)
+                .is_some_and(|result| {
+                    result.kind() == ValueTypeKind::Direct
+                        && result.semantic() == outcome_semantic
+                        && self.program.representations.type_id(result.semantic())
+                            == Some(result_ty)
+                });
+            if !canonical_result {
+                self.error(
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.result[0]"),
+                    "task.outcome_take result must use the canonical direct Nominal#7[T] value type",
+                );
+            }
+        }
+
+        let text = self.scalar_type(&Type::Text);
+        let managed_text = text.is_some_and(|text| {
+            self.program
+                .representations
+                .value_type(text)
+                .is_some_and(|value| {
+                    value.kind() == ValueTypeKind::Direct
+                        && value.semantic() == &Type::Text
+                        && self.program.representations.repr(value.repr())
+                            == Some(&Repr::ManagedPointer)
+                })
+        });
+        if !managed_text {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task_fault.text"),
+                "task.outcome_take requires the canonical managed Text representation",
+            );
+        }
+
+        let fault_semantic = Type::Nominal(TASK_FAULT_TYPE_ID, Vec::new());
+        let fault = self.program.representations.type_id(&fault_semantic);
+        let fault_fields = fault.and_then(|fault| {
+            let value = self.program.representations.value_type(fault)?;
+            (value.kind() == ValueTypeKind::Direct
+                && value.semantic() == &fault_semantic
+                && self.program.representations.type_id(value.semantic()) == Some(fault))
+            .then(|| self.product_fields(fault).map(<[ValueTypeId]>::to_vec))
+            .flatten()
+        });
+        let expected_fault_fields = text.map(|text| vec![text, text]);
+        if fault_fields != expected_fault_fields {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task_fault"),
+                "task.outcome_take requires canonical Nominal#6 as direct product (Text, Text)",
+            );
+        }
+
+        if let Some(outcome) = expected_outcome {
+            let variants = self.sum_repr(outcome).and_then(|sum| {
+                self.program.representations.sum(sum).map(|sum| {
+                    sum.variants()
+                        .iter()
+                        .map(|variant| variant.fields().to_vec())
+                        .collect::<Vec<_>>()
+                })
+            });
+            let completed = usize::try_from(TASK_OUTCOME_COMPLETED_VARIANT).ok();
+            let faulted = usize::try_from(TASK_OUTCOME_FAULTED_VARIANT).ok();
+            let cancelled = usize::try_from(TASK_OUTCOME_CANCELLED_VARIANT).ok();
+            let expected_completed = output.map(|output| vec![output]);
+            let expected_faulted = fault.map(|fault| vec![fault]);
+            let exact_variants = variants.as_ref().is_some_and(|variants| {
+                variants.len() == 3
+                    && completed.and_then(|index| variants.get(index))
+                        == expected_completed.as_ref()
+                    && faulted.and_then(|index| variants.get(index)) == expected_faulted.as_ref()
+                    && cancelled
+                        .and_then(|index| variants.get(index))
+                        .is_some_and(Vec::is_empty)
+            });
+            if !exact_variants {
+                self.error(
+                    ValidationCode::InstructionShape,
+                    format!("{path}.result[0]"),
+                    "TaskOutcome must have exactly ordered variants Completed(T), Faulted(TaskFault), Cancelled",
+                );
+            }
+        }
+
+        if function.coroutine().is_none() {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                path,
+                "task.outcome_take requires an active typed-coroutine executor context",
+            );
+        }
+        if !function.effects().contains(Effects::MAY_COLLECT) {
+            self.error(
+                ValidationCode::EffectMismatch,
+                path,
+                "task.outcome_take requires the function's MAY_COLLECT effect",
+            );
+        }
+        if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+            self.error(
+                ValidationCode::EffectMismatch,
+                path,
+                "task.outcome_take requires the function's NEEDS_EXECUTOR effect",
+            );
+        }
+    }
+
+    /// Proves the capability carried by the otherwise ordinary `Task[T]`
+    /// operand. Exactly one incoming edge must define the parameter, that edge
+    /// must be the normal edge of `settled` or `race`, and the take must remain
+    /// in that dedicated normal block. This rejects arbitrary created, returned,
+    /// or forwarded handles whose tasks may still be pending at runtime.
+    fn task_outcome_take_has_terminal_provenance(
+        function: &Function,
+        instruction: &Instruction,
+        task: ValueId,
+    ) -> bool {
+        let Some(value) = function.value(task) else {
+            return false;
+        };
+        let ValueDefinition::BlockParameter { block, index } = value.definition() else {
+            return false;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return false;
+        };
+        if !function
+            .block(block)
+            .is_some_and(|block| block.instructions().contains(&instruction.id()))
+        {
+            return false;
+        }
+
+        let mut incoming = 0_usize;
+        let mut terminal_producer = false;
+        for source in function.blocks() {
+            let Some(terminator) = source.terminator() else {
+                continue;
+            };
+            incoming = incoming.saturating_add(
+                terminator
+                    .control_flow_edges()
+                    .into_iter()
+                    .filter(|edge| edge.block == block)
+                    .count(),
+            );
+            let TerminatorKind::AwaitTasks {
+                mode,
+                tasks,
+                normal,
+                ..
+            } = terminator.kind()
+            else {
+                continue;
+            };
+            if normal.block != block {
+                continue;
+            }
+            let source_task = match mode {
+                AwaitMode::Settled => tasks.get(index),
+                AwaitMode::Race if index == 0 => tasks.first(),
+                AwaitMode::All | AwaitMode::Any | AwaitMode::Race => None,
+            };
+            terminal_producer = source_task
+                .and_then(|task| function.value(*task))
+                .is_some_and(|source| source.ty() == value.ty());
+        }
+        incoming == 1 && terminal_producer
+    }
+
     fn task_output_type(&self, function: &Function, task: ValueId) -> Option<ValueTypeId> {
         function
             .value(task)
@@ -3345,6 +3578,9 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::TaskOutcomeTake { task } => {
+                self.validate_task_outcome_take(function, instruction, *task, &path);
+            }
             InstructionKind::DirectCall { callee, arguments } => {
                 let callee_id = *callee;
                 let Some(callee) = self.program.function(callee_id) else {
@@ -3713,7 +3949,7 @@ impl<'a> Validator<'a> {
                         "await_tasks cannot consume the same child Task more than once",
                     );
                 }
-                let outputs = tasks
+                let (task_types, outputs): (Vec<_>, Vec<_>) = tasks
                     .iter()
                     .copied()
                     .enumerate()
@@ -3727,9 +3963,9 @@ impl<'a> Validator<'a> {
                                 "await_tasks operand must be a canonical concrete Task handle",
                             );
                         }
-                        output
+                        (task_type.filter(|_| output.is_some()), output)
                     })
-                    .collect::<Vec<_>>();
+                    .unzip();
                 let result_outputs = match mode {
                     AwaitMode::All => outputs.clone(),
                     AwaitMode::Any => {
@@ -3747,6 +3983,23 @@ impl<'a> Validator<'a> {
                             );
                         }
                         vec![first]
+                    }
+                    AwaitMode::Settled => task_types,
+                    AwaitMode::Race => {
+                        let first = outputs.first().copied().flatten();
+                        if outputs
+                            .iter()
+                            .copied()
+                            .flatten()
+                            .any(|output| Some(output) != first)
+                        {
+                            self.error(
+                                ValidationCode::TypeMismatch,
+                                format!("{path}.tasks"),
+                                "await_tasks race requires every child Task to have the same output type",
+                            );
+                        }
+                        vec![task_types.first().copied().flatten()]
                     }
                 };
                 self.validate_result_target(
@@ -4442,6 +4695,9 @@ impl<'a> Validator<'a> {
                 let operation = match instruction.kind() {
                     InstructionKind::TaskCreate { .. } => Some("create a Task"),
                     InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
+                    InstructionKind::TaskOutcomeTake { .. } => {
+                        Some("consume a terminal Task outcome")
+                    }
                     InstructionKind::DirectCall { callee, .. }
                         if self
                             .exact_effect(*callee)
@@ -5190,13 +5446,16 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
             | InstructionKind::TextMapInsert { .. }
             | InstructionKind::TextMapRemove { .. }
             | InstructionKind::DynConstruct { .. }
+            | InstructionKind::TaskOutcomeTake { .. }
     ) || matches!(kind, InstructionKind::ListConstruct { elements } if !elements.is_empty())
     {
         effects = effects.union(Effects::MAY_COLLECT);
     }
     if matches!(
         kind,
-        InstructionKind::TaskCreate { .. } | InstructionKind::TaskJoinAll { .. }
+        InstructionKind::TaskCreate { .. }
+            | InstructionKind::TaskJoinAll { .. }
+            | InstructionKind::TaskOutcomeTake { .. }
     ) {
         effects = effects.union(Effects::NEEDS_EXECUTOR);
     }

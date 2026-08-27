@@ -61,8 +61,9 @@ pub use ir::{
     CheckedIntBinaryOp, Constant, ContractFaultKind, ContractFaultMetadata, CoroutinePlan,
     CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate,
     Function, Instruction, InstructionKind, IntPredicate, LIST_LITERAL_MAX_ELEMENTS, Origin,
-    Program, ResourceKind, ResultTarget, Signature, SumCase, Terminator, TerminatorKind,
-    UnwindTarget, Value, ValueDefinition,
+    Program, ResourceKind, ResultTarget, Signature, SumCase, TASK_FAULT_TYPE_ID,
+    TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT,
+    TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition,
 };
 pub use lower::{
     InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,
