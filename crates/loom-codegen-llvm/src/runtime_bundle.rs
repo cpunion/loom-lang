@@ -623,6 +623,13 @@ fn freeze_runtime_snapshot(
     let (writer, path) = snapshot.into_parts();
     drop(writer);
 
+    // `same_file::Handle` retains its cloned `File` on Windows so file-index
+    // equality remains valid. The original identity therefore still has the
+    // writer's access rights even after `writer` is closed. Release it before
+    // requesting a handle whose share mode deliberately excludes writers;
+    // `reader_identity` remains as the stable identity anchor for the handoff.
+    drop(original_identity);
+
     #[cfg(windows)]
     let frozen = {
         use std::os::windows::fs::OpenOptionsExt as _;
@@ -653,7 +660,7 @@ fn freeze_runtime_snapshot(
         "ArtifactWriteFailed",
         "frozen runtime archive snapshot",
     )?;
-    if original_identity != frozen_identity {
+    if reader_identity != frozen_identity {
         return Err(CodegenError::new(
             "ArtifactWriteFailed",
             "runtime archive snapshot changed while its construction handle was closed",
@@ -1309,6 +1316,88 @@ fn valid_digest(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn runtime_snapshots_freeze_concurrently_without_cross_talk() {
+        const WORKERS: usize = 16;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let start = std::sync::Barrier::new(WORKERS);
+        let snapshots = std::thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(WORKERS);
+            for worker in 0..WORKERS {
+                let start = &start;
+                let parent = directory.path();
+                workers.push(scope.spawn(move || {
+                    let contents = format!("parallel runtime snapshot {worker}");
+                    let mut snapshot = tempfile::Builder::new()
+                        .prefix(".loom-runtime-link-parallel-")
+                        .suffix(".lib")
+                        .tempfile_in(parent)
+                        .expect("create parallel runtime snapshot");
+                    snapshot
+                        .write_all(contents.as_bytes())
+                        .expect("write parallel runtime snapshot");
+                    snapshot
+                        .as_file()
+                        .sync_all()
+                        .expect("synchronize parallel runtime snapshot");
+
+                    start.wait();
+                    let frozen = freeze_runtime_snapshot(snapshot)
+                        .expect("freeze parallel runtime snapshot");
+                    assert_eq!(
+                        hash_bounded_file_handle(
+                            &frozen.file,
+                            MAX_ARCHIVE_BYTES,
+                            "parallel runtime archive snapshot",
+                        )
+                        .expect("hash parallel runtime snapshot"),
+                        digest(contents.as_bytes())
+                    );
+
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::OpenOptionsExt as _;
+
+                        let linker_reader = File::options()
+                            .read(true)
+                            .share_mode(WINDOWS_LINKER_INPUT_SHARE_MODE)
+                            .open(frozen.path())
+                            .expect("parallel linker reader must open the frozen snapshot");
+                        assert_eq!(
+                            hash_bounded_file_handle(
+                                &linker_reader,
+                                MAX_ARCHIVE_BYTES,
+                                "parallel linker-visible runtime archive",
+                            )
+                            .expect("hash parallel linker-visible archive"),
+                            digest(contents.as_bytes())
+                        );
+                    }
+
+                    frozen
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("parallel snapshot worker"))
+                .collect::<Vec<_>>()
+        });
+
+        let paths = snapshots
+            .iter()
+            .map(|snapshot| snapshot.path().to_path_buf())
+            .collect::<Vec<_>>();
+        let mut unique_paths = paths.clone();
+        unique_paths.sort();
+        unique_paths.dedup();
+        assert_eq!(unique_paths.len(), WORKERS);
+        assert!(paths.iter().all(|path| path.is_file()));
+
+        drop(snapshots);
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
     #[cfg(windows)]
     #[test]
     fn runtime_snapshot_is_read_shared_but_write_frozen_for_msvc_linking() {
@@ -1350,8 +1439,71 @@ mod tests {
             Some(ERROR_SHARING_VIOLATION),
             "unexpected Windows write-open error: {write_error}"
         );
+
+        let snapshot_path = snapshot.path().to_path_buf();
+        let replacement = directory.path().join("replacement-runtime.lib");
+        fs::write(&replacement, b"replacement runtime archive")
+            .expect("write replacement runtime archive");
+        let replace_error = fs::rename(&replacement, snapshot.path())
+            .expect_err("the frozen snapshot must reject path replacement during linking");
+        assert!(
+            matches!(
+                replace_error.raw_os_error(),
+                Some(5 | ERROR_SHARING_VIOLATION)
+            ),
+            "unexpected Windows replacement error: {replace_error}"
+        );
+        assert!(replacement.is_file());
+
         verify_runtime_snapshot(&snapshot, bundle.archive_sha256())
             .expect("snapshot remains identical after linker-style reading");
+        drop(linker_reader);
+        drop(snapshot);
+        assert!(!snapshot_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn writable_identity_handle_must_close_before_linker_share_is_requested() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut snapshot = tempfile::Builder::new()
+            .prefix(".loom-runtime-link-identity-")
+            .suffix(".lib")
+            .tempfile_in(directory.path())
+            .expect("create runtime snapshot");
+        snapshot
+            .write_all(b"runtime snapshot identity")
+            .expect("write runtime snapshot");
+        let writer_identity = opened_file_identity(
+            snapshot.as_file(),
+            "ArtifactWriteFailed",
+            "writable runtime snapshot",
+        )
+        .expect("retain writable snapshot identity");
+        let (writer, path) = snapshot.into_parts();
+        drop(writer);
+
+        let share_error = File::options()
+            .read(true)
+            .share_mode(WINDOWS_LINKER_INPUT_SHARE_MODE)
+            .open(&path)
+            .expect_err("the writable identity clone must retain write access");
+        assert_eq!(
+            share_error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION),
+            "unexpected Windows identity-sharing error: {share_error}"
+        );
+
+        drop(writer_identity);
+        File::options()
+            .read(true)
+            .share_mode(WINDOWS_LINKER_INPUT_SHARE_MODE)
+            .open(&path)
+            .expect("the linker share must succeed after the writable identity closes");
     }
 
     #[test]
