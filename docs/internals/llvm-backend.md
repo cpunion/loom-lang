@@ -398,12 +398,14 @@ explicit linker. Object emission is independent of this link input. Final
 native executables are not persistently cached because the system linker, SDK,
 and debug-companion environment are not yet hermetic.
 
-Linking copies the validated runtime archive to one adjacent private snapshot,
-synchronizes it, and closes its writable construction handle before starting an
-external linker. The compiler retains a read-only handle and rechecks both file
-identity and SHA-256 after linking. On Windows that handle permits concurrent
-readers but denies writers and deletion, matching MSVC input-library sharing
-without reopening the snapshot to replacement.
+Linking copies the validated runtime archive to one adjacent private snapshot
+per invocation and synchronizes it. Before starting an external linker, the
+compiler closes both the writable construction handle and the writable clone
+temporarily retained for its first identity check. An independent read-only
+identity anchor survives that handoff. The final Windows handle permits
+concurrent readers but denies writers and deletion, matching MSVC input-library
+sharing without globally serializing links or reopening a snapshot to
+replacement. The compiler rechecks both file identity and SHA-256 after linking.
 
 ## Debug information
 
