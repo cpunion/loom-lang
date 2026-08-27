@@ -44,7 +44,9 @@ codegen, the runtime, and native fixture closures. Until that job produces a
 real Windows runner result, this is configuration rather than verified platform
 or release evidence.
 
-The pinned LLVM 19.1.7 Windows development archive advertises
+Both Windows CI and release jobs use
+`.github/scripts/bootstrap-windows-llvm.ps1`. The pinned LLVM 19.1.7 Windows
+development archive advertises
 `libxml2s.lib` in its static system-library closure but does not contain that
 archive. The Windows job therefore builds libxml2 2.9.12 from its
 SHA-256-pinned source using the options in LLVM's 19.1.7 release script and

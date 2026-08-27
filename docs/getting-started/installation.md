@@ -12,12 +12,13 @@ The following table describes automated evidence, not a compatibility promise:
 | --- | --- | --- |
 | Ubuntu 24.04, x86-64 | Full workspace, LLVM and interpreter fixtures, packages, runtime, and quality gates | Yes |
 | macOS 15, arm64 | Full workspace, LLVM and interpreter fixtures, packages, and runtime gates | Yes |
-| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | Not published |
+| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | `.zip` workflow entry configured; not yet verified or published |
 
-The Windows job covers native code generation, linking, runtime I/O, and
-CodeView/PDB inspection, but Windows support is not claimed until successful
-runner evidence exists. Object emission for another target also does not
-provide that target's runtime or linker.
+The Windows jobs cover native code generation, linking, runtime I/O,
+CodeView/PDB inspection, and the structure of a release zip, but Windows
+support is not claimed until successful runner and archive evidence exists.
+Object emission for another target also does not provide that target's runtime
+or linker.
 
 ## Prerequisites
 
@@ -97,10 +98,13 @@ stores the bundle elsewhere, set `LOOM_RUNTIME_BUNDLE` or pass
 
 ## Release archives
 
-Development releases may provide archives for Linux x86-64 and macOS arm64.
-Treat the release page and its checksum file as the source of truth for the
-artifacts attached to a particular tag. Verify the downloaded archive before
-running it; do not assume that an archive exists for an unlisted host.
+Development releases may provide `.tar.gz` archives for Linux x86-64 and macOS
+arm64. The workflow is also configured to build a Windows x86-64 `.zip`, but
+that entry is not a support or availability claim until a Windows runner has
+successfully produced and checked it. Treat the release page and its checksum
+file as the source of truth for the artifacts attached to a particular tag.
+Verify the downloaded archive before running it; do not assume that an archive
+exists merely because its matrix entry is configured.
 
 ## Troubleshooting LLVM discovery
 

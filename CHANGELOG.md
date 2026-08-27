@@ -15,6 +15,9 @@ artifact, or runtime compatibility.
 - A pull-request-only contribution policy and private security-reporting path.
 - Verified Linux and macOS native CI coverage, plus a complete Windows native
   job whose support claim remains gated on successful runner evidence.
+- A Windows x86-64 release-matrix entry that stages the native `.exe` tools and
+  runtime `.lib`, runs release smoke gates, and produces a checksummed `.zip`;
+  availability remains gated on successful Windows runner evidence.
 - Trusted Linux and macOS base-versus-candidate benchmark comments with one
   exact comparison table and visible runtime-index charts.
 - Explicit, checksummed runtime bundles for native linking, including strict
