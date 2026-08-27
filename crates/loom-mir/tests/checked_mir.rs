@@ -947,7 +947,77 @@ fn locals_and_places_are_checked_without_indexing_panics() {
     let errors = validation_errors(&program);
     assert!(errors.contains(MirValidationCode::ImmutablePlace));
     assert!(errors.contains(MirValidationCode::InvalidLocalReference));
-    assert!(errors.contains(MirValidationCode::ProjectedMove));
+}
+
+#[test]
+fn projected_move_returns_the_leaf_and_consumes_the_complete_root() {
+    let pair = Type::Nominal(TypeId(0), Vec::new());
+    let pair_definition = TypeDef {
+        id: TypeId(0),
+        name: "Pair".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![
+                FieldDef {
+                    name: "left".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "right".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                },
+            ],
+            invariant: None,
+        },
+    };
+    let projected = Place {
+        local: LocalId(0),
+        projection: vec![1],
+    };
+    let valid = function(
+        0,
+        vec![local(0, pair.clone(), false)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(ExprKind::Move(projected.clone()), Type::Int))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        types: vec![pair_definition.clone()],
+        functions: vec![valid],
+        ..Program::default()
+    })
+    .expect("a projected move consumes its direct aggregate root");
+
+    let invalid_reuse = function(
+        0,
+        vec![local(0, pair.clone(), false)],
+        vec![local(1, Type::Int, false)],
+        pair.clone(),
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Let {
+                    local: LocalId(1),
+                    value: expr(ExprKind::Move(projected), Type::Int),
+                },
+                span: span(),
+            }],
+            tail: Some(Box::new(copy(0, pair))),
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&Program {
+        types: vec![pair_definition],
+        functions: vec![invalid_reuse],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::LocalState));
 }
 
 fn shape_types() -> Vec<TypeDef> {
@@ -2000,7 +2070,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 19);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 20);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);

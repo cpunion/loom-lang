@@ -2710,6 +2710,193 @@ pub fn main() Unit {
 }
 
 #[test]
+fn checked_projected_move_extracts_the_leaf_and_consumes_its_root() {
+    use loom_core::Span;
+    use loom_mir::{
+        Block, CallArgument, CallPlan, CallTarget, Constant, ConstructionMode, Expr, ExprKind,
+        FieldDef, Function, FunctionId, LocalDecl, LocalId, Place, Program, Statement,
+        StatementKind, Type, TypeDef, TypeDefKind, TypeId,
+    };
+
+    let span = Span::default();
+    let inner = Type::Nominal(TypeId(0), Vec::new());
+    let outer = Type::Nominal(TypeId(1), Vec::new());
+    let local = |id, ty| LocalDecl {
+        id: LocalId(id),
+        name: format!("local_{id}"),
+        ty,
+        mutable: false,
+        span,
+    };
+    let expression = |kind, ty| Expr::new(kind, ty, span);
+    let mut take = Function {
+        id: FunctionId(0),
+        name: "projected_move.take".to_owned(),
+        span,
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, outer.clone())],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Int,
+        receiver: None,
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expression(
+                ExprKind::Move(Place {
+                    local: LocalId(0),
+                    projection: vec![0, 1],
+                }),
+                Type::Int,
+            ))),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    take.renumber_expr_ids().expect("take expression ids");
+    let inner_value = expression(
+        ExprKind::Record {
+            ty: TypeId(0),
+            type_arguments: Vec::new(),
+            fields: vec![
+                expression(ExprKind::Constant(Constant::Int(1)), Type::Int),
+                expression(ExprKind::Constant(Constant::Int(7)), Type::Int),
+            ],
+            construction: ConstructionMode::Plain,
+        },
+        inner.clone(),
+    );
+    let outer_value = expression(
+        ExprKind::Record {
+            ty: TypeId(1),
+            type_arguments: Vec::new(),
+            fields: vec![
+                inner_value,
+                expression(ExprKind::Constant(Constant::Bool(true)), Type::Bool),
+            ],
+            construction: ConstructionMode::Plain,
+        },
+        outer.clone(),
+    );
+    let mut main = Function {
+        id: FunctionId(1),
+        name: "projected_move.main".to_owned(),
+        span,
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: vec![local(0, outer.clone()), local(1, Type::Int)],
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: outer_value,
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: expression(
+                            ExprKind::Call {
+                                target: CallTarget::Direct(FunctionId(0)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![CallArgument::Value(expression(
+                                    ExprKind::Move(Place::local(LocalId(0))),
+                                    outer.clone(),
+                                ))],
+                                witnesses: Vec::new(),
+                            },
+                            Type::Int,
+                        ),
+                    },
+                    span,
+                },
+            ],
+            tail: Some(Box::new(expression(
+                ExprKind::Constant(Constant::Unit),
+                Type::Unit,
+            ))),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids().expect("main expression ids");
+    let checked = Program {
+        types: vec![
+            TypeDef {
+                id: TypeId(0),
+                name: "Inner".to_owned(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![
+                        FieldDef {
+                            name: "left".to_owned(),
+                            ty: Type::Int,
+                            span,
+                        },
+                        FieldDef {
+                            name: "right".to_owned(),
+                            ty: Type::Int,
+                            span,
+                        },
+                    ],
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: TypeId(1),
+                name: "Outer".to_owned(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![
+                        FieldDef {
+                            name: "inner".to_owned(),
+                            ty: inner,
+                            span,
+                        },
+                        FieldDef {
+                            name: "guard".to_owned(),
+                            ty: Type::Bool,
+                            span,
+                        },
+                    ],
+                    invariant: None,
+                },
+            },
+        ],
+        functions: vec![take, main],
+        exports: std::collections::BTreeMap::from([("main".to_owned(), FunctionId(1))]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("projected move checked MIR");
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &checked,
+        &SourceArtifactRequest::Run {
+            entry: "main".to_owned(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower projected move") else {
+        panic!("direct projected move must be complete")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.matches("product.extract").count() >= 2, "{dump}");
+    assert!(dump.contains(" = call i0"), "{dump}");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn over_budget_product_depth_and_structure_select_atomic_fallback() {
     use loom_mir::{

@@ -32,7 +32,6 @@ pub enum MirValidationCode {
     DuplicateLocal,
     InvalidPlace,
     ImmutablePlace,
-    ProjectedMove,
     TypeMismatch,
     ExpressionIdentity,
     ExpressionShape,
@@ -70,7 +69,6 @@ impl MirValidationCode {
             Self::DuplicateLocal => "MirDuplicateLocal",
             Self::InvalidPlace => "MirInvalidPlace",
             Self::ImmutablePlace => "MirImmutablePlace",
-            Self::ProjectedMove => "MirProjectedMove",
             Self::TypeMismatch => "MirTypeMismatch",
             Self::ExpressionIdentity => "MirExpressionIdentity",
             Self::ExpressionShape => "MirExpressionShape",
@@ -3608,14 +3606,6 @@ impl<'program> Validator<'program> {
                     self.push(
                         MirValidationCode::ReceiverShape,
                         "a mutable receiver aliases the caller and cannot be moved",
-                        expression.span,
-                        format!("{path}.place"),
-                    );
-                }
-                if !place.projection.is_empty() {
-                    self.push(
-                        MirValidationCode::ProjectedMove,
-                        "the interpreter only supports moving an entire local place",
                         expression.span,
                         format!("{path}.place"),
                     );

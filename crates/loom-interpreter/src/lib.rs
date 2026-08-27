@@ -1879,6 +1879,10 @@ impl<'program> Interpreter<'program> {
             }
         };
 
+        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
+        {
+            return Ok(result);
+        }
         let current_parameter_values = self.read_parameter_values(frame, function)?;
         let (current_receiver, current_arguments) =
             self.contract_arguments(function, &current_parameter_values)?;
@@ -2017,6 +2021,10 @@ impl<'program> Interpreter<'program> {
                     function.span,
                 )
                 .into());
+        }
+        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
+        {
+            return Ok(());
         }
         let parameter_values = self.read_parameter_values(frame, function)?;
         let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
@@ -5380,16 +5388,8 @@ impl<'program> Interpreter<'program> {
     }
 
     fn take_place(&mut self, location: &Location, span: Span) -> Result<Value, ExecutionFailure> {
-        let (root, projection) = self.resolve_location(location, span)?;
-        if !projection.is_empty() || !location.projection.is_empty() {
-            return Err(self
-                .runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "moving a projected place is not supported by verified MIR",
-                    span,
-                )
-                .into());
-        }
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
         let frame = self
             .frames
             .get_mut(&root.frame)
@@ -5407,7 +5407,7 @@ impl<'program> Interpreter<'program> {
                 span,
             })?;
         match std::mem::replace(slot, Slot::Moved) {
-            Slot::Value(value) => Ok(value),
+            Slot::Value(value) => take_value_projection(value, &projection, span),
             Slot::Empty => Err(RuntimeFault {
                 code: "LOOM_RUNTIME_UNINITIALIZED".into(),
                 message: "local is uninitialized".into(),
@@ -6101,6 +6101,33 @@ fn read_value_projection(
         }
     }
     Ok(current.clone())
+}
+
+fn take_value_projection(
+    mut value: Value,
+    projection: &[u32],
+    span: Span,
+) -> Result<Value, ExecutionFailure> {
+    for field in projection {
+        value = unrefined(value);
+        let Value::Record { fields, .. } = value else {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "field projection targets a non-record value".into(),
+                span,
+            }
+            .into());
+        };
+        value = fields
+            .into_iter()
+            .nth(*field as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "field projection is out of bounds".into(),
+                span,
+            })?;
+    }
+    Ok(value)
 }
 
 fn write_value_projection(

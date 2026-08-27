@@ -6859,17 +6859,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             ExprKind::Move(place) => {
-                if !place.projection.is_empty() {
-                    return Err(CodegenError::new(
-                        "LlvmAbiDefect",
-                        "checked MIR contains a projected move",
-                    ));
-                }
                 let source = self.place(place)?;
                 self.shallow_copy(destination, source)?;
+                let root = self.local(place.local)?;
                 self.backend
                     .builder
-                    .build_store(source, self.backend.value_type.const_zero())
+                    .build_store(root, self.backend.value_type.const_zero())
                     .map_err(builder_error)?;
                 self.deactivate_gc_local(place.local);
                 Ok(true)

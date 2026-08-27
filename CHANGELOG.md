@@ -39,6 +39,9 @@ artifact, or runtime compatibility.
 - Eligible closed enums and exhaustive matches now use bounded typed LCIR
   lowering with direct native sum layouts. Float patterns follow IEEE ordered
   equality, including equal signed zeros and non-matching NaNs.
+- Interpreted MIR version 20 permits projected moves. They return the selected
+  leaf and consume the complete aggregate root, preserving a simple initialized
+  or moved local state without partial-initialization compatibility.
 
 No historical release notes have been reconstructed. Future entries should
 describe observable changes, not reproduce the Git commit log.

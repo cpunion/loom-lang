@@ -56,6 +56,12 @@ Validation covers:
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
 
+A projected `Copy` observes only its leaf. A projected `Move` transfers that
+leaf and marks the complete root local moved. Consuming the root is intentional:
+checked MIR has no partial-initialization state, so later access to either the
+root or a sibling is rejected until the root is assigned again. Projected
+assignment reconstructs the complete value through its typed field path.
+
 ### Bounded recursive type analysis
 
 Validation never expands recursive generic definitions into an unbounded
@@ -143,7 +149,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `19`;
+- artifact version `20`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
@@ -152,7 +158,7 @@ numeric encodings, the entry, and the complete MIR program.
 
 Portable library artifacts use a separate versioned envelope (`.loomlib`
 version `1`) around checked MIR and package/public-interface metadata. Its
-nested checked-MIR envelope is still version `19` and uses the construction
+nested checked-MIR envelope is version `20` and uses the construction
 proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project
