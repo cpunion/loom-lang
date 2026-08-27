@@ -2353,6 +2353,262 @@ fn portable_mir_resource_exemptions_apply_only_to_the_exact_expression_root() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+fn portable_mir_allows_match_to_transfer_one_resource_into_scoped() {
+    let carrier = TypeId(1);
+    let carrier_ty = Type::Nominal(carrier, Vec::new());
+    let resource_binding = LocalId(2);
+    let matched_resource = expr(
+        ExprKind::Match {
+            scrutinee: Box::new(move_local(0, carrier_ty.clone())),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Variant {
+                        ty: carrier,
+                        variant: VariantId(0),
+                        payload: vec![Pattern::Binding],
+                    },
+                    bindings: vec![resource_binding],
+                    value: move_local(resource_binding.0, resource_type()),
+                },
+                MatchArm {
+                    pattern: Pattern::Variant {
+                        ty: carrier,
+                        variant: VariantId(1),
+                        payload: Vec::new(),
+                    },
+                    bindings: Vec::new(),
+                    value: resource_value(13),
+                },
+            ],
+        },
+        resource_type(),
+    );
+    let main = function(
+        1,
+        vec![local(0, carrier_ty, false)],
+        vec![
+            local(1, resource_type(), true),
+            local(resource_binding.0, resource_type(), false),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Scoped {
+                    local: LocalId(1),
+                    value: matched_resource,
+                    disposal: ScopedDisposal::StaticConcept {
+                        requirement: RequirementId(0),
+                        witness: WitnessRef::Concrete(WitnessId(0)),
+                        dispatch_type: resource_type(),
+                    },
+                },
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let mut program = resource_program(main, Vec::new(), false);
+    program.types.push(TypeDef {
+        id: carrier,
+        name: "ResourceResult".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "Ok".to_owned(),
+                    payload: vec![resource_type()],
+                    span: span(),
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "Fallback".to_owned(),
+                    payload: Vec::new(),
+                    span: span(),
+                },
+            ],
+        },
+    });
+
+    validate_program(&program).expect("a match may transfer exactly one arm root into Scoped");
+
+    let StatementKind::Scoped { value, .. } = &mut program.functions[1].body.statements[0].kind
+    else {
+        panic!("test fixture must contain Scoped");
+    };
+    let ExprKind::Match { arms, .. } = &mut value.kind else {
+        panic!("test fixture must contain a match initializer");
+    };
+    arms[0].value = resource_value(14);
+    program.functions[1]
+        .renumber_expr_ids()
+        .expect("renumber hostile match fixture");
+    let errors = validation_errors(&program);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error.path.ends_with("value.arms[0].bindings[0]")
+            && error.message.contains("transfer directly into Scoped")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_mir_match_consumes_resource_carriers_but_not_active_scoped_values() {
+    let carrier = TypeId(1);
+    let carrier_ty = Type::Nominal(carrier, Vec::new());
+    let binding = LocalId(1);
+    let scoped = LocalId(2);
+    let consume_carrier = function(
+        1,
+        vec![local(0, carrier_ty.clone(), false)],
+        vec![
+            local(binding.0, resource_type(), false),
+            local(scoped.0, resource_type(), true),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Match {
+                        scrutinee: Box::new(move_local(0, carrier_ty.clone())),
+                        arms: vec![
+                            MatchArm {
+                                pattern: Pattern::Variant {
+                                    ty: carrier,
+                                    variant: VariantId(0),
+                                    payload: vec![Pattern::Binding],
+                                },
+                                bindings: vec![binding],
+                                value: expr(
+                                    ExprKind::Block(Block {
+                                        statements: vec![Statement {
+                                            kind: StatementKind::Scoped {
+                                                local: scoped,
+                                                value: move_local(binding.0, resource_type()),
+                                                disposal: ScopedDisposal::StaticConcept {
+                                                    requirement: RequirementId(0),
+                                                    witness: WitnessRef::Concrete(WitnessId(0)),
+                                                    dispatch_type: resource_type(),
+                                                },
+                                            },
+                                            span: span(),
+                                        }],
+                                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                        span: span(),
+                                    }),
+                                    Type::Unit,
+                                ),
+                            },
+                            MatchArm {
+                                pattern: Pattern::Variant {
+                                    ty: carrier,
+                                    variant: VariantId(1),
+                                    payload: Vec::new(),
+                                },
+                                bindings: Vec::new(),
+                                value: constant(Constant::Unit, Type::Unit),
+                            },
+                        ],
+                    },
+                    Type::Unit,
+                )),
+                span: span(),
+            }],
+            tail: None,
+            span: span(),
+        },
+    );
+    let mut carrier_program = resource_program(consume_carrier, Vec::new(), false);
+    carrier_program.types.push(TypeDef {
+        id: carrier,
+        name: "ResourceCarrier".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "Resource".to_owned(),
+                    payload: vec![resource_type()],
+                    span: span(),
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "Empty".to_owned(),
+                    payload: Vec::new(),
+                    span: span(),
+                },
+            ],
+        },
+    });
+    validate_program(&carrier_program)
+        .expect("match arms may transfer each resource payload into their own Scoped binding");
+
+    let active = LocalId(0);
+    let rebound = LocalId(1);
+    let rescoped = LocalId(2);
+    let match_active = function(
+        1,
+        Vec::new(),
+        vec![
+            local(active.0, resource_type(), true),
+            local(rebound.0, resource_type(), false),
+            local(rescoped.0, resource_type(), true),
+        ],
+        Type::Unit,
+        Block {
+            statements: vec![
+                scoped_resource(active.0, 15),
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Match {
+                            scrutinee: Box::new(copy(active.0, resource_type())),
+                            arms: vec![MatchArm {
+                                pattern: Pattern::Binding,
+                                bindings: vec![rebound],
+                                value: expr(
+                                    ExprKind::Block(Block {
+                                        statements: vec![Statement {
+                                            kind: StatementKind::Scoped {
+                                                local: rescoped,
+                                                value: move_local(rebound.0, resource_type()),
+                                                disposal: ScopedDisposal::StaticConcept {
+                                                    requirement: RequirementId(0),
+                                                    witness: WitnessRef::Concrete(WitnessId(0)),
+                                                    dispatch_type: resource_type(),
+                                                },
+                                            },
+                                            span: span(),
+                                        }],
+                                        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                        span: span(),
+                                    }),
+                                    Type::Unit,
+                                ),
+                            }],
+                        },
+                        Type::Unit,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let errors = validation_errors(&resource_program(match_active, Vec::new(), false));
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::ObligationShape
+            && error
+                .message
+                .contains("active scoped resource cannot be consumed")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
 fn portable_mir_rejects_move_based_resource_escape_surfaces() {
     let direct_return = function(
         1,

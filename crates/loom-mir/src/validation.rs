@@ -601,6 +601,7 @@ enum CleanupEntry {
 enum ResourceUse {
     Ordinary,
     RejectedLoss,
+    MatchScrutinee,
     ScopedInitializer,
     ScopedReceiver,
 }
@@ -9456,6 +9457,37 @@ impl<'program> Validator<'program> {
                     path,
                 );
             }
+            ResourceUse::MatchScrutinee => {
+                if !place.projection.is_empty() {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "matching a value containing MustScope state must consume a complete local",
+                        span,
+                        path,
+                    );
+                }
+                if Self::external_receiver_local(function, place.local) {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a non-owning method receiver cannot be consumed by pattern matching",
+                        span,
+                        path,
+                    );
+                }
+                if self.scoped_local_is_active(place.local, state) {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "an active scoped resource cannot be consumed by pattern matching",
+                        span,
+                        path,
+                    );
+                }
+                // Pattern matching consumes its scrutinee. Source paths are
+                // represented as Copy after sema has proved this affine
+                // transfer, so enforce the consumption at the checked MIR
+                // boundary just as Scoped initializers do.
+                self.set_slot_state(state, place.local.0 as usize, SlotState::Moved);
+            }
             ResourceUse::ScopedInitializer => {
                 if !place.projection.is_empty() {
                     self.push(
@@ -9802,12 +9834,25 @@ impl<'program> Validator<'program> {
                 no_value(then_flow.diverges && else_flow.diverges)
             }
             ExprKind::Match { scrutinee, arms } => {
-                let scrutinee = self.dataflow_expr(
+                // Match is the affine decomposition boundary for a
+                // resource-bearing carrier. Every payload pattern is checked
+                // independently below, and a resource binding must be moved
+                // by its arm. When the match itself initializes Scoped (the
+                // shape emitted for postfix `?`), each arm root may complete
+                // that same transfer. Nested calls, aggregates, and conditions
+                // continue to use ordinary resource rules.
+                let arm_resource_use = if resource_use == ResourceUse::ScopedInitializer {
+                    ResourceUse::ScopedInitializer
+                } else {
+                    ResourceUse::Ordinary
+                };
+                let scrutinee = self.dataflow_expr_as(
                     function,
                     scrutinee,
                     state,
                     &format!("{path}.scrutinee"),
                     depth + 1,
+                    ResourceUse::MatchScrutinee,
                 );
                 if scrutinee.diverges {
                     return no_value(true);
@@ -9819,12 +9864,13 @@ impl<'program> Validator<'program> {
                     for local in &arm.bindings {
                         self.dataflow_store(local.0 as usize, &mut arm_state);
                     }
-                    let flow = self.dataflow_expr(
+                    let flow = self.dataflow_expr_as(
                         function,
                         &arm.value,
                         &mut arm_state,
                         &format!("{path}.arms[{index}].value"),
                         depth + 1,
+                        arm_resource_use,
                     );
                     for (binding_index, local) in arm.bindings.iter().enumerate() {
                         let Some(local_decl) = Self::local_decl(function, *local) else {
