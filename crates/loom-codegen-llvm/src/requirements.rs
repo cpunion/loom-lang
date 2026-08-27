@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use loom_codegen_ir::ReachableSourceGraph;
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, Function, FunctionId,
-    Program, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
+    Program, ScopedDisposal, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
 use crate::CodegenError;
@@ -379,6 +379,49 @@ impl RequirementScanner<'_> {
                         self.scan_planned_stack_record_initializer(value, output)?;
                     } else {
                         self.scan_expr(value, output)?;
+                    }
+                }
+                StatementKind::Scoped {
+                    value, disposal, ..
+                } => {
+                    self.scan_expr(value, output)?;
+                    match disposal {
+                        ScopedDisposal::StaticConcept {
+                            requirement,
+                            witness,
+                            ..
+                        } => {
+                            if let Some(witness) = concrete_witness(witness) {
+                                let method = self
+                                    .program
+                                    .witness(witness)
+                                    .and_then(|witness| witness.methods.get(requirement))
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        CodegenError::new(
+                                            "InvalidWitnessTable",
+                                            format!(
+                                                "witness #{} has no requirement #{}",
+                                                witness.0, requirement.0
+                                            ),
+                                        )
+                                    })?;
+                                output.callees.insert(RequirementCallee::Universal(method));
+                            } else {
+                                add_dynamic_callees(
+                                    self.program,
+                                    self.reachable,
+                                    *requirement,
+                                    output,
+                                )?;
+                            }
+                        }
+                        ScopedDisposal::FileClose => output
+                            .requirements
+                            .include(builtin_requirements(Builtin::FileClose)),
+                        ScopedDisposal::SocketClose => output
+                            .requirements
+                            .include(builtin_requirements(Builtin::SocketClose)),
                     }
                 }
                 StatementKind::Assign { value, .. } | StatementKind::Evaluate(value) => {

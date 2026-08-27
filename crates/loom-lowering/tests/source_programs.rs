@@ -34,6 +34,25 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     compile(source)
 }
 
+fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
+    let parsed = parse_with_file(FileId(0), source);
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "syntax diagnostics: {:#?}",
+        parsed.diagnostics()
+    );
+    let lowered = lower_files([SourceUnit {
+        file: FileId(0),
+        syntax: parsed.ast(),
+    }]);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    analyze(&lowered.program).diagnostics
+}
+
 fn function_has_name(function: &loom_mir::Function, expected: &str) -> bool {
     function.name.rsplit('.').next() == Some(expected)
 }
@@ -101,6 +120,93 @@ fn core03_source_lowers_and_validates() {
     assert!(format!("{program:#?}").contains("Tuple"));
     assert!(format!("{program:#?}").contains("LetTuple"));
     assert!(format!("{program:#?}").contains("Defer"));
+}
+
+#[test]
+fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
+    let program = compile_and_validate(
+        r"
+module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+fn main() Unit {
+    scoped resource = Resource { value = 1 }
+    Unit
+}
+",
+    );
+    assert!(program.prelude.dispose_concept.is_some());
+    assert!(program.prelude.dispose_requirement.is_some());
+    assert!(program.prelude.must_scope_concept.is_some());
+    assert!(program.prelude.no_suspend_concept.is_some());
+    let main = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "main"))
+        .expect("main function");
+    let debug = format!("{:#?}", main.body);
+    assert!(debug.contains("Scoped"), "{debug}");
+    assert!(debug.contains("StaticConcept"), "{debug}");
+    assert!(!debug.contains("Defer"), "{debug}");
+}
+
+#[test]
+fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
+    let diagnostics = analyze_source(
+        r"
+module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+fn invalid() Unit {
+    let resource = Resource { value = 1 }
+    Unit
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["MustScopeRequiresScoped"]
+    );
 }
 
 #[test]
@@ -743,6 +849,8 @@ async fn pathFiles(path Path) Unit {
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }
+    assert_eq!(debug.matches("Scoped").count(), 2, "{debug}");
+    assert!(!debug.contains("Defer"), "{debug}");
 }
 
 #[test]

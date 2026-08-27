@@ -1104,6 +1104,19 @@ impl<'program> Classifier<'program> {
             StatementKind::Let { value, .. } | StatementKind::LetTuple { value, .. } => {
                 self.visit_expr(function, key, value, &format!("{path}.value"))
             }
+            StatementKind::Scoped { value, .. } => {
+                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
+                    return false;
+                }
+                self.item(
+                    UnsupportedFeature::DeferredCleanup,
+                    function.id,
+                    None,
+                    statement.span,
+                    path.to_owned(),
+                );
+                true
+            }
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
@@ -1848,6 +1861,13 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
         | StatementKind::LetTuple { value, .. }
         | StatementKind::Assign { value, .. }
         | StatementKind::Evaluate(value) => scan_effect_expr(value, summary),
+        StatementKind::Scoped { value, .. } => {
+            let continues = scan_effect_expr(value, summary);
+            if continues {
+                summary.include(Effects::MAY_FAULT);
+            }
+            continues
+        }
         StatementKind::ForRange {
             start, end, body, ..
         } => {
@@ -1982,7 +2002,7 @@ fn scan_mutation_block(block: &mir::Block, changed: &mut BTreeSet<LocalId>) -> b
 
 fn scan_mutation_statement(statement: &mir::Statement, changed: &mut BTreeSet<LocalId>) -> bool {
     match &statement.kind {
-        StatementKind::Let { local, value } => {
+        StatementKind::Let { local, value } | StatementKind::Scoped { local, value, .. } => {
             let continues = scan_mutation_expr(value, changed);
             if continues {
                 changed.insert(*local);
@@ -3036,6 +3056,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     flow.env = self.environments.set(flow.env, *local, value)?;
                     Ok(StatementFlow::Continue(flow))
                 }
+                EvalFlow::Terminated => Ok(StatementFlow::Terminated),
+            },
+            StatementKind::Scoped { value, .. } => match self.lower_expr(flow, value)? {
+                EvalFlow::Continue { .. } => Err(self.unsupported_reached("scoped cleanup")),
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
             StatementKind::ForRange {

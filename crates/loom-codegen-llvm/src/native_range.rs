@@ -1112,6 +1112,10 @@ impl FunctionAnalyzer<'_, '_> {
                 }
                 environment.insert(*local, result);
             }
+            StatementKind::Scoped { local, value, .. } => {
+                let result = self.eval_expr(value, environment);
+                environment.insert(*local, result);
+            }
             StatementKind::LetTuple { locals, value } => {
                 self.eval_expr(value, environment);
                 for local in locals {
@@ -2461,6 +2465,10 @@ fn collect_block_mutations(block: &Block, roots: &mut BTreeSet<LocalId>) {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Evaluate(value) => collect_expr_mutations(value, roots),
+            StatementKind::Scoped { local, value, .. } => {
+                collect_expr_mutations(value, roots);
+                roots.insert(*local);
+            }
             StatementKind::Assert { condition } => collect_expr_mutations(condition, roots),
             StatementKind::Defer(cleanup) => collect_block_mutations(cleanup, roots),
             StatementKind::Return(value) => {
@@ -2550,7 +2558,8 @@ fn block_moves_local(block: &Block, local: LocalId) -> bool {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => expression_moves_local(value, local),
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => expression_moves_local(value, local),
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
@@ -2828,7 +2837,8 @@ fn block_contains_loop(block: &Block) -> bool {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => expression_contains_loop(value),
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => expression_contains_loop(value),
             StatementKind::Assert { condition } => expression_contains_loop(condition),
             StatementKind::Return(value) => value.as_ref().is_some_and(expression_contains_loop),
         })
@@ -2898,7 +2908,8 @@ fn block_contains_nested_loop_at(block: &Block, inside_loop: bool) -> bool {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => {
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => {
                 expression_contains_nested_loop_at(value, inside_loop)
             }
             StatementKind::Assert { condition } => {
@@ -2980,7 +2991,8 @@ fn block_contains_return(block: &Block) -> bool {
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => expression_contains_return(value),
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => expression_contains_return(value),
             StatementKind::Assert { condition } => expression_contains_return(condition),
         })
         || block
@@ -3038,7 +3050,7 @@ fn block_contains_defer(block: &Block) -> bool {
         .statements
         .iter()
         .any(|statement| match &statement.kind {
-            StatementKind::Defer(_) => true,
+            StatementKind::Defer(_) | StatementKind::Scoped { .. } => true,
             StatementKind::ForRange { body, .. } => block_contains_defer(body),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }

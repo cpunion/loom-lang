@@ -31,6 +31,7 @@ use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
 };
+use crate::runtime::LoomRuntime;
 use crate::witness::{WitnessArena, clone_witnesses};
 use crate::{
     COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
@@ -3575,6 +3576,7 @@ struct FaultArguments {
 }
 
 unsafe fn raise_fault_for_task_or_root(
+    root_runtime: *mut LoomRuntime,
     active_task: *mut LoomTask,
     arguments: FaultArguments,
 ) -> i32 {
@@ -3591,6 +3593,9 @@ unsafe fn raise_fault_for_task_or_root(
         unsafe { record_primary_task_fault(&mut *active_task, code, message, detail) };
         return WAIT_OK;
     }
+    if root_runtime.is_null() {
+        return WAIT_INVALID_ARGUMENT;
+    }
 
     let (Some(code), Some(message), Some(display), Some(detail)) = (
         unsafe { copy_text(arguments.code, arguments.code_length) },
@@ -3600,6 +3605,12 @@ unsafe fn raise_fault_for_task_or_root(
     ) else {
         return WAIT_INVALID_ARGUMENT;
     };
+    // SAFETY: context resolution proves this is the active runtime, either
+    // directly or through its one attached live executor. The per-runtime
+    // latch is reset only when a new outer generated-code interval begins.
+    if !unsafe { (*root_runtime).latch_sync_fault() } {
+        return WAIT_OK;
+    }
     report_fault(&detail, &code, &message, &display);
     WAIT_OK
 }
@@ -3659,16 +3670,16 @@ pub unsafe extern "C" fn context_raise_fault_v1(
         detail,
         detail_length,
     };
-    let active_task = match resolve_fault_context(context) {
-        Some(FaultContextTarget::Root) => ptr::null_mut(),
+    let (root_runtime, active_task) = match resolve_fault_context(context) {
+        Some(FaultContextTarget::Root) => (active_runtime_pointer(), ptr::null_mut()),
         Some(FaultContextTarget::Executor(executor)) => {
             // SAFETY: resolution matched the candidate against the active
             // runtime's live attachment before converting it to an executor.
-            unsafe { (*executor).active_task }
+            unsafe { ((*executor).runtime_pointer(), (*executor).active_task) }
         }
         None => return WAIT_INVALID_ARGUMENT,
     };
-    unsafe { raise_fault_for_task_or_root(active_task, arguments) }
+    unsafe { raise_fault_for_task_or_root(root_runtime, active_task, arguments) }
 }
 
 /// Routes a generated-code fault whose structured detail contains a dynamic source span.

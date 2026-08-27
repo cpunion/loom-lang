@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::ops::Deref;
@@ -10,9 +10,9 @@ use crate::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, Constant,
     ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr,
     ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, Program,
-    Receiver, RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, Statement,
-    StatementKind, SuspensionPoint, TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId,
-    Witness, WitnessParam, WitnessRef,
+    Receiver, RequirementDef, RequirementId, RequirementType, RequirementWitnessParam,
+    ScopedDisposal, Statement, StatementKind, SuspensionPoint, TaskJoinMode, Type, TypeDef,
+    TypeDefKind, UnaryOp, VariantId, Witness, WitnessParam, WitnessRef,
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
@@ -579,16 +579,50 @@ struct DataflowState {
 
 #[derive(Clone)]
 struct RegisteredCleanup {
-    block: Rc<Block>,
+    action: RegisteredCleanupAction,
     path: Rc<str>,
     depth: u16,
     older: Option<usize>,
+}
+
+#[derive(Clone)]
+enum RegisteredCleanupAction {
+    Block(Rc<Block>),
+    Scoped { local: LocalId, span: Span },
 }
 
 #[derive(Clone, Copy)]
 enum CleanupEntry {
     Normal,
     Unwind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceUse {
+    Ordinary,
+    RejectedLoss,
+    ScopedInitializer,
+    ScopedReceiver,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConformanceState {
+    Proven,
+    Absent,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ConformanceGoal {
+    target: Type,
+    concept: ConceptId,
+    bindings: BTreeMap<String, Type>,
+}
+
+#[derive(Default)]
+struct ConformanceNode {
+    proven: bool,
+    alternatives: Vec<Vec<usize>>,
 }
 
 struct ExprFlow {
@@ -818,6 +852,7 @@ impl<'program> Validator<'program> {
 
     #[allow(clippy::too_many_lines)]
     fn validate_prelude_ids(&mut self) {
+        self.validate_resource_prelude_ids();
         let entries = [
             ("result", self.program.prelude.result, "enum"),
             ("option", self.program.prelude.option, "enum"),
@@ -1316,6 +1351,95 @@ impl<'program> Validator<'program> {
                     "prelude ParseFloatError must use empty InvalidSyntax#0 and OutOfRange#1 variants",
                     definition.span,
                     "prelude.parse_float_error",
+                );
+            }
+        }
+    }
+
+    fn validate_resource_prelude_ids(&mut self) {
+        let dispose = self.program.prelude.dispose_concept;
+        let dispose_requirement = self.program.prelude.dispose_requirement;
+        if dispose.is_some() != dispose_requirement.is_some() {
+            self.push(
+                MirValidationCode::ConceptShape,
+                "prelude Dispose concept and dispose requirement metadata must be present together",
+                Span::default(),
+                "prelude.dispose_concept",
+            );
+        }
+        if let Some(dispose) = dispose {
+            let Some(concept) = self.program.concept(dispose) else {
+                self.invalid_concept(dispose, Span::default(), "prelude.dispose_concept");
+                return;
+            };
+            let valid = !concept.dynamic
+                && concept.name == "Dispose"
+                && concept.associated_types.is_empty()
+                && dispose_requirement
+                    .is_some_and(|requirement| concept.requirements.as_slice() == [requirement]);
+            if !valid {
+                self.push(
+                    MirValidationCode::ConceptShape,
+                    "prelude Dispose must be a non-dynamic concept with no associated types and exactly one canonical requirement",
+                    concept.span,
+                    "prelude.dispose_concept",
+                );
+            }
+        }
+        if let Some(requirement_id) = dispose_requirement {
+            let Some(requirement) = self.program.requirement(requirement_id) else {
+                self.invalid_requirement(
+                    requirement_id,
+                    Span::default(),
+                    "prelude.dispose_requirement",
+                );
+                return;
+            };
+            let valid = dispose == Some(requirement.concept)
+                && requirement.name == "dispose"
+                && requirement.receiver == Some(Receiver::Mutable)
+                && requirement.method_type_parameters == 0
+                && requirement.params == [RequirementType::SelfType]
+                && requirement.return_ty == RequirementType::Unit
+                && requirement.witness_params.is_empty();
+            if !valid {
+                self.push(
+                    MirValidationCode::RequirementShape,
+                    "prelude Dispose.dispose must be exactly `method dispose(mut self) Unit` with no generic proof parameters",
+                    requirement.span,
+                    "prelude.dispose_requirement",
+                );
+            }
+        }
+        for (name, id, path) in [
+            (
+                "MustScope",
+                self.program.prelude.must_scope_concept,
+                "prelude.must_scope_concept",
+            ),
+            (
+                "NoSuspend",
+                self.program.prelude.no_suspend_concept,
+                "prelude.no_suspend_concept",
+            ),
+        ] {
+            let Some(id) = id else {
+                continue;
+            };
+            let Some(concept) = self.program.concept(id) else {
+                self.invalid_concept(id, Span::default(), path);
+                continue;
+            };
+            if concept.name != name
+                || concept.dynamic
+                || !concept.associated_types.is_empty()
+                || !concept.requirements.is_empty()
+            {
+                self.push(
+                    MirValidationCode::ConceptShape,
+                    format!("prelude {name} must be an empty, non-dynamic marker concept"),
+                    concept.span,
+                    path,
                 );
             }
         }
@@ -2012,6 +2136,25 @@ impl<'program> Validator<'program> {
                     "async concept requirements are not part of the current MIR contract",
                     function.span,
                     format!("{method_path}.is_async"),
+                );
+            }
+            if self.program.prelude.dispose_requirement == Some(*requirement)
+                && (function.receiver != Some(Receiver::Mutable)
+                    || function.params.len() != 1
+                    || !function
+                        .params
+                        .first()
+                        .is_some_and(|parameter| parameter.mutable)
+                    || function.return_ty != Type::Unit
+                    || function.call_plan.receiver_invariant.is_some()
+                    || !function.call_plan.requires.is_empty()
+                    || !function.call_plan.ensures.is_empty())
+            {
+                self.push(
+                    MirValidationCode::WitnessShape,
+                    "Dispose implementation methods must be synchronous, contract-free, and exactly `dispose(mut self) Unit`",
+                    function.span,
+                    &method_path,
                 );
             }
 
@@ -3346,6 +3489,46 @@ impl<'program> Validator<'program> {
                     self.type_mismatch(&declared.ty, &value_ty, statement.span, path);
                 }
             }
+            StatementKind::Scoped {
+                local,
+                value,
+                disposal,
+            } => {
+                let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
+                let Some(declared) = Self::local_decl(function, *local) else {
+                    self.invalid_local(*local, statement.span, format!("{path}.local"));
+                    return;
+                };
+                if !function
+                    .locals
+                    .iter()
+                    .any(|candidate| candidate.id == *local)
+                {
+                    self.push(
+                        MirValidationCode::InvalidLocalReference,
+                        "a `Scoped` statement must initialize a declared non-parameter local",
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                } else if !types_compatible(&declared.ty, &value_ty) {
+                    self.type_mismatch(&declared.ty, &value_ty, statement.span, path);
+                }
+                if !declared.mutable {
+                    self.push(
+                        MirValidationCode::ImmutablePlace,
+                        "a scoped MIR local must be internally mutable for disposal writeback",
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                }
+                self.validate_scoped_disposal(
+                    function,
+                    declared,
+                    disposal,
+                    statement.span,
+                    &format!("{path}.disposal"),
+                );
+            }
             StatementKind::LetTuple { locals, value } => {
                 let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
                 let Type::Tuple(elements) = value_ty else {
@@ -3462,8 +3645,20 @@ impl<'program> Validator<'program> {
                     .is_some_and(|ty| !types_compatible(ty, &value_ty))
                 {
                     self.type_mismatch(
-                        &place_ty.expect("checked above"),
+                        place_ty.as_ref().expect("checked above"),
                         &value_ty,
+                        statement.span,
+                        path,
+                    );
+                }
+                if self.type_contains_resource_obligation(function, &value_ty)
+                    || place_ty
+                        .as_ref()
+                        .is_some_and(|ty| self.type_contains_resource_obligation(function, ty))
+                {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "MustScope state cannot be copied or replaced by assignment",
                         statement.span,
                         path,
                     );
@@ -3480,7 +3675,13 @@ impl<'program> Validator<'program> {
                 let expression_path = format!("{path}.expression");
                 let ty = self.validate_expr(function, expression, &expression_path, depth);
                 if !expr_definitely_diverges(expression, 0) {
-                    self.reject_obligation_loss(&ty, expression.span, &expression_path, "discard");
+                    self.reject_obligation_loss(
+                        function,
+                        &ty,
+                        expression.span,
+                        &expression_path,
+                        "discard",
+                    );
                 }
             }
             StatementKind::Defer(cleanup) => {
@@ -4058,16 +4259,294 @@ impl<'program> Validator<'program> {
         self.supports_value_equality_inner(ty, &[], &mut Vec::new(), 0, &mut remaining)
     }
 
-    fn reject_obligation_loss(&mut self, ty: &Type, span: Span, path: &str, action: &str) {
+    #[allow(clippy::too_many_lines)]
+    fn conformance_state_bounded(
+        &self,
+        function: &Function,
+        target: &Type,
+        concept: ConceptId,
+        remaining: &mut usize,
+    ) -> ConformanceState {
+        let root = ConformanceGoal {
+            target: target.clone(),
+            concept,
+            bindings: BTreeMap::new(),
+        };
+        let mut goals = vec![root.clone()];
+        let mut indices = BTreeMap::from([(root, 0_usize)]);
+        let mut pending = VecDeque::from([0_usize]);
+        let mut nodes = vec![ConformanceNode::default()];
+        let mut unknown = false;
+
+        while let Some(index) = pending.pop_front() {
+            if *remaining == 0 {
+                unknown = true;
+                break;
+            }
+            *remaining -= 1;
+            let goal = goals[index].clone();
+            let mut node = ConformanceNode {
+                proven: function.witness_params.iter().any(|parameter| {
+                    parameter.concept == goal.concept
+                        && parameter.target == goal.target
+                        && proof_bindings_satisfy(&parameter.bindings, &goal.bindings)
+                }),
+                alternatives: Vec::new(),
+            };
+            for witness in self
+                .program
+                .witnesses
+                .iter()
+                .filter(|witness| witness.concept == goal.concept)
+            {
+                let substitutions = match infer_conformance_head(
+                    &witness.concrete,
+                    &goal.target,
+                    witness.type_parameters,
+                    remaining,
+                ) {
+                    Ok(Some(substitutions)) => substitutions,
+                    Ok(None) => continue,
+                    Err(()) => {
+                        unknown = true;
+                        continue;
+                    }
+                };
+                let mut associated = BTreeMap::new();
+                for (name, ty) in &witness.associated {
+                    let Some(ty) = copy_type_bounded(ty, Some(&substitutions), remaining, 0) else {
+                        unknown = true;
+                        break;
+                    };
+                    associated.insert(name.clone(), ty);
+                }
+                if !proof_bindings_satisfy(&associated, &goal.bindings) {
+                    continue;
+                }
+                let mut alternative = Vec::with_capacity(witness.prerequisites.len());
+                let mut complete = true;
+                for prerequisite in &witness.prerequisites {
+                    let Some(target) =
+                        copy_type_bounded(&prerequisite.target, Some(&substitutions), remaining, 0)
+                    else {
+                        unknown = true;
+                        complete = false;
+                        break;
+                    };
+                    let mut bindings = BTreeMap::new();
+                    for (name, ty) in &prerequisite.bindings {
+                        let Some(ty) = copy_type_bounded(ty, Some(&substitutions), remaining, 0)
+                        else {
+                            unknown = true;
+                            complete = false;
+                            break;
+                        };
+                        bindings.insert(name.clone(), ty);
+                    }
+                    if !complete {
+                        break;
+                    }
+                    let prerequisite = ConformanceGoal {
+                        target,
+                        concept: prerequisite.concept,
+                        bindings,
+                    };
+                    let prerequisite_index = if let Some(index) = indices.get(&prerequisite) {
+                        *index
+                    } else {
+                        let index = goals.len();
+                        indices.insert(prerequisite.clone(), index);
+                        goals.push(prerequisite);
+                        nodes.push(ConformanceNode::default());
+                        pending.push_back(index);
+                        index
+                    };
+                    alternative.push(prerequisite_index);
+                }
+                if complete {
+                    if alternative.is_empty() {
+                        node.proven = true;
+                    } else {
+                        node.alternatives.push(alternative);
+                    }
+                }
+            }
+            nodes[index] = node;
+        }
+
+        let mut changed = true;
+        while changed && *remaining > 0 {
+            changed = false;
+            for index in 0..nodes.len() {
+                if nodes[index].proven {
+                    continue;
+                }
+                *remaining -= 1;
+                if nodes[index].alternatives.iter().any(|alternative| {
+                    alternative
+                        .iter()
+                        .all(|dependency| nodes[*dependency].proven)
+                }) {
+                    nodes[index].proven = true;
+                    changed = true;
+                }
+                if *remaining == 0 {
+                    unknown = true;
+                    break;
+                }
+            }
+        }
+        if nodes.first().is_some_and(|node| node.proven) {
+            ConformanceState::Proven
+        } else if unknown || !pending.is_empty() {
+            ConformanceState::Unknown
+        } else {
+            ConformanceState::Absent
+        }
+    }
+
+    fn type_contains_resource_obligation(&self, function: &Function, root: &Type) -> bool {
         let mut remaining = MAX_VALIDATION_TYPE_NODES;
-        let obligations = self.value_obligations_inner(ty, &[], &mut Vec::new(), 0, &mut remaining);
+        self.value_obligations_with_resources_bounded(function, root, &mut remaining)
+            .resource
+    }
+
+    fn value_obligations_with_resources_bounded(
+        &self,
+        function: &Function,
+        ty: &Type,
+        remaining: &mut usize,
+    ) -> ValueObligations {
+        let mut obligations = self.value_obligations_inner(ty, &[], &mut Vec::new(), 0, remaining);
+        if !obligations.resource {
+            if obligations.unresolved && *remaining == 0 {
+                // A bounded structural walk may not have reached a trailing
+                // canonical File/Socket. Preserve the resource bit as the
+                // fail-closed answer before marker-specific fast paths run.
+                obligations.resource = true;
+            } else {
+                obligations.resource =
+                    self.type_contains_must_scope_bounded(function, ty, remaining);
+            }
+        }
+        obligations
+    }
+
+    fn type_contains_must_scope_bounded(
+        &self,
+        function: &Function,
+        root: &Type,
+        remaining: &mut usize,
+    ) -> bool {
+        let Some(marker) = self.program.prelude.must_scope_concept else {
+            // Built-in File/Socket containment remains covered by the
+            // representation-independent ValueObligations analysis.
+            return false;
+        };
+        if !self
+            .program
+            .witnesses
+            .iter()
+            .any(|witness| witness.concept == marker)
+            && !function
+                .witness_params
+                .iter()
+                .any(|parameter| parameter.concept == marker)
+        {
+            return false;
+        }
+        let mut pending = vec![root.clone()];
+        let mut visited = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if *remaining == 0 {
+                return true;
+            }
+            *remaining -= 1;
+            if !visited.insert(ty.clone()) {
+                continue;
+            }
+            if matches!(&ty, Type::Nominal(id, _) if self.program.prelude.file == Some(*id) || self.program.prelude.socket == Some(*id))
+            {
+                return true;
+            }
+            match self.conformance_state_bounded(function, &ty, marker, remaining) {
+                ConformanceState::Proven | ConformanceState::Unknown => return true,
+                ConformanceState::Absent => {}
+            }
+            match ty {
+                Type::Tuple(elements) => pending.extend(elements),
+                Type::List(element) | Type::TaskOutcome(element) => pending.push(*element),
+                Type::Nominal(type_id, arguments) => {
+                    let Some(definition) = self.program.type_def(type_id) else {
+                        continue;
+                    };
+                    match &definition.kind {
+                        TypeDefKind::Record { fields, .. } => {
+                            for field in fields {
+                                let Some(field) =
+                                    copy_type_bounded(&field.ty, Some(&arguments), remaining, 0)
+                                else {
+                                    return true;
+                                };
+                                pending.push(field);
+                            }
+                        }
+                        TypeDefKind::Enum { variants } => {
+                            for payload in variants.iter().flat_map(|variant| &variant.payload) {
+                                let Some(payload) =
+                                    copy_type_bounded(payload, Some(&arguments), remaining, 0)
+                                else {
+                                    return true;
+                                };
+                                pending.push(payload);
+                            }
+                        }
+                        TypeDefKind::Refined { base, .. } => {
+                            let Some(base) =
+                                copy_type_bounded(base, Some(&arguments), remaining, 0)
+                            else {
+                                return true;
+                            };
+                            pending.push(base);
+                        }
+                    }
+                }
+                // A Task transfers its output obligation through await rather
+                // than making the task handle itself MustScope.
+                Type::Task(_)
+                | Type::Never
+                | Type::Unit
+                | Type::Bool
+                | Type::Int
+                | Type::Float
+                | Type::Text
+                | Type::Parameter(_)
+                | Type::AssociatedProjection { .. }
+                | Type::View { .. }
+                | Type::Error => {}
+            }
+        }
+        false
+    }
+
+    fn reject_obligation_loss(
+        &mut self,
+        function: &Function,
+        ty: &Type,
+        span: Span,
+        path: &str,
+        action: &str,
+    ) {
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        let obligations =
+            self.value_obligations_with_resources_bounded(function, ty, &mut remaining);
         if obligations.is_empty() {
             return;
         }
 
         let mut kinds = Vec::with_capacity(3);
         if obligations.resource {
-            kinds.push("File or Socket");
+            kinds.push("File or Socket, or another MustScope resource");
         }
         if obligations.task {
             kinds.push("an unconsumed Task");
@@ -4084,6 +4563,28 @@ impl<'program> Validator<'program> {
             span,
             path,
         );
+    }
+
+    fn reject_must_scope_escape(
+        &mut self,
+        function: &Function,
+        ty: &Type,
+        span: Span,
+        path: &str,
+        action: &str,
+    ) {
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        if self
+            .value_obligations_with_resources_bounded(function, ty, &mut remaining)
+            .resource
+        {
+            self.push(
+                MirValidationCode::ObligationShape,
+                format!("checked MIR cannot let MustScope state {action}; transfer it into Scoped"),
+                span,
+                path,
+            );
+        }
     }
 
     fn value_obligations_inner(
@@ -6092,6 +6593,131 @@ impl<'program> Validator<'program> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn validate_scoped_disposal(
+        &mut self,
+        function: &Function,
+        local: &LocalDecl,
+        disposal: &ScopedDisposal,
+        span: Span,
+        path: &str,
+    ) {
+        match disposal {
+            ScopedDisposal::StaticConcept {
+                requirement,
+                witness,
+                dispatch_type,
+            } => {
+                if self.program.prelude.dispose_requirement != Some(*requirement) {
+                    self.push(
+                        MirValidationCode::RequirementShape,
+                        "scoped disposal must use the canonical Dispose.dispose requirement",
+                        span,
+                        format!("{path}.requirement"),
+                    );
+                }
+                if !types_compatible(&local.ty, dispatch_type) {
+                    self.type_mismatch(
+                        &local.ty,
+                        dispatch_type,
+                        span,
+                        &format!("{path}.dispatch_type"),
+                    );
+                }
+                let Some(concept) = self.program.prelude.dispose_concept else {
+                    self.push(
+                        MirValidationCode::InvalidConceptReference,
+                        "static scoped disposal requires canonical prelude Dispose metadata",
+                        span,
+                        path,
+                    );
+                    return;
+                };
+                let expected = WitnessParam {
+                    target: local.ty.clone(),
+                    concept,
+                    bindings: BTreeMap::new(),
+                    span,
+                };
+                let resolved = self.validate_witness_ref(
+                    function,
+                    witness,
+                    Some(&expected),
+                    span,
+                    &format!("{path}.witness"),
+                    0,
+                );
+                let Some(witness_id) = resolved.and_then(|resolved| resolved.definition) else {
+                    return;
+                };
+                let Some(method) = self
+                    .program
+                    .witness(witness_id)
+                    .and_then(|witness| witness.methods.get(requirement))
+                    .and_then(|function| self.program.function(*function))
+                else {
+                    self.push(
+                        MirValidationCode::WitnessShape,
+                        "scoped Dispose proof has no implementation method",
+                        span,
+                        path,
+                    );
+                    return;
+                };
+                if method.is_async
+                    || method.receiver != Some(Receiver::Mutable)
+                    || method.return_ty != Type::Unit
+                    || method.params.len() != 1
+                    || !method
+                        .params
+                        .first()
+                        .is_some_and(|parameter| parameter.mutable)
+                    || !types_compatible(&method.params[0].ty, &local.ty)
+                    || method.call_plan.receiver_invariant.is_some()
+                    || !method.call_plan.requires.is_empty()
+                    || !method.call_plan.ensures.is_empty()
+                {
+                    self.push(
+                        MirValidationCode::WitnessShape,
+                        "scoped Dispose implementation must be synchronous, contract-free, and exactly `dispose(mut self) Unit`",
+                        method.span,
+                        path,
+                    );
+                }
+            }
+            ScopedDisposal::FileClose => {
+                if !self
+                    .program
+                    .prelude
+                    .file
+                    .is_some_and(|file| nominal_is(&local.ty, file))
+                {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "FileClose scoped disposal requires the canonical File type",
+                        span,
+                        path,
+                    );
+                }
+            }
+            ScopedDisposal::SocketClose => {
+                if !self
+                    .program
+                    .prelude
+                    .socket
+                    .is_some_and(|socket| nominal_is(&local.ty, socket))
+                {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "SocketClose scoped disposal requires the canonical Socket type",
+                        span,
+                        path,
+                    );
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_make_view(
         &mut self,
@@ -6107,6 +6733,7 @@ impl<'program> Validator<'program> {
         let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
         if !expr_definitely_diverges(value, 0) {
             self.reject_obligation_loss(
+                function,
                 &value_ty,
                 value.span,
                 &format!("{path}.value"),
@@ -6264,6 +6891,13 @@ impl<'program> Validator<'program> {
                 );
             }
             previous_patterns.push(vec![arm.pattern.clone()]);
+            self.validate_pattern_obligations(
+                function,
+                &arm.pattern,
+                scrutinee,
+                arm.value.span,
+                &format!("{arm_path}.pattern"),
+            );
             let mut bindings = Vec::new();
             self.validate_pattern(
                 &arm.pattern,
@@ -6303,6 +6937,71 @@ impl<'program> Validator<'program> {
             joined
         } else {
             joined
+        }
+    }
+
+    fn validate_pattern_obligations(
+        &mut self,
+        function: &Function,
+        pattern: &Pattern,
+        expected: &Type,
+        span: Span,
+        path: &str,
+    ) {
+        let mut remaining = MAX_PATTERN_ANALYSIS_STEPS;
+        let mut pending = vec![(pattern, expected.clone(), path.to_owned())];
+        while let Some((pattern, expected, path)) = pending.pop() {
+            if remaining == 0 {
+                self.push(
+                    MirValidationCode::NestingLimit,
+                    "pattern obligation analysis exceeds its checked budget",
+                    span,
+                    path,
+                );
+                return;
+            }
+            remaining -= 1;
+            match pattern {
+                Pattern::Wildcard | Pattern::Constant(_)
+                    if self.type_contains_resource_obligation(function, &expected) =>
+                {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a pattern cannot discard a value containing MustScope state",
+                        span,
+                        path,
+                    );
+                }
+                Pattern::Variant {
+                    ty,
+                    variant,
+                    payload,
+                } => {
+                    let arguments = match &expected {
+                        Type::Nominal(expected, arguments) if expected == ty => arguments,
+                        _ => continue,
+                    };
+                    let Some(definition) = self.variant(*ty, *variant) else {
+                        continue;
+                    };
+                    for (index, nested) in payload.iter().enumerate() {
+                        let Some(schema) = definition.payload.get(index) else {
+                            continue;
+                        };
+                        let Some(ty) = substitute_type_bounded(schema, arguments) else {
+                            self.push(
+                                MirValidationCode::NestingLimit,
+                                "pattern obligation substitution exceeds its checked budget",
+                                span,
+                                format!("{path}.payload[{index}]"),
+                            );
+                            continue;
+                        };
+                        pending.push((nested, ty, format!("{path}.payload[{index}]")));
+                    }
+                }
+                Pattern::Wildcard | Pattern::Binding | Pattern::Constant(_) => {}
+            }
         }
     }
 
@@ -7859,6 +8558,7 @@ impl<'program> Validator<'program> {
     ) {
         match &statement.kind {
             StatementKind::Let { value, .. }
+            | StatementKind::Scoped { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. } => self.validate_borrowed_view_expr(
                 function,
@@ -8134,6 +8834,15 @@ impl<'program> Validator<'program> {
             &format!("{path}.body"),
             0,
         );
+        if let Some(tail) = function.body.tail.as_deref() {
+            self.reject_must_scope_escape(
+                function,
+                &tail.ty,
+                tail.span,
+                &format!("{path}.body.tail"),
+                "escape through a function tail",
+            );
+        }
         self.drain_pending_cleanup_unwinds(function);
         if !flow.loans.is_empty() {
             self.push(
@@ -8174,6 +8883,7 @@ impl<'program> Validator<'program> {
                 &format!("{path}.statements[{index}]"),
                 depth + 1,
             ) {
+                self.audit_block_resource_bindings(function, block, state, path);
                 self.dataflow_cleanup_exit(function, state);
                 return ExprFlow {
                     diverges: true,
@@ -8189,13 +8899,61 @@ impl<'program> Validator<'program> {
             |tail| self.dataflow_expr(function, tail, state, &format!("{path}.tail"), depth + 1),
         );
         if flow.diverges {
+            self.audit_block_resource_bindings(function, block, state, path);
             self.dataflow_cleanup_exit(function, state);
             flow.loans.clear();
-        } else if !self.dataflow_cleanup_sequence(function, state, cleanup_base) {
-            flow.diverges = true;
-            flow.loans.clear();
+        } else {
+            self.audit_block_resource_bindings(function, block, state, path);
+            if !self.dataflow_cleanup_sequence(function, state, cleanup_base) {
+                flow.diverges = true;
+                flow.loans.clear();
+            }
         }
         flow
+    }
+
+    fn audit_block_resource_bindings(
+        &mut self,
+        function: &Function,
+        block: &Block,
+        state: &DataflowState,
+        path: &str,
+    ) {
+        for (index, statement) in block.statements.iter().enumerate() {
+            let mut locals = Vec::new();
+            match &statement.kind {
+                StatementKind::Let { local, .. } => locals.push(*local),
+                StatementKind::LetTuple {
+                    locals: bindings, ..
+                } => locals.extend(bindings.iter().copied()),
+                StatementKind::Scoped { .. }
+                | StatementKind::ForRange { .. }
+                | StatementKind::Assign { .. }
+                | StatementKind::Assert { .. }
+                | StatementKind::Evaluate(_)
+                | StatementKind::Defer(_)
+                | StatementKind::Return(_) => {}
+            }
+            for local in locals {
+                let Some(declaration) = Self::local_decl(function, local) else {
+                    continue;
+                };
+                if !self.type_contains_resource_obligation(function, &declaration.ty) {
+                    continue;
+                }
+                if matches!(
+                    self.slot_state(state, local.0 as usize),
+                    Some(SlotState::Available | SlotState::MaybeUnavailable)
+                ) {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "an ordinary binding containing MustScope state leaves its lexical block without transferring into Scoped",
+                        declaration.span,
+                        format!("{path}.statements[{index}].local"),
+                    );
+                }
+            }
+        }
     }
 
     /// Validate and apply registered cleanups in interpreter order.
@@ -8250,14 +9008,27 @@ impl<'program> Validator<'program> {
             state.temporary_loans = Rc::new(TemporaryLoanSet::default());
         }
         state.active_cleanup = cleanup.older;
-        let flow = self.dataflow_block(
-            function,
-            cleanup.block.as_ref(),
-            &mut state,
-            cleanup.path.as_ref(),
-            cleanup.depth,
-        );
-        (!flow.diverges).then_some(state)
+        match &cleanup.action {
+            RegisteredCleanupAction::Block(block) => {
+                let flow = self.dataflow_block(
+                    function,
+                    block.as_ref(),
+                    &mut state,
+                    cleanup.path.as_ref(),
+                    cleanup.depth,
+                );
+                (!flow.diverges).then_some(state)
+            }
+            RegisteredCleanupAction::Scoped { local, span, .. } => {
+                self.require_available(*local, &state, *span, cleanup.path.as_ref());
+                // Dispose may fault. At this point the current registration is
+                // already popped, so its unwind can only execute older
+                // cleanups and cannot re-enter itself.
+                self.enqueue_cleanup_unwind(state.clone());
+                self.set_slot_state(&mut state, local.0 as usize, SlotState::Moved);
+                Some(state)
+            }
+        }
     }
 
     fn dataflow_cleanup_exit(&mut self, _function: &Function, state: &mut DataflowState) {
@@ -8344,6 +9115,58 @@ impl<'program> Validator<'program> {
                     );
                 }
                 self.dataflow_store(index, state);
+                false
+            }
+            StatementKind::Scoped {
+                local,
+                value,
+                disposal: _,
+            } => {
+                let value = self.dataflow_expr_as(
+                    function,
+                    value,
+                    state,
+                    &format!("{path}.value"),
+                    depth,
+                    ResourceUse::ScopedInitializer,
+                );
+                if value.diverges {
+                    return true;
+                }
+                if !value.loans.is_empty() {
+                    self.push(
+                        MirValidationCode::BorrowShape,
+                        "call-scoped interface carrier cannot enter a scoped binding",
+                        statement.span,
+                        format!("{path}.value"),
+                    );
+                }
+                let index = local.0 as usize;
+                if self
+                    .slot_state(state, index)
+                    .is_some_and(|slot| slot != SlotState::Uninitialized)
+                {
+                    self.push(
+                        MirValidationCode::LocalState,
+                        "Scoped must initialize an uninitialized local exactly once",
+                        statement.span,
+                        format!("{path}.local"),
+                    );
+                }
+                self.dataflow_store(index, state);
+                let older = state.active_cleanup;
+                let cleanup_id = self.cleanup_arena.len();
+                debug_assert!(older.is_none_or(|older| older < cleanup_id));
+                self.cleanup_arena.push(RegisteredCleanup {
+                    action: RegisteredCleanupAction::Scoped {
+                        local: *local,
+                        span: statement.span,
+                    },
+                    path: Rc::from(format!("{path}.disposal")),
+                    depth: depth + 1,
+                    older,
+                });
+                state.active_cleanup = Some(cleanup_id);
                 false
             }
             StatementKind::LetTuple { locals, value } => {
@@ -8479,7 +9302,7 @@ impl<'program> Validator<'program> {
                 let cleanup_id = self.cleanup_arena.len();
                 debug_assert!(older.is_none_or(|older| older < cleanup_id));
                 self.cleanup_arena.push(RegisteredCleanup {
-                    block: Rc::new(cleanup.clone()),
+                    action: RegisteredCleanupAction::Block(Rc::new(cleanup.clone())),
                     path: Rc::from(format!("{path}.cleanup")),
                     depth: depth + 1,
                     older,
@@ -8488,12 +9311,13 @@ impl<'program> Validator<'program> {
                 false
             }
             StatementKind::Evaluate(expression) => {
-                self.dataflow_expr(
+                self.dataflow_expr_as(
                     function,
                     expression,
                     state,
                     &format!("{path}.expression"),
                     depth,
+                    ResourceUse::RejectedLoss,
                 )
                 .diverges
             }
@@ -8501,6 +9325,13 @@ impl<'program> Validator<'program> {
                 if let Some(value) = value {
                     let flow =
                         self.dataflow_expr(function, value, state, &format!("{path}.value"), depth);
+                    self.reject_must_scope_escape(
+                        function,
+                        &value.ty,
+                        value.span,
+                        &format!("{path}.value"),
+                        "escape through Return",
+                    );
                     if !flow.loans.is_empty() {
                         self.push(
                             MirValidationCode::BorrowShape,
@@ -8515,7 +9346,219 @@ impl<'program> Validator<'program> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn dataflow_expr_as(
+        &mut self,
+        function: &Function,
+        expression: &Expr,
+        state: &mut DataflowState,
+        path: &str,
+        depth: u16,
+        resource_use: ResourceUse,
+    ) -> ExprFlow {
+        self.dataflow_expr_with_use(function, expression, state, path, depth, resource_use)
+    }
+
+    fn scoped_local_is_active(&self, local: LocalId, state: &DataflowState) -> bool {
+        let mut current = state.active_cleanup;
+        let mut remaining = self.cleanup_arena.len().min(MAX_VALIDATION_TYPE_NODES);
+        while let Some(index) = current {
+            if remaining == 0 {
+                return false;
+            }
+            remaining -= 1;
+            let Some(cleanup) = self.cleanup_arena.get(index) else {
+                return false;
+            };
+            if matches!(cleanup.action, RegisteredCleanupAction::Scoped { local: active, .. } if active == local)
+            {
+                return true;
+            }
+            current = cleanup.older;
+        }
+        false
+    }
+
+    fn external_receiver_local(function: &Function, local: LocalId) -> bool {
+        function.receiver.is_some()
+            && function
+                .params
+                .first()
+                .is_some_and(|parameter| parameter.id == local)
+    }
+
+    fn call_target_has_receiver(&self, target: &CallTarget) -> bool {
+        match target {
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => self
+                .program
+                .function(*function)
+                .is_some_and(|function| function.receiver.is_some()),
+            CallTarget::StaticConcept { requirement, .. } | CallTarget::Dynamic { requirement } => {
+                self.program
+                    .requirement(*requirement)
+                    .is_some_and(|requirement| requirement.receiver.is_some())
+            }
+            CallTarget::Builtin(builtin) => matches!(
+                builtin,
+                Builtin::FileReadText
+                    | Builtin::FileWriteText
+                    | Builtin::FileTryReadText
+                    | Builtin::FileTryWriteText
+                    | Builtin::SocketReadText
+                    | Builtin::SocketWriteText
+                    | Builtin::SocketTryReadText
+                    | Builtin::SocketTryWriteText
+            ),
+        }
+    }
+
+    fn call_target_is_manual_disposal(&self, target: &CallTarget) -> bool {
+        match target {
+            CallTarget::StaticConcept { requirement, .. } => {
+                self.program.prelude.dispose_requirement == Some(*requirement)
+            }
+            CallTarget::Builtin(Builtin::FileClose | Builtin::SocketClose) => true,
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => self
+                .program
+                .prelude
+                .dispose_requirement
+                .is_some_and(|requirement| {
+                    self.program
+                        .witnesses
+                        .iter()
+                        .any(|witness| witness.methods.get(&requirement) == Some(function))
+                }),
+            CallTarget::Dynamic { .. } | CallTarget::Builtin(_) => false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_resource_place_use(
+        &mut self,
+        function: &Function,
+        place: &Place,
+        ty: &Type,
+        state: &mut DataflowState,
+        span: Span,
+        path: &str,
+        is_move: bool,
+        resource_use: ResourceUse,
+    ) {
+        if !self.type_contains_resource_obligation(function, ty) {
+            return;
+        }
+        match resource_use {
+            ResourceUse::RejectedLoss => {}
+            ResourceUse::Ordinary => {
+                self.push(
+                    MirValidationCode::ObligationShape,
+                    "MustScope state cannot be copied, moved, returned, stored, or passed as an ordinary value",
+                    span,
+                    path,
+                );
+            }
+            ResourceUse::ScopedInitializer => {
+                if !place.projection.is_empty() {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a MustScope transfer into `Scoped` must consume a complete local",
+                        span,
+                        path,
+                    );
+                }
+                if Self::external_receiver_local(function, place.local) {
+                    // Receiver parameter zero borrows the caller's active
+                    // scoped resource. Other value parameters have no
+                    // non-owning mode in MIR, and MustScope ordinary call
+                    // arguments are rejected independently at the call site.
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a non-owning method receiver cannot be transferred into `Scoped`",
+                        span,
+                        path,
+                    );
+                }
+                if self.scoped_local_is_active(place.local, state) {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "an active scoped resource cannot be transferred into another scoped binding",
+                        span,
+                        path,
+                    );
+                }
+                // Source paths are represented as Copy even though the sema
+                // phase has proved an affine transfer into Scoped. Enforce
+                // that transfer independently at the untrusted MIR boundary.
+                self.set_slot_state(state, place.local.0 as usize, SlotState::Moved);
+            }
+            ResourceUse::ScopedReceiver => {
+                if !place.projection.is_empty()
+                    || (!self.scoped_local_is_active(place.local, state)
+                        && !Self::external_receiver_local(function, place.local))
+                {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a MustScope method receiver must be a complete active scoped binding",
+                        span,
+                        path,
+                    );
+                }
+                if is_move {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "a scoped method receiver cannot move its resource",
+                        span,
+                        path,
+                    );
+                }
+            }
+        }
+    }
+
+    fn reject_no_suspend_across_await(
+        &mut self,
+        function: &Function,
+        state: &DataflowState,
+        span: Span,
+        path: &str,
+    ) {
+        let Some(marker) = self.program.prelude.no_suspend_concept else {
+            return;
+        };
+        let mut current = state.active_cleanup;
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        while let Some(index) = current {
+            if remaining == 0 {
+                self.push(
+                    MirValidationCode::SuspensionShape,
+                    "active cleanup analysis exceeded its checked bound",
+                    span,
+                    path,
+                );
+                return;
+            }
+            remaining -= 1;
+            let Some(cleanup) = self.cleanup_arena.get(index) else {
+                return;
+            };
+            if let RegisteredCleanupAction::Scoped { local, .. } = cleanup.action
+                && let Some(local) = Self::local_decl(function, local)
+                && !matches!(
+                    self.conformance_state_bounded(function, &local.ty, marker, &mut remaining,),
+                    ConformanceState::Absent
+                )
+            {
+                self.push(
+                    MirValidationCode::SuspensionShape,
+                    "a NoSuspend scoped resource cannot remain active across Await",
+                    span,
+                    path,
+                );
+                return;
+            }
+            current = cleanup.older;
+        }
+    }
+
     fn dataflow_expr(
         &mut self,
         function: &Function,
@@ -8523,6 +9566,26 @@ impl<'program> Validator<'program> {
         state: &mut DataflowState,
         path: &str,
         depth: u16,
+    ) -> ExprFlow {
+        self.dataflow_expr_with_use(
+            function,
+            expression,
+            state,
+            path,
+            depth,
+            ResourceUse::Ordinary,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn dataflow_expr_with_use(
+        &mut self,
+        function: &Function,
+        expression: &Expr,
+        state: &mut DataflowState,
+        path: &str,
+        depth: u16,
+        resource_use: ResourceUse,
     ) -> ExprFlow {
         if !self.enter(depth, expression.span, path) {
             return ExprFlow {
@@ -8566,6 +9629,16 @@ impl<'program> Validator<'program> {
                         path,
                     );
                 }
+                self.validate_resource_place_use(
+                    function,
+                    place,
+                    &expression.ty,
+                    state,
+                    expression.span,
+                    path,
+                    false,
+                    resource_use,
+                );
                 ExprFlow {
                     diverges: expression.ty == Type::Never,
                     loans: Vec::new(),
@@ -8574,6 +9647,16 @@ impl<'program> Validator<'program> {
             ExprKind::Move(place) => {
                 self.require_available(place.local, state, expression.span, path);
                 self.reject_owner_mutation_while_borrowed(place, state, expression.span, path);
+                self.validate_resource_place_use(
+                    function,
+                    place,
+                    &expression.ty,
+                    state,
+                    expression.span,
+                    path,
+                    true,
+                    resource_use,
+                );
                 let index = place.local.0 as usize;
                 self.set_slot_state(state, index, SlotState::Moved);
                 ExprFlow {
@@ -8743,6 +9826,22 @@ impl<'program> Validator<'program> {
                         &format!("{path}.arms[{index}].value"),
                         depth + 1,
                     );
+                    for (binding_index, local) in arm.bindings.iter().enumerate() {
+                        let Some(local_decl) = Self::local_decl(function, *local) else {
+                            continue;
+                        };
+                        if self.type_contains_resource_obligation(function, &local_decl.ty)
+                            && self.slot_state(&arm_state, local.0 as usize)
+                                != Some(SlotState::Moved)
+                        {
+                            self.push(
+                                MirValidationCode::ObligationShape,
+                                "a pattern-bound MustScope value must transfer directly into Scoped",
+                                arm.value.span,
+                                format!("{path}.arms[{index}].bindings[{binding_index}]"),
+                            );
+                        }
+                    }
                     all_diverge &= flow.diverges;
                     if flow.diverges {
                         // A direct Never-valued arm does not cross a block
@@ -8823,6 +9922,15 @@ impl<'program> Validator<'program> {
                 target, arguments, ..
             } => {
                 let target_is_synchronous = self.call_target_is_proven_synchronous(target);
+                let target_has_receiver = self.call_target_has_receiver(target);
+                if self.call_target_is_manual_disposal(target) {
+                    self.push(
+                        MirValidationCode::ObligationShape,
+                        "Dispose and intrinsic close operations may only be invoked by a Scoped registration",
+                        expression.span,
+                        format!("{path}.target"),
+                    );
+                }
                 // Call-argument accesses form a dynamic scope. Retaining its
                 // entry root makes every normal or diverging exit an O(1)
                 // restoration and preserves pointer identity for joins.
@@ -8830,16 +9938,43 @@ impl<'program> Validator<'program> {
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
-                            let flow = self.dataflow_expr(
+                            let resource_use = if index == 0 && target_has_receiver {
+                                ResourceUse::ScopedReceiver
+                            } else {
+                                ResourceUse::Ordinary
+                            };
+                            let flow = self.dataflow_expr_as(
                                 function,
                                 value,
                                 state,
                                 &format!("{path}.arguments[{index}]"),
                                 depth + 1,
+                                resource_use,
                             );
                             if flow.diverges {
                                 state.temporary_loans = Rc::clone(&checkpoint);
                                 return no_value(true);
+                            }
+                            if resource_use == ResourceUse::ScopedReceiver
+                                && !matches!(value.kind, ExprKind::Copy(_) | ExprKind::Move(_))
+                                && self.type_contains_resource_obligation(function, &value.ty)
+                            {
+                                self.push(
+                                    MirValidationCode::ObligationShape,
+                                    "a MustScope method receiver must be a complete active scoped binding",
+                                    value.span,
+                                    format!("{path}.arguments[{index}]"),
+                                );
+                            }
+                            if resource_use == ResourceUse::Ordinary
+                                && self.type_contains_resource_obligation(function, &value.ty)
+                            {
+                                self.push(
+                                    MirValidationCode::ObligationShape,
+                                    "a value containing MustScope state cannot be passed as an ordinary argument",
+                                    value.span,
+                                    format!("{path}.arguments[{index}]"),
+                                );
                             }
                             if !target_is_synchronous && !flow.loans.is_empty() {
                                 self.push(
@@ -8853,19 +9988,44 @@ impl<'program> Validator<'program> {
                         }
                         CallArgument::InOut(place) => {
                             self.require_available(place.local, state, expression.span, path);
+                            let argument_path = format!("{path}.arguments[{index}]");
+                            let place_ty = self
+                                .validate_place(
+                                    function,
+                                    place,
+                                    false,
+                                    expression.span,
+                                    &argument_path,
+                                )
+                                .unwrap_or(Type::Error);
+                            let resource_use = if index == 0 && target_has_receiver {
+                                ResourceUse::ScopedReceiver
+                            } else {
+                                ResourceUse::Ordinary
+                            };
+                            self.validate_resource_place_use(
+                                function,
+                                place,
+                                &place_ty,
+                                state,
+                                expression.span,
+                                &argument_path,
+                                false,
+                                resource_use,
+                            );
                             if !target_is_synchronous {
                                 self.push(
                                     MirValidationCode::BorrowShape,
                                     "an inout place cannot enter a call whose target is not proven synchronous",
                                     expression.span,
-                                    format!("{path}.arguments[{index}]"),
+                                    &argument_path,
                                 );
                             }
                             self.reject_owner_mutation_while_borrowed(
                                 place,
                                 state,
                                 expression.span,
-                                &format!("{path}.arguments[{index}]"),
+                                &argument_path,
                             );
                             Rc::make_mut(&mut state.temporary_loans).push(PlaceLoan {
                                 owner: place.clone(),
@@ -8891,8 +10051,14 @@ impl<'program> Validator<'program> {
                 token: _,
                 ..
             } => {
-                let flow =
-                    self.dataflow_expr(function, value, state, &format!("{path}.value"), depth + 1);
+                let flow = self.dataflow_expr_as(
+                    function,
+                    value,
+                    state,
+                    &format!("{path}.value"),
+                    depth + 1,
+                    ResourceUse::RejectedLoss,
+                );
                 if flow.diverges {
                     return no_value(true);
                 }
@@ -8917,6 +10083,7 @@ impl<'program> Validator<'program> {
                         path,
                     );
                 }
+                self.reject_no_suspend_across_await(function, state, expression.span, path);
                 if !flow.diverges {
                     self.validate_active_cleanups_at_fault_point(function, state);
                 }
@@ -9238,6 +10405,72 @@ fn constant_type(constant: &Constant) -> Type {
     }
 }
 
+fn infer_conformance_head(
+    schema: &Type,
+    target: &Type,
+    arity: u32,
+    remaining: &mut usize,
+) -> Result<Option<Vec<Type>>, ()> {
+    let arity = usize::try_from(arity).map_err(|_| ())?;
+    let mut substitutions = vec![None; arity];
+    let mut pending = vec![(schema, target)];
+    while let Some((schema, target)) = pending.pop() {
+        if *remaining == 0 {
+            return Err(());
+        }
+        *remaining -= 1;
+        match (schema, target) {
+            (Type::Parameter(index), target) => {
+                let Some(slot) = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| substitutions.get_mut(index))
+                else {
+                    return Err(());
+                };
+                if slot.as_ref().is_some_and(|known| known != target) {
+                    return Ok(None);
+                }
+                if slot.is_none() {
+                    *slot = Some(target.clone());
+                }
+            }
+            (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => {
+                pending.extend(left.iter().zip(right));
+            }
+            (Type::Nominal(left_id, left), Type::Nominal(right_id, right))
+                if left_id == right_id && left.len() == right.len() =>
+            {
+                pending.extend(left.iter().zip(right));
+            }
+            (Type::List(left), Type::List(right))
+            | (Type::Task(left), Type::Task(right))
+            | (Type::TaskOutcome(left), Type::TaskOutcome(right)) => {
+                pending.push((left, right));
+            }
+            (
+                Type::View {
+                    mutable: left_mutable,
+                    concept: left_concept,
+                    bindings: left,
+                },
+                Type::View {
+                    mutable: right_mutable,
+                    concept: right_concept,
+                    bindings: right,
+                },
+            ) if left_mutable == right_mutable
+                && left_concept == right_concept
+                && left.keys().eq(right.keys()) =>
+            {
+                pending.extend(left.values().zip(right.values()));
+            }
+            (left, right) if left == right => {}
+            _ => return Ok(None),
+        }
+    }
+    complete_substitutions(&substitutions).map(Some).ok_or(())
+}
+
 fn witness_params_equal(left: &WitnessParam, right: &WitnessParam) -> bool {
     left.target == right.target && left.concept == right.concept && left.bindings == right.bindings
 }
@@ -9322,6 +10555,7 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
         let diverges = match &statement.kind {
             StatementKind::Return(_) => true,
             StatementKind::Let { value, .. }
+            | StatementKind::Scoped { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
             | StatementKind::Evaluate(value) => expr_definitely_diverges(value, depth + 1),
@@ -9350,7 +10584,9 @@ fn cleanup_contains_forbidden_control(block: &Block, depth: u16) -> bool {
         .statements
         .iter()
         .any(|statement| match &statement.kind {
-            StatementKind::Return(_) | StatementKind::Defer(_) => true,
+            StatementKind::Return(_) | StatementKind::Defer(_) | StatementKind::Scoped { .. } => {
+                true
+            }
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }

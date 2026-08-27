@@ -18,8 +18,9 @@ use loom_core::runtime_fault::{
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId, Statement,
-    StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp, VariantId, WitnessId, WitnessRef,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId,
+    ScopedDisposal, Statement, StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp,
+    VariantId, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -373,7 +374,7 @@ struct ManagedTask {
     children: Vec<u64>,
     cursor: usize,
     awaiting_state: Option<u32>,
-    cleanups: Vec<Block>,
+    cleanups: Vec<RuntimeCleanup>,
     status: TaskStatus,
     queued: bool,
     marked: bool,
@@ -386,6 +387,16 @@ struct ManagedTask {
     join_combined: bool,
     join_winner: Option<usize>,
     cancel_requested: bool,
+}
+
+#[derive(Clone, Debug)]
+enum RuntimeCleanup {
+    Deferred(Block),
+    Scoped {
+        local: LocalId,
+        disposal: ScopedDisposal,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -488,6 +499,7 @@ enum AwaitPoll {
 enum AwaitDestination {
     Ignore,
     Local(LocalId),
+    Scoped(LocalId, ScopedDisposal),
     Tuple(Vec<LocalId>),
     Return,
 }
@@ -1186,9 +1198,10 @@ impl<'program> Interpreter<'program> {
         loop {
             let cursor = self.tasks.get(&task_id).expect("task exists").cursor;
             if let Some(statement) = function.body.statements.get(cursor).cloned() {
-                if let StatementKind::Defer(cleanup) = statement.kind {
+                if let StatementKind::Defer(cleanup) = &statement.kind {
                     let task = self.tasks.get_mut(&task_id).expect("task exists");
-                    task.cleanups.push(cleanup);
+                    task.cleanups
+                        .push(RuntimeCleanup::Deferred(cleanup.clone()));
                     task.cursor += 1;
                     continue;
                 }
@@ -1197,6 +1210,13 @@ impl<'program> Interpreter<'program> {
                     StatementKind::Let { local, value } => {
                         await_expr(value).map(|awaited| (AwaitDestination::Local(*local), awaited))
                     }
+                    StatementKind::Scoped {
+                        local,
+                        value,
+                        disposal,
+                    } => await_expr(value).map(|awaited| {
+                        (AwaitDestination::Scoped(*local, disposal.clone()), awaited)
+                    }),
                     StatementKind::LetTuple { locals, value } => await_expr(value)
                         .map(|awaited| (AwaitDestination::Tuple(locals.clone()), awaited)),
                     StatementKind::Evaluate(value) => {
@@ -1228,6 +1248,23 @@ impl<'program> Interpreter<'program> {
                                         statement.span,
                                     )?;
                                 }
+                                AwaitDestination::Scoped(local, disposal) => {
+                                    self.set_slot(
+                                        frame,
+                                        local,
+                                        Slot::Value(value),
+                                        statement.span,
+                                    )?;
+                                    self.tasks
+                                        .get_mut(&task_id)
+                                        .expect("task exists")
+                                        .cleanups
+                                        .push(RuntimeCleanup::Scoped {
+                                            local,
+                                            disposal,
+                                            span: statement.span,
+                                        });
+                                }
                                 AwaitDestination::Tuple(locals) => {
                                     self.bind_tuple(frame, &locals, value, statement.span)?;
                                 }
@@ -1242,6 +1279,31 @@ impl<'program> Interpreter<'program> {
                             continue;
                         }
                     }
+                }
+
+                if let StatementKind::Scoped {
+                    local,
+                    value,
+                    disposal,
+                } = &statement.kind
+                {
+                    match self.eval_expr(frame, value) {
+                        Ok(value) => {
+                            self.set_slot(frame, *local, Slot::Value(value), statement.span)?;
+                            self.tasks
+                                .get_mut(&task_id)
+                                .expect("task exists")
+                                .cleanups
+                                .push(RuntimeCleanup::Scoped {
+                                    local: *local,
+                                    disposal: disposal.clone(),
+                                    span: statement.span,
+                                });
+                            self.tasks.get_mut(&task_id).expect("task exists").cursor += 1;
+                        }
+                        Err(abort) => return Ok(self.finish_task(task_id, Err(abort))),
+                    }
+                    continue;
                 }
 
                 match self.eval_statement(frame, &statement) {
@@ -2141,10 +2203,25 @@ impl<'program> Interpreter<'program> {
         let mut cleanups = Vec::new();
         let outcome = (|| {
             for statement in &block.statements {
-                if let StatementKind::Defer(cleanup) = &statement.kind {
-                    cleanups.push(cleanup.clone());
-                } else {
-                    self.eval_statement(frame, statement)?;
+                match &statement.kind {
+                    StatementKind::Defer(cleanup) => {
+                        cleanups.push(RuntimeCleanup::Deferred(cleanup.clone()));
+                    }
+                    StatementKind::Scoped {
+                        local,
+                        value,
+                        disposal,
+                    } => {
+                        let value = self.eval_expr(frame, value)?;
+                        self.set_slot(frame, *local, Slot::Value(value), statement.span)
+                            .map_err(EvalAbort::from)?;
+                        cleanups.push(RuntimeCleanup::Scoped {
+                            local: *local,
+                            disposal: disposal.clone(),
+                            span: statement.span,
+                        });
+                    }
+                    _ => self.eval_statement(frame, statement)?,
                 }
             }
             block
@@ -2158,11 +2235,25 @@ impl<'program> Interpreter<'program> {
     fn run_cleanups(
         &mut self,
         frame: u64,
-        cleanups: Vec<Block>,
+        cleanups: Vec<RuntimeCleanup>,
         mut outcome: Result<Value, EvalAbort>,
     ) -> Result<Value, EvalAbort> {
         for cleanup in cleanups.into_iter().rev() {
-            match self.eval_block(frame, &cleanup) {
+            let (cleanup_outcome, cleanup_span) = match cleanup {
+                RuntimeCleanup::Deferred(block) => {
+                    let span = block.span;
+                    (self.eval_block(frame, &block), span)
+                }
+                RuntimeCleanup::Scoped {
+                    local,
+                    disposal,
+                    span,
+                } => (
+                    self.eval_scoped_disposal(frame, local, &disposal, span),
+                    span,
+                ),
+            };
+            match cleanup_outcome {
                 Ok(_) => {}
                 Err(EvalAbort::Failure(failure)) => {
                     if matches!(&outcome, Ok(_) | Err(EvalAbort::Return(_))) {
@@ -2174,7 +2265,7 @@ impl<'program> Interpreter<'program> {
                         outcome = Err(EvalAbort::from(self.runtime_fault(
                             "LOOM_RUNTIME_INVALID_MIR",
                             "defer cleanup attempted to return",
-                            cleanup.span,
+                            cleanup_span,
                         )));
                     }
                 }
@@ -2262,11 +2353,13 @@ impl<'program> Interpreter<'program> {
                 self.eval_expr(frame, expression)?;
                 Ok(())
             }
-            StatementKind::Defer(_) => Err(EvalAbort::from(self.runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "defer registration escaped block execution",
-                statement.span,
-            ))),
+            StatementKind::Defer(_) | StatementKind::Scoped { .. } => {
+                Err(EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "cleanup registration escaped block execution",
+                    statement.span,
+                )))
+            }
             StatementKind::Return(value) => {
                 let value = value
                     .as_ref()
@@ -2794,6 +2887,66 @@ impl<'program> Interpreter<'program> {
                 .map_err(EvalAbort::from)?;
         }
         Ok(Value::Unit)
+    }
+
+    fn eval_scoped_disposal(
+        &mut self,
+        frame: u64,
+        local: LocalId,
+        disposal: &ScopedDisposal,
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        match disposal {
+            ScopedDisposal::FileClose | ScopedDisposal::SocketClose => {
+                let builtin = match disposal {
+                    ScopedDisposal::FileClose => Builtin::FileClose,
+                    ScopedDisposal::SocketClose => Builtin::SocketClose,
+                    ScopedDisposal::StaticConcept { .. } => unreachable!(),
+                };
+                self.eval_resource_close(
+                    frame,
+                    builtin,
+                    &[CallArgument::InOut(Place::local(local))],
+                    span,
+                )
+            }
+            ScopedDisposal::StaticConcept {
+                requirement,
+                witness,
+                ..
+            } => {
+                let runtime_witness = self.resolve_witness(frame, witness, span)?;
+                let definition = self
+                    .program
+                    .witness(runtime_witness.definition)
+                    .cloned()
+                    .ok_or_else(|| {
+                        EvalAbort::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "scoped disposal references an unknown witness",
+                            span,
+                        ))
+                    })?;
+                let function = definition
+                    .methods
+                    .get(requirement)
+                    .copied()
+                    .ok_or_else(|| {
+                        EvalAbort::from(self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "scoped disposal witness is missing Dispose.dispose",
+                            span,
+                        ))
+                    })?;
+                self.invoke_bound(
+                    function,
+                    vec![BoundArgument::Alias(Location::local(frame, local))],
+                    runtime_witness.arguments,
+                    span,
+                )
+                .map_err(EvalAbort::from)
+            }
+        }
     }
 
     fn eval_static_concept_call(
@@ -6167,6 +6320,133 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod scoped_cleanup_tests {
+    use super::*;
+    use loom_mir::{CallPlan, ConstructionMode, FieldDef, LocalDecl, Statement, Type, TypeDef};
+
+    fn expression(kind: ExprKind, ty: Type) -> Expr {
+        Expr::new(kind, ty, Span::default())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn faulting_scoped_initializer_does_not_register_its_disposal() {
+        let file_ty = Type::Nominal(TypeId(0), Vec::new());
+        let initializer = expression(
+            ExprKind::Block(Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Assert {
+                        condition: expression(
+                            ExprKind::Constant(Constant::Bool(false)),
+                            Type::Bool,
+                        ),
+                    },
+                    span: Span::default(),
+                }],
+                tail: Some(Box::new(expression(
+                    ExprKind::Record {
+                        ty: TypeId(0),
+                        type_arguments: Vec::new(),
+                        fields: vec![expression(ExprKind::Constant(Constant::Int(9)), Type::Int)],
+                        construction: ConstructionMode::Plain,
+                    },
+                    file_ty.clone(),
+                ))),
+                span: Span::default(),
+            }),
+            file_ty.clone(),
+        );
+        let mut program = Program {
+            types: vec![TypeDef {
+                id: TypeId(0),
+                name: "File".into(),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".into(),
+                        ty: Type::Int,
+                        span: Span::default(),
+                    }],
+                    invariant: None,
+                },
+            }],
+            functions: vec![Function {
+                id: FunctionId(0),
+                name: "main".into(),
+                span: Span::default(),
+                type_parameters: 0,
+                is_async: false,
+                suspension_points: Vec::new(),
+                params: Vec::new(),
+                witness_params: Vec::new(),
+                witness_prefix_count: 0,
+                locals: vec![LocalDecl {
+                    id: LocalId(0),
+                    name: "file".into(),
+                    ty: file_ty.clone(),
+                    mutable: true,
+                    span: Span::default(),
+                }],
+                return_ty: Type::Unit,
+                receiver: None,
+                body: Block {
+                    statements: vec![Statement {
+                        kind: StatementKind::Scoped {
+                            local: LocalId(0),
+                            value: initializer,
+                            disposal: ScopedDisposal::FileClose,
+                        },
+                        span: Span::default(),
+                    }],
+                    tail: Some(Box::new(expression(
+                        ExprKind::Constant(Constant::Unit),
+                        Type::Unit,
+                    ))),
+                    span: Span::default(),
+                },
+                call_plan: CallPlan::default(),
+            }],
+            prelude: loom_mir::PreludeIds {
+                file: Some(TypeId(0)),
+                ..loom_mir::PreludeIds::default()
+            },
+            ..Program::default()
+        };
+        program
+            .renumber_expr_ids()
+            .expect("renumber scoped initializer fixture");
+        let program = program
+            .into_checked()
+            .expect("valid checked scoped initializer fixture");
+        let body = program.functions[0].body.clone();
+        let mut interpreter = Interpreter::new(&program);
+        interpreter.frames.insert(
+            1,
+            Frame {
+                // A stale slot makes an incorrectly pre-registered cleanup
+                // observable without relying on language-level aliasing.
+                slots: vec![Slot::Value(Value::Record {
+                    ty: TypeId(0),
+                    fields: vec![Value::Int { value: 9 }],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter
+            .files
+            .insert(9, tempfile::tempfile().expect("create file handle fixture"));
+
+        let outcome = interpreter.eval_block(1, &body);
+        assert!(matches!(outcome, Err(EvalAbort::Failure(_))));
+        assert!(
+            interpreter.files.contains_key(&9),
+            "a Scoped disposal must register only after its initializer succeeds"
+        );
     }
 }
 

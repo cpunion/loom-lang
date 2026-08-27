@@ -13,16 +13,21 @@ use loom_mir::{
     CheckedProgram, ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm,
     ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
     LocalDecl, LocalId, MatchArm, Pattern, PreludeIds, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, RequirementWitnessParam, Statement, StatementKind,
-    SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, UnaryOp, VariantDef, VariantId, Witness,
-    WitnessId, WitnessParam, WitnessRef,
+    RequirementId, RequirementType, RequirementWitnessParam, ScopedDisposal as MirScopedDisposal,
+    Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
+    VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
     CallTarget as SemaCallTarget, Coercion, ConstructionCheck, Mutability, Place as SemaPlace,
-    PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal, Signature, TyData, TyId,
-    ViewSource, WitnessSelection, WitnessSource,
+    PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal as SemaScopedDisposal,
+    Signature, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
 };
+
+const RESOURCE_MODULE: &str = "standard.resource";
+const DISPOSE_CONCEPT: &str = "Dispose";
+const MUST_SCOPE_CONCEPT: &str = "MustScope";
+const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
 
 const OPTION_TYPE: TypeId = TypeId(0);
 const RESULT_TYPE: TypeId = TypeId(1);
@@ -272,6 +277,22 @@ impl<'a> Compiler<'a> {
     }
 
     fn run(&self) -> LowerResult<Program> {
+        let dispose = self.language_concept(DISPOSE_CONCEPT);
+        let dispose_requirement = dispose.and_then(|definition| {
+            let DefinitionKind::Concept(concept) = &self.hir.definitions[definition].kind else {
+                return None;
+            };
+            concept
+                .requirements
+                .iter()
+                .find(|requirement| {
+                    self.hir.definitions[**requirement]
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| name.as_str() == "dispose")
+                })
+                .and_then(|requirement| self.indices.requirements.get(requirement).copied())
+        });
         let mut program = Program {
             types: self.lower_types()?,
             concepts: self.lower_concepts()?,
@@ -301,12 +322,33 @@ impl<'a> Compiler<'a> {
                 io_error: Some(IO_ERROR_TYPE),
                 io_error_kind: Some(IO_ERROR_KIND_TYPE),
                 log_level: Some(LOG_LEVEL_TYPE),
+                dispose_concept: dispose.and_then(|id| self.indices.concepts.get(&id).copied()),
+                dispose_requirement,
+                must_scope_concept: self
+                    .language_concept(MUST_SCOPE_CONCEPT)
+                    .and_then(|id| self.indices.concepts.get(&id).copied()),
+                no_suspend_concept: self
+                    .language_concept(NO_SUSPEND_CONCEPT)
+                    .and_then(|id| self.indices.concepts.get(&id).copied()),
             },
         };
         program.types.shrink_to_fit();
         program.functions.shrink_to_fit();
         program.witnesses.shrink_to_fit();
         Ok(program)
+    }
+
+    fn language_concept(&self, name: &str) -> Option<DefId> {
+        self.hir.definitions.iter().find_map(|(definition, item)| {
+            let module = &self.hir.modules[item.module];
+            (module.name.as_str() == RESOURCE_MODULE
+                && item
+                    .name
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.as_str() == name)
+                && matches!(item.kind, DefinitionKind::Concept(_)))
+            .then_some(definition)
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1947,7 +1989,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         output: &mut Vec<Statement>,
     ) -> LowerResult<()> {
         match source {
-            HirStatement::Let { local, value } | HirStatement::Scoped { local, value } => {
+            HirStatement::Let { local, value } => {
                 let mir_local = required(
                     self.hir_locals.get(local).copied(),
                     "binding has no MIR local",
@@ -1961,77 +2003,61 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     },
                     span: self.expr_span(*value),
                 });
-                if matches!(source, HirStatement::Scoped { .. }) {
-                    let disposal = required(
-                        self.semantics.scoped_disposals.get(*local),
-                        "scoped binding has no selected Dispose witness",
-                        self.expr_span(*value),
-                    )?;
-                    let target = match disposal {
-                        ScopedDisposal::Concept {
+            }
+            HirStatement::Scoped { local, value } => {
+                let span = self.expr_span(*value);
+                let mir_local = required(
+                    self.hir_locals.get(local).copied(),
+                    "scoped binding has no MIR local",
+                    span,
+                )?;
+                let lowered_value = self.lower_suspendable_expr(*value, output, true)?;
+                let disposal = required(
+                    self.semantics.scoped_disposals.get(*local),
+                    "scoped binding has no selected Dispose witness",
+                    span,
+                )?;
+                let disposal = match disposal {
+                    SemaScopedDisposal::Concept {
+                        requirement,
+                        witness,
+                    } => {
+                        let requirement = required(
+                            self.compiler.indices.requirements.get(requirement).copied(),
+                            "Dispose requirement has no MIR id",
+                            span,
+                        )?;
+                        let dispatch_type = self
+                            .params
+                            .iter()
+                            .chain(&self.locals)
+                            .find(|declaration| declaration.id == mir_local)
+                            .map(|declaration| declaration.ty.clone())
+                            .ok_or_else(|| defect("scoped MIR local has no declaration", span))?;
+                        MirScopedDisposal::StaticConcept {
                             requirement,
-                            witness,
-                        } => {
-                            let requirement = required(
-                                self.compiler.indices.requirements.get(requirement).copied(),
-                                "Dispose requirement has no MIR id",
-                                self.expr_span(*value),
-                            )?;
-                            let dispatch_type = self
-                                .params
-                                .iter()
-                                .chain(&self.locals)
-                                .find(|declaration| declaration.id == mir_local)
-                                .map(|declaration| declaration.ty.clone())
-                                .ok_or_else(|| {
-                                    defect(
-                                        "scoped MIR local has no declaration",
-                                        self.expr_span(*value),
-                                    )
-                                })?;
-                            CallTarget::StaticConcept {
-                                requirement,
-                                witness: self
-                                    .lower_witness_selection(witness, self.expr_span(*value))?,
-                                dispatch_type,
-                            }
+                            witness: self.lower_witness_selection(witness, span)?,
+                            dispatch_type,
                         }
-                        ScopedDisposal::Builtin(BuiltinValue::FileClose) => {
-                            CallTarget::Builtin(Builtin::FileClose)
-                        }
-                        ScopedDisposal::Builtin(BuiltinValue::SocketClose) => {
-                            CallTarget::Builtin(Builtin::SocketClose)
-                        }
-                        ScopedDisposal::Builtin(_) => {
-                            return Err(defect(
-                                "invalid intrinsic scoped disposal",
-                                self.expr_span(*value),
-                            ));
-                        }
-                    };
-                    let call = Expr {
-                        id: loom_mir::ExprId::UNASSIGNED,
-                        kind: ExprKind::Call {
-                            target,
-                            type_arguments: Vec::new(),
-                            arguments: vec![CallArgument::InOut(loom_mir::Place::local(mir_local))],
-                            witnesses: Vec::new(),
-                        },
-                        ty: Type::Unit,
-                        span: self.expr_span(*value),
-                    };
-                    output.push(Statement {
-                        kind: StatementKind::Defer(Block {
-                            statements: vec![Statement {
-                                kind: StatementKind::Evaluate(call),
-                                span: self.expr_span(*value),
-                            }],
-                            tail: None,
-                            span: self.expr_span(*value),
-                        }),
-                        span: self.expr_span(*value),
-                    });
-                }
+                    }
+                    SemaScopedDisposal::Builtin(BuiltinValue::FileClose) => {
+                        MirScopedDisposal::FileClose
+                    }
+                    SemaScopedDisposal::Builtin(BuiltinValue::SocketClose) => {
+                        MirScopedDisposal::SocketClose
+                    }
+                    SemaScopedDisposal::Builtin(_) => {
+                        return Err(defect("invalid intrinsic scoped disposal", span));
+                    }
+                };
+                output.push(Statement {
+                    kind: StatementKind::Scoped {
+                        local: mir_local,
+                        value: lowered_value,
+                        disposal,
+                    },
+                    span,
+                });
             }
             HirStatement::LetTuple { locals, value } => {
                 let locals = locals

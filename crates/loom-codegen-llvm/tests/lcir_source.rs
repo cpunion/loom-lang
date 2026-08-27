@@ -1259,6 +1259,48 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
 }
 
 #[test]
+fn legacy_sync_cleanup_fault_preserves_the_interpreter_primary_fault() {
+    let source = r#"module legacy_cleanup_primary
+
+import standard.log.debug
+
+pub fn main() Unit {
+    defer {
+        debug("older-cleanup-ran")
+        Unit
+    }
+    defer {
+        assert false
+        Unit
+    }
+    let primary = 1 / 0
+    discard primary
+    Unit
+}
+"#;
+    let program = compile_source(source);
+    let failure = interpret_run(&program, "main").expect_err("interpreter primary fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerDivisionByZero"),
+        "{failure:?}"
+    );
+
+    let legacy =
+        emit_and_run_legacy_machine_fault_with_ir(&program, "main", "legacy-cleanup-primary");
+    assert!(!legacy.output.status.success(), "{:?}", legacy.output);
+    assert!(
+        legacy.ir.contains("define internal i32 @loom.fn."),
+        "the differential must exercise the legacy universal-value emitter:\n{}",
+        legacy.ir
+    );
+    let fault = machine_fault(&legacy.output);
+    assert_eq!(fault["fault"]["code"], "IntegerDivisionByZero");
+    let diagnostics = diagnostic_text(&legacy.output);
+    assert!(!diagnostics.contains("AssertionFault"), "{diagnostics}");
+    assert!(diagnostics.contains("older-cleanup-ran"), "{diagnostics}");
+}
+
+#[test]
 fn integer_overflow_json_matches_at_each_direct_operation_span() {
     let source = r"module lcir_integer_overflow_diagnostics
 

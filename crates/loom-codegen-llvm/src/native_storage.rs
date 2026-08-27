@@ -226,6 +226,12 @@ fn scan_stack_record_statement(
             }
             scan_expr!(value);
         }
+        StatementKind::Scoped { local, value, .. } => {
+            if eligible.contains_key(local) {
+                forbidden.insert(*local);
+            }
+            scan_expr!(value);
+        }
         StatementKind::LetTuple { locals, value } => {
             forbidden.extend(
                 locals
@@ -804,6 +810,9 @@ fn is_exact_local_copy(expression: &Expr, local: LocalId) -> bool {
 fn statement_mutates_list(statement: &StatementKind, list: LocalId) -> bool {
     match statement {
         StatementKind::Let { local, value } => *local == list || expr_mutates_list(value, list),
+        StatementKind::Scoped { local, value, .. } => {
+            *local == list || expr_mutates_list(value, list)
+        }
         StatementKind::LetTuple { locals, value } => {
             locals.contains(&list) || expr_mutates_list(value, list)
         }
@@ -931,6 +940,12 @@ impl IntListUseScanner {
                     } else {
                         self.scan_expr(value);
                     }
+                }
+                StatementKind::Scoped { local, value, .. } => {
+                    if *local == self.local {
+                        self.forbid();
+                    }
+                    self.scan_expr(value);
                 }
                 StatementKind::LetTuple { locals, value } => {
                     if locals.contains(&self.local) {
@@ -1149,7 +1164,12 @@ fn block_references_local(block: &Block, local: LocalId) -> bool {
         .statements
         .iter()
         .any(|statement| match &statement.kind {
-            StatementKind::Let {
+            StatementKind::Scoped {
+                local: destination,
+                value,
+                ..
+            }
+            | StatementKind::Let {
                 local: destination,
                 value,
             } => *destination == local || expr_references_local(value, local),

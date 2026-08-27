@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use loom_runtime_abi::{LoomGcRootFrame, LoomGcTypedRootFrame};
 
@@ -20,6 +20,7 @@ pub struct LoomRuntime {
     pub(crate) heap: LoomHeap,
     attached_executor: *mut c_void,
     pub(crate) active_depth: AtomicU32,
+    sync_fault_latched: AtomicBool,
     pub(crate) sync_root_top: *mut LoomGcRootFrame,
     pub(crate) sync_root_depth: u64,
     pub(crate) typed_root_top: *mut LoomGcTypedRootFrame,
@@ -32,6 +33,7 @@ impl LoomRuntime {
             heap: LoomHeap::new(),
             attached_executor: ptr::null_mut(),
             active_depth: AtomicU32::new(0),
+            sync_fault_latched: AtomicBool::new(false),
             sync_root_top: ptr::null_mut(),
             sync_root_depth: 0,
             typed_root_top: ptr::null_mut(),
@@ -66,6 +68,22 @@ impl LoomRuntime {
 
     pub(crate) fn attached_executor_pointer(&self) -> *mut c_void {
         self.attached_executor
+    }
+
+    /// Starts one outer synchronous generated-code interval with no fault.
+    /// Nested runtime/executor activation belongs to the same interval and
+    /// must not clear an already recorded primary fault.
+    pub(crate) fn begin_sync_fault_scope(&self) {
+        self.sync_fault_latched.store(false, Ordering::Release);
+    }
+
+    /// Returns true exactly once in the current synchronous root interval.
+    /// Async tasks retain their independent first-fault storage and never use
+    /// this latch.
+    pub(crate) fn latch_sync_fault(&self) -> bool {
+        self.sync_fault_latched
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     pub(crate) fn has_sync_roots(&self) -> bool {
@@ -183,6 +201,27 @@ mod tests {
             assert_eq!(crate::gc::deactivate_runtime_v1(second), WAIT_OK);
             assert_eq!(runtime_destroy_v1(first), WAIT_OK);
             assert_eq!(runtime_destroy_v1(second), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn synchronous_fault_latch_is_scoped_to_one_outer_activation() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            assert!((*runtime).latch_sync_fault());
+            assert!(!(*runtime).latch_sync_fault());
+
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            assert!(!(*runtime).latch_sync_fault());
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            assert!((*runtime).latch_sync_fault());
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
