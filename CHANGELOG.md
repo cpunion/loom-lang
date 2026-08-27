@@ -34,6 +34,11 @@ artifact, or runtime compatibility.
   `Result[Socket, E]` handling while still rejecting wildcard loss,
   unconsumed payloads, projected transfers, and matching an active scoped
   resource.
+- The controlled release-quality runner now uses independent loopback I/O
+  fixtures for interpreter and native execution, so one backend cannot retain
+  a connection or consume the other backend's expected server slot. Native
+  failures also retain structured fault metadata, and the Core 0.3 fixture
+  digest is synchronized with its reviewed source.
 - Failed native links now retain bounded diagnostics written to both standard
   output and standard error. This preserves MSVC `LINK` errors that Clang
   otherwise followed with only a generic failure summary.
