@@ -35,7 +35,18 @@ pub struct Analysis {
     pub module_graph: ModuleGraph,
     pub def_maps: DefMapBuild,
     pub impl_index: crate::ImplIndex,
+    /// Compiler-known concept identities resolved from their module-qualified
+    /// HIR definitions. Downstream lowering must not reconstruct these facts
+    /// from an unqualified source name.
+    pub canonical_concepts: CanonicalConcepts,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Canonical language concepts whose identity affects executable validation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CanonicalConcepts {
+    /// The `standard.resource.MustScope` marker selected by semantic analysis.
+    pub must_scope: Option<DefId>,
 }
 
 impl Analysis {
@@ -76,7 +87,7 @@ fn analyze_with_reused_bodies(
     let mut diagnostics = graph.diagnostics;
     diagnostics.extend(def_maps.diagnostics.iter().cloned());
 
-    let (typed, impl_index, mut diagnostics) = {
+    let (typed, impl_index, canonical_concepts, mut diagnostics) = {
         let mut typed = TypedProgram::default();
         if let Some((previous, _)) = previous {
             typed.types = previous.typed.types.clone();
@@ -91,9 +102,17 @@ fn analyze_with_reused_bodies(
         analyzer.collect_signatures();
         analyzer.validate_dynamic_concepts();
         analyzer.build_conformances();
-        analyzer.validate_resource_concepts();
+        let canonical_concepts = CanonicalConcepts {
+            must_scope: analyzer.language_concept(MUST_SCOPE_CONCEPT),
+        };
+        analyzer.validate_resource_concepts(canonical_concepts);
         analyzer.check_bodies(previous);
-        (analyzer.typed, analyzer.impl_index, analyzer.diagnostics)
+        (
+            analyzer.typed,
+            analyzer.impl_index,
+            canonical_concepts,
+            analyzer.diagnostics,
+        )
     };
     sort_diagnostics(&mut diagnostics);
 
@@ -102,6 +121,7 @@ fn analyze_with_reused_bodies(
         module_graph: graph.graph,
         def_maps,
         impl_index,
+        canonical_concepts,
         diagnostics,
     }
 }
@@ -139,9 +159,14 @@ impl Analyzer<'_> {
             })
     }
 
-    fn validate_resource_concepts(&mut self) {
+    fn validate_resource_concepts(&mut self, canonical: CanonicalConcepts) {
         for marker in [MUST_SCOPE_CONCEPT, NO_SUSPEND_CONCEPT] {
-            let Some(definition) = self.language_concept(marker) else {
+            let definition = if marker == MUST_SCOPE_CONCEPT {
+                canonical.must_scope
+            } else {
+                self.language_concept(marker)
+            };
+            let Some(definition) = definition else {
                 continue;
             };
             let DefinitionKind::Concept(concept) = &self.program.definitions[definition].kind

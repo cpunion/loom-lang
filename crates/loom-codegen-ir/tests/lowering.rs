@@ -1265,8 +1265,10 @@ fn hidden_run_root_inputs_are_invalid_not_unsupported() {
         witnessed,
         vec![ConceptDef {
             id: ConceptId(0),
+            module: "test".into(),
             name: "Marker".into(),
             span,
+            identity: None,
             dynamic: true,
             associated_types: Vec::new(),
             requirements: Vec::new(),

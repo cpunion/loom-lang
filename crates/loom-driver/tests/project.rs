@@ -15,6 +15,7 @@ use loom_driver::{
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
+use loom_mir::ConceptIdentity;
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -1072,6 +1073,58 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
         first.parse(FileId(0)).expect("first parse").ast(),
         second.parse(FileId(0)).expect("cached parse").ast()
     );
+}
+
+#[test]
+fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
+    let project = TestProject::new();
+    project.write(
+        "resource.loom",
+        "module standard.resource\n\nconcept MustScope {}\n\nrecord Resource {\n    value Int\n}\n\nimpl MustScope for Resource {}\n\nfn stable() Unit { Unit }\n",
+    );
+    project.write(
+        "main.loom",
+        "module application\n\npub fn main() Unit {\n    let value = 1\n    Unit\n}\n",
+    );
+    let cache = PersistentCache::new(project.root.join("target/semantic-resource-cache"));
+
+    let cold_host = AnalysisHost::new(&project.root).expect("open cold resource project");
+    let (cold, _) = cold_host.snapshot_from_sources_with_parse_cache(
+        cold_host.load_sources().expect("load cold resource source"),
+        &cache,
+        "must-scope-identity-test-v1",
+    );
+    assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
+
+    project.write(
+        "main.loom",
+        "module application\n\npub fn main() Unit {\n    let value = 2\n    Unit\n}\n",
+    );
+    let warm_host = AnalysisHost::new(&project.root).expect("open warm resource project");
+    let (warm, _) = warm_host.snapshot_from_sources_with_parse_cache(
+        warm_host.load_sources().expect("load warm resource source"),
+        &cache,
+        "must-scope-identity-test-v1",
+    );
+    assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
+    assert_eq!(warm.semantic_query_stats().modules_reused, 1);
+    let semantic_id = warm
+        .semantic_analysis()
+        .canonical_concepts
+        .must_scope
+        .expect("semantic analysis must rederive MustScope from current HIR");
+    assert_eq!(
+        warm.hir().modules[warm.hir().definitions[semantic_id].module]
+            .name
+            .as_str(),
+        "standard.resource"
+    );
+    let mir = warm.executable().expect("warm checked MIR");
+    let marker = mir
+        .concept(mir.prelude.must_scope_concept.expect("MIR MustScope id"))
+        .expect("MIR MustScope concept");
+    assert_eq!(marker.module, "standard.resource");
+    assert_eq!(marker.identity, Some(ConceptIdentity::MustScope));
 }
 
 #[test]

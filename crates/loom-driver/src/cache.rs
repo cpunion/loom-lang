@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use loom_core::{FileId, Severity};
 use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_sema::{
-    Analysis, ConstructionCheck, DefMapBuild, ImplIndex, ModuleGraph, RuntimeCheck, TypedProgram,
+    Analysis, CanonicalConcepts, ConstructionCheck, DefMapBuild, ImplIndex, ModuleGraph,
+    RuntimeCheck, TypedProgram,
 };
 use loom_syntax::{Parse, SYNTAX_NESTING_LIMIT_VERSION};
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -741,6 +742,11 @@ impl SemanticAnalysisWire {
             module_graph: self.module_graph,
             def_maps: self.def_maps,
             impl_index: self.impl_index,
+            // Persistent typed facts are reuse inputs, not language-item
+            // proof authority. `analyze_reusing_bodies` always resolves this
+            // identity again from the current module-qualified HIR before MIR
+            // lowering can observe the returned Analysis.
+            canonical_concepts: CanonicalConcepts::default(),
             diagnostics: self.diagnostics,
         }
     }

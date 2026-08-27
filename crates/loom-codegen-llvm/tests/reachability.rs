@@ -25,8 +25,10 @@ fn dynamic_edges_keep_only_witnesses_constructed_by_reachable_code() {
     let mut program = Program::default();
     program.concepts.push(ConceptDef {
         id: ConceptId(0),
+        module: "test".into(),
         name: "Display".into(),
         span: Default::default(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: vec![RequirementId(0)],
@@ -92,8 +94,10 @@ fn dynamic_edges_use_straight_line_receiver_points_to_sets() {
     let mut program = Program::default();
     program.concepts.push(ConceptDef {
         id: ConceptId(0),
+        module: "test".into(),
         name: "Display".into(),
         span: Default::default(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: vec![RequirementId(0)],

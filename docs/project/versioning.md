@@ -12,16 +12,16 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `21` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
 | Portable library artifact | version `1` |
-| Persistent compiler cache | schema `2` |
+| Persistent compiler cache | schema `3` |
 | LCIR textual dump | version `13` |
 | LCIR artifact identity | schema `14` |
 | LCIR native-object domain | `loom-lcir-native-object-v10` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v15` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `12` |
+| Native runtime ABI component | `13` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -34,6 +34,18 @@ bundles compare the whole identity, not only the numeric runtime component.
 Interpreted MIR version 21 replaces the lossy synthesized `Let` plus `Defer`
 encoding of `scoped` with an atomic scoped-initialization and disposal record.
 Version 20 is intentionally rejected rather than inferred or upgraded.
+
+Interpreted MIR version 22 carries each concept's source-module provenance and
+the compiler-known identity of the canonical `standard.resource.MustScope`
+marker. Validation independently requires the qualified concept, identity tag,
+prelude id, dense concept id, and empty non-dynamic marker shape to agree.
+Missing, redirected, duplicated, or inconsistent metadata fails closed before
+execution. Persistent cache schema 3 invalidates older semantic and checked-MIR
+entries; cached typed body facts never supply this identity, which semantic
+analysis rederives from the current HIR. The portable-library envelope remains
+version 1 because its nested checked-MIR payload has its own version boundary.
+No source syntax, resource lifetime rule, LCIR, native ABI, or runtime boundary
+changes in version 22.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC

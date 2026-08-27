@@ -16,6 +16,11 @@ A MIR `Program` contains dense tables for:
 - exported names and test roots;
 - compiler-known prelude identities.
 
+Concept metadata retains its source module separately from its unqualified
+name. Semantic analysis resolves the module-qualified
+`standard.resource.MustScope` definition and lowering marks only that `DefId`
+with the versioned compiler-known `MustScope` identity.
+
 MIR types include primitive values, tuples, lists, nominal instantiations,
 generic parameters, associated projections, `Task`, `TaskOutcome`, dynamic
 views, and the internal error type. Surface conveniences are gone: a call has
@@ -60,6 +65,21 @@ Validation covers:
 - Task obligations, suspension shapes, and exact live-slot maps;
 - canonical `Dispose`, `MustScope`, and `NoSuspend` prelude identities, plus
   independent affine resource-flow and cleanup-stack validation.
+
+For `MustScope`, the validator does not accept an unqualified name as proof. It
+independently finds the unique `standard.resource.MustScope` concept from the
+serialized source-module provenance, then requires that concept, its
+compiler-known identity tag, and `prelude.must_scope_concept` to be the same
+dense id with the exact empty non-dynamic marker shape. Missing both the tag and
+the prelude id is still invalid when the qualified concept remains. A concept
+named `MustScope` in another module remains an ordinary concept. Any inconsistent
+identity is a fail-closed resource result for all loss, escape, receiver, and
+place-use checks, in addition to producing `MirConceptShape`.
+
+Persistent typed-semantic cache entries intentionally do not carry
+`CanonicalConcepts` as proof authority. On a compatible cache hit,
+`analyze_reusing_bodies` resolves the identity again from the current
+module-qualified HIR before MIR lowering observes the analysis.
 
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
@@ -157,7 +177,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `21`;
+- artifact version `22`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
@@ -166,7 +186,7 @@ numeric encodings, the entry, and the complete MIR program.
 
 Portable library artifacts use a separate versioned envelope (`.loomlib`
 version `1`) around checked MIR and package/public-interface metadata. Its
-nested checked-MIR envelope is version `21` and uses the construction
+nested checked-MIR envelope is version `22` and uses the construction
 proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project

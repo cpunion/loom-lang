@@ -232,12 +232,27 @@ pub enum RequirementType {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConceptDef {
     pub id: ConceptId,
+    /// Stable source module provenance used to verify compiler-known
+    /// identities independently of an earlier semantic-analysis process.
+    pub module: String,
     pub name: String,
     pub span: Span,
+    /// Stable compiler-known identity assigned from semantic analysis. This is
+    /// deliberately separate from `name`: ordinary source naming cannot make
+    /// a concept acquire language-level resource semantics in checked MIR.
+    pub identity: Option<ConceptIdentity>,
     pub dynamic: bool,
     pub associated_types: Vec<AssociatedTypeDef>,
     /// Requirement ids in source declaration order.
     pub requirements: Vec<RequirementId>,
+}
+
+/// Versioned identity for a concept with compiler-defined semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConceptIdentity {
+    /// Canonical `standard.resource.MustScope` resource obligation marker.
+    MustScope,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

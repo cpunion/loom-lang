@@ -158,6 +158,14 @@ fn main() Unit {
     assert!(program.prelude.dispose_requirement.is_some());
     assert!(program.prelude.must_scope_concept.is_some());
     assert!(program.prelude.no_suspend_concept.is_some());
+    let must_scope = program
+        .concept(program.prelude.must_scope_concept.expect("MustScope id"))
+        .expect("MustScope concept");
+    assert_eq!(must_scope.module, "standard.resource");
+    assert_eq!(
+        must_scope.identity,
+        Some(loom_mir::ConceptIdentity::MustScope)
+    );
     let main = program
         .functions
         .iter()

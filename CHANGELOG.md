@@ -34,6 +34,14 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Checked MIR now carries source-module provenance and a versioned
+  compiler-known identity for the canonical `standard.resource.MustScope`
+  marker. Artifact and cache validation independently require that qualified
+  concept, its identity tag, the prelude id, and the empty marker shape to
+  agree, while same-named concepts in other modules remain ordinary. This
+  advances interpreted MIR to version 22 and the persistent compiler cache to
+  schema 3 without changing source resource or cleanup semantics, LCIR, the
+  native ABI, or the runtime ABI.
 - Typed LCIR now expands source assertions, `defer`, and `scoped` disposal into
   direct lexical control flow. Cleanup registers only after its statement or
   scoped initializer succeeds, runs in strict LIFO order on normal block exit,
