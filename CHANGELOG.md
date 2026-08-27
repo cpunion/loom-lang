@@ -28,6 +28,12 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Checked MIR now treats exhaustive pattern matching as an affine
+  decomposition boundary for resource-bearing carriers. This restores
+  `scoped resource = fallible_task.await?` and explicit `Result[File, E]` or
+  `Result[Socket, E]` handling while still rejecting wildcard loss,
+  unconsumed payloads, projected transfers, and matching an active scoped
+  resource.
 - Failed native links now retain bounded diagnostics written to both standard
   output and standard error. This preserves MSVC `LINK` errors that Clang
   otherwise followed with only a generic failure summary.
