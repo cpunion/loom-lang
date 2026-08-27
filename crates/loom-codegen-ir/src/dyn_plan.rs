@@ -177,12 +177,7 @@ fn collect_views(program: &mir::Program, root: &Type, output: &mut BTreeSet<Type
                 if let Some(fields) = concrete_any_record_fields(program, &ty) {
                     pending.extend(fields.into_vec());
                 } else if let Some(variants) = closed_enum_variants(program, &ty) {
-                    pending.extend(
-                        variants
-                            .into_vec()
-                            .into_iter()
-                            .flat_map(|variant| variant.into_vec()),
-                    );
+                    pending.extend(variants.into_vec().into_iter().flat_map(<[Type]>::into_vec));
                 } else if let Some(base) = concrete_refined_base(program, &ty) {
                     pending.push(base);
                 }

@@ -73,12 +73,18 @@ artifact, or runtime compatibility.
   when the closed-world concept-and-associated-binding witness set proves one
   closed nongeneric conformance. Dynamic requirements become direct typed
   calls, mutable interface parameters preserve normal and fault-path writeback,
-  and dead conformances or unused method slots never reach LLVM. Competing or
-  open witness sets remain structured whole-artifact fallback; no runtime tag,
-  witness pointer, conformance registry, universal value, or indirect call was
-  added. The `lcir-dyn-unique` fixture and Core02 main route provide real CLI,
-  host, legacy-differential, and Linux/MSVC object evidence. Existing LCIR,
-  artifact, object, cache, and runtime ABI versions are unchanged.
+  and the same erasure now applies recursively inside products, closed sums,
+  and managed Lists. A `List[dyn C]` therefore uses the selected concrete
+  element layout and repeated pointer map; field projection, sum matching,
+  checked List reads, forwarding, and logical copies remain ordinary typed
+  value operations. Dead conformances or unused method slots never reach LLVM.
+  Missing, competing, or open witness sets remain structured whole-artifact
+  fallback; no runtime tag, witness pointer, conformance registry, universal
+  value, or indirect call was added. The `lcir-dyn-unique` fixture and both
+  Core02 main and test routes provide real CLI, host, legacy-differential,
+  forced-relocation, copy-independence, and Linux/MSVC object evidence.
+  Existing LCIR, artifact, object, cache, and runtime ABI versions are
+  unchanged.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
   representations. Generic field projection, contract evaluation, calls,

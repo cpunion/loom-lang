@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, Effects, LoweringOutcome, SourceArtifactRequest, TargetLayout,
+    CheckedArtifact, Effects, LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout,
     UnsupportedFeature, dump_program, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
@@ -2558,6 +2558,275 @@ fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
             "unexpected `{forbidden}`:\n{}",
             native.ir
         );
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Core02 gate keeps nested dyn erasure, precise repeated descriptors, copy independence, forced relocation, and cross-target objects together"
+)]
+fn core02_tests_erase_dynamic_storage_to_concrete_layouts() {
+    let fields = (0..31)
+        .map(|index| format!("    n{index} Int"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let initializers = (0..31)
+        .map(|index| format!("n{index} = {index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let repeated = std::iter::repeat_n("wide", 129)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let pressure = format!(
+        r#"
+
+record DynWide {{
+    item dyn Labeled
+{fields}
+}}
+
+fn joinDynStorage(left Text, right Text) Text {{ left.concat(right) }}
+
+test fn dynamicStorageGcPressure() {{
+    let raw = Label {{ text = joinDynStorage("Rel", "ocated") }}
+    let erased = erase_label(raw)
+    let wide = DynWide {{ item = erased, {initializers} }}
+    var values = [{repeated}]
+    let alias = values
+    values.add(wide)
+    let trigger = [{repeated}]
+    let triggerLength = trigger.length()
+    let valuesLength = values.length()
+    let aliasLength = alias.length()
+    assert triggerLength == 129
+    assert valuesLength == 130
+    assert aliasLength == 129
+    assert raw.text == "Relocated"
+    match values.get(129) {{
+        Some(item) => {{
+            let text = item.item.label()
+            assert text == "Relocated"
+            Unit
+        }}
+        None => {{
+            assert false
+            Unit
+        }}
+    }}
+    match alias.get(0) {{
+        Some(item) => {{
+            let text = item.item.label()
+            assert text == "Relocated"
+            Unit
+        }}
+        None => {{
+            assert false
+            Unit
+        }}
+    }}
+    let interfaces = [erased, erase_label(Label {{ text = "other" }})]
+    match interfaces.get(0) {{
+        Some(value) => {{
+            let text = value.label()
+            assert text == "Relocated"
+            Unit
+        }}
+        None => {{
+            assert false
+            Unit
+        }}
+    }}
+}}
+"#
+    );
+    let source = format!(
+        "{}\n{pressure}",
+        include_str!("../../../examples/core02/concepts.loom")
+    );
+    let program = compile_source(&source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 4, "{interpreted:#?}");
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:#?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "example.concepts.erase_label",
+        "example.concepts.forward_label",
+        "example.concepts.erase_source",
+        "example.concepts.dynamicStorageGcPressure",
+        "list.construct",
+        "list.append",
+        "list.get",
+        "sum.switch",
+        "inout=[0]",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(
+        !dump.contains("View["),
+        "dynamic storage leaked into LCIR:\n{dump}"
+    );
+
+    let label_id = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "Label")
+        .map(|definition| definition.id)
+        .expect("Core02 Label type");
+    let holder_id = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "LabelHolder")
+        .map(|definition| definition.id)
+        .expect("Core02 LabelHolder type");
+    let packet_id = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "LabelPacket")
+        .map(|definition| definition.id)
+        .expect("Core02 LabelPacket type");
+    let labeled = program
+        .concepts
+        .iter()
+        .find(|concept| concept.name == "Labeled")
+        .map(|concept| concept.id)
+        .expect("Core02 Labeled concept");
+    let concrete = Type::Nominal(label_id, Vec::new());
+    let view = Type::View {
+        mutable: false,
+        concept: labeled,
+        bindings: BTreeMap::new(),
+    };
+    let physical_list = Type::List(Box::new(concrete.clone()));
+    let source_list = Type::List(Box::new(view.clone()));
+    let representations = artifact.representations();
+    let concrete_type = representations
+        .type_id(&concrete)
+        .expect("one concrete Label representation");
+    assert_eq!(
+        representations
+            .value_types()
+            .iter()
+            .filter(|ty| ty.semantic() == &concrete)
+            .count(),
+        1,
+        "raw and erased Label values must share one physical value type"
+    );
+    assert!(representations.type_id(&view).is_none());
+    assert!(representations.type_id(&source_list).is_none());
+    assert!(representations.type_id(&physical_list).is_some());
+
+    let holder = representations
+        .type_id(&Type::Nominal(holder_id, Vec::new()))
+        .expect("LabelHolder representation");
+    let Repr::Product(holder_product) = representations
+        .value_type(holder)
+        .and_then(|ty| representations.repr(ty.repr()))
+        .copied()
+        .expect("LabelHolder physical representation")
+    else {
+        panic!("LabelHolder must remain an unboxed product")
+    };
+    assert_eq!(
+        representations
+            .product(holder_product)
+            .expect("LabelHolder product")
+            .fields(),
+        [concrete_type]
+    );
+    let packet = representations
+        .type_id(&Type::Nominal(packet_id, Vec::new()))
+        .expect("LabelPacket representation");
+    let Repr::Sum(packet_sum) = representations
+        .value_type(packet)
+        .and_then(|ty| representations.repr(ty.repr()))
+        .copied()
+        .expect("LabelPacket physical representation")
+    else {
+        panic!("LabelPacket must remain a closed sum")
+    };
+    assert_eq!(
+        representations
+            .sum(packet_sum)
+            .expect("LabelPacket sum")
+            .variants()[0]
+            .fields(),
+        [concrete_type]
+    );
+
+    let native = emit_and_run_lcir(&artifact, "source-core02-dyn-storage");
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-core02-dyn-storage");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.list.descriptor",
+        "loom.lcir.list.pointer_offsets",
+        "managed.root.reload",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "dynamic storage IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "ValueNode",
+        "loom_executor_",
+        "loom_witness_",
+        "WitnessInstance",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "dynamic storage IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_indirect_calls(&native.ir);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create dyn-storage target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "core02-dyn-storage.obj"
+        } else {
+            "core02-dyn-storage.o"
+        });
+        let ir_path = directory.path().join("core02-dyn-storage.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                emit_ir: Some(ir_path.clone()),
+                target_triple: Some(target.to_owned()),
+                optimization: OptimizationProfile::Release,
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit dyn-storage object for {target}: {error}"));
+        let bytes = std::fs::read(&object).expect("read dyn-storage object");
+        if target.contains("windows") {
+            assert_eq!(bytes.get(..2), Some([0x64, 0x86].as_slice()));
+        } else {
+            assert_eq!(bytes.get(..4), Some([0x7f, b'E', b'L', b'F'].as_slice()));
+        }
+        let ir = std::fs::read_to_string(ir_path).expect("read dyn-storage target IR");
+        assert!(ir.contains("loom.lcir.list.descriptor"), "{target}: {ir}");
+        assert!(
+            ir.contains("loom.lcir.list.pointer_offsets"),
+            "{target}: {ir}"
+        );
+        assert!(!ir.contains("loom_witness_"), "{target}: {ir}");
+        assert_no_indirect_calls(&ir);
     }
 }
 
