@@ -582,6 +582,14 @@ impl ArtifactValidator<'_> {
         let Some(text) = program.representations().type_id(&Type::Text) else {
             return;
         };
+        let is_immortal = program
+            .representations()
+            .value_type(text)
+            .and_then(|ty| program.representations().repr(ty.repr()))
+            == Some(&crate::Repr::ImmortalText);
+        if !is_immortal {
+            return;
+        }
         let mut supplied = program
             .functions()
             .iter()

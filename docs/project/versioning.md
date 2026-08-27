@@ -15,13 +15,13 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `10` |
-| LCIR artifact identity | schema `11` |
-| LCIR native-object domain | `loom-lcir-native-object-v7` |
+| LCIR textual dump | version `11` |
+| LCIR artifact identity | schema `12` |
+| LCIR native-object domain | `loom-lcir-native-object-v8` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v12` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v13` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `9` |
+| Native runtime ABI component | `10` |
 | Coroutine/Task ABI component | `2` |
 | Wait ABI component | `1` |
 | Standard-library ABI component | `4` |
@@ -30,20 +30,28 @@ The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
 
-LCIR's literal-only direct `Text` representation adds a new physical pointer
-ABI and new IR operations. It therefore advances the dump, artifact identity,
-LCIR native-object, and CLI object-cache domains shown above. That literal-only
-compiler change reuses the existing native text layout descriptor and helper
-symbols. The subsequent runtime-only typed moving-GC foundation independently
-advances the native runtime component to `9`, GC identity to `gc-v8`, and adds
-`typed-gc-v1` plus `typed-shadow-stack-v1` identity components. LCIR does not
-yet emit the new allocation or root symbols.
+LCIR's literal-only direct `Text` representation first added the physical
+pointer ABI and allocation-free operations. The subsequent typed moving-GC
+foundation advanced the native runtime component to `9`, GC identity to
+`gc-v8`, and added `typed-gc-v1` plus `typed-shadow-stack-v1` identity
+components without emitting those calls from LCIR.
+
+Dynamic `Text.concat` now makes those typed root facilities part of generated
+LCIR. An artifact containing concat uses one `ManagedPointer` representation
+for all Text, publishes exact live-after typed shadow-stack bitmaps, and calls
+the specialized staging/allocation helper. This advances the current LCIR dump
+to 11, artifact schema to 12, native-object domain to v8, and object-cache
+domain to v13. The new helper advances the native runtime component to `10`
+and the exact identity components to `text-v2` and `runtime-v4`; the collector
+implementation remains `gc-v8`.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
-executor, and suspension capability identity even though current typed source
-lowering still emits only effect-free or `MAY_FAULT` functions. Its canonical
-encoding advances the four compiler-private LCIR and object-cache boundaries;
-it does not change the runtime ABI.
+executor, and suspension capability identity. Current typed source lowering
+emits effect-free and `MAY_FAULT` functions, and dynamic Text concat emits the
+exact `MAY_COLLECT | NEEDS_RUNTIME` capability pair. It still emits no executor
+or suspension operation. The lattice's canonical encoding advanced the four
+compiler-private LCIR and object-cache boundaries; concat's runtime boundary
+is versioned separately above.
 
 Typed LCIR fault metadata adds canonical contract-fault kinds, bounded text,
 and concrete contract/blame spans to dumps and artifact identity. LLVM emits

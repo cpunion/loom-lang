@@ -7,7 +7,7 @@ conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values, literal-proven immortal `Text`, structural tuples,
+LCIR for primitive values, literal or concat-produced direct `Text`, structural tuples,
 closed records, compile-time-established refined values, and eligible closed
 enums. Any reachable feature outside current LCIR coverage selects the complete
 legacy layout below; the two callable ABIs are never mixed in one object. In
@@ -55,8 +55,9 @@ internally.
 ## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, `Float` as `F64`, literal-proven `Text` as one opaque
-`ImmortalText` pointer on 64-bit targets, and each supported structural tuple
+as `I1`, `Int` as `I64`, `Float` as `F64`, and `Text` as one opaque pointer on
+64-bit targets. Text uses `ImmortalText` for a literal-only artifact and
+`ManagedPointer` for the entire artifact when concat is reachable. Each supported structural tuple
 or closed record as an immutable `Product` of canonical element or field value
 types. Tuples and records may contain one another as long as the representation
 graph is acyclic. An explicit registration table chooses the canonical value
@@ -99,7 +100,7 @@ and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
-Generic records, moving or nested managed values, protected projections,
+Generic records, managed values nested in aggregates, protected projections,
 runtime-checked construction, concepts, contracts, cleanup, and async
 operations still select the complete universal route. Typed LCIR does not
 change the legacy runtime ABI or make either object ABI public.
@@ -115,29 +116,36 @@ The object has a versioned layout descriptor, allocation size, UTF-8 byte
 length, Unicode scalar length, and trailing UTF-8 bytes. Dynamically created
 text is moved by the GC.
 
-The narrow typed LCIR representation is one opaque pointer to a
-compiler-emitted `TextObject` global with that same header and exact UTF-8
-bytes. The global is immutable and lives for the process lifetime. Source
-roots have no parameters, LCIR source functions have internal linkage, the
-artifact contains the exact direct-call closure, and `TextLiteral` is the only
-producer. Thus every typed text pointer is proven transitively to originate in
-the same artifact's immortal literal even when it flows through locals, block
-parameters, calls, returns, or a concrete generic identity function.
+Typed LCIR uses one opaque pointer with that object shape. In a literal-only
+artifact, `ImmortalText` points at compiler-emitted immutable globals with
+process lifetime. If concat is reachable, representation planning selects
+`ManagedPointer` for every Text in the artifact, including literals. Dynamic
+results are typed moving-GC leaves; literals remain legal static values in the
+same pointer ABI. The callable graph never mixes those two LCIR
+representations.
 
 Length reads the scalar-count field. Containment and content equality use the
 existing allocation-free containment helper, with equality also requiring
 equal UTF-8 byte lengths. Source equality never compares object pointers. The
-Text operations themselves need no universal `ValueSlot`, GC/shadow-stack
-setup, runtime object, or executor; unrelated fault effects may still need a
-fault context. `concat`, `get`, any moving or dynamic producer, and any
-aggregate containing `Text` remain complete legacy fallback. The runtime now
-exposes a typed moving allocation and shadow-root ABI, but LCIR does not yet
-emit those roots or use the allocator for dynamic `Text`.
+allocation-free Text operations themselves need no universal `ValueSlot` or
+executor. `concat` is an infallible LCIR safepoint with `MAY_COLLECT`, which
+implies a synchronous runtime but no executor or source fault edge. Its
+specialized helper stages both inputs before collection, allocates a typed leaf
+with no pointer fields, initializes it without a safepoint, and publishes it
+last. OOM is an uncatchable process fault; malformed ABI status fails closed.
+
+Every managed SSA value live after a collecting operation receives a stable
+pointer cell in a typed shadow frame. Per-site bitmaps are exact, results are
+excluded at their defining safepoint, and later uses reload the possibly moved
+pointer. Functions with no live-across managed value emit no frame. `get`,
+other dynamic producers, and any aggregate containing Text remain complete
+legacy fallback.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
-tag and does not make `Text` a dynamic type. LCIR reuses the existing layout
-descriptor and containment-helper symbols, so this direct compiler ABI does
-not bump the native runtime ABI.
+tag and does not make `Text` a dynamic type. Literal objects and typed moving
+objects reuse the existing language-visible layout prefix. The concat helper
+and generated typed-root calls advance the whole native runtime identity to
+ABI component 10 with `text-v2` and `runtime-v4`; GC remains `gc-v8`.
 
 ## Dynamic concept values
 

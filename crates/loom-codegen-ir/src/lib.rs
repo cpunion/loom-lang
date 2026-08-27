@@ -29,6 +29,7 @@ mod instance;
 mod instance_closure;
 mod ir;
 mod lower;
+mod managed_roots;
 mod match_plan;
 mod place_plan;
 mod repr;
@@ -66,6 +67,7 @@ pub use lower::{
     ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature, UnsupportedItem,
     lower_typed_artifact,
 };
+pub use managed_roots::{ManagedRootPlan, ManagedSafepoint, plan_managed_roots};
 pub use repr::{
     ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr, SumVariantRepr,
     TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,

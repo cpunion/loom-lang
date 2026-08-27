@@ -737,6 +737,143 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source fixture keeps interpreter/native semantics, forced relocation, IR shape, and cross-target objects in one differential gate"
+)]
+fn managed_text_concat_runs_tests_reloads_roots_and_emits_on_all_supported_targets() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = format!(
+        r#"module lcir_managed_text
+
+enum Problem {{ WrongText }}
+
+fn join(left Text, right Text) Text {{ left.concat(right) }}
+
+pub fn main() Unit {{
+    discard join("hello", "界").length()
+    Unit
+}}
+
+test fn concatMovesAndAliases() Result[Unit, Problem] {{
+    let kept = join("K", "eep")
+    let pressure = "{pressure}".concat("{pressure}")
+    discard pressure.length()
+    let alias = kept.concat(kept)
+    if alias == "KeepKeep" && kept == "Keep" {{
+        Ok(Unit)
+    }} else {{
+        Err(Problem.WrongText)
+    }}
+}}
+"#
+    );
+    let program = compile_source(&source);
+    let run_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(run_artifact.functions().iter().all(|function| {
+        function.effects().contains(Effects::MAY_COLLECT)
+            && function.effects().contains(Effects::NEEDS_RUNTIME)
+            && !function.effects().contains(Effects::MAY_FAULT)
+            && !function.effects().contains(Effects::NEEDS_EXECUTOR)
+            && !function.effects().contains(Effects::MAY_SUSPEND)
+    }));
+    let run = emit_and_run_lcir(&run_artifact, "source-managed-text-run");
+    assert!(run.output.status.success(), "{:?}", run.output);
+    assert_eq!(run.output.stdout, b"Unit\n");
+    assert!(
+        run.ir
+            .contains("declare i32 @loom_runtime_text_concat_typed_v1(ptr, ptr, ptr)"),
+        "{}",
+        run.ir
+    );
+    assert!(run.ir.contains("loom_runtime_create_v1"), "{}", run.ir);
+    assert!(run.ir.contains("loom_runtime_activate_v1"), "{}", run.ir);
+    assert!(!run.ir.contains("loom_executor_"), "{}", run.ir);
+    assert!(!run.ir.contains("%loom.Value"), "{}", run.ir);
+    assert!(!run.ir.contains("loom_gc_root_push_v1"), "{}", run.ir);
+    assert!(!run.ir.contains("loom_gc_typed_root_push_v1"), "{}", run.ir);
+    assert!(!run.ir.contains("loom_gc_typed_root_pop_v1"), "{}", run.ir);
+
+    let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(tests_artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("text.concat"), "{dump}");
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+    let tests = emit_and_run_lcir(&tests_artifact, "source-managed-text-tests");
+    assert!(tests.output.status.success(), "{:?}", tests.output);
+    assert!(
+        String::from_utf8_lossy(&tests.output.stdout).contains("concatMovesAndAliases"),
+        "{:?}",
+        tests.output
+    );
+    for required in [
+        "loom_runtime_text_concat_typed_v1",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+        "managed.root.reload",
+    ] {
+        assert!(
+            tests.ir.contains(required),
+            "missing `{required}`:\n{}",
+            tests.ir
+        );
+    }
+    assert_eq!(
+        tests
+            .ir
+            .matches("call i32 @loom_gc_typed_root_push_v1")
+            .count(),
+        tests
+            .ir
+            .matches("call i32 @loom_gc_typed_root_pop_v1")
+            .count(),
+        "typed root frames must balance on every generated exit:\n{}",
+        tests.ir
+    );
+    assert!(!tests.ir.contains("loom_gc_root_push_v1"), "{}", tests.ir);
+    assert!(!tests.ir.contains("loom_executor_"), "{}", tests.ir);
+    assert!(!tests.ir.contains("%loom.Value"), "{}", tests.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create managed Text cross-target directory");
+        let object = directory.path().join("managed-text.o");
+        let ir_path = directory.path().join("managed-text.ll");
+        emit_lcir_native_object(
+            &tests_artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed Text object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read managed Text cross-target IR");
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert!(ir.contains("loom_runtime_text_concat_typed_v1"), "{ir}");
+        assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
     let program = compile_source(source);

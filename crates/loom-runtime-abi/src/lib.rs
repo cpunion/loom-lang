@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 9;
+pub const RUNTIME_ABI_VERSION: u32 = 10;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
@@ -13,7 +13,7 @@ pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v3/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/runtime-v4/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -46,6 +46,9 @@ pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
 pub const TYPED_GC_ALLOC_SYMBOL: &str = "loom_gc_typed_alloc_v1";
 pub const TYPED_GC_ROOT_PUSH_SYMBOL: &str = "loom_gc_typed_root_push_v1";
 pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
+/// Stages two complete Text payloads before its typed allocation safepoint and
+/// publishes the initialized managed leaf through its output cell.
+pub const TEXT_CONCAT_TYPED_SYMBOL: &str = "loom_runtime_text_concat_typed_v1";
 
 /// Runtime-owned state bit in [`LoomGcRootFrame::flags`].
 ///
@@ -242,7 +245,8 @@ pub const TEXT_OBJECT_FIELD_SCALAR_LENGTH: u32 = 3;
 pub const TEXT_OBJECT_FIELD_BYTES: u32 = 4;
 pub const TEXT_OBJECT_HEADER_SIZE: u64 = 32;
 pub const TEXT_OBJECT_ALIGNMENT: u64 = 8;
-/// Runtime descriptor referenced by compiler-emitted immortal Text objects.
+/// Runtime layout descriptor referenced by compiler-emitted literal and
+/// runtime-allocated managed Text objects.
 pub const TEXT_LAYOUT_SYMBOL: &str = "loom_layout_text_v1";
 /// Allocation-free UTF-8 byte-subsequence helper used by typed LCIR Text.
 pub const TEXT_CONTAINS_SYMBOL: &str = "loom_runtime_text_contains";
@@ -303,7 +307,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 9);
+        assert_eq!(RUNTIME_ABI_VERSION, 10);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
@@ -316,7 +320,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v3/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/runtime-v4/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 

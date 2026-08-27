@@ -35,13 +35,16 @@ use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
-    IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget, ScalarRepr, SumRepr, SumTagRepr,
-    Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
+    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedSafepoint, Origin, Repr,
+    ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan,
+    UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_runtime_abi::{
+    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, TEXT_CONCAT_TYPED_SYMBOL,
     TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION,
 };
 
 use crate::CodegenError;
@@ -424,7 +427,7 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
-            Some(Repr::ImmortalText) => Ok(self.text_type),
+            Some(Repr::ImmortalText | Repr::ManagedPointer) => Ok(self.text_type),
             Some(Repr::Product(product)) => {
                 if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
                     return Ok(existing);
@@ -628,7 +631,7 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.fallible_bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.fallible_int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.fallible_float_type),
-            Some(Repr::ImmortalText) => create_fallible_debug_type(
+            Some(Repr::ImmortalText | Repr::ManagedPointer) => create_fallible_debug_type(
                 backend.context,
                 &self.builder,
                 self.type_file,
@@ -1150,7 +1153,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         if artifact
             .representations()
             .reprs()
-            .contains(&Repr::ImmortalText)
+            .iter()
+            .any(|repr| matches!(repr, Repr::ImmortalText | Repr::ManagedPointer))
         {
             let actual_size = target_data.get_abi_size(&text_object_type);
             let actual_alignment = u64::from(target_data.get_abi_alignment(&text_object_type));
@@ -1265,7 +1269,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.context.bool_type().into()),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.context.i64_type().into()),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.context.f64_type().into()),
-            Some(Repr::ImmortalText) => Ok(self.ptr_type.into()),
+            Some(Repr::ImmortalText | Repr::ManagedPointer) => Ok(self.ptr_type.into()),
             Some(Repr::Product(product)) => {
                 let fields = self
                     .artifact
@@ -1670,6 +1674,69 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .add_function(TEXT_CONTAINS_SYMBOL, function_type, None)
             })
     }
+
+    fn runtime_text_concat_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TEXT_CONCAT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TEXT_CONCAT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn typed_root_push(&self) -> FunctionValue<'ctx> {
+        self.runtime_status_function(TYPED_GC_ROOT_PUSH_SYMBOL)
+    }
+
+    fn typed_root_pop(&self) -> FunctionValue<'ctx> {
+        self.runtime_status_function(TYPED_GC_ROOT_POP_SYMBOL)
+    }
+
+    fn require_zero_status(&self, status: IntValue<'ctx>, name: &str) -> Result<(), CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "status guard has no active function")
+            })?;
+        let success = self
+            .context
+            .append_basic_block(function, &format!("{name}.ok"));
+        let failure = self
+            .context
+            .append_basic_block(function, &format!("{name}.failed"));
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_zero(),
+                &format!("{name}.status.ok"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], &format!("{name}.trap"))
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(success);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1687,6 +1754,10 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     phis: Vec<Option<PhiValue<'ctx>>>,
     values: Vec<Option<BasicValueEnum<'ctx>>>,
     fault_context: Option<PointerValue<'ctx>>,
+    root_plan: ManagedRootPlan,
+    root_cells: Vec<Option<PointerValue<'ctx>>>,
+    root_frame: Option<PointerValue<'ctx>>,
+    root_state: Option<PointerValue<'ctx>>,
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -1695,6 +1766,26 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         source: &'artifact Function,
     ) -> Result<Self, CodegenError> {
         let function = backend.function(source.id())?;
+        let root_plan =
+            plan_managed_roots(backend.artifact.program(), source.id()).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("could not derive managed-root plan for {}", source.id()),
+                )
+            })?;
+        // This is a target-emission resource boundary, not unsupported source
+        // coverage. Exceeding it is a deterministic ProgramTooLarge failure
+        // and must never select the legacy route.
+        if u64::try_from(root_plan.slots().len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS
+            || u64::try_from(root_plan.state_count()).unwrap_or(u64::MAX) > GC_MAX_ROOT_STATES
+            || u64::try_from(root_plan.bitmaps().len()).unwrap_or(u64::MAX)
+                > GC_MAX_ROOT_BITMAP_WORDS
+        {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!("{} exceeds the typed shadow-root ABI limits", source.id()),
+            ));
+        }
         let emission_order = Self::compute_emission_order(source)?;
         let mut blocks = vec![None; source.blocks().len()];
         for block_id in emission_order.iter().copied() {
@@ -1725,6 +1816,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             phis: vec![None; source.values().len()],
             values: vec![None; source.values().len()],
             fault_context: None,
+            root_plan,
+            root_cells: vec![None; source.values().len()],
+            root_frame: None,
+            root_state: None,
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
@@ -1801,7 +1896,302 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
+    fn prepare_root_frame(&mut self) -> Result<(), CodegenError> {
+        if self.root_plan.slots().is_empty() {
+            return Ok(());
+        }
+        let entry = self.source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", self.source.id()),
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(self.blocks[entry.index()]);
+        let slots = self.root_plan.slots().to_vec();
+        let slot_array = self.prepare_root_cells(entry, &slots)?;
+        let descriptor = self.emit_root_descriptor(slots.len())?;
+        self.link_root_frame(entry, descriptor, slot_array)
+    }
+
+    fn prepare_root_cells(
+        &mut self,
+        entry: BlockId,
+        slots: &[ValueId],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        for value in slots.iter().copied() {
+            let cell = self
+                .backend
+                .builder
+                .build_alloca(
+                    self.backend.ptr_type,
+                    &format!("managed.root.v{}", value.raw()),
+                )
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(cell, self.backend.ptr_type.const_null())
+                .map_err(builder_error)?;
+            self.root_cells[value.index()] = Some(cell);
+        }
+        for value in slots.iter().copied() {
+            if matches!(
+                self.source
+                    .value(value)
+                    .map(loom_codegen_ir::Value::definition),
+                Some(ValueDefinition::BlockParameter { block, .. }) if block == entry
+            ) {
+                let parameter = self.values[value.index()].ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("entry managed parameter {value} has no LLVM value"),
+                    )
+                })?;
+                self.backend
+                    .builder
+                    .build_store(
+                        self.root_cells[value.index()].expect("root cell"),
+                        parameter,
+                    )
+                    .map_err(builder_error)?;
+            }
+        }
+
+        let slot_fields = vec![self.backend.ptr_type.into(); slots.len()];
+        let slot_array_type = self.backend.context.struct_type(&slot_fields, false);
+        let slot_array = self
+            .backend
+            .builder
+            .build_alloca(slot_array_type, "managed.root.slots")
+            .map_err(builder_error)?;
+        for (index, value) in slots.iter().copied().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many managed roots"))?;
+            let field = self
+                .backend
+                .builder
+                .build_struct_gep(slot_array_type, slot_array, index, "managed.root.slot")
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(field, self.root_cells[value.index()].expect("root cell"))
+                .map_err(builder_error)?;
+        }
+        Ok(slot_array)
+    }
+
+    fn emit_root_descriptor(&self, slot_count: usize) -> Result<PointerValue<'ctx>, CodegenError> {
+        let bitmap_values = self
+            .root_plan
+            .bitmaps()
+            .iter()
+            .map(|word| self.backend.context.i64_type().const_int(*word, false))
+            .collect::<Vec<_>>();
+        let bitmap_length = u32::try_from(bitmap_values.len()).map_err(|_| {
+            CodegenError::new("ProgramTooLarge", "typed root bitmap exceeds LLVM limits")
+        })?;
+        let bitmap_type = self.backend.context.i64_type().array_type(bitmap_length);
+        let bitmap = self.backend.module.add_global(
+            bitmap_type,
+            None,
+            &self.backend.unique("managed.root.bitmaps"),
+        );
+        bitmap.set_initializer(&self.backend.context.i64_type().const_array(&bitmap_values));
+        bitmap.set_constant(true);
+        bitmap.set_linkage(Linkage::Private);
+        bitmap.set_unnamed_address(UnnamedAddress::Global);
+
+        let descriptor_type = self.backend.context.struct_type(
+            &[
+                self.backend.context.i32_type().into(),
+                self.backend.context.i32_type().into(),
+                self.backend.context.i64_type().into(),
+                self.backend.context.i64_type().into(),
+                self.backend.context.i64_type().into(),
+                self.backend.ptr_type.into(),
+            ],
+            false,
+        );
+        let descriptor = self.backend.module.add_global(
+            descriptor_type,
+            None,
+            &self.backend.unique("managed.root.descriptor"),
+        );
+        let slot_count = u64::try_from(slot_count)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many managed roots"))?;
+        let state_count = u64::try_from(self.root_plan.state_count())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many managed-root states"))?;
+        let bitmap_words = u64::try_from(self.root_plan.bitmap_words()).map_err(|_| {
+            CodegenError::new("ProgramTooLarge", "managed-root bitmap row is too wide")
+        })?;
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_SHADOW_STACK_ABI_VERSION), false)
+                    .into(),
+                self.backend.context.i32_type().const_zero().into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(slot_count, false)
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(state_count, false)
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(bitmap_words, false)
+                    .into(),
+                bitmap.as_pointer_value().into(),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(descriptor.as_pointer_value())
+    }
+
+    fn link_root_frame(
+        &mut self,
+        entry: BlockId,
+        descriptor: PointerValue<'ctx>,
+        slot_array: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let frame_type = self.backend.context.struct_type(
+            &[
+                self.backend.context.i32_type().into(),
+                self.backend.context.i32_type().into(),
+                self.backend.context.i64_type().into(),
+                self.backend.ptr_type.into(),
+                self.backend.ptr_type.into(),
+                self.backend.ptr_type.into(),
+            ],
+            false,
+        );
+        let frame = self
+            .backend
+            .builder
+            .build_alloca(frame_type, "managed.root.frame")
+            .map_err(builder_error)?;
+        let fields: [BasicValueEnum<'ctx>; 6] = [
+            self.backend
+                .context
+                .i32_type()
+                .const_int(u64::from(TYPED_SHADOW_STACK_ABI_VERSION), false)
+                .into(),
+            self.backend.context.i32_type().const_zero().into(),
+            self.backend.context.i64_type().const_zero().into(),
+            descriptor.into(),
+            slot_array.into(),
+            self.backend.ptr_type.const_null().into(),
+        ];
+        for (index, value) in fields.into_iter().enumerate() {
+            let index = u32::try_from(index).expect("six root-frame fields fit u32");
+            let field = self
+                .backend
+                .builder
+                .build_struct_gep(frame_type, frame, index, "managed.root.frame.field")
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(field, value)
+                .map_err(builder_error)?;
+            if index == 2 {
+                self.root_state = Some(field);
+            }
+        }
+        self.root_frame = Some(frame);
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_root_push(),
+            &[frame.into()],
+            "managed.root.push",
+        )?;
+        self.backend
+            .require_zero_status(status, "managed.root.push")?;
+        self.blocks[entry.index()] = self.current_block()?;
+        Ok(())
+    }
+
+    fn publish_block_parameters(&self, block: BlockId) -> Result<(), CodegenError> {
+        let block = self
+            .source
+            .block(block)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "managed-root block disappeared"))?;
+        for value in block.params().iter().copied() {
+            let Some(cell) = self.root_cells.get(value.index()).copied().flatten() else {
+                continue;
+            };
+            let raw = self.values[value.index()].ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("managed block parameter {value} has no LLVM value"),
+                )
+            })?;
+            self.backend
+                .builder
+                .build_store(cell, raw)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
+    fn publish_root_state(&self, site: ManagedSafepoint) -> Result<(), CodegenError> {
+        let Some(pointer) = self.root_state else {
+            return Ok(());
+        };
+        let state = self.root_plan.state(site).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("collecting LCIR site {site:?} has no root state"),
+            )
+        })?;
+        self.backend
+            .builder
+            .build_store(
+                pointer,
+                self.backend.context.i64_type().const_int(state, false),
+            )
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn pop_root_frame(&self) -> Result<(), CodegenError> {
+        let Some(frame) = self.root_frame else {
+            return Ok(());
+        };
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_root_pop(),
+            &[frame.into()],
+            "managed.root.pop",
+        )?;
+        self.backend.require_zero_status(status, "managed.root.pop")
+    }
+
+    fn record_value(
+        &mut self,
+        id: ValueId,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.values[id.index()] = Some(value);
+        if let Some(cell) = self.root_cells.get(id.index()).copied().flatten() {
+            self.backend
+                .builder
+                .build_store(cell, value)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
     fn compile(mut self) -> Result<(), CodegenError> {
+        self.prepare_root_frame()?;
         for index in 0..self.emission_order.len() {
             let block_id = self.emission_order[index];
             let block = self.source.block(block_id).ok_or_else(|| {
@@ -1813,6 +2203,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             self.backend
                 .builder
                 .position_at_end(self.blocks[block_id.index()]);
+            self.publish_block_parameters(block_id)?;
             for instruction_id in block.instructions() {
                 let instruction = self.source.instruction(*instruction_id).ok_or_else(|| {
                     CodegenError::new(
@@ -1830,7 +2221,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 )
             })?;
             self.set_debug_location(terminator.origin())?;
-            self.emit_terminator(terminator)?;
+            self.emit_terminator(block.id(), terminator)?;
         }
         if let Some(debug) = &self.backend.debug {
             let entry = self.source.entry().ok_or_else(|| {
@@ -1959,6 +2350,39 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::Constant(constant) => one(self.emit_constant(*constant)?),
             InstructionKind::TextLiteral { utf8 } => {
                 one(self.backend.emit_text_literal(utf8)?.into())
+            }
+            InstructionKind::TextConcat { left, right } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Text concat has no result")
+                })?;
+                let left = self.value(*left)?.into_pointer_value();
+                let right = self.value(*right)?.into_pointer_value();
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output =
+                    if let Some(cell) = self.root_cells.get(result.index()).copied().flatten() {
+                        cell
+                    } else {
+                        self.backend
+                            .builder
+                            .build_alloca(self.backend.ptr_type, "text.concat.output")
+                            .map_err(builder_error)?
+                    };
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_text_concat_typed(),
+                    &[left.into(), right.into(), output.into()],
+                    "text.concat.status",
+                )?;
+                self.backend.require_zero_status(status, "text.concat")?;
+                one(self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "text.concat.result")
+                    .map_err(builder_error)?)
             }
             InstructionKind::TextLength { text } => one(self
                 .backend
@@ -2263,6 +2687,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .map_err(builder_error)?)
             }
             InstructionKind::DirectCall { callee, arguments } => {
+                let callee_source = self.backend.artifact.function(*callee).ok_or_else(|| {
+                    CodegenError::new(
+                        "InvalidFunctionReference",
+                        "direct LCIR callee is missing from its artifact",
+                    )
+                })?;
+                if callee_source.effects().contains(Effects::MAY_COLLECT) {
+                    self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                }
                 let arguments = self.call_arguments(arguments, false)?;
                 let returned = call_basic(
                     &self.backend.builder,
@@ -2270,17 +2703,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     &arguments,
                     "direct.call",
                 )?;
-                let callee = self.backend.artifact.function(*callee).ok_or_else(|| {
-                    CodegenError::new(
-                        "InvalidFunctionReference",
-                        "direct LCIR callee is missing from its artifact",
-                    )
-                })?;
-                if callee.signature().inout_params().is_empty() {
+                if callee_source.signature().inout_params().is_empty() {
                     one(returned)
                 } else {
                     let returned = returned.into_struct_value();
-                    (0..=callee.signature().inout_params().len())
+                    (0..=callee_source.signature().inout_params().len())
                         .map(|index| {
                             let index = u32::try_from(index).map_err(|_| {
                                 CodegenError::new(
@@ -2308,8 +2735,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 ),
             ));
         }
-        for (result, value) in instruction.results().iter().zip(values) {
-            self.values[result.index()] = Some(value);
+        for (result, value) in instruction.results().iter().copied().zip(values) {
+            self.record_value(result, value)?;
         }
         Ok(())
     }
@@ -2788,7 +3215,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_terminator(&mut self, terminator: &Terminator) -> Result<(), CodegenError> {
+    fn emit_terminator(
+        &mut self,
+        block: BlockId,
+        terminator: &Terminator,
+    ) -> Result<(), CodegenError> {
         match terminator.kind() {
             TerminatorKind::Jump(target) => self.branch(target),
             TerminatorKind::Branch {
@@ -2897,7 +3328,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 arguments,
                 normal,
                 unwind,
-            } => self.emit_invoke(*callee, arguments, normal, unwind),
+            } => self.emit_invoke(block, *callee, arguments, normal, unwind),
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -3219,11 +3650,21 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     fn emit_invoke(
         &mut self,
+        block: BlockId,
         callee: InstanceId,
         arguments: &[ValueId],
         normal: &ResultTarget,
         unwind: &UnwindTarget,
     ) -> Result<(), CodegenError> {
+        let callee_source = self.backend.artifact.function(callee).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                "invoked LCIR callee is missing from its artifact",
+            )
+        })?;
+        if callee_source.effects().contains(Effects::MAY_COLLECT) {
+            self.publish_root_state(ManagedSafepoint::Terminator(block))?;
+        }
         let arguments = self.call_arguments(arguments, true)?;
         let aggregate = call_basic(
             &self.backend.builder,
@@ -3238,12 +3679,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_extract_value(aggregate, 0, "invoke.status")
             .map_err(builder_error)?
             .into_int_value();
-        let callee_source = self.backend.artifact.function(callee).ok_or_else(|| {
-            CodegenError::new(
-                "InvalidFunctionReference",
-                "invoked LCIR callee is missing from its artifact",
-            )
-        })?;
         let mut logical_results =
             Vec::with_capacity(1 + callee_source.signature().inout_params().len());
         for index in 0..=callee_source.signature().inout_params().len() {
@@ -3417,6 +3852,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if self.source.effects().contains(Effects::MAY_FAULT) {
             self.emit_status_return(self.backend.context.i32_type().const_zero(), &values)
         } else if let [value] = values.as_slice() {
+            self.pop_root_frame()?;
             self.backend
                 .builder
                 .build_return(Some(value))
@@ -3430,6 +3866,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "function returns void"))?
                 .into_struct_type();
             let aggregate = self.build_return_aggregate(return_type, &values, 0)?;
+            self.pop_root_frame()?;
             self.backend
                 .builder
                 .build_return(Some(&aggregate))
@@ -3485,6 +3922,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?
                 .into_struct_value();
         }
+        self.pop_root_frame()?;
         self.backend
             .builder
             .build_return(Some(&aggregate))
@@ -3662,6 +4100,17 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn value(&self, id: ValueId) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if let Some(cell) = self.root_cells.get(id.index()).copied().flatten() {
+            return self
+                .backend
+                .builder
+                .build_load(
+                    self.backend.ptr_type,
+                    cell,
+                    &format!("managed.root.reload.v{}", id.raw()),
+                )
+                .map_err(builder_error);
+        }
         self.values
             .get(id.index())
             .copied()
@@ -3710,8 +4159,10 @@ impl<'ctx> Backend<'ctx, '_> {
             let source = self.artifact.function(root).ok_or_else(|| {
                 CodegenError::new("InvalidFunctionReference", "LCIR run root is missing")
             })?;
-            if source.effects().contains(Effects::MAY_FAULT) {
-                self.emit_fallible_run(main, root)
+            if source.effects().contains(Effects::NEEDS_RUNTIME)
+                || source.effects().contains(Effects::MAY_FAULT)
+            {
+                self.emit_runtime_run(main, root)
             } else {
                 self.builder
                     .build_call(self.function(root)?, &[], "run")
@@ -3727,7 +4178,7 @@ impl<'ctx> Backend<'ctx, '_> {
         }
     }
 
-    fn emit_fallible_run(
+    fn emit_runtime_run(
         &self,
         main: FunctionValue<'ctx>,
         root: InstanceId,
@@ -3791,8 +4242,18 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(activated);
-        let fault_context = self.initialize_fault_context(runtime)?;
-        let (status, _) = self.call_fallible_root(root, fault_context, "run")?;
+        let source = self.artifact.function(root).ok_or_else(|| {
+            CodegenError::new("InvalidFunctionReference", "LCIR run root is missing")
+        })?;
+        let status = if source.effects().contains(Effects::MAY_FAULT) {
+            let fault_context = self.initialize_fault_context(runtime)?;
+            self.call_fallible_root(root, fault_context, "run")?.0
+        } else {
+            self.builder
+                .build_call(self.function(root)?, &[], "run")
+                .map_err(builder_error)?;
+            self.context.i32_type().const_zero()
+        };
         self.destroy_runtime(runtime)?;
         let success = self.context.append_basic_block(main, "run.success");
         let failure = self.context.append_basic_block(main, "run.failure");
@@ -3848,8 +4309,10 @@ impl<'ctx> Backend<'ctx, '_> {
                     format!("LCIR test root {root} is missing"),
                 )
             })?;
-            if source.effects().contains(Effects::MAY_FAULT) {
-                self.emit_fallible_test(main, *root, source.name(), *outcome, failed)?;
+            if source.effects().contains(Effects::NEEDS_RUNTIME)
+                || source.effects().contains(Effects::MAY_FAULT)
+            {
+                self.emit_runtime_test(main, *root, source.name(), *outcome, failed)?;
             } else {
                 let returned = call_basic(&self.builder, self.function(*root)?, &[], "test")?;
                 let succeeded =
@@ -3867,7 +4330,7 @@ impl<'ctx> Backend<'ctx, '_> {
         Ok(())
     }
 
-    fn emit_fallible_test(
+    fn emit_runtime_test(
         &self,
         main: FunctionValue<'ctx>,
         root: InstanceId,
@@ -3935,8 +4398,21 @@ impl<'ctx> Backend<'ctx, '_> {
 
         let next = self.context.append_basic_block(main, "test.next");
         self.builder.position_at_end(activated);
-        let fault_context = self.initialize_fault_context(runtime)?;
-        let (status, returned) = self.call_fallible_root(root, fault_context, "test")?;
+        let source = self.artifact.function(root).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("LCIR test root {root} is missing"),
+            )
+        })?;
+        let (status, returned) = if source.effects().contains(Effects::MAY_FAULT) {
+            let fault_context = self.initialize_fault_context(runtime)?;
+            self.call_fallible_root(root, fault_context, "test")?
+        } else {
+            (
+                self.context.i32_type().const_zero(),
+                call_basic(&self.builder, self.function(root)?, &[], "test")?,
+            )
+        };
         self.destroy_runtime(runtime)?;
         let runtime_succeeded = self
             .builder
@@ -3947,12 +4423,6 @@ impl<'ctx> Backend<'ctx, '_> {
                 "test.succeeded",
             )
             .map_err(builder_error)?;
-        let source = self.artifact.function(root).ok_or_else(|| {
-            CodegenError::new(
-                "InvalidFunctionReference",
-                format!("LCIR test root {root} is missing"),
-            )
-        })?;
         let outcome_succeeded =
             self.test_outcome_succeeded(returned, source.signature().result(), outcome)?;
         let succeeded = self

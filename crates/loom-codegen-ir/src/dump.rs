@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 10")?;
+    writeln!(output, "lcir 11")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -191,6 +191,9 @@ fn write_instruction(
         InstructionKind::TextLiteral { utf8 } => {
             output.write_str("text.literal ")?;
             write_quoted_string(output, utf8)
+        }
+        InstructionKind::TextConcat { left, right } => {
+            write!(output, "text.concat %{left}, %{right}")
         }
         InstructionKind::TextLength { text } => write!(output, "text.length %{text}"),
         InstructionKind::TextContains { text, needle } => {
@@ -333,6 +336,7 @@ fn write_terminator(
                     | Repr::Zst
                     | Repr::Scalar(_)
                     | Repr::ImmortalText
+                    | Repr::ManagedPointer
                     | Repr::Product(_) => None,
                 })
                 .map(crate::SumRepr::variants);
@@ -520,6 +524,7 @@ fn write_repr(
         Repr::Scalar(ScalarRepr::I64) => output.write_str("i64"),
         Repr::Scalar(ScalarRepr::F64) => output.write_str("f64"),
         Repr::ImmortalText => output.write_str("immortal_text_ptr"),
+        Repr::ManagedPointer => output.write_str("managed_ptr"),
         Repr::Product(product) => {
             write!(output, "product {product}(")?;
             let fields = representations

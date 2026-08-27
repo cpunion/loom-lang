@@ -17,7 +17,7 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, literal-proven immortal-text, structural-tuple, closed-record, and
+primitive, direct literal/concat-text, structural-tuple, closed-record, and
 compile-time-established refined artifacts, plus bounded concrete direct
 generic instances over those representations and eligible concrete
 closed-enum artifacts, into typed LCIR and falls back atomically for reachable
@@ -29,7 +29,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Moving, dynamically produced, or nested managed values,
+native specializations. Managed values other than direct Text concat results,
+nested managed values,
 unsupported or recursive enums,
 runtime-checked constraints, concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
@@ -108,6 +109,9 @@ vocabulary is:
 - one opaque `ImmortalText` pointer for a 64-bit closed artifact in which every
   text value is transitively produced by a compiler-emitted process-lifetime
   literal;
+- one opaque `ManagedPointer` for every Text in an artifact where concat is
+  reachable; literals remain static objects and concat results are typed
+  moving-GC leaves in the same direct pointer ABI;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -122,8 +126,8 @@ vocabulary is:
 
 Products and sums are immutable register aggregates. Tuples, records, sums,
 established refinements, and protected invariant products may contain one
-another when the resulting by-value graph is acyclic. `ImmortalText` is not
-admitted inside those aggregates. Each representation plan
+another when the resulting by-value graph is acyclic. Neither Text pointer
+representation is admitted inside those aggregates in the current slice. Each representation plan
 has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. General managed,
@@ -132,11 +136,16 @@ complete lowering and validation rules. A generic or dynamic operation
 elsewhere in an artifact does not make an unrelated direct value carry a
 universal tag.
 
-The narrow text slice supports only allocation-free length, containment, and
-content equality or inequality; equality is never pointer equality. `concat`,
-`get`, dynamic producers, and aggregate-contained text remain whole-artifact
-fallback until a typed shadow-root ABI can keep direct pointers precise across
-moving-GC safepoints. Literal planning is bounded to 1 MiB of UTF-8 for one
+The direct text slice supports allocation-free length, containment, and
+content equality or inequality; equality is never pointer equality. It also
+supports concat through a specialized typed helper. Any concat selects
+`ManagedPointer` for every Text in the complete artifact and adds
+`MAY_COLLECT`. Exact backwards SSA liveness supplies typed pointer cells and a
+deduplicated bitmap state for every collecting site. Values are live after the
+call, so its not-yet-defined result is excluded; explicit edge arguments map
+only to live explicit destination parameters. Empty plans emit no frame.
+`get`, other dynamic producers, and aggregate-contained text remain
+whole-artifact fallback. Literal planning is bounded to 1 MiB of UTF-8 for one
 literal and 16 MiB across one LCIR artifact.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
@@ -243,6 +252,7 @@ source function:
 | `Scalar(I1)` | `i1` |
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
+| `ImmortalText` or `ManagedPointer` Text | opaque pointer |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
 | tagless `Sum` | its sole variant payload struct |
 | tag-only `Sum` | its checked minimal integer tag |
@@ -262,9 +272,9 @@ single fallibility flag. `MAY_FAULT` remains independent; checked scalar faults
 do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
-closure over direct and invoke call edges. The current typed operation set has
-no collecting, executor, or suspending opcode, so these flags establish the
-validated vocabulary and identity boundary without starting those services.
+closure over direct and invoke call edges. `TextConcat` is the current
+collecting opcode. The typed operation set still has no executor or suspending
+opcode.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -282,8 +292,19 @@ loop phi. Match plans use IEEE ordered equality for float constants, share one
 typed capture block per selected source arm, and are rejected before LCIR
 allocation if their bounded pattern, decision, value, work, or CFG-block
 budgets are exceeded.
-It creates no runtime for an infallible direct root and creates a runtime, but
-no executor, for a synchronous faulting root.
+The harness creates no runtime for a pure direct root. It creates a runtime,
+but no executor, for a synchronous faulting or collecting root.
+
+Managed Text concat calls
+`loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
+and validate both full UTF-8 inputs before any allocation can collect, then
+allocate a 32-byte, 8-aligned, pointer-free typed prefix with trailing bytes,
+initialize it without a safepoint, and publish the result last. OOM is an
+uncatchable process-level fault; every other nonzero status fails closed. LLVM
+publishes exact typed-root states before concat and transitively collecting
+calls, reloads candidate cells after safepoints, and pops every nonempty frame
+on all source exits. Root-map ABI-limit excess is `ProgramTooLarge`, not
+fallback. No universal root chain or executor participates in this path.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

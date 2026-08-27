@@ -51,6 +51,18 @@ pub fn main() Unit {
     )
 }
 
+fn derived_text_program() -> CheckedProgram {
+    compile_source(
+        r#"module prepared_derived_text
+
+pub fn main() Unit {
+    discard "value".get(0)
+    Unit
+}
+"#,
+    )
+}
+
 #[test]
 fn automatic_route_is_atomic_over_the_reachable_artifact() {
     let scalar = scalar_program();
@@ -68,8 +80,8 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
         EmitOptions::run("main"),
         NativeRoutePolicy::Automatic,
     )
-    .expect("prepare unsupported artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    .expect("prepare managed Text artifact");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let managed_tuple = compile_source(
         r#"module prepared_managed_tuple
@@ -117,7 +129,7 @@ fn one_unsupported_test_selects_legacy_for_the_ordered_test_artifact() {
 test fn scalar() Unit { Unit }
 
 test fn text() Unit {
-    discard "left".concat("right")
+    discard "value".get(0)
     Unit
 }
 "#,
@@ -184,12 +196,12 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
 
-    let text = allocating_text_program();
+    let text = derived_text_program();
     let text_ir = directory.path().join("text.ll");
     let mut text_options = EmitOptions::run("main");
     text_options.emit_ir = Some(text_ir.clone());
     let text_prepared = prepare_native_object(&text, text_options, NativeRoutePolicy::Automatic)
-        .expect("prepare allocating Text artifact");
+        .expect("prepare derived Text artifact");
     emit_prepared_native_object(&text_prepared, &directory.path().join("text.o"))
         .expect("emit legacy MIR");
     let text_ir = std::fs::read_to_string(text_ir).expect("read legacy IR");

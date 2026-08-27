@@ -1,4 +1,5 @@
-//! Managed immutable `Text` storage used by universal `Value` envelopes.
+//! Managed immutable `Text` storage shared by universal `Value` envelopes and
+//! typed direct `Text` pointers.
 
 use std::ffi::c_void;
 use std::mem::{align_of, size_of};
@@ -6,12 +7,14 @@ use std::ptr;
 use std::slice;
 
 use loom_runtime_abi::{
-    LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES,
-    LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomLayoutDescriptor, TEXT_OBJECT_HEADER_SIZE,
+    GC_INVALID_ARGUMENT, GC_OK, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
+    LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
+    LoomGcObjectDescriptor, LoomLayoutDescriptor, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     VALUE_SLOT_WORDS, VALUE_TAG_TEXT, VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_NOMINAL,
     VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
 
+use crate::gc::allocate_typed_object;
 use crate::scheduler::ValueSlot;
 
 /// The one process-wide descriptor referenced by dynamic and literal Text
@@ -65,6 +68,82 @@ pub(crate) struct ByteObject {
 
 const TEXT_OBJECT_HEADER_BYTES: usize = size_of::<TextObject>();
 const TEXT_OBJECT_HEADER_WORDS: usize = TEXT_OBJECT_HEADER_BYTES / size_of::<u64>();
+/// Concatenates two complete Text objects into one precisely described typed
+/// managed leaf. Both UTF-8 payloads are copied into non-GC staging storage
+/// before the allocation which may move either input. The fresh object remains
+/// unpublished while its header and trailing bytes are initialized.
+#[unsafe(export_name = "loom_runtime_text_concat_typed_v1")]
+pub unsafe extern "C" fn concat_typed_v1(
+    left: *const c_void,
+    right: *const c_void,
+    output: *mut *mut c_void,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    let staged = (|| {
+        // SAFETY: both immutable objects are read in full before the typed
+        // allocator below can enter a Loom collection.
+        let left = unsafe { text_bytes(left) }?;
+        let right = unsafe { text_bytes(right) }?;
+        let byte_length = left.len().checked_add(right.len())?;
+        let mut staged = Vec::with_capacity(byte_length);
+        staged.extend_from_slice(left);
+        staged.extend_from_slice(right);
+        let text = std::str::from_utf8(&staged).ok()?;
+        let scalar_length = u64::try_from(text.chars().count()).ok()?;
+        Some((staged, scalar_length))
+    })();
+    let Some((staged, scalar_length)) = staged else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let Ok(byte_length) = u64::try_from(staged.len()) else {
+        std::process::abort();
+    };
+    let Some(allocation_size) = TEXT_OBJECT_HEADER_SIZE.checked_add(byte_length) else {
+        std::process::abort();
+    };
+    let descriptor = LoomGcObjectDescriptor {
+        abi_version: TYPED_GC_ABI_VERSION,
+        flags: 0,
+        fixed_size: TEXT_OBJECT_HEADER_SIZE,
+        object_align: align_of::<TextObject>() as u64,
+        pointer_count: 0,
+        pointer_offsets: ptr::null(),
+    };
+    let mut allocated = ptr::null_mut();
+    // SAFETY: the descriptor is process-lifetime immutable metadata and the
+    // local output cell remains stable for the complete allocation call.
+    let status = unsafe {
+        allocate_typed_object(&raw const descriptor, allocation_size, &raw mut allocated)
+    };
+    if status == GC_RESOURCE_LIMIT {
+        std::process::abort();
+    }
+    if status != GC_OK {
+        return status;
+    }
+    let object = allocated.cast::<TextObject>();
+    // SAFETY: the typed allocator returned a zeroed allocation with the exact
+    // header/alignment and enough pointer-free trailing storage. Initialization
+    // performs no allocation or runtime call, so it contains no safepoint.
+    unsafe {
+        object.write(TextObject {
+            layout: &raw const TEXT_LAYOUT_DESCRIPTOR,
+            allocation_size,
+            byte_length,
+            scalar_length,
+            bytes: [],
+        });
+        ptr::copy_nonoverlapping(
+            staged.as_ptr(),
+            allocated.cast::<u8>().add(TEXT_OBJECT_HEADER_BYTES),
+            staged.len(),
+        );
+        output.write(allocated);
+    }
+    GC_OK
+}
 
 /// Allocates a managed Text object after validating UTF-8 and caching its
 /// Unicode scalar length.
@@ -236,18 +315,25 @@ unsafe fn validate_text_object_deep(object: *const TextObject) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_void;
     use std::mem::{align_of, offset_of, size_of};
+    use std::ptr;
 
     use loom_runtime_abi::{
-        LoomLayoutDescriptor, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE, VALUE_SLOT_WORDS,
-        VALUE_TAG_TEXT,
+        GC_OK, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
+        TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION,
+        VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
     };
 
     use super::{
         BYTES_LAYOUT_DESCRIPTOR, ByteObject, TEXT_LAYOUT_DESCRIPTOR, TextObject,
-        allocate_byte_storage, allocate_text_storage, bytes, scalar_length,
-        validate_text_object_deep,
+        allocate_byte_storage, allocate_text_storage, bytes, concat_typed_v1, scalar_length,
+        text_bytes, validate_text_object_deep,
     };
+    use crate::gc::{
+        activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
+    };
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
     use crate::scheduler::ValueSlot;
 
     #[test]
@@ -298,6 +384,57 @@ mod tests {
             &raw const BYTES_LAYOUT_DESCRIPTOR
         );
         drop(allocation);
+    }
+
+    #[test]
+    fn typed_concat_stages_aliases_before_forced_collection_and_publishes_last() {
+        let (left_storage, left) = allocate_text_storage("a界".as_bytes()).unwrap();
+        let (right_storage, right) = allocate_text_storage("🙂".as_bytes()).unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 1_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 1,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut cell: *mut c_void = ptr::null_mut();
+            let slots = [(&raw mut cell).cast::<c_void>()];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(
+                concat_typed_v1(left.cast(), right.cast(), &raw mut cell),
+                GC_OK
+            );
+            assert_eq!(text_bytes(cell), Some("a界🙂".as_bytes()));
+            let first = cell;
+            assert_eq!(concat_typed_v1(first, first, &raw mut cell), GC_OK);
+            assert_eq!(text_bytes(cell), Some("a界🙂a界🙂".as_bytes()));
+            assert!((*runtime).heap.collections >= 2);
+            assert!((*runtime).heap.relocations >= 1);
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(right_storage);
+        drop(left_storage);
     }
 
     #[test]

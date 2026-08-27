@@ -26,7 +26,7 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values, literal-proven immortal `Text`, structural tuples, closed
+primitive values, literal or concat-produced `Text`, structural tuples, closed
 records, and established transparent refined values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
@@ -100,8 +100,9 @@ target's LLVM data layout.
 The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete
 direct LCIR object whose representations are all width-independent can
-therefore be emitted for a matching 32-bit LLVM target. `ImmortalText` and the
-legacy universal representation both require 64-bit pointers; reachable text
+therefore be emitted for a matching 32-bit LLVM target. Both direct `Text`
+representations and the legacy universal representation require 64-bit
+pointers; reachable text
 selects atomic legacy fallback during 32-bit direct classification, and that
 legacy route then reports its existing unsupported-target boundary. None of
 these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
@@ -183,15 +184,18 @@ metadata does not yet synthesize nominal source aliases such as `Money` or
 `Range`. This deliberate display limitation does not erase nominal identity
 from LCIR dumps, validation, cache fingerprints, or object artifact identity.
 
-## Direct LCIR literal text
+## Direct LCIR text
 
-An admitted `Text` SSA value is one opaque LLVM pointer to an immutable object
-emitted as a private, unnamed-address global. The global uses the runtime's
-existing text-object prefix—layout descriptor pointer, allocation size, UTF-8
-byte length, Unicode scalar length—followed by the exact UTF-8 bytes. It points
-at the existing `loom_layout_text_v1` descriptor and lives for the process
-lifetime. The pointer is not a universal `loom.Value`, a tagged interface
-value, or an address whose identity is visible to source code.
+An admitted `Text` SSA value is one opaque LLVM pointer to a canonical object
+whose prefix is the runtime layout descriptor pointer, allocation size, UTF-8
+byte length, and Unicode scalar length, followed by exact UTF-8 bytes. A
+literal-only artifact uses `ImmortalText`; each literal is a private,
+unnamed-address global that points at `loom_layout_text_v1` and lives for the
+process lifetime. If any reachable function concatenates Text, the entire
+artifact instead uses `ManagedPointer` for every Text. Literals remain static,
+while concat results are moving typed-GC leaves with the same language-visible
+object shape. Neither representation is a universal `loom.Value`, a tagged
+interface value, or a source-observable address.
 
 LCIR loads scalar length directly from the immutable header. Containment calls
 the existing allocation-free `loom_runtime_text_contains` byte-slice helper.
@@ -200,21 +204,32 @@ helper; LLVM never compares literal object pointers to implement source
 equality. The helper and descriptor declarations retain their exact target
 pointer ABI when emitting 64-bit ELF, Mach-O, or COFF objects.
 
-The complete artifact proof is intentionally narrow. Roots accept no source
-arguments, every source callable has internal linkage, direct-call closure is
-exactly validated, and `TextLiteral` is the only admitted producer. A text
-pointer can therefore cross direct function, return, block-parameter, local,
-or concrete generic boundaries only after originating in the same artifact's
-immortal literal. These Text operations add no universal value,
-GC/shadow-stack setup, runtime-object creation, or executor/scheduler setup;
-independent fault effects elsewhere in the artifact may still require the
-ordinary fault runtime context.
+For managed Text, `TextConcat` calls
+`loom_runtime_text_concat_typed_v1(left, right, out_cell)`. The helper validates
+and copies both complete UTF-8 inputs into non-GC staging storage before its
+first possible collection. It then allocates a typed leaf with a 32-byte fixed
+prefix, 8-byte alignment, no pointer fields, and pointer-free trailing bytes.
+Initialization contains no safepoint and the helper publishes the result only
+after the header and bytes are complete. Resource exhaustion aborts as the
+language's uncatchable OOM fault; every other nonzero status reaches a
+fail-closed trap rather than a source unwind edge.
 
-`concat`, `get`, dynamically created or otherwise moving text, and `Text`
-nested in a product, sum, or transparent representation remain atomic
-whole-artifact fallback. Supporting them requires a typed shadow-root ABI that
-lets the moving collector update direct managed pointers at every safepoint;
-this literal-only slice does not weaken that requirement.
+The emitter derives exact backwards liveness for managed SSA values. It gives
+each value live across any collecting site one pointer-sized stack cell,
+publishes per-site typed-root bitmap state immediately before the call, and
+reloads every candidate use after collection. Results are excluded at their
+own safepoint; block parameters and later definitions are written into their
+cells. Successor arguments are rooted only when the paired explicit block
+parameter is live. Functions with no live-across managed value emit no frame,
+descriptor, bitmap, push, or pop. Every normal, fault, and resumed-fault return
+pops a frame that was pushed. Root-map ABI-limit overflow is an emission-time
+`ProgramTooLarge` error and cannot select legacy fallback.
+
+The harness creates only a synchronous runtime when the root's exact effects
+require one. Managed concat introduces no universal root chain, executor,
+scheduler, suspension, or catchable fault channel. `Text.get`, other dynamic
+Text producers, and `Text` nested in a product, sum, or transparent
+representation remain atomic whole-artifact fallback.
 
 ## Direct LCIR closed sums
 
@@ -268,7 +283,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v7` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v8` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -280,13 +295,14 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v12` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v13` and never suppresses fingerprint
 errors.
 
-The current LCIR domains encode both the explicit transitive effect lattice and
-canonical typed fault metadata. These compiler-private metadata changes do not
-add a physical runtime boundary, so the native runtime ABI itself does not
-advance for either slice.
+The current LCIR domains encode the explicit transitive effect lattice,
+canonical typed fault metadata, and direct managed Text/root-map semantics.
+The first two changes add no physical runtime boundary. Dynamic concat does:
+the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
+components while GC remains `gc-v8`.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

@@ -442,7 +442,11 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
-                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText => {}
+                Repr::Uninhabited
+                | Repr::Zst
+                | Repr::Scalar(_)
+                | Repr::ImmortalText
+                | Repr::ManagedPointer => {}
             }
         }
         let mut product_value_uses = vec![0_usize; product_count];
@@ -577,15 +581,15 @@ impl<'a> Validator<'a> {
                         *uses = uses.saturating_add(1);
                     }
                 }
-                Some(Repr::ImmortalText) => {
+                Some(Repr::ImmortalText | Repr::ManagedPointer) => {
                     if value_type.semantic() != &Type::Text
                         || value_type.kind() != ValueTypeKind::Direct
                         || representations.target().pointer_bits() != 64
                     {
                         self.error(
                             ValidationCode::RepresentationPlan,
-                            format!("representations.type[{index}].immortal_text"),
-                            "immortal Text must be the direct Text semantic type on a 64-bit target",
+                            format!("representations.type[{index}].text_pointer"),
+                            "Text pointers must be the direct Text semantic type on a 64-bit target",
                         );
                     }
                 }
@@ -594,7 +598,7 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}]"),
-                            "Text semantic values must use the immortal Text representation in this LCIR slice",
+                            "Text semantic values must use one canonical Text pointer representation",
                         );
                     }
                 }
@@ -619,6 +623,7 @@ impl<'a> Validator<'a> {
                     | Repr::Zst
                     | Repr::Scalar(_)
                     | Repr::ImmortalText
+                    | Repr::ManagedPointer
                     | Repr::Product(_)
                     | Repr::Sum(_) => None,
                 })
@@ -827,7 +832,13 @@ impl<'a> Validator<'a> {
                     }),
                     (
                         None,
-                        Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText)
+                        Some(
+                            Repr::Uninhabited
+                            | Repr::Zst
+                            | Repr::Scalar(_)
+                            | Repr::ImmortalText
+                            | Repr::ManagedPointer,
+                        )
                         | None,
                     ) => None,
                 };
@@ -884,7 +895,13 @@ impl<'a> Validator<'a> {
                             );
                         }
                     }
-                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText)
+                    Some(
+                        Repr::Uninhabited
+                        | Repr::Zst
+                        | Repr::Scalar(_)
+                        | Repr::ImmortalText
+                        | Repr::ManagedPointer,
+                    )
                     | None => {}
                 }
             }
@@ -1343,6 +1360,13 @@ impl<'a> Validator<'a> {
         let integer = self.scalar_type(&Type::Int);
         let float = self.scalar_type(&Type::Float);
         let text = self.scalar_type(&Type::Text);
+        let text_is_managed = text.is_some_and(|text| {
+            self.program
+                .representations
+                .value_type(text)
+                .and_then(|ty| self.program.representations.repr(ty.repr()))
+                == Some(&Repr::ManagedPointer)
+        });
         match &instruction.kind {
             InstructionKind::Constant(constant) => {
                 let expected = match constant {
@@ -1358,7 +1382,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "Text literal requires the canonical immortal Text representation",
+                        "Text literal requires the canonical Text pointer representation",
                     );
                 }
                 self.require_results(function, instruction, &[text], &path);
@@ -1385,12 +1409,36 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::TextConcat { left, right } => {
+                if !text_is_managed {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "Text concatenation requires the canonical managed Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *left,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.left"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *right,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.right"),
+                );
+                self.require_results(function, instruction, &[text], &path);
+            }
             InstructionKind::TextLength { text: value } => {
                 if text.is_none() {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.text"),
-                        "Text length requires the canonical immortal Text representation",
+                        "Text length requires the canonical Text pointer representation",
                     );
                 }
                 self.require_known_value_type(
@@ -1410,7 +1458,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.text"),
-                        "Text containment requires the canonical immortal Text representation",
+                        "Text containment requires the canonical Text pointer representation",
                     );
                 }
                 self.require_known_value_type(
@@ -1434,7 +1482,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.left"),
-                        "Text comparison requires the canonical immortal Text representation",
+                        "Text comparison requires the canonical Text pointer representation",
                     );
                 }
                 self.require_known_value_type(
@@ -3080,6 +3128,9 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 let Some(instruction) = function.instruction(instruction_id) else {
                     continue;
                 };
+                if matches!(instruction.kind(), InstructionKind::TextConcat { .. }) {
+                    effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
+                }
                 if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
                     && let Some(callee) = canonical_function_index(program, *callee)
                 {

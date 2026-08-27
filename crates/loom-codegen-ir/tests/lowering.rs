@@ -135,7 +135,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn allocating_or_derived_text_operations_select_one_atomic_fallback() {
+fn derived_text_operations_still_select_one_atomic_fallback() {
     let outcome = lower_run(
         r#"module lcir_text_fallback
 
@@ -147,7 +147,7 @@ pub fn main() Unit {
 "#,
     );
     let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("allocating Text operations must keep the complete artifact on fallback")
+        panic!("derived Text operations must keep the complete artifact on fallback")
     };
     assert!(
         report
@@ -155,9 +155,54 @@ pub fn main() Unit {
             .iter()
             .filter(|item| { item.feature() == UnsupportedFeature::BuiltinCall })
             .count()
-            >= 2,
+            >= 1,
         "{report:?}"
     );
+}
+
+#[test]
+fn concat_selects_one_managed_text_representation_and_collection_effect() {
+    let outcome = lower_run(
+        r#"module lcir_text_concat
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+pub fn main() Unit {
+    let joined = join("left", "right")
+    discard joined.length()
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("dynamic Text concat must lower through complete LCIR")
+    };
+    let text = artifact
+        .representations()
+        .type_id(&loom_mir::Type::Text)
+        .expect("Text type");
+    let representation = artifact
+        .representations()
+        .value_type(text)
+        .and_then(|ty| artifact.representations().repr(ty.repr()));
+    assert_eq!(representation, Some(&loom_codegen_ir::Repr::ManagedPointer));
+    assert!(artifact.functions().iter().all(|function| {
+        function
+            .effects()
+            .contains(loom_codegen_ir::Effects::MAY_COLLECT)
+            && function
+                .effects()
+                .contains(loom_codegen_ir::Effects::NEEDS_RUNTIME)
+            && !function
+                .effects()
+                .contains(loom_codegen_ir::Effects::MAY_FAULT)
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        function
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::TextConcat { .. }))
+    }));
 }
 
 #[test]
@@ -1045,11 +1090,11 @@ fn invalid_run_name_is_an_error_not_unsupported() {
 }
 
 #[test]
-fn unsupported_unreachable_functions_do_not_select_fallback() {
+fn unreachable_concat_does_not_select_managed_text_or_fallback() {
     let dump = complete_dump(
         r#"module unreachable
 
-fn deadText() Text { "legacy" }
+fn deadText() Text { "left".concat("right") }
 
 pub fn main() Unit { Unit }
 "#,
@@ -1290,7 +1335,7 @@ fn diverging_prefixes_do_not_require_unmaterialized_unsupported_heads() {
 }
 
 #[test]
-fn reachable_unsupported_sites_report_the_whole_artifact_before_building() {
+fn reachable_concat_is_repeatably_supported_as_one_complete_artifact() {
     let mir = compile(
         r#"module coverage
 
@@ -1310,8 +1355,8 @@ pub fn main() Unit {
         TargetLayout::new(64).expect("test target"),
     )
     .expect("classification succeeds");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("reachable allocating Text must select whole-artifact fallback")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("reachable Text concat must select whole-artifact LCIR")
     };
     let repeated = lower_typed_artifact(
         &mir,
@@ -1321,23 +1366,16 @@ pub fn main() Unit {
         TargetLayout::new(64).expect("test target"),
     )
     .expect("repeat classification");
-    let LoweringOutcome::Unsupported(repeated) = repeated else {
-        panic!("repeated allocating Text classification must be unsupported")
+    let LoweringOutcome::Complete(repeated) = repeated else {
+        panic!("repeated allocating Text classification must remain supported")
     };
-    assert_eq!(report, repeated);
-    assert!(
-        report
-            .items()
+    assert_eq!(artifact_identity(&artifact), artifact_identity(&repeated));
+    assert!(artifact.functions().iter().any(|function| {
+        function
+            .instructions()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::BuiltinCall)
-    );
-    assert!(
-        report.items().iter().all(|item| !item.path().is_empty())
-            && report
-                .items()
-                .iter()
-                .any(|item| item.expression().is_some())
-    );
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::TextConcat { .. }))
+    }));
 }
 
 #[test]

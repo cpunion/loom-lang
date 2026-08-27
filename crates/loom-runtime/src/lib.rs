@@ -65,6 +65,7 @@ pub use standard::{
     parse_json, path_contains_nul, path_join, text_concat, text_contains, text_get, text_length,
     text_map_get, text_map_insert, text_map_remove,
 };
+pub use text::concat_typed_v1;
 
 pub use loom_runtime_abi::{
     COROUTINE_ABI_VERSION, DYN_FLAG_MUTABLE, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON,

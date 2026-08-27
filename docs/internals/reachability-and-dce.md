@@ -23,13 +23,21 @@ instances across all roots. Generic declarations are not roots by themselves.
 The typed LLVM emitter therefore declares only concrete signatures required by
 the selected artifact; it never emits a universal generic body.
 
-This exact closure also proves the narrow direct `Text` provenance rule. Run
-and test roots accept no arguments, all LCIR source callables have internal
-linkage, and `TextLiteral` is the only admitted producer. A text value passed
+This exact closure also selects one direct `Text` representation for the whole
+artifact. If no reachable instance concatenates Text, `TextLiteral` is the only
+producer and every Text uses `ImmortalText`. Run and test roots accept no
+arguments, all LCIR source callables have internal linkage, and a value passed
 through locals, block parameters, direct calls, returns, or a concrete generic
 instance must therefore originate in an immortal literal in the same artifact.
-Any dynamic or allocating producer, text nested in an aggregate, or unsupported
-text operation changes the complete artifact to the legacy route before LCIR
+
+If any reachable instance uses `Text.concat`, every Text in the closed
+artifact instead uses `ManagedPointer`, including compiler-emitted literals.
+Concat remains on the typed LCIR route: its exact `MAY_COLLECT | NEEDS_RUNTIME`
+effect propagates through the reachable call graph, and generated typed root
+maps keep only managed SSA values live after each safepoint. An unreachable
+concat cannot change representation or route selection. `Text.get`, another
+unsupported dynamic Text producer, or Text nested in an aggregate still
+changes the complete reachable artifact to the legacy route before LCIR
 construction.
 
 ## Roots
@@ -120,6 +128,8 @@ Reachability changes need tests for:
 
 - direct and recursive call closure;
 - regular generic recursion, nonregular rejection, and planning budgets;
+- literal-only versus reachable-concat artifact-wide Text representation, plus
+  an unreachable concat that does not change route selection;
 - duplicate concrete instances shared across calls and test roots;
 - deterministic instance order and artifact identity;
 - static and dynamic concept dispatch;

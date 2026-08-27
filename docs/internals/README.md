@@ -18,7 +18,7 @@ The workspace is split into narrow crates:
 | `loom-mir` | Typed executable IR, artifact encoding, liveness, and validation. |
 | `loom-lowering` | Total lowering from typed HIR to MIR. |
 | `loom-interpreter` | Deterministic execution of validated MIR. |
-| `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic direct MIR-to-LCIR selection for primitives, literal-proven immortal text, closed products/sums, and established transparent values; typed-SSA builders, validation, artifact roots, and insertion-order dumps. |
+| `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic direct MIR-to-LCIR selection for primitives, direct literal/managed text, closed products/sums, and established transparent values; typed-SSA builders, validation, artifact roots, exact managed-root planning, and insertion-order dumps. |
 | `loom-runtime-abi` | Shared compiler-private native ABI constants, universal and typed root records, and precise typed object descriptors. |
 | `loom-runtime` | Side-by-side universal/typed moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
 | `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |

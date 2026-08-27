@@ -71,8 +71,8 @@ This succeeds only when the linked LLVM installation provides and Loom can
 initialize the requested target. Complete LLVM installations retain their
 all-target initializer. Partial installations use Loom's bounded AArch64, ARM,
 and X86 initializer set; a different partial target set is not currently a
-supported toolchain. The complete legacy value route and typed LCIR's
-literal-only `Text` representation require 64-bit pointers. A completely
+supported toolchain. The complete legacy value route and both typed LCIR
+`Text` representations require 64-bit pointers. A completely
 supported typed LCIR artifact that does not require that representation may
 emit a matching 32-bit relocatable object, but that is not evidence of a
 supported 32-bit Loom runtime or executable toolchain. Object emission does
