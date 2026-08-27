@@ -11,17 +11,21 @@ long-term compatibility guarantee.
 | --- | --- | --- | --- | --- | --- |
 | Linux x86-64 (Ubuntu 24.04) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
 | macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
-| Windows x86-64 (Windows 2025) | configured native job | complete workspace | LLVM 19 native closure configured | host object path | no |
+| Windows x86-64 (Windows 2025) | configured native job | complete workspace | LLVM 19 native closure configured | host object path | `.zip` workflow entry configured; no verified archive |
 | Other LLVM 64-bit triples | no general CI claim | host-dependent | only with a matching validated runtime bundle and linker | possible when LLVM provides the target | no |
 | 32-bit triples | no | not a native claim | no runtime/executable support | complete direct LCIR object only when LLVM provides the target; legacy route rejects | no |
 
-The Windows job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
+The Windows CI job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
 builds the complete workspace, and runs the Core 0.1-0.3 check/build/test/run
 loops on both backends. Native builds additionally require the expected `.exe`
 and `.pdb` outputs, parse the PDB, and inspect a compiler-emitted COFF object for
-CodeView sections before executing the artifact. This configuration becomes a
-Windows toolchain claim only when that job passes; source-level cross-checks on
-another host are not described as Windows execution.
+CodeView sections before executing the artifact. The release job reuses the
+same pinned LLVM bootstrap and is configured to stage `loomc.exe`,
+`loom-lsp.exe`, and `loom_runtime.lib`, execute Core, C3, standard-library, and
+adjacent-runtime gates, and hash a `.zip`. These configurations become Windows
+toolchain and archive claims only after successful Windows runner evidence;
+source-level cross-checks on another host are not described as Windows
+execution.
 
 Linux, macOS, and the configured Windows job build the complete Cargo workspace
 with Rust 1.88 and LLVM 19 and execute native/runtime integration gates. Linux
@@ -89,7 +93,8 @@ The repository does not yet provide evidence for:
 
 - production stability, large external applications, or a stable 1.0
   compatibility policy;
-- Windows native execution or Windows release archives;
+- verified Windows native execution or a successfully produced Windows release
+  archive;
 - 32-bit native execution;
 - a stable FFI, dynamic library, plugin, or reflection ABI;
 - a multithreaded executor;

@@ -248,13 +248,15 @@ jobs:
     name: Windows x86-64 native closure (LLVM 19)
     runs-on: windows-2025
     timeout-minutes: 60
-    env:
-      LLVM_ARCHIVE_SHA256: b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0
-      LIBXML_ARCHIVE_SHA256: 98bfa7a9a5e2a75638422050740448ee9f02bf4dc2075c9822d7747d5ff9e617
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Test Windows LLVM bootstrap argument binding
+        shell: pwsh
+        run: |
+          & ./.github/scripts/test-windows-llvm-bootstrap.ps1 `
+            -TemporaryRoot $env:RUNNER_TEMP
       - name: Restore official LLVM 19.1.7 development archive
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
@@ -265,166 +267,12 @@ jobs:
       - name: Verify and unpack LLVM development toolchain
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
-          if ((Test-Path $archive -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $env:LLVM_ARCHIVE_SHA256) {
-            Remove-Item -Force $archive
-          }
-          if (-not (Test-Path $archive -PathType Leaf)) {
-            & curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --continue-at - --output $archive $url
-            if ($LASTEXITCODE -ne 0) {
-              throw "could not download the official LLVM development archive"
-            }
-          }
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
-            throw "LLVM archive SHA-256 mismatch: $actual"
-          }
           $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-19.1.7-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          New-Item -ItemType Directory -Force -Path $llvmRoot | Out-Null
-          & tar.exe -xf $archive -C $llvmRoot --strip-components=1
-          if ($LASTEXITCODE -ne 0) {
-            throw "could not unpack the official LLVM development archive"
-          }
-          "LLVM_PATH=$llvmRoot" >> $env:GITHUB_ENV
-          "LLVM_SYS_191_PREFIX=$llvmRoot" >> $env:GITHUB_ENV
-          "LOOM_CC=$llvmRoot\bin\clang.exe" >> $env:GITHUB_ENV
-          "$llvmRoot\bin" >> $env:GITHUB_PATH
-          $version = (& "$llvmRoot\bin\llvm-config.exe" --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $version -ne "19.1.7") {
-            throw "unexpected llvm-config version: $version"
-          }
-          $targetsBuilt = (& "$llvmRoot\bin\llvm-config.exe" --targets-built).Trim() -split '\s+' | Sort-Object -Unique
-          $expectedTargets = @("AArch64", "ARM", "X86")
-          if ($LASTEXITCODE -ne 0 -or @(Compare-Object -ReferenceObject $expectedTargets -DifferenceObject $targetsBuilt).Count -ne 0) {
-            throw "unexpected LLVM target-library set: $($targetsBuilt -join ' ')"
-          }
-          & "$llvmRoot\bin\clang.exe" --version
-          $llvmLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-static --libfiles).Trim()
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($llvmLibraries) -or -not (Test-Path "$llvmRoot\include\llvm-c\Core.h" -PathType Leaf)) {
-            throw "LLVM development libraries are incomplete"
-          }
-          foreach ($library in ($llvmLibraries -split '\s+')) {
-            if (-not (Test-Path $library -PathType Leaf)) {
-              throw "llvm-config reported a missing library: $library"
-            }
-          }
-          $systemLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-static --system-libs).Trim()
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($systemLibraries)) {
-            throw "llvm-config did not report its static system-library closure"
-          }
-          $systemLibraryNames = $systemLibraries -split '\s+'
-          if ($systemLibraryNames -notcontains "libxml2s.lib") {
-            throw "the pinned LLVM 19.1.7 package no longer reports its expected libxml2s.lib dependency"
-          }
-          $libxmlLibrary = Join-Path $llvmRoot "lib\libxml2s.lib"
-          if (-not (Test-Path $libxmlLibrary -PathType Leaf)) {
-            # LLVM's 19.1.7 Windows release recipe links this exact static
-            # libxml2 build, but the published development archive omits it.
-            $libxmlArchive = Join-Path $env:RUNNER_TEMP "libxml2-v2.9.12.tar.gz"
-            $libxmlUrl = "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.9.12/libxml2-v2.9.12.tar.gz"
-            if ((Test-Path $libxmlArchive -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 $libxmlArchive).Hash.ToLowerInvariant() -ne $env:LIBXML_ARCHIVE_SHA256) {
-              Remove-Item -Force $libxmlArchive
-            }
-            if (-not (Test-Path $libxmlArchive -PathType Leaf)) {
-              & curl.exe --fail --location --retry 5 --retry-delay 5 --retry-all-errors --continue-at - --output $libxmlArchive $libxmlUrl
-              if ($LASTEXITCODE -ne 0) {
-                throw "could not download the libxml2 source used by LLVM 19.1.7"
-              }
-            }
-            $libxmlActual = (Get-FileHash -Algorithm SHA256 $libxmlArchive).Hash.ToLowerInvariant()
-            if ($libxmlActual -ne $env:LIBXML_ARCHIVE_SHA256) {
-              throw "libxml2 source archive SHA-256 mismatch: $libxmlActual"
-            }
-
-            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $vsRoot = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vsRoot)) {
-              throw "could not locate the Visual C++ x86-64 toolchain"
-            }
-            $vsDevCmd = Join-Path $vsRoot "Common7\Tools\VsDevCmd.bat"
-            $devCommand = "`"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
-            $developerEnvironment = & cmd.exe /d /s /c $devCommand
-            if ($LASTEXITCODE -ne 0) {
-              throw "could not initialize the Visual C++ x86-64 toolchain"
-            }
-            foreach ($entry in $developerEnvironment) {
-              $separator = $entry.IndexOf('=')
-              if ($separator -gt 0) {
-                Set-Item -Path "Env:$($entry.Substring(0, $separator))" -Value $entry.Substring($separator + 1)
-              }
-            }
-
-            $libxmlRoot = Join-Path $env:RUNNER_TEMP "loom-libxml-2.9.12-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-            $libxmlSource = Join-Path $libxmlRoot "source"
-            $libxmlBuild = Join-Path $libxmlRoot "build"
-            $libxmlInstall = Join-Path $libxmlRoot "install"
-            New-Item -ItemType Directory -Force -Path $libxmlSource | Out-Null
-            & tar.exe -xzf $libxmlArchive -C $libxmlSource --strip-components=1
-            if ($LASTEXITCODE -ne 0) {
-              throw "could not unpack the pinned libxml2 source archive"
-            }
-            $libxmlOptions = @(
-              "-S", $libxmlSource,
-              "-B", $libxmlBuild,
-              "-G", "Ninja",
-              "-DCMAKE_BUILD_TYPE=Release",
-              "-DCMAKE_INSTALL_PREFIX=$libxmlInstall",
-              "-DBUILD_SHARED_LIBS=OFF",
-              "-DLIBXML2_WITH_C14N=OFF",
-              "-DLIBXML2_WITH_CATALOG=OFF",
-              "-DLIBXML2_WITH_DEBUG=OFF",
-              "-DLIBXML2_WITH_DOCB=OFF",
-              "-DLIBXML2_WITH_FTP=OFF",
-              "-DLIBXML2_WITH_HTML=OFF",
-              "-DLIBXML2_WITH_HTTP=OFF",
-              "-DLIBXML2_WITH_ICONV=OFF",
-              "-DLIBXML2_WITH_ICU=OFF",
-              "-DLIBXML2_WITH_ISO8859X=OFF",
-              "-DLIBXML2_WITH_LEGACY=OFF",
-              "-DLIBXML2_WITH_LZMA=OFF",
-              "-DLIBXML2_WITH_MEM_DEBUG=OFF",
-              "-DLIBXML2_WITH_MODULES=OFF",
-              "-DLIBXML2_WITH_OUTPUT=ON",
-              "-DLIBXML2_WITH_PATTERN=OFF",
-              "-DLIBXML2_WITH_PROGRAMS=OFF",
-              "-DLIBXML2_WITH_PUSH=OFF",
-              "-DLIBXML2_WITH_PYTHON=OFF",
-              "-DLIBXML2_WITH_READER=OFF",
-              "-DLIBXML2_WITH_REGEXPS=OFF",
-              "-DLIBXML2_WITH_RUN_DEBUG=OFF",
-              "-DLIBXML2_WITH_SAX1=OFF",
-              "-DLIBXML2_WITH_SCHEMAS=OFF",
-              "-DLIBXML2_WITH_SCHEMATRON=OFF",
-              "-DLIBXML2_WITH_TESTS=OFF",
-              "-DLIBXML2_WITH_THREADS=ON",
-              "-DLIBXML2_WITH_THREAD_ALLOC=OFF",
-              "-DLIBXML2_WITH_TREE=ON",
-              "-DLIBXML2_WITH_VALID=OFF",
-              "-DLIBXML2_WITH_WRITER=OFF",
-              "-DLIBXML2_WITH_XINCLUDE=OFF",
-              "-DLIBXML2_WITH_XPATH=OFF",
-              "-DLIBXML2_WITH_XPTR=OFF",
-              "-DLIBXML2_WITH_ZLIB=OFF",
-              "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
-            )
-            & cmake.exe @libxmlOptions
-            if ($LASTEXITCODE -ne 0) {
-              throw "could not configure LLVM's pinned static libxml2 dependency"
-            }
-            & cmake.exe --build $libxmlBuild --target install --config Release --parallel 2
-            if ($LASTEXITCODE -ne 0) {
-              throw "could not build LLVM's pinned static libxml2 dependency"
-            }
-            $builtLibxml = Join-Path $libxmlInstall "lib\libxml2s.lib"
-            if (-not (Test-Path $builtLibxml -PathType Leaf)) {
-              throw "the pinned libxml2 build did not install libxml2s.lib"
-            }
-            Copy-Item -LiteralPath $builtLibxml -Destination $libxmlLibrary
-          }
-          if (-not (Test-Path $libxmlLibrary -PathType Leaf) -or (Get-Item $libxmlLibrary).Length -eq 0) {
-            throw "LLVM's static system-library closure is incomplete: libxml2s.lib"
-          }
+          & ./.github/scripts/bootstrap-windows-llvm.ps1 `
+            -CacheRoot $env:RUNNER_TEMP `
+            -InstallRoot $llvmRoot `
+            -EnvironmentFile $env:GITHUB_ENV `
+            -PathFile $env:GITHUB_PATH
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:

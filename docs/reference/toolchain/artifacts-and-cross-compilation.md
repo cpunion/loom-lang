@@ -113,18 +113,23 @@ interpreter never discover or load a native runtime bundle.
 
 ## Release artifacts
 
-The release workflow currently publishes archives for:
+The release workflow has verified archive paths for:
 
 - Linux x86-64;
 - macOS arm64.
+
+It also has a configured Windows Server 2025 x86-64 matrix entry that produces
+a `.zip` rather than a `.tar.gz`. That entry is not yet runner-verified release
+evidence and must not be treated as current artifact availability.
 
 Each archive includes `loomc`, `loom-lsp`, the project README, and a matching
 runtime bundle. It is accompanied by a SHA-256 file, and tagged releases also
 publish an aggregate `SHA256SUMS`.
 
-Windows is not currently a release-artifact platform. LLVM recognizing a
-Windows triple must not be represented as a tested Windows runtime or
-executable toolchain.
+Windows is not yet a verified release-artifact platform. A configured workflow
+entry, or LLVM recognizing a Windows triple, must not be represented as a
+tested Windows runtime or executable toolchain until the Windows archive gates
+have succeeded.
 
 For the complete distinction between compiler-layer CI, native runtime, cross
 target, and release support, see

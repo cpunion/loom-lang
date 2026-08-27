@@ -138,7 +138,9 @@ replace focused tests and is not a general benchmark.
 
 Linux runs the full workspace and all principal fixture gates. macOS runs the
 full workspace, standard-library differential tests, and the C3 dual-backend
-loop. A complete Windows native job is configured, but it is not verified
-platform or release evidence until a real Windows runner result is recorded.
-See [Implementation status](../project/implementation-status.md) before adding
-a platform claim.
+loop. Complete Windows CI and release jobs are configured, including a
+PowerShell argument-binding probe for their shared pinned LLVM bootstrap, but
+they are not verified platform or release evidence until real Windows runner
+and archive results are recorded. See
+[Implementation status](../project/implementation-status.md) before adding a
+platform claim.

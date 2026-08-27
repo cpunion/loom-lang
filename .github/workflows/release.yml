@@ -17,15 +17,31 @@ jobs:
         include:
           - runner: ubuntu-24.04
             platform: linux-x86_64
+            runtime_archive: target/release/libloom_runtime.a
+            compiler: target/release/loomc
+            language_server: target/release/loom-lsp
+            executable_suffix: ""
           - runner: macos-15
             platform: macos-arm64
+            runtime_archive: target/release/libloom_runtime.a
+            compiler: target/release/loomc
+            language_server: target/release/loom-lsp
+            executable_suffix: ""
+          - runner: windows-2025
+            platform: windows-x86_64
+            runtime_archive: target/release/loom_runtime.lib
+            compiler: target/release/loomc.exe
+            language_server: target/release/loom-lsp.exe
+            executable_suffix: .exe
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Select and validate release identity
         id: release
+        shell: bash
         env:
           RELEASE_EVENT: ${{ github.event_name }}
           RELEASE_RUN_ID: ${{ github.run_id }}
@@ -59,6 +75,7 @@ jobs:
           echo "name=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Install LLVM 19 on Linux
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
@@ -66,53 +83,126 @@ jobs:
           echo "LOOM_CC=clang-19" >> "$GITHUB_ENV"
       - name: Install and discover LLVM 19 on macOS
         if: runner.os == 'macOS'
+        shell: bash
         run: |
           brew install llvm@19
           llvm_prefix="$(brew --prefix llvm@19)"
           echo "LLVM_SYS_191_PREFIX=$llvm_prefix" >> "$GITHUB_ENV"
           echo "LOOM_CC=$llvm_prefix/bin/clang" >> "$GITHUB_ENV"
           echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
+      - name: Test Windows LLVM bootstrap argument binding
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/test-windows-llvm-bootstrap.ps1 `
+            -TemporaryRoot $env:RUNNER_TEMP
+      - name: Restore official LLVM 19.1.7 development archive
+        if: runner.os == 'Windows'
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
+            ${{ runner.temp }}/libxml2-v2.9.12.tar.gz
+          key: windows-llvm-19.1.7-b4557b4f012161f5-libxml-2.9.12-98bfa7a9a5e2a756
+      - name: Verify and unpack LLVM 19 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-19.1.7-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & ./.github/scripts/bootstrap-windows-llvm.ps1 `
+            -CacheRoot $env:RUNNER_TEMP `
+            -InstallRoot $llvmRoot `
+            -EnvironmentFile $env:GITHUB_ENV `
+            -PathFile $env:GITHUB_PATH
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build portable release runtime archive
-        run: CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked --release -p loom-runtime
+        shell: bash
+        env:
+          CARGO_ENCODED_RUSTFLAGS: -Ctarget-cpu=generic
+        run: cargo build --locked --release -p loom-runtime
       - name: Build release tools
+        shell: bash
         run: cargo build --locked --release -p loom-cli -p loom-lsp
       - name: Pack release runtime sidecar
+        shell: bash
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
+          RUNTIME_ARCHIVE: ${{ matrix.runtime_archive }}
+          RELEASE_COMPILER: ${{ matrix.compiler }}
         run: |
           runtime_bundle="$RUNNER_TEMP/loom-runtime-$RELEASE_PLATFORM-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/runtime"
-          target/release/loomc runtime pack \
-            --archive target/release/libloom_runtime.a \
+          "$RELEASE_COMPILER" runtime pack \
+            --archive "$RUNTIME_ARCHIVE" \
             --output "$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
-      - name: C3 dual-backend release gate
+      - name: Core release check/build/test/run smoke
+        shell: bash
+        env:
+          RELEASE_COMPILER: ${{ matrix.compiler }}
+          EXECUTABLE_SUFFIX: ${{ matrix.executable_suffix }}
         run: |
-          cargo run --locked --release -p loom-cli -- --no-cache check --target app examples/c3/application
-          cargo run --locked --release -p loom-cli -- --no-cache build --target app --output target/release-c3 examples/c3/application
-          cargo run --locked --release -p loom-cli -- --no-cache test --target unit examples/c3/application
-          cargo run --locked --release -p loom-cli -- --no-cache run --target app examples/c3/application
-          cargo run --locked --release -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
-          cargo run --locked --release -p loom-cli -- --backend interpreter --no-cache build --target app --output target/release-c3.loomi examples/c3/application
-          cargo run --locked --release -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
-          cargo run --locked --release -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
+          for version in core01 core02 core03; do
+            source="examples/$version"
+            native="target/release-$version"
+            interpreted="target/release-$version.loomi"
+            "$RELEASE_COMPILER" --no-cache check "$source"
+            "$RELEASE_COMPILER" --no-cache build --output "$native" "$source"
+            "$RELEASE_COMPILER" --no-cache test "$source"
+            "$RELEASE_COMPILER" --no-cache run "$source"
+            "$RELEASE_COMPILER" run --artifact "$native$EXECUTABLE_SUFFIX"
+            "$RELEASE_COMPILER" --backend interpreter --no-cache check "$source"
+            "$RELEASE_COMPILER" --backend interpreter --no-cache build --output "$interpreted" "$source"
+            "$RELEASE_COMPILER" --backend interpreter --no-cache test "$source"
+            "$RELEASE_COMPILER" --backend interpreter --no-cache run "$source"
+            "$RELEASE_COMPILER" --backend interpreter run --artifact "$interpreted"
+          done
+      - name: C3 dual-backend release gate
+        shell: bash
+        env:
+          RELEASE_COMPILER: ${{ matrix.compiler }}
+          EXECUTABLE_SUFFIX: ${{ matrix.executable_suffix }}
+        run: |
+          "$RELEASE_COMPILER" --no-cache check --target app examples/c3/application
+          "$RELEASE_COMPILER" --no-cache build --target app --output target/release-c3 examples/c3/application
+          "$RELEASE_COMPILER" --no-cache test --target unit examples/c3/application
+          "$RELEASE_COMPILER" --no-cache run --target app examples/c3/application
+          "$RELEASE_COMPILER" run --artifact "target/release-c3$EXECUTABLE_SUFFIX"
+          "$RELEASE_COMPILER" --backend interpreter --no-cache check --target app examples/c3/application
+          "$RELEASE_COMPILER" --backend interpreter --no-cache build --target app --output target/release-c3.loomi examples/c3/application
+          "$RELEASE_COMPILER" --backend interpreter --no-cache test --target unit examples/c3/application
+          "$RELEASE_COMPILER" --backend interpreter --no-cache run --target app examples/c3/application
+          "$RELEASE_COMPILER" --backend interpreter run --artifact target/release-c3.loomi
       - name: Portable package artifact release gate
+        shell: bash
         run: cargo test --locked --release -p loom-cli --test cli library_targets_build_portable_validated_artifacts
       - name: Standard library differential release gate
+        shell: bash
         run: |
+          cargo test --locked --release -p loom-codegen-llvm --test standard_values
           cargo test --locked --release -p loom-codegen-llvm --test structured_standard_values
           cargo test --locked --release -p loom-codegen-llvm --test runtime_bundle
       - name: Controlled quality release gate
+        shell: bash
         run: cargo run --locked --release -p loom-quality > target/c3-evidence.json
       - name: Verify release tools
+        shell: bash
+        env:
+          RELEASE_COMPILER: ${{ matrix.compiler }}
+          RELEASE_LANGUAGE_SERVER: ${{ matrix.language_server }}
         run: |
-          target/release/loomc --help
-          target/release/loom-lsp --help || test "$?" -eq 2
-      - name: Archive and checksum
+          "$RELEASE_COMPILER" --help
+          set +e
+          "$RELEASE_LANGUAGE_SERVER" --help
+          lsp_status="$?"
+          set -e
+          test "$lsp_status" -eq 2
+      - name: Archive and checksum Unix release
+        if: runner.os != 'Windows'
+        shell: bash
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_NAME: ${{ steps.release.outputs.name }}
@@ -132,6 +222,42 @@ jobs:
           target/release-bundle-smoke
           tar -czf "$archive" -C "$staging" .
           shasum -a 256 "$archive" > "$archive.sha256"
+      - name: Archive and checksum Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_NAME: ${{ steps.release.outputs.name }}
+        run: |
+          $archive = "loom-lang-$env:RELEASE_NAME-$env:RELEASE_PLATFORM.zip"
+          $staging = Join-Path $env:RUNNER_TEMP "loom-release-$env:RELEASE_PLATFORM-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item -LiteralPath target/release/loomc.exe -Destination $staging
+          Copy-Item -LiteralPath target/release/loom-lsp.exe -Destination $staging
+          foreach ($document in @(
+            "README.md", "LICENSE", "CHANGELOG.md", "ROADMAP.md",
+            "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
+            "GOVERNANCE.md", "SUPPORT.md"
+          )) {
+            Copy-Item -LiteralPath $document -Destination $staging
+          }
+          Copy-Item -LiteralPath docs -Destination (Join-Path $staging "docs") -Recurse
+          Copy-Item -LiteralPath $env:LOOM_RUNTIME_BUNDLE -Destination (Join-Path $staging "runtime") -Recurse
+          Remove-Item Env:LOOM_RUNTIME_BUNDLE
+          & "$staging/loomc.exe" --no-cache build --output target/release-bundle-smoke examples/core01
+          if ($LASTEXITCODE -ne 0) {
+            throw "the staged Windows compiler could not discover its adjacent runtime bundle"
+          }
+          & target/release-bundle-smoke.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "the staged Windows native smoke executable failed"
+          }
+          Compress-Archive `
+            -Path (Join-Path $staging "*") `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n", [System.Text.Encoding]::ASCII)
       - name: Upload release archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -139,6 +265,8 @@ jobs:
           path: |
             loom-lang-*.tar.gz
             loom-lang-*.tar.gz.sha256
+            loom-lang-*.zip
+            loom-lang-*.zip.sha256
           if-no-files-found: error
 
   publish:
@@ -155,13 +283,39 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Verify and aggregate checksums
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          cd dist
-          for checksum in loom-lang-*.tar.gz.sha256; do
-            shasum -a 256 --check "$checksum"
+          expected_archives=(
+            "loom-lang-$RELEASE_TAG-linux-x86_64.tar.gz"
+            "loom-lang-$RELEASE_TAG-macos-arm64.tar.gz"
+            "loom-lang-$RELEASE_TAG-windows-x86_64.zip"
+          )
+          expected_files=()
+          for archive in "${expected_archives[@]}"; do
+            expected_files+=("$archive" "$archive.sha256")
+            test -f "dist/$archive"
+            test -f "dist/$archive.sha256"
+            (cd dist && shasum -a 256 --check "$archive.sha256")
           done
-          LC_ALL=C sort loom-lang-*.tar.gz.sha256 > SHA256SUMS
+          mapfile -t actual_files < <(
+            find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+          )
+          mapfile -t expected_files < <(
+            printf '%s\n' "${expected_files[@]}" | LC_ALL=C sort
+          )
+          if ! diff -u \
+            <(printf '%s\n' "${expected_files[@]}") \
+            <(printf '%s\n' "${actual_files[@]}"); then
+            echo "Downloaded release artifact set is not exact" >&2
+            exit 1
+          fi
+          for archive in "${expected_archives[@]}"; do
+            cat "dist/$archive.sha256"
+          done | LC_ALL=C sort > dist/SHA256SUMS
       - name: Publish immutable GitHub Release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -171,12 +325,17 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
           fi
 
+          assets=(
+            "dist/loom-lang-$RELEASE_TAG-linux-x86_64.tar.gz"
+            "dist/loom-lang-$RELEASE_TAG-linux-x86_64.tar.gz.sha256"
+            "dist/loom-lang-$RELEASE_TAG-macos-arm64.tar.gz"
+            "dist/loom-lang-$RELEASE_TAG-macos-arm64.tar.gz.sha256"
+            "dist/loom-lang-$RELEASE_TAG-windows-x86_64.zip"
+            "dist/loom-lang-$RELEASE_TAG-windows-x86_64.zip.sha256"
+            "dist/SHA256SUMS"
+          )
           existing_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
-          for asset in \
-            dist/loom-lang-*.tar.gz \
-            dist/loom-lang-*.tar.gz.sha256 \
-            dist/SHA256SUMS
-          do
+          for asset in "${assets[@]}"; do
             asset_name="${asset##*/}"
             if printf '%s\n' "$existing_assets" | grep -Fqx "$asset_name"; then
               echo "Release asset $asset_name already exists; refusing to replace it" >&2
@@ -184,7 +343,4 @@ jobs:
             fi
           done
 
-          gh release upload "$RELEASE_TAG" \
-            dist/loom-lang-*.tar.gz \
-            dist/loom-lang-*.tar.gz.sha256 \
-            dist/SHA256SUMS
+          gh release upload "$RELEASE_TAG" "${assets[@]}"
