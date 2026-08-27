@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 6")?;
+    writeln!(output, "lcir 7")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -168,6 +168,10 @@ pub fn write_program_with_options(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the canonical instruction encoder keeps every opcode spelling in one exhaustive match"
+)]
 fn write_instruction(
     output: &mut impl Write,
     function: &Function,
@@ -189,6 +193,23 @@ fn write_instruction(
     }
     match instruction.kind() {
         InstructionKind::Constant(constant) => write_constant(output, *constant),
+        InstructionKind::TextLiteral { utf8 } => {
+            output.write_str("text.literal ")?;
+            write_quoted_string(output, utf8)
+        }
+        InstructionKind::TextLength { text } => write!(output, "text.length %{text}"),
+        InstructionKind::TextContains { text, needle } => {
+            write!(output, "text.contains %{text}, %{needle}")
+        }
+        InstructionKind::TextCompare {
+            predicate,
+            left,
+            right,
+        } => write!(
+            output,
+            "text.compare.{} %{left}, %{right}",
+            bool_predicate_name(*predicate)
+        ),
         InstructionKind::ProductConstruct { fields } => {
             write!(output, "product.construct (")?;
             write_arguments(output, fields)?;
@@ -313,7 +334,11 @@ fn write_terminator(
                 .and_then(|value_type| program.representations().repr(value_type.repr()))
                 .and_then(|repr| match repr {
                     Repr::Sum(sum) => program.representations().sum(*sum),
-                    Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::Product(_) => None,
+                    Repr::Uninhabited
+                    | Repr::Zst
+                    | Repr::Scalar(_)
+                    | Repr::ImmortalText
+                    | Repr::Product(_) => None,
                 })
                 .map(crate::SumRepr::variants);
             for (index, case) in cases.iter().enumerate() {
@@ -498,6 +523,7 @@ fn write_repr(
         Repr::Scalar(ScalarRepr::I1) => output.write_str("i1"),
         Repr::Scalar(ScalarRepr::I64) => output.write_str("i64"),
         Repr::Scalar(ScalarRepr::F64) => output.write_str("f64"),
+        Repr::ImmortalText => output.write_str("immortal_text_ptr"),
         Repr::Product(product) => {
             write!(output, "product {product}(")?;
             let fields = representations

@@ -222,6 +222,7 @@ struct Validator<'a> {
     program: &'a Program,
     fault_states: Vec<Vec<FaultStateSet>>,
     exact_effects: Vec<Effects>,
+    text_literal_bytes: usize,
     errors: Vec<ValidationError>,
 }
 
@@ -233,6 +234,7 @@ impl<'a> Validator<'a> {
             program,
             fault_states,
             exact_effects,
+            text_literal_bytes: 0,
             errors: Vec::new(),
         }
     }
@@ -428,7 +430,7 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
-                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
+                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText => {}
             }
         }
         let mut product_value_uses = vec![0_usize; product_count];
@@ -563,7 +565,27 @@ impl<'a> Validator<'a> {
                         *uses = uses.saturating_add(1);
                     }
                 }
-                Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {}
+                Some(Repr::ImmortalText) => {
+                    if value_type.semantic() != &Type::Text
+                        || value_type.kind() != ValueTypeKind::Direct
+                        || representations.target().pointer_bits() != 64
+                    {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}].immortal_text"),
+                            "immortal Text must be the direct Text semantic type on a 64-bit target",
+                        );
+                    }
+                }
+                Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
+                    if value_type.semantic() == &Type::Text {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}]"),
+                            "Text semantic values must use the immortal Text representation in this LCIR slice",
+                        );
+                    }
+                }
             }
         }
 
@@ -584,6 +606,7 @@ impl<'a> Validator<'a> {
                     Repr::Uninhabited
                     | Repr::Zst
                     | Repr::Scalar(_)
+                    | Repr::ImmortalText
                     | Repr::Product(_)
                     | Repr::Sum(_) => None,
                 })
@@ -790,7 +813,11 @@ impl<'a> Validator<'a> {
                             |nodes, variant| nodes.checked_add(variant.fields().len()),
                         )
                     }),
-                    (None, Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None) => None,
+                    (
+                        None,
+                        Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText)
+                        | None,
+                    ) => None,
                 };
                 let Some(structural_cost) = structural_cost else {
                     continue;
@@ -845,7 +872,8 @@ impl<'a> Validator<'a> {
                             );
                         }
                     }
-                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {}
+                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText)
+                    | None => {}
                 }
             }
             if exceeded {
@@ -1292,6 +1320,7 @@ impl<'a> Validator<'a> {
         let boolean = self.scalar_type(&Type::Bool);
         let integer = self.scalar_type(&Type::Int);
         let float = self.scalar_type(&Type::Float);
+        let text = self.scalar_type(&Type::Text);
         match &instruction.kind {
             InstructionKind::Constant(constant) => {
                 let expected = match constant {
@@ -1301,6 +1330,106 @@ impl<'a> Validator<'a> {
                     Constant::FloatBits(_) => float,
                 };
                 self.require_results(function, instruction, &[expected], &path);
+            }
+            InstructionKind::TextLiteral { utf8 } => {
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "Text literal requires the canonical immortal Text representation",
+                    );
+                }
+                self.require_results(function, instruction, &[text], &path);
+                if utf8.len() > crate::TEXT_LITERAL_MAX_BYTES {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.utf8"),
+                        format!(
+                            "Text literal has {} UTF-8 bytes, exceeding the {}-byte per-literal budget",
+                            utf8.len(),
+                            crate::TEXT_LITERAL_MAX_BYTES
+                        ),
+                    );
+                }
+                self.text_literal_bytes = self.text_literal_bytes.saturating_add(utf8.len());
+                if self.text_literal_bytes > crate::TEXT_LITERAL_MAX_TOTAL_BYTES {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.utf8"),
+                        format!(
+                            "Text literals exceed the {}-byte artifact budget",
+                            crate::TEXT_LITERAL_MAX_TOTAL_BYTES
+                        ),
+                    );
+                }
+            }
+            InstructionKind::TextLength { text: value } => {
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.text"),
+                        "Text length requires the canonical immortal Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.require_results(function, instruction, &[integer], &path);
+            }
+            InstructionKind::TextContains {
+                text: value,
+                needle,
+            } => {
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.text"),
+                        "Text containment requires the canonical immortal Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *needle,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.needle"),
+                );
+                self.require_results(function, instruction, &[boolean], &path);
+            }
+            InstructionKind::TextCompare { left, right, .. } => {
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.left"),
+                        "Text comparison requires the canonical immortal Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *left,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.left"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *right,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.right"),
+                );
+                self.require_results(function, instruction, &[boolean], &path);
             }
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {

@@ -33,6 +33,7 @@ mod match_plan;
 mod place_plan;
 mod repr;
 mod source_graph;
+mod text_plan;
 mod validate;
 
 pub use artifact::{
@@ -71,6 +72,7 @@ pub use repr::{
 pub use source_graph::{
     GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
 };
+pub use text_plan::{TEXT_LITERAL_MAX_BYTES, TEXT_LITERAL_MAX_TOTAL_BYTES};
 pub use validate::{
     CheckedProgram, ValidationCode, ValidationError, ValidationErrors, check_program,
     validate_program,

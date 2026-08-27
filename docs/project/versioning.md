@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `6` |
-| LCIR artifact identity | schema `7` |
-| LCIR native-object domain | `loom-lcir-native-object-v3` |
+| LCIR textual dump | version `7` |
+| LCIR artifact identity | schema `8` |
+| LCIR native-object domain | `loom-lcir-native-object-v4` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v8` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v9` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `8` |
 | Coroutine/Task ABI component | `2` |
@@ -29,6 +29,13 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
+
+LCIR's literal-only direct `Text` representation adds a new physical pointer
+ABI and new IR operations. It therefore advances the dump, artifact identity,
+LCIR native-object, and CLI object-cache domains shown above. It reuses the
+existing native text layout descriptor and containment-helper symbols, so the
+native runtime ABI identity and its component versions do not advance for this
+compiler-only coverage change.
 
 ## Toolchain releases
 

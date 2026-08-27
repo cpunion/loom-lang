@@ -7,7 +7,7 @@ use loom_mir::Type;
 use crate::ids::ProgramBrand;
 use crate::{
     CheckedProgram, Function, InstanceId, InstructionKind, Program, RepresentationPlan,
-    TerminatorKind,
+    TerminatorKind, ValueDefinition, ValueTypeId,
 };
 
 /// Unchecked LCIR roots requested for one complete native artifact.
@@ -91,6 +91,7 @@ pub enum ArtifactValidationCode {
     DuplicateTestRoot,
     RootSignature,
     UnreachableFunction,
+    ImmortalTextProvenance,
 }
 
 impl ArtifactValidationCode {
@@ -103,6 +104,7 @@ impl ArtifactValidationCode {
             Self::DuplicateTestRoot => "LcirArtifactDuplicateTestRoot",
             Self::RootSignature => "LcirArtifactRootSignature",
             Self::UnreachableFunction => "LcirArtifactUnreachableFunction",
+            Self::ImmortalTextProvenance => "LcirArtifactImmortalTextProvenance",
         }
     }
 }
@@ -292,8 +294,10 @@ impl CheckedProgram {
 ///
 /// The request variant makes the harness kind structurally unambiguous. This
 /// validator checks branded identity, existence, per-kind signature rules,
-/// uniqueness of test roots, and that every function belongs to the exact
-/// callable closure. An empty test set is valid only with an empty program.
+/// uniqueness of test roots, that every function belongs to the exact callable
+/// closure, and that every immortal Text value has only literal or closed
+/// internal typed-flow provenance. An empty test set is valid only with an
+/// empty program.
 ///
 /// # Errors
 ///
@@ -422,6 +426,9 @@ impl ArtifactValidator<'_> {
         }
         if self.errors.is_empty() {
             self.validate_closed_graph(&root_ids);
+        }
+        if self.errors.is_empty() {
+            self.validate_immortal_text_provenance();
         }
     }
 
@@ -559,12 +566,273 @@ impl ArtifactValidator<'_> {
         }
     }
 
+    /// Rechecks the executable half of the immortal-Text proof at the final
+    /// artifact boundary. Every Text instruction result must be a literal or
+    /// an internal direct-call result, and every Text block parameter must be
+    /// supplied by an internal call or a checked intra-function edge. Together
+    /// with zero-input roots and exact call-graph closure, this excludes an
+    /// external, undefined, or moving pointer while allowing closed recursive
+    /// flows that never materialize a value.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the provenance proof exhaustively mirrors every checked LCIR edge form in one audit boundary"
+    )]
+    fn validate_immortal_text_provenance(&mut self) {
+        let program = self.program.as_program();
+        let Some(text) = program.representations().type_id(&Type::Text) else {
+            return;
+        };
+        let mut supplied = program
+            .functions()
+            .iter()
+            .map(|function| vec![false; function.values().len()])
+            .collect::<Vec<_>>();
+
+        for function in program.functions() {
+            for instruction in function.instructions() {
+                if let InstructionKind::DirectCall { callee, arguments } = instruction.kind() {
+                    mark_text_call_inputs(program, text, &mut supplied, *callee, arguments);
+                }
+            }
+            for block in function.blocks() {
+                let Some(terminator) = block.terminator() else {
+                    continue;
+                };
+                match terminator.kind() {
+                    TerminatorKind::Jump(target) => {
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            target.block,
+                            &target.arguments,
+                            0,
+                        );
+                    }
+                    TerminatorKind::Branch {
+                        then_target,
+                        else_target,
+                        ..
+                    } => {
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            then_target.block,
+                            &then_target.arguments,
+                            0,
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            else_target.block,
+                            &else_target.arguments,
+                            0,
+                        );
+                    }
+                    TerminatorKind::SumSwitch { cases, .. } => {
+                        for case in cases {
+                            let implicit = function
+                                .block(case.block)
+                                .map(|target| {
+                                    target.params().len().saturating_sub(case.arguments.len())
+                                })
+                                .unwrap_or_default();
+                            mark_text_target(
+                                function,
+                                text,
+                                &mut supplied,
+                                case.block,
+                                &case.arguments,
+                                implicit,
+                            );
+                        }
+                    }
+                    TerminatorKind::CheckedIntNegate { normal, fault, .. }
+                    | TerminatorKind::CheckedIntBinary { normal, fault, .. } => {
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            normal.block,
+                            &normal.arguments,
+                            1,
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            fault.block,
+                            &fault.arguments,
+                            0,
+                        );
+                    }
+                    TerminatorKind::Invoke {
+                        callee,
+                        arguments,
+                        normal,
+                        unwind,
+                    } => {
+                        mark_text_call_inputs(program, text, &mut supplied, *callee, arguments);
+                        let implicit_writebacks = program
+                            .function(*callee)
+                            .map(|callee| callee.signature().inout_params().len())
+                            .unwrap_or_default();
+                        if program
+                            .function(*callee)
+                            .is_some_and(|callee| callee.signature().result() == text)
+                            && let Some(parameter) = function
+                                .block(normal.block)
+                                .and_then(|block| block.params().first())
+                        {
+                            mark_text_value(&mut supplied, *parameter);
+                        }
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            normal.block,
+                            &normal.arguments,
+                            1_usize.saturating_add(implicit_writebacks),
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            unwind.block,
+                            &unwind.arguments,
+                            implicit_writebacks,
+                        );
+                    }
+                    TerminatorKind::Assert { success, fault, .. } => {
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            success.block,
+                            &success.arguments,
+                            0,
+                        );
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            fault.block,
+                            &fault.arguments,
+                            0,
+                        );
+                    }
+                    TerminatorKind::Return(_)
+                    | TerminatorKind::Fault { .. }
+                    | TerminatorKind::ResumeFault => {}
+                }
+            }
+        }
+
+        for (function_index, function) in program.functions().iter().enumerate() {
+            for value in function.values().iter().filter(|value| value.ty() == text) {
+                let valid = match value.definition() {
+                    ValueDefinition::BlockParameter { .. } => supplied
+                        .get(function_index)
+                        .and_then(|values| values.get(value.id().index()))
+                        .copied()
+                        .unwrap_or(false),
+                    ValueDefinition::InstructionResult { instruction, index } => function
+                        .instruction(instruction)
+                        .is_some_and(|instruction| match instruction.kind() {
+                            InstructionKind::TextLiteral { .. } => index == 0,
+                            InstructionKind::DirectCall { callee, .. } => {
+                                index == 0
+                                    && program
+                                        .function(*callee)
+                                        .is_some_and(|callee| callee.signature().result() == text)
+                            }
+                            _ => false,
+                        }),
+                };
+                if !valid {
+                    self.error(
+                        ArtifactValidationCode::ImmortalTextProvenance,
+                        format!(
+                            "program.function[{function_index}].value[{}]",
+                            value.id().index()
+                        ),
+                        "immortal Text value is not produced by a literal or supplied through closed internal typed flow".to_owned(),
+                    );
+                }
+            }
+        }
+    }
+
     fn error(&mut self, code: ArtifactValidationCode, path: String, message: String) {
         self.errors.push(ArtifactValidationError {
             code,
             path,
             message,
         });
+    }
+}
+
+fn mark_text_value(supplied: &mut [Vec<bool>], value: crate::ValueId) {
+    if let Some(function) = supplied.get_mut(value.owner().index())
+        && let Some(slot) = function.get_mut(value.index())
+    {
+        *slot = true;
+    }
+}
+
+fn mark_text_call_inputs(
+    program: &Program,
+    text: ValueTypeId,
+    supplied: &mut [Vec<bool>],
+    callee: InstanceId,
+    arguments: &[crate::ValueId],
+) {
+    let Some(callee) = program.function(callee) else {
+        return;
+    };
+    let Some(entry) = callee.entry().and_then(|entry| callee.block(entry)) else {
+        return;
+    };
+    for ((parameter_type, parameter), _argument) in callee
+        .signature()
+        .params()
+        .iter()
+        .copied()
+        .zip(entry.params().iter().copied())
+        .zip(arguments)
+    {
+        if parameter_type == text {
+            mark_text_value(supplied, parameter);
+        }
+    }
+}
+
+fn mark_text_target(
+    function: &Function,
+    text: ValueTypeId,
+    supplied: &mut [Vec<bool>],
+    block: crate::BlockId,
+    arguments: &[crate::ValueId],
+    implicit: usize,
+) {
+    let Some(target) = function.block(block) else {
+        return;
+    };
+    for (parameter, _argument) in target
+        .params()
+        .iter()
+        .copied()
+        .skip(implicit)
+        .zip(arguments)
+    {
+        if function
+            .value(parameter)
+            .is_some_and(|value| value.ty() == text)
+        {
+            mark_text_value(supplied, parameter);
+        }
     }
 }
 

@@ -23,6 +23,15 @@ instances across all roots. Generic declarations are not roots by themselves.
 The typed LLVM emitter therefore declares only concrete signatures required by
 the selected artifact; it never emits a universal generic body.
 
+This exact closure also proves the narrow direct `Text` provenance rule. Run
+and test roots accept no arguments, all LCIR source callables have internal
+linkage, and `TextLiteral` is the only admitted producer. A text value passed
+through locals, block parameters, direct calls, returns, or a concrete generic
+instance must therefore originate in an immortal literal in the same artifact.
+Any dynamic or allocating producer, text nested in an aggregate, or unsupported
+text operation changes the complete artifact to the legacy route before LCIR
+construction.
+
 ## Roots
 
 - A binary build/run/debug has the selected exported function as its root.

@@ -613,6 +613,122 @@ pub fn main() Unit {
 }
 
 #[test]
+fn pure_immortal_text_operations_need_no_active_runtime_gc_or_executor() {
+    let program = compile_source(
+        r#"module lcir_text_pure
+
+fn inspect(value Text) Bool {
+    value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
+}
+
+pub fn main() Unit {
+    discard inspect("hello界")
+    Unit
+}
+"#,
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native = emit_and_run_lcir(&artifact, "source-pure-immortal-text");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(
+        native
+            .ir
+            .contains("declare i32 @loom_runtime_text_contains(ptr, i64, ptr, i64)"),
+        "{}",
+        native.ir
+    );
+    assert!(native.ir.contains("@loom_layout_text_v1 = external global"));
+    assert!(
+        !native.ir.contains("loom_runtime_create_v1"),
+        "{}",
+        native.ir
+    );
+    assert!(
+        !native.ir.contains("loom_runtime_activate_v1"),
+        "{}",
+        native.ir
+    );
+    assert_no_legacy_surface(&native.ir);
+}
+
+#[test]
+fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets() {
+    let source = include_str!("../../../fixtures/lcir-text/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for expected in [
+        "immortal_text_ptr",
+        "types=[Text] witnesses=[]",
+        "text.literal \"hello界\"",
+        "text.length",
+        "text.contains",
+        "text.compare.equal",
+        "text.compare.not_equal",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-immortal-text");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-immortal-text");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(
+        native
+            .ir
+            .contains("declare i32 @loom_runtime_text_contains(ptr, i64, ptr, i64)"),
+        "{}",
+        native.ir
+    );
+    assert!(native.ir.contains("@loom_layout_text_v1 = external global"));
+    assert!(native.ir.contains("text.compare.same_length"));
+    assert!(native.ir.contains("define internal ptr @loom.lcir.fn"));
+    assert_no_legacy_surface(&native.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create cross-target Text directory");
+        let object = directory.path().join("text.o");
+        let ir_path = directory.path().join("text.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit Text object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read cross-target Text IR");
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("declare i32 @loom_runtime_text_contains(ptr, i64, ptr, i64)"),
+            "{ir}"
+        );
+        assert!(ir.contains("define internal ptr @loom.lcir.fn"), "{ir}");
+        assert_no_legacy_surface(&ir);
+    }
+}
+
+#[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
     let program = compile_source(source);

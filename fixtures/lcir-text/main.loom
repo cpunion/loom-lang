@@ -1,0 +1,28 @@
+module lcir_text
+
+fn identity[T](value T) T { value }
+
+fn score(value Text) Int {
+    if value.length() == 6 && value.contains("界") && value == "hello界" && value != "other" {
+        42
+    } else {
+        0
+    }
+}
+
+fn verify() Unit {
+    if score(identity("hello界")) == 42 {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn immortalText() Unit {
+    verify()
+}

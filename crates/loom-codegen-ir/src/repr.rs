@@ -69,9 +69,10 @@ pub enum ScalarRepr {
 
 /// The canonical physical representation of one concrete Loom value type.
 ///
-/// This initial vocabulary is intentionally small. Managed, list,
-/// dynamic-witness, and task representations will be added only alongside
-/// their complete lowering and validation rules.
+/// This vocabulary grows only alongside complete lowering and validation
+/// rules. `ImmortalText` is deliberately narrower than a general managed
+/// reference: admitted values can originate only in compiler-emitted literal
+/// objects, so no moving-GC root is required by this representation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Repr {
     /// Control-flow vocabulary for semantic `Never`. The direct foundation
@@ -80,6 +81,9 @@ pub enum Repr {
     Uninhabited,
     Zst,
     Scalar(ScalarRepr),
+    /// One opaque pointer to a process-lifetime Text object emitted by the
+    /// compiler. It is not the representation of dynamically allocated Text.
+    ImmortalText,
     /// An immutable register aggregate whose ordered fields are independently
     /// typed LCIR values. Closed products may contain other products, but
     /// validation rejects missing, uninhabited, or cyclic field graphs.
@@ -394,6 +398,11 @@ impl RepresentationPlan {
             .iter()
             .map(|field| self.type_id(field))
             .collect::<Option<Vec<_>>>()?;
+        if fields.iter().any(|field| {
+            self.value_type(*field).and_then(|ty| self.repr(ty.repr())) == Some(&Repr::ImmortalText)
+        }) {
+            return None;
+        }
         let product = ProductReprId::from_index(self.brand, self.products.len())?;
         let repr = ReprId::from_index(self.brand, self.reprs.len())?;
         let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
@@ -425,6 +434,26 @@ impl RepresentationPlan {
         self.add_product(semantic, fields, ValueTypeKind::Direct)
     }
 
+    pub(crate) fn add_immortal_text(&mut self) -> Option<ValueTypeId> {
+        if self.target.pointer_bits() != 64 || self.type_id(&Type::Text).is_some() {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::ImmortalText);
+        self.types.push(ValueType {
+            semantic: Type::Text,
+            repr,
+            kind: ValueTypeKind::Direct,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: Type::Text,
+            value_type: ty,
+        });
+        self.canonical_types.insert(Type::Text, ty);
+        Some(ty)
+    }
+
     pub(crate) fn add_invariant_record(
         &mut self,
         semantic: Type,
@@ -452,7 +481,10 @@ impl RepresentationPlan {
         }
         let base = self.type_id(base)?;
         let repr = self.value_type(base)?.repr;
-        if matches!(self.repr(repr), Some(Repr::Uninhabited)) {
+        if matches!(
+            self.repr(repr),
+            Some(Repr::Uninhabited | Repr::ImmortalText)
+        ) {
             return None;
         }
         let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
@@ -490,6 +522,14 @@ impl RepresentationPlan {
                     })
             })
             .collect::<Option<Vec<_>>>()?;
+        if variants.iter().any(|variant| {
+            variant.fields.iter().any(|field| {
+                self.value_type(*field).and_then(|ty| self.repr(ty.repr()))
+                    == Some(&Repr::ImmortalText)
+            })
+        }) {
+            return None;
+        }
         let sum = SumReprId::from_index(self.brand, self.sums.len())?;
         let repr = ReprId::from_index(self.brand, self.reprs.len())?;
         let ty = ValueTypeId::from_index(self.brand, self.types.len())?;

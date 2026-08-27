@@ -65,6 +65,13 @@ witness instances use a separate non-moving arena because generated proof
 arguments can hold their addresses across a safepoint; unreachable instances
 are marked and swept.
 
+The typed LCIR literal-text slice is outside the managed heap. Its immutable
+compiler-emitted `TextObject` globals live for the process lifetime, so their
+one-pointer values need neither a shadow-stack entry nor relocation. This is
+not a general exemption for `Text`: allocation, dynamic production, text in an
+aggregate, or any other moving text path selects complete legacy lowering
+until a typed shadow-root ABI can publish direct managed pointers precisely.
+
 ## Source semantics
 
 GC must not change:
