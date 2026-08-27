@@ -1,0 +1,180 @@
+module lcir_typed_task_outcomes
+
+async fn completedText(label Text) Text {
+    label.concat(" completed")
+}
+
+async fn faultedText(label Text) Text {
+    let length = label.length()
+    assert length == 0
+    label
+}
+
+async fn slowManagedLoser(marker Int) Text {
+    defer {
+        assert marker == 73
+        Unit
+    }
+    Task.sleep(100).await
+    "slow".concat(" loser")
+}
+
+async fn fastManagedWinner() Text {
+    "fast".concat(" winner")
+}
+
+async fn exerciseSettled() Unit {
+    let firstFailure, completed, secondFailure = Task.settled(
+    faultedText("first"),
+    completedText("middle"),
+    faultedText("second")
+    ).await
+
+    let firstCode, firstMessage = match firstFailure {
+        Completed(_) => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+        Faulted(fault) => (fault.code(), fault.message())
+        Cancelled => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+    }
+    let completedValue = match completed {
+        Completed(value) => value
+        Faulted(_) => {
+            assert false
+            "unreachable"
+        }
+        Cancelled => {
+            assert false
+            "unreachable"
+        }
+    }
+    let secondCode, secondMessage = match secondFailure {
+        Completed(_) => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+        Faulted(fault) => (fault.code(), fault.message())
+        Cancelled => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+    }
+
+    assert completedValue == "middle completed"
+    assert secondCode == "AssertionFault"
+    assert secondMessage == "assertion was not satisfied"
+
+    let laterFailure, laterCompleted = Task.settled(
+    faultedText("later"),
+    completedText("later")
+    ).await
+    match laterFailure {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match laterCompleted {
+        Completed(value) => {
+            assert value == "later completed"
+            Unit
+        }
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+
+    // These managed Text leaves came from the first captured fault. They must
+    // remain rooted across the later await and its two outcome-capture
+    // safepoints.
+    assert firstCode == "AssertionFault"
+    assert firstMessage == "assertion was not satisfied"
+
+    let listOutcomes = Task.settled([
+    faultedText("list failure"),
+    completedText("list success")
+    ]).await
+    let listLength = listOutcomes.length()
+    assert listLength == 2
+    Unit
+}
+
+async fn exerciseRace() Unit {
+    let completedWinner = Task.race(
+    slowManagedLoser(73),
+    fastManagedWinner()
+    ).await
+    match completedWinner {
+        Completed(value) => {
+            assert value == "fast winner"
+            Unit
+        }
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+
+    // The first child suspends, so the second child is the deterministic
+    // nonzero winner. Finalizing the race cancels and drains the first child,
+    // including its registered defer cleanup.
+    let faultWinner = Task.race([
+    slowManagedLoser(73),
+    faultedText("race failure")
+    ]).await
+    match faultWinner {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    Unit
+}
+
+async fn exerciseOutcomes() Unit {
+    exerciseSettled().await
+    exerciseRace().await
+}
+
+pub async fn main() Unit {
+    exerciseOutcomes().await
+}
+
+test async fn fixedSettledAndRaceUseTypedOutcomes() Unit {
+    exerciseOutcomes().await
+}
