@@ -2411,6 +2411,77 @@ pub fn main() Unit {
 }
 
 #[test]
+fn projected_pod_copy_and_move_publish_the_private_native_result() {
+    let source = r#"module projected_pod_publication
+
+record Pair { left Int, right Int }
+record Holder { selected Pair, guard Bool }
+
+fn select() Pair {
+    let holder = Holder {
+        selected = Pair { left = 11, right = 29 },
+        guard = true,
+    }
+    holder.selected
+}
+
+pub fn main() Unit {
+    let keepRoot = "projected-pod"
+    let pair = select()
+    assert pair.left == 11
+    assert pair.right == 29
+    discard keepRoot
+    Unit
+}
+"#;
+    let (copy_project, copy_program, copy_ir) = emit_source_with_ir(source);
+    assert_emitted_main_succeeds(&copy_project);
+    let copy = llvm_native_function(&copy_ir, "projected_pod_publication_select");
+    assert!(copy.contains("record.copy.projected.native"), "{copy}");
+
+    let mut raw = copy_program.into_program();
+    let select = raw
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("select"))
+        .expect("find projected POD producer");
+    let tail = select
+        .body
+        .tail
+        .as_deref_mut()
+        .expect("projected POD producer tail");
+    let ExprKind::Copy(place) = &tail.kind else {
+        panic!("projected POD source tail is not a copy: {tail:?}")
+    };
+    tail.kind = ExprKind::Move(place.clone());
+    let moved = raw
+        .into_checked()
+        .expect("projected POD move consumes its complete Holder root");
+    let main = *moved.as_program().exports.get("main").expect("main export");
+    assert_eq!(
+        Interpreter::new(&moved)
+            .invoke(main, Vec::new(), loom_core::Span::default())
+            .expect("interpret projected POD move"),
+        loom_interpreter::Value::Unit,
+    );
+
+    let move_project = tempfile::tempdir().expect("create projected move project");
+    let executable = move_project.path().join("program");
+    let ir_path = move_project.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir_path.clone());
+    emit_native(&moved, &executable, &options).expect("emit projected POD move");
+    let output = Command::new(&executable)
+        .output()
+        .expect("run projected POD move");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"Unit\n");
+    let move_ir = std::fs::read_to_string(ir_path).expect("read projected move IR");
+    let moved = llvm_native_function(&move_ir, "projected_pod_publication_select");
+    assert!(moved.contains("record.copy.projected.native"), "{moved}");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn readonly_list_builtins_snapshot_the_header_and_clone_only_the_selected_value() {
     let source = r"module list_readonly
