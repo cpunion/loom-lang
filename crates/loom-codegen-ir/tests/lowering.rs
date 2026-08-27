@@ -825,8 +825,66 @@ pub async fn main() Unit {
     Unit
 }
 ";
+    let nested_finite = r"module async_nested_finite_view
 
-    for (label, source) in [("finite", finite), ("open", open)] {
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record First { value Int }
+record Second { value Int }
+record Envelope { source dyn Source }
+
+impl Source for First {
+    method next(mut self) Int { self.value }
+}
+
+impl Source for Second {
+    method next(mut self) Int { self.value }
+}
+
+async fn takeNested(envelope Envelope) Int {
+    var source = envelope.source
+    source.next()
+}
+
+pub async fn main() Unit {
+    let first = takeNested(Envelope { source = First { value = 1 } }).await
+    let second = takeNested(Envelope { source = Second { value = 2 } }).await
+    assert first == 1
+    assert second == 2
+    Unit
+}
+";
+    let unique_with_list = r"module async_unique_view_with_list
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Boxed { values List[Int] }
+
+impl Source for Boxed {
+    method next(mut self) Int { self.values.length() }
+}
+
+async fn takeOwned(source Source) Int {
+    source.next()
+}
+
+pub async fn main() Unit {
+    let observed = takeOwned(Boxed { values = [1] }).await
+    assert observed == 1
+    Unit
+}
+";
+
+    for (label, source) in [
+        ("finite", finite),
+        ("open", open),
+        ("nested finite", nested_finite),
+        ("unique with List", unique_with_list),
+    ] {
         let LoweringOutcome::Unsupported(report) = lower_run(source) else {
             panic!("{label} dynamic coroutine frame must remain atomic fallback")
         };
