@@ -53,6 +53,13 @@ object-build fingerprint includes both `llvm-config --system-libs` and every
 reported dependency supplied by the LLVM prefix, so changing this companion
 library invalidates native object-cache entries.
 
+Loom also compiles target initialization from the exact
+`llvm-config --targets-built` set. A complete LLVM installation keeps the
+single all-target initializer; a release package containing only a subset,
+such as LLVM's Windows archive, references and initializes only the target
+libraries it actually ships. This prevents an otherwise valid host compiler
+from acquiring unresolved symbols for omitted cross targets.
+
 ## First build
 
 ```sh

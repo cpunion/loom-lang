@@ -20,6 +20,48 @@ const OBJECT_CRATES: &[&str] = &[
     "loom-runtime-abi",
 ];
 
+const LLVM_19_TARGETS: &[&str] = &[
+    "AArch64",
+    "AMDGPU",
+    "ARM",
+    "AVR",
+    "BPF",
+    "Hexagon",
+    "Lanai",
+    "LoongArch",
+    "Mips",
+    "MSP430",
+    "NVPTX",
+    "PowerPC",
+    "RISCV",
+    "Sparc",
+    "SystemZ",
+    "VE",
+    "WebAssembly",
+    "X86",
+    "XCore",
+];
+
+const INKWELL_TARGET_CFGS: &[(&str, &str)] = &[
+    ("AArch64", "loom_llvm_target_aarch64"),
+    ("AMDGPU", "loom_llvm_target_amdgpu"),
+    ("ARM", "loom_llvm_target_arm"),
+    ("BPF", "loom_llvm_target_bpf"),
+    ("Hexagon", "loom_llvm_target_hexagon"),
+    ("Lanai", "loom_llvm_target_lanai"),
+    ("LoongArch", "loom_llvm_target_loongarch"),
+    ("Mips", "loom_llvm_target_mips"),
+    ("MSP430", "loom_llvm_target_msp430"),
+    ("NVPTX", "loom_llvm_target_nvptx"),
+    ("PowerPC", "loom_llvm_target_powerpc"),
+    ("RISCV", "loom_llvm_target_riscv"),
+    ("Sparc", "loom_llvm_target_sparc"),
+    ("SystemZ", "loom_llvm_target_systemz"),
+    ("WebAssembly", "loom_llvm_target_webassembly"),
+    ("X86", "loom_llvm_target_x86"),
+    ("XCore", "loom_llvm_target_xcore"),
+];
+
 fn main() {
     let compiler_target = env::var("TARGET").expect("Cargo target triple");
     println!("cargo:rustc-env=LOOM_COMPILER_TARGET={compiler_target}");
@@ -113,6 +155,9 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
         "--shared-mode",
     ] {
         let output = llvm_config(&config, option);
+        if option == "--targets-built" {
+            emit_llvm_target_configuration(&output);
+        }
         identity.field("llvm-config-option", option.as_bytes());
         identity.field("llvm-config-output", &output);
     }
@@ -172,6 +217,25 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
             "llvm-config returned a non-local library name"
         );
         add_external_file(identity, "libllvm", &declared_libdir.join(name));
+    }
+}
+
+fn emit_llvm_target_configuration(output: &[u8]) {
+    println!("cargo:rustc-check-cfg=cfg(loom_llvm_complete_target_set)");
+    for (_, cfg) in INKWELL_TARGET_CFGS {
+        println!("cargo:rustc-check-cfg=cfg({cfg})");
+    }
+
+    let output = String::from_utf8(output.to_vec()).expect("llvm-config --targets-built UTF-8");
+    let built = output.split_ascii_whitespace().collect::<BTreeSet<_>>();
+    if LLVM_19_TARGETS.iter().all(|target| built.contains(target)) {
+        println!("cargo:rustc-cfg=loom_llvm_complete_target_set");
+        return;
+    }
+    for (target, cfg) in INKWELL_TARGET_CFGS {
+        if built.contains(target) {
+            println!("cargo:rustc-cfg={cfg}");
+        }
     }
 }
 
