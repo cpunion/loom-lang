@@ -43,6 +43,39 @@ fn representation_pointer_kinds(
     Some((immortal, managed))
 }
 
+fn representation_contains_task_handle(
+    representations: &RepresentationPlan,
+    root: ValueTypeId,
+) -> Option<bool> {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(value) = pending.pop() {
+        if !visited.insert(value) {
+            continue;
+        }
+        let value = representations.value_type(value)?;
+        match representations.repr(value.repr())? {
+            Repr::TaskHandle => return Some(true),
+            Repr::Product(product) => {
+                pending.extend(representations.product(*product)?.fields().iter().copied());
+            }
+            Repr::Sum(sum) => pending.extend(
+                representations
+                    .sum(*sum)?
+                    .variants()
+                    .iter()
+                    .flat_map(|variant| variant.fields().iter().copied()),
+            ),
+            Repr::Uninhabited
+            | Repr::Zst
+            | Repr::Scalar(_)
+            | Repr::ImmortalText
+            | Repr::ManagedPointer => {}
+        }
+    }
+    Some(false)
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
     RepresentationPlan,
@@ -733,6 +766,10 @@ impl<'a> Validator<'a> {
                     }
                 }
                 Some(Repr::TaskHandle) => {
+                    let canonical =
+                        ValueTypeId::from_index(self.program.brand, index).is_some_and(|ty| {
+                            representations.type_id(value_type.semantic()) == Some(ty)
+                        });
                     let valid_semantic = match value_type.semantic() {
                         Type::Task(output) => {
                             representations.type_id(output).is_some_and(|output_id| {
@@ -744,7 +781,8 @@ impl<'a> Validator<'a> {
                         }
                         _ => false,
                     };
-                    if !valid_semantic
+                    if !canonical
+                        || !valid_semantic
                         || value_type.kind() != ValueTypeKind::Direct
                         || representations.target().pointer_bits() != 64
                     {
@@ -809,6 +847,8 @@ impl<'a> Validator<'a> {
                                     representations.repr(candidate_type.repr()),
                                     Some(Repr::Uninhabited)
                                 )
+                                && representation_contains_task_handle(&representations, candidate)
+                                    == Some(false)
                                 && representation_pointer_kinds(&representations, candidate)
                                     .is_some_and(|(immortal, _)| !immortal)
                         });
@@ -816,7 +856,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.dynamic[{index}].candidate[{candidate_index}]"),
-                        "dynamic candidate must be distinct, inhabited, registered, and contain no immortal-only pointer leaf",
+                        "dynamic candidate must be distinct, inhabited, registered, and contain neither Task handles nor immortal-only pointer leaves",
                     );
                 }
             }
@@ -1590,6 +1630,18 @@ impl<'a> Validator<'a> {
                 "coroutine output must exactly match the function result type",
             );
         }
+        let canonical_output = self
+            .program
+            .representations
+            .value_type(plan.output())
+            .and_then(|output| self.program.representations.type_id(output.semantic()));
+        if canonical_output != Some(plan.output()) {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.output"),
+                "coroutine output must use its canonical value representation at the Task ABI boundary",
+            );
+        }
         if !function.signature().inout_params().is_empty() {
             self.error(
                 ValidationCode::InvalidCoroutinePlan,
@@ -1756,10 +1808,11 @@ impl<'a> Validator<'a> {
         function
             .value(task)
             .map(crate::Value::ty)
-            .and_then(|task| self.program.representations.value_type(task))
-            .and_then(|task| {
-                (self.program.representations.repr(task.repr()) == Some(&Repr::TaskHandle))
-                    .then_some(task.semantic())
+            .and_then(|task_id| {
+                let task = self.program.representations.value_type(task_id)?;
+                (self.program.representations.repr(task.repr()) == Some(&Repr::TaskHandle)
+                    && self.program.representations.type_id(task.semantic()) == Some(task_id))
+                .then_some(task.semantic())
             })
             .and_then(|semantic| match semantic {
                 Type::Task(output) => self.program.representations.type_id(output),
@@ -3110,13 +3163,37 @@ impl<'a> Validator<'a> {
                     &format!("{path}.argument"),
                 );
                 self.require_results(function, instruction, &[None], &path);
-                let result = instruction
+                let result_type = instruction
                     .results()
                     .first()
                     .and_then(|result| function.value(*result))
-                    .and_then(|result| self.program.representations.value_type(result.ty()));
-                let valid_result = result.is_some_and(|result| {
+                    .map(crate::Value::ty);
+                let result =
+                    result_type.and_then(|result| self.program.representations.value_type(result));
+                let coroutine_output = callee.signature().result();
+                let canonical_output = self
+                    .program
+                    .representations
+                    .value_type(coroutine_output)
+                    .and_then(|output| self.program.representations.type_id(output.semantic()));
+                if self
+                    .program
+                    .representations
+                    .value_type(coroutine_output)
+                    .is_some()
+                    && canonical_output != Some(coroutine_output)
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.coroutine.result"),
+                        "task.create coroutine output must use its canonical value representation",
+                    );
+                }
+                let valid_result = result_type.zip(result).is_some_and(|(result_type, result)| {
                     self.program.representations.repr(result.repr()) == Some(&Repr::TaskHandle)
+                        && self.program.representations.type_id(result.semantic())
+                            == Some(result_type)
+                        && canonical_output == Some(coroutine_output)
                         && matches!(
                             result.semantic(),
                             Type::Task(output)
