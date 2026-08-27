@@ -5429,8 +5429,8 @@ impl<'program> Interpreter<'program> {
         location: &Location,
         span: Span,
     ) -> Result<(Location, Vec<u32>), ExecutionFailure> {
-        let mut current = location.clone();
-        let mut prefix = Vec::new();
+        let mut current = Location::local(location.frame, location.local);
+        let mut segments = Vec::new();
         for _ in 0..64 {
             let frame = self.frames.get(&current.frame).ok_or_else(|| {
                 ExecutionFailure::from(self.runtime_fault(
@@ -5447,13 +5447,15 @@ impl<'program> Interpreter<'program> {
                 ))
             })?;
             if let Slot::Alias(alias) = slot {
-                prefix.extend_from_slice(&alias.projection);
+                segments.push(alias.projection.clone());
                 current = Location {
                     frame: alias.frame,
                     local: alias.local,
                     projection: Vec::new(),
                 };
             } else {
+                segments.reverse();
+                let prefix = segments.into_iter().flatten().collect();
                 return Ok((current, prefix));
             }
         }
@@ -6165,6 +6167,62 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod location_projection_tests {
+    use super::*;
+
+    #[test]
+    fn alias_chain_projections_are_resolved_from_root_to_leaf() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        interpreter.frames.insert(
+            1,
+            Frame {
+                slots: vec![Slot::Value(Value::Record {
+                    ty: TypeId(0),
+                    fields: vec![
+                        Value::Int { value: 7 },
+                        Value::Record {
+                            ty: TypeId(1),
+                            fields: vec![Value::Int { value: 11 }, Value::Int { value: 29 }],
+                        },
+                    ],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter.frames.insert(
+            2,
+            Frame {
+                slots: vec![Slot::Alias(Location {
+                    frame: 1,
+                    local: LocalId(0),
+                    projection: vec![1],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter.frames.insert(
+            3,
+            Frame {
+                slots: vec![Slot::Alias(Location {
+                    frame: 2,
+                    local: LocalId(0),
+                    projection: vec![0],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+
+        let value = interpreter
+            .read_place(&Location::local(3, LocalId(0)), Span::default())
+            .expect("resolve nested projected receiver");
+        assert_eq!(value, Value::Int { value: 11 });
     }
 }
 

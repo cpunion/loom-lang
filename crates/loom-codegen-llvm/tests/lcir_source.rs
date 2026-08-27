@@ -1340,6 +1340,69 @@ fn projected_places_preserve_sibling_updates_and_loop_product_phis() {
 }
 
 #[test]
+fn nested_receiver_aliases_preserve_root_to_leaf_projection_order() {
+    let source = r"module lcir_nested_receiver_aliases
+
+record Counter { value Int }
+record Pair { left Counter, right Counter }
+record Holder { guard Int, pair Pair }
+
+impl Counter {
+    method add(mut self, amount Int) Unit {
+        self.value = self.value + amount
+    }
+}
+
+impl Pair {
+    method bumpLeft(mut self) Unit {
+        self.left.add(5)
+    }
+}
+
+pub fn main() Unit {
+    var holder = Holder {
+        guard = 7,
+        pair = Pair {
+            left = Counter { value = 11 },
+            right = Counter { value = 29 },
+        },
+    }
+    holder.pair.bumpLeft()
+    let guard = holder.guard
+    let left = holder.pair.left.value
+    let right = holder.pair.right.value
+    if guard == 7 && left == 16 && right == 29 {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare nested projected receivers");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir(&artifact, "source-nested-receiver-aliases");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-nested-receiver-aliases");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+}
+
+#[test]
 fn projected_place_products_emit_exact_i686_and_msvc_objects() {
     let program = compile_source(PROJECTED_PLACE_SOURCE);
     let request = SourceArtifactRequest::Run {
