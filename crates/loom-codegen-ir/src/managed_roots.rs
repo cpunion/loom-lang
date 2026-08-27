@@ -12,16 +12,34 @@ pub enum ManagedSafepoint {
     Terminator(BlockId),
 }
 
-/// One exact managed leaf of an LCIR SSA value.
+/// One typed step from an LCIR aggregate to an exact managed leaf.
 ///
-/// `projection` is empty for a direct managed pointer. Product projections are
-/// zero-based field indices from the outer value to one managed pointer leaf.
-/// Slots sort first by dense `ValueId` and then lexicographically by projection,
-/// which makes root metadata independent from hash or traversal order.
+/// Sum steps name both the closed variant and its payload field. They are
+/// candidate projections: publication additionally tests every enclosing tag
+/// and writes null for an inactive candidate.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ManagedRootProjection {
+    ProductField(u32),
+    SumVariantField { variant: u32, field: u32 },
+}
+
+/// Maximum candidate managed leaves catalogued for one SSA value.
+///
+/// Direct aggregate validation expands repeated children by occurrence and
+/// applies the same structural bound, so this is both an explicit root-planner
+/// resource boundary and a defense against independently forged plans.
+pub const MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE: usize =
+    crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
+
+/// One exact candidate managed leaf of an LCIR SSA value.
+///
+/// `projection` is empty for a direct managed pointer. Slots sort first by
+/// dense `ValueId` and then lexicographically by their typed projection, which
+/// makes root metadata independent from hash or traversal order.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ManagedRootSlot {
     value: ValueId,
-    projection: Box<[u32]>,
+    projection: Box<[ManagedRootProjection]>,
 }
 
 impl ManagedRootSlot {
@@ -31,7 +49,7 @@ impl ManagedRootSlot {
     }
 
     #[must_use]
-    pub const fn projection(&self) -> &[u32] {
+    pub const fn projection(&self) -> &[ManagedRootProjection] {
         &self.projection
     }
 }
@@ -117,11 +135,11 @@ fn plan_managed_roots_with_work(
 
 struct ManagedProjectionCatalog {
     value_types: Box<[ValueTypeId]>,
-    by_type: BTreeMap<ValueTypeId, Box<[Box<[u32]>]>>,
+    by_type: BTreeMap<ValueTypeId, Box<[Box<[ManagedRootProjection]>]>>,
 }
 
 impl ManagedProjectionCatalog {
-    fn for_value_index(&self, index: usize) -> Option<&[Box<[u32]>]> {
+    fn for_value_index(&self, index: usize) -> Option<&[Box<[ManagedRootProjection]>]> {
         self.value_types
             .get(index)
             .and_then(|ty| self.by_type.get(ty))
@@ -154,13 +172,27 @@ fn managed_value_projections(
 fn managed_leaf_projections(
     representations: &RepresentationPlan,
     root: ValueTypeId,
-) -> Option<Box<[Box<[u32]>]>> {
+) -> Option<Box<[Box<[ManagedRootProjection]>]>> {
     let mut projections = Vec::new();
     let mut pending = vec![(root, Vec::new())];
     while let Some((value, path)) = pending.pop() {
+        if path.len() > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
+            || pending
+                .len()
+                .checked_add(projections.len())?
+                .checked_add(1)?
+                > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
+        {
+            return None;
+        }
         let value = representations.value_type(value)?;
         match representations.repr(value.repr())? {
-            Repr::ManagedPointer => projections.push(path.into_boxed_slice()),
+            Repr::ManagedPointer => {
+                projections.push(path.into_boxed_slice());
+                if projections.len() > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE {
+                    return None;
+                }
+            }
             Repr::Product(product) => {
                 for (index, field) in representations
                     .product(*product)?
@@ -172,12 +204,28 @@ fn managed_leaf_projections(
                 {
                     let index = u32::try_from(index).ok()?;
                     let mut field_path = path.clone();
-                    field_path.push(index);
+                    field_path.push(ManagedRootProjection::ProductField(index));
                     pending.push((field, field_path));
                 }
             }
-            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText | Repr::Sum(_) => {
+            Repr::Sum(sum) => {
+                for (variant, payload) in representations
+                    .sum(*sum)?
+                    .variants()
+                    .iter()
+                    .enumerate()
+                    .rev()
+                {
+                    let variant = u32::try_from(variant).ok()?;
+                    for (field, field_type) in payload.fields().iter().copied().enumerate().rev() {
+                        let field = u32::try_from(field).ok()?;
+                        let mut field_path = path.clone();
+                        field_path.push(ManagedRootProjection::SumVariantField { variant, field });
+                        pending.push((field_type, field_path));
+                    }
+                }
             }
+            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText => {}
         }
     }
     Some(projections.into_boxed_slice())
@@ -517,11 +565,36 @@ fn add_edge_live(
 mod tests {
     use loom_mir::{FunctionId as MirFunctionId, Type};
 
-    use super::plan_managed_roots_with_work;
+    use super::{
+        MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, managed_leaf_projections,
+        plan_managed_roots_with_work,
+    };
     use crate::{
         BlockTarget, Constant, Effects, InstructionKind, Origin, ProgramBuilder, Signature,
         TargetLayout, Terminator, TerminatorKind,
     };
+
+    #[test]
+    fn candidate_catalog_accepts_its_exact_limit_and_rejects_one_more() {
+        for (width, accepted) in [
+            (MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, true),
+            (MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE + 1, false),
+        ] {
+            let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+            builder
+                .add_managed_text_type()
+                .expect("register managed Text");
+            let elements = vec![Type::Text; width];
+            let product = builder
+                .add_tuple_type(&elements)
+                .expect("unchecked wide product representation");
+            let projections = managed_leaf_projections(builder.representations(), product);
+            assert_eq!(projections.is_some(), accepted, "candidate width {width}");
+            if let Some(projections) = projections {
+                assert_eq!(projections.len(), width);
+            }
+        }
+    }
 
     #[test]
     #[expect(

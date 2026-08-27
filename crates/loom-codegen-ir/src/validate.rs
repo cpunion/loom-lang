@@ -10,19 +10,22 @@ use crate::{
     Terminator, TerminatorKind, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
-fn representation_contains_text_pointer(
+fn representation_text_pointer_kinds(
     representations: &RepresentationPlan,
     root: ValueTypeId,
-) -> Option<bool> {
+) -> Option<(bool, bool)> {
     let mut pending = vec![root];
     let mut visited = BTreeSet::new();
+    let mut immortal = false;
+    let mut managed = false;
     while let Some(value) = pending.pop() {
         if !visited.insert(value) {
             continue;
         }
         let value = representations.value_type(value)?;
         match representations.repr(value.repr())? {
-            Repr::ImmortalText | Repr::ManagedPointer => return Some(true),
+            Repr::ImmortalText => immortal = true,
+            Repr::ManagedPointer => managed = true,
             Repr::Product(product) => {
                 pending.extend(representations.product(*product)?.fields().iter().copied());
             }
@@ -36,7 +39,7 @@ fn representation_contains_text_pointer(
             Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
         }
     }
-    Some(false)
+    Some((immortal, managed))
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -553,7 +556,7 @@ impl<'a> Validator<'a> {
                 );
             }
             if let ValueTypeKind::Transparent { base } = value_type.kind()
-                && representation_contains_text_pointer(&representations, base) != Some(false)
+                && representation_text_pointer_kinds(&representations, base) != Some((false, false))
             {
                 self.error(
                     ValidationCode::RepresentationPlan,
@@ -683,7 +686,8 @@ impl<'a> Validator<'a> {
         };
         let supported_sum_field = |field: ValueTypeId| {
             supported_product_field(field)
-                && representation_contains_text_pointer(&representations, field) == Some(false)
+                && representation_text_pointer_kinds(&representations, field)
+                    .is_some_and(|(immortal, _)| !immortal)
         };
         for (index, product) in representations.products().iter().enumerate() {
             let product_id = ProductReprId::from_index(self.program.brand, index);
@@ -762,7 +766,7 @@ impl<'a> Validator<'a> {
                             format!(
                                 "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
                             ),
-                            "sum payloads must reference inhabited pointer-free direct value types",
+                            "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer",
                         );
                     }
                     if let Some(nested) = aggregate_index(field) {

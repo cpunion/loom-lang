@@ -1262,6 +1262,161 @@ test fn managedProducts() Result[Unit, Problem] {{ verify() }}
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adversarial gate keeps Option, Result-product, tagless and nested sums, phi/call/inout/match relocation, guarded carrier decoding, and cross-target evidence together"
+)]
+fn managed_sum_leaves_relocate_only_for_the_active_variant() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = include_str!("../../../fixtures/lcir-managed-sums/main.loom").replace(
+        "fn collectPressure() Text { join(\"small\", \"pressure\") }",
+        &format!("fn collectPressure() Text {{ join(\"{pressure}\", \"{pressure}\") }}"),
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+
+    let native = emit_and_run_lcir(&artifact, "source-managed-sums");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("managedSums"),
+        "{:?}",
+        native.output
+    );
+    for forbidden in ["loom_gc_root_push_v1", "loom_executor_", "%loom.Value"] {
+        assert!(!native.ir.contains(forbidden), "{}", native.ir);
+    }
+
+    let retain_option = emitted_lcir_function(&native.ir, &artifact, "retainOption");
+    for required in [
+        ".s1f0",
+        "managed.root.reload",
+        "managed.root.rebuild.active.sum",
+        "managed.root.sum.variant.active",
+        "managed.root.active.pointer",
+    ] {
+        assert!(
+            retain_option.contains(required),
+            "Option[Text] root flow omitted `{required}`:\n{retain_option}"
+        );
+    }
+
+    let retain_result = emitted_lcir_function(&native.ir, &artifact, "retainResult");
+    for required in [
+        ".s0f0.p0",
+        ".s0f0.p1",
+        "managed.root.reload",
+        "managed.root.rebuild.sum.payload",
+    ] {
+        assert!(
+            retain_result.contains(required),
+            "Result[Pair, Problem] root flow omitted `{required}`:\n{retain_result}"
+        );
+    }
+
+    let nested_pair = emitted_lcir_function(&native.ir, &artifact, "nestedPair");
+    for required in [
+        ".s0f0.s1f0",
+        ".s1f0.s0f0.p0",
+        ".s1f0.s0f0.p1",
+        ".s2f0",
+        ".s2f1",
+        "managed.root.sum.path.active",
+        "managed.root.sum.safe.carrier",
+        "managed.root.rebuild.sum.safe.carrier",
+        "ptrtoint ptr",
+        "inttoptr i64",
+    ] {
+        assert!(
+            nested_pair.contains(required),
+            "nested managed sum omitted `{required}`:\n{nested_pair}"
+        );
+    }
+    assert!(
+        nested_pair.contains("and i1"),
+        "nested candidate predicates must be conjoined:\n{nested_pair}"
+    );
+    assert!(
+        nested_pair.contains("ptr null"),
+        "inactive candidates must publish null:\n{nested_pair}"
+    );
+    assert!(
+        nested_pair.contains("zeroinitializer"),
+        "inactive or malformed tags must decode only a zero carrier:\n{nested_pair}"
+    );
+
+    let tagless = emitted_lcir_function(&native.ir, &artifact, "retainEnvelope");
+    assert!(tagless.contains(".s0f0"), "{tagless}");
+    assert!(
+        !tagless.contains("managed.root.sum.variant.active"),
+        "a tagless one-variant sum must not invent a discriminant:\n{tagless}"
+    );
+
+    let inout = emitted_lcir_function(&native.ir, &artifact, "relocate");
+    for required in [
+        "managed.root",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "direct.call",
+    ] {
+        assert!(
+            inout.contains(required),
+            "managed-sum inout flow omitted `{required}`:\n{inout}"
+        );
+    }
+
+    let pointer_free = emitted_lcir_function(&native.ir, &artifact, "pointerFree");
+    for forbidden in [
+        "managed.root",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            !pointer_free.contains(forbidden),
+            "pointer-free sum allocated a typed frame via `{forbidden}`:\n{pointer_free}"
+        );
+    }
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create managed-sum target directory");
+        let object = directory.path().join("managed-sums.o");
+        let ir_path = directory.path().join("managed-sums.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed-sum object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read managed-sum target IR");
+        for required in [
+            "managed.root.sum.safe.carrier",
+            "managed.root.rebuild.active.sum",
+            "ptrtoint ptr",
+            "inttoptr i64",
+            "loom_gc_typed_root_push_v1",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
     let program = compile_source(source);

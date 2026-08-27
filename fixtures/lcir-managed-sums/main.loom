@@ -1,0 +1,180 @@
+module lcir_managed_sums
+
+enum Problem { WrongText }
+
+record Pair {
+    left Text
+    right Text
+}
+
+enum Envelope { Wrapped(Text) }
+
+enum Nested {
+    Optional(Option[Text])
+    Outcome(Result[Pair, Problem])
+    Alias(Text, Text)
+}
+
+enum Plain {
+    One(Int)
+    Empty
+}
+
+record Holder { state Nested }
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn collectPressure() Text { join("small", "pressure") }
+
+fn retainOption(input Option[Text], takeInput Bool) Option[Text] {
+    let fallback = Some("Fallback")
+    let selected = if takeInput { input } else { fallback }
+    let pressure = collectPressure()
+    discard pressure.length()
+    selected
+}
+
+fn retainResult(input Result[Pair, Problem]) Result[Pair, Problem] {
+    let pressure = collectPressure()
+    discard pressure.length()
+    input
+}
+
+fn retainEnvelope(input Envelope) Envelope {
+    let pressure = collectPressure()
+    discard pressure.length()
+    input
+}
+
+fn retainNested(input Nested, takeInput Bool) Nested {
+    let fallback = Nested.Alias("Fallback", "Fallback")
+    let selected = if takeInput { input } else { fallback }
+    let pressure = collectPressure()
+    discard pressure.length()
+    selected
+}
+
+impl Holder {
+    method relocate(mut self) Unit {
+        self.state = retainNested(self.state, true)
+        Unit
+    }
+}
+
+fn optionText(input Option[Text]) Text {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match input {
+        Some(text) => text
+        None => "Missing"
+    }
+}
+
+fn resultPair(input Result[Pair, Problem]) Pair {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match input {
+        Ok(pair) => pair
+        Err(_) => Pair { left = "Missing", right = "Missing" }
+    }
+}
+
+fn envelopeText(input Envelope) Text {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match input {
+        Wrapped(text) => text
+    }
+}
+
+fn nestedPair(input Nested) Pair {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match input {
+        Optional(Some(text)) => Pair { left = text, right = text }
+        Optional(None) => Pair { left = "Missing", right = "Missing" }
+        Outcome(Ok(pair)) => pair
+        Outcome(Err(_)) => Pair { left = "Missing", right = "Missing" }
+        Alias(left, right) => Pair { left = left, right = right }
+    }
+}
+
+fn pointerFree(input Plain) Int {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match input {
+        One(number) => number
+        Empty => 0
+    }
+}
+
+fn verify() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let optional = retainOption(Some(kept), true)
+    let fromOption = optionText(optional)
+    let outcome = retainResult(Ok(Pair { left = kept, right = kept }))
+    let fromResult = resultPair(outcome)
+    let envelope = retainEnvelope(Envelope.Wrapped(kept))
+    let fromEnvelope = envelopeText(envelope)
+    var holder = Holder { state = Nested.Alias(kept, kept) }
+    holder.relocate()
+    let fromAlias = nestedPair(holder.state)
+    let fromNestedOption = nestedPair(retainNested(Nested.Optional(Some(kept)), true))
+    let fromNestedResult = nestedPair(retainNested(Nested.Outcome(Ok(Pair { left = kept, right = kept })), true))
+    if fromOption == "Keep" && fromResult.left == "Keep" && fromResult.right == "Keep" && fromEnvelope == "Keep" && fromAlias.left == "Keep" && fromAlias.right == "Keep" && fromNestedOption.left == "Keep" && fromNestedOption.right == "Keep" && fromNestedResult.left == "Keep" && fromNestedResult.right == "Keep" && pointerFree(Plain.One(42)) == 42 {
+        Ok(Unit)
+    } else {
+        Err(Problem.WrongText)
+    }
+}
+
+fn verdict(condition Bool) Result[Unit, Problem] {
+    if condition { Ok(Unit) } else { Err(Problem.WrongText) }
+}
+
+test fn optionSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    verdict(optionText(retainOption(Some(kept), true)) == "Keep")
+}
+
+test fn resultProductSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = resultPair(retainResult(Ok(Pair { left = kept, right = kept })))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn taglessSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    verdict(envelopeText(retainEnvelope(Envelope.Wrapped(kept))) == "Keep")
+}
+
+test fn nestedAliasSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    var holder = Holder { state = Nested.Alias(kept, kept) }
+    holder.relocate()
+    let pair = nestedPair(holder.state)
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn nestedOptionSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = nestedPair(retainNested(Nested.Optional(Some(kept)), true))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn nestedResultSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = nestedPair(retainNested(Nested.Outcome(Ok(Pair { left = kept, right = kept })), true))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn pointerFreeSum() Result[Unit, Problem] {
+    verdict(pointerFree(Plain.One(42)) == 42)
+}
+
+pub fn main() Unit {
+    discard verify()
+    Unit
+}
+
+test fn managedSums() Result[Unit, Problem] { verify() }

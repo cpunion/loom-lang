@@ -266,6 +266,14 @@ The additive repeated-element allocator then advances only the runtime
 boundary: native component 13, `runtime-v7`, `gc-v9`, and
 `typed-repeated-v1`. Fixed-offset typed allocations remain `typed-gc-v1`; LCIR
 does not use the repeated symbol until monomorphized List lowering lands.
+Managed Text leaves in closed unboxed sums then advance the artifact identity
+to schema 15, the dump to `lcir 14`, the LCIR native-object domain to
+`loom-lcir-native-object-v11`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v16`. Candidate root slots are ordered by dense SSA
+value and typed product/sum path. Publication conjoins every enclosing tag,
+writes null for inactive variants, and reload reconstructs only the active
+payload from target-layout byte offsets. This reuses typed-shadow-stack v1 and
+does not change native runtime component 13, `runtime-v7`, or `gc-v9`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered

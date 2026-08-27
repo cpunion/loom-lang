@@ -123,7 +123,7 @@ pub fn main() Unit {
         NativeRoutePolicy::Automatic,
     )
     .expect("prepare sum whose payload transitively contains managed Text");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let dead_text = compile_source(
         r#"module prepared_dead_text

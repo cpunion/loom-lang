@@ -106,7 +106,7 @@ fn immortal_text_is_explicit_64_bit_only_and_not_a_product_leaf() {
 }
 
 #[test]
-fn managed_text_enters_nested_products_but_not_sums_or_transparent_carriers() {
+fn managed_text_enters_nested_products_and_sums_but_not_transparent_carriers() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     builder
         .add_managed_text_type()
@@ -127,16 +127,19 @@ fn managed_text_enters_nested_products_but_not_sums_or_transparent_carriers() {
         Some(Repr::Product(_))
     ));
 
-    assert_eq!(
+    let sum = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(91), Vec::new()),
+            &[Box::from([record.clone()])],
+        )
+        .expect("closed sum may carry exact managed leaves");
+    assert!(matches!(
         builder
-            .add_sum_type(
-                Type::Nominal(TypeId(91), Vec::new()),
-                &[Box::from([record.clone()])],
-            )
-            .expect_err("sum payloads remain pointer-free")
-            .code(),
-        BuildErrorCode::InvalidSumType
-    );
+            .representations()
+            .value_type(sum)
+            .and_then(|ty| builder.representations().repr(ty.repr())),
+        Some(Repr::Sum(_))
+    ));
     assert_eq!(
         builder
             .add_transparent_type(Type::Nominal(TypeId(92), Vec::new()), &record)

@@ -67,7 +67,10 @@ pub use lower::{
     ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature, UnsupportedItem,
     lower_typed_artifact,
 };
-pub use managed_roots::{ManagedRootPlan, ManagedRootSlot, ManagedSafepoint, plan_managed_roots};
+pub use managed_roots::{
+    MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
+    ManagedRootSlot, ManagedSafepoint, plan_managed_roots,
+};
 pub use repr::{
     ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr, SumVariantRepr,
     TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,

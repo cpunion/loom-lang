@@ -42,6 +42,14 @@ artifact, or runtime compatibility.
   advances interpreted MIR to version 22 and the persistent compiler cache to
   schema 3 without changing source resource or cleanup semantics, LCIR, the
   native ABI, or the runtime ABI.
+- Typed LCIR now keeps closed unboxed sums direct when a variant contains
+  managed `Text`, including through nested products and sums. Each live sum
+  receives deterministic candidate leaf cells; tag guards publish only the
+  active variant and clear every inactive candidate, while post-GC reload
+  rebuilds only the active payload from zero-initialized carrier bytes. This
+  advances the LCIR dump to 14, artifact identity to schema 15, native-object
+  domain to v11, and CLI object cache to v16. It reuses typed-shadow-stack v1
+  and does not change native runtime ABI component 13 or `gc-v9`.
 - Typed LCIR now expands source assertions, `defer`, and `scoped` disposal into
   direct lexical control flow. Cleanup registers only after its statement or
   scoped initializer succeeds, runs in strict LIFO order on normal block exit,

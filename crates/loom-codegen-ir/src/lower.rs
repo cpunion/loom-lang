@@ -447,12 +447,12 @@ pub fn lower_typed_artifact(
         managed_text,
         ..
     } = classifier;
-    // Product-contained Text uses the managed-capable pointer provenance mode
+    // Aggregate-contained Text uses the managed-capable pointer provenance mode
     // even when every current value is a compiler literal. This keeps the
     // product representation exact without expanding the separate immortal
     // provenance proof through aggregate construction, projection, and phi
     // flow. A literal pointer remains a valid typed managed-root cell value.
-    let managed_text = managed_text || aggregates.uses_text_product_leaf();
+    let managed_text = managed_text || aggregates.uses_text_aggregate_leaf();
     let aggregate_plan = aggregates.finish();
     let summaries = closure
         .entries()

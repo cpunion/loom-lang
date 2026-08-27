@@ -311,7 +311,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v10` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v11` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -323,12 +323,12 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v15` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v16` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, direct managed Text semantics, and managed
-leaves inside unboxed products.
+leaves inside unboxed products and closed sums.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

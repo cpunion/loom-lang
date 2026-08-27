@@ -40,8 +40,8 @@ pub(crate) fn closed_record_fields<'program>(
 }
 
 /// Resolves one fully concrete enum instantiation into ordered, substituted
-/// payload types. The recursive direct-value classifier rejects managed,
-/// erroneous, open, and cyclic payload graphs.
+/// payload types. The recursive direct-value classifier rejects erroneous,
+/// open, cyclic, and target-incompatible payload graphs.
 pub(crate) fn closed_enum_variants(
     program: &mir::Program,
     ty: &Type,
@@ -469,7 +469,7 @@ pub(crate) struct AggregatePlanner<'program> {
     rejected_roots: BTreeSet<Type>,
     acyclic_nominals: BTreeSet<TypeId>,
     rejected_nominals: BTreeSet<TypeId>,
-    uses_text_product_leaf: bool,
+    uses_text_aggregate_leaf: bool,
 }
 
 impl<'program> AggregatePlanner<'program> {
@@ -481,12 +481,12 @@ impl<'program> AggregatePlanner<'program> {
             rejected_roots: BTreeSet::new(),
             acyclic_nominals: BTreeSet::new(),
             rejected_nominals: BTreeSet::new(),
-            uses_text_product_leaf: false,
+            uses_text_aggregate_leaf: false,
         }
     }
 
-    pub(crate) const fn uses_text_product_leaf(&self) -> bool {
-        self.uses_text_product_leaf
+    pub(crate) const fn uses_text_aggregate_leaf(&self) -> bool {
+        self.uses_text_aggregate_leaf
     }
 
     fn supports_nominal_schema(&mut self, id: TypeId) -> bool {
@@ -528,9 +528,9 @@ impl<'program> AggregatePlanner<'program> {
         let mut visiting = BTreeSet::new();
         let mut discovered = BTreeMap::new();
         let mut structural_nodes = 0_usize;
-        let mut uses_text_product_leaf = false;
+        let mut uses_text_aggregate_leaf = false;
         let mut supported = true;
-        while let Some((semantic, depth, exiting, text_product_path)) = pending.pop() {
+        while let Some((semantic, depth, exiting, text_aggregate_path)) = pending.pop() {
             if exiting {
                 visiting.remove(&semantic);
                 continue;
@@ -563,10 +563,12 @@ impl<'program> AggregatePlanner<'program> {
                 break;
             }
             structural_nodes = next_structural_nodes;
-            let child_text_product_path = text_product_path
+            let child_text_aggregate_path = text_aggregate_path
                 && matches!(
                     shape,
-                    AggregateShape::Product(_) | AggregateShape::InvariantProduct(_)
+                    AggregateShape::Product(_)
+                        | AggregateShape::InvariantProduct(_)
+                        | AggregateShape::Sum(_)
                 );
             let mut children = Vec::new();
             for field in shape.dependencies() {
@@ -574,11 +576,11 @@ impl<'program> AggregatePlanner<'program> {
                     continue;
                 }
                 if field == &Type::Text {
-                    if !child_text_product_path || !self.supports_managed_text {
+                    if !child_text_aggregate_path || !self.supports_managed_text {
                         supported = false;
                         break;
                     }
-                    uses_text_product_leaf = true;
+                    uses_text_aggregate_leaf = true;
                     continue;
                 }
                 children.push(field.clone());
@@ -587,20 +589,20 @@ impl<'program> AggregatePlanner<'program> {
                 break;
             }
             discovered.entry(semantic.clone()).or_insert(shape);
-            pending.push((semantic, depth, true, text_product_path));
+            pending.push((semantic, depth, true, text_aggregate_path));
             pending.extend(children.into_iter().rev().map(|child| {
                 (
                     child,
                     depth.saturating_add(1),
                     false,
-                    child_text_product_path,
+                    child_text_aggregate_path,
                 )
             }));
         }
 
         if supported {
             self.planned.extend(discovered);
-            self.uses_text_product_leaf |= uses_text_product_leaf;
+            self.uses_text_aggregate_leaf |= uses_text_aggregate_leaf;
         } else {
             self.rejected_roots.insert(ty.clone());
         }
