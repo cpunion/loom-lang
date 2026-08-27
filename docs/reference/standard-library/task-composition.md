@@ -11,14 +11,14 @@ or a public coroutine protocol:
 - `Task.settled` observes every terminal state;
 - `Task.race` observes the first terminal state.
 
-Version 0.3 recognizes these qualified calls directly in the frontend because
-fixed heterogeneous rows require shape specialization. The compiler lowers a
-closed call to a private join primitive. Future versions should route this
-recognition through ordinary standard-library declarations and intrinsic
-metadata instead of frontend name matching. In either implementation,
-evaluation order, types, cancellation, cleanup, and fault behavior remain the
-source API contract described here. Programs cannot name the primitive or
-depend on its frame layout.
+The semantic boundary is an ordinary standard-library declaration. An
+implementation may attach compiler-private intrinsic identity to that resolved
+declaration to specialize a fixed heterogeneous row; source spelling must not
+be semantic identity. Version 0.3 has one known implementation gap here: its
+frontend still recognizes the exact qualified names before ordinary declaration
+resolution. Evaluation order, types, cancellation, cleanup, and fault behavior
+remain the source API contract described here, and programs cannot name or
+depend on the private join substrate.
 
 ## Fixed task rows
 

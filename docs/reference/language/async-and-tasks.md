@@ -2,14 +2,11 @@
 
 > Normative for Loom language version 0.3.
 
-Loom async is structured and explicit. The language defines typed child tasks,
-postfix suspension, and the static obligation that keeps children structured.
-Join policies such as `Task.all`, `Task.any`, `Task.settled`, and `Task.race`
-are standard-library source APIs rather than keywords or additional
-control-flow syntax. The version 0.3 frontend recognizes those qualified calls
-directly; moving that recognition behind ordinary library declarations is an
-implementation goal and does not require new language syntax. Their callable
-signatures are specified in
+Loom async is structured and explicit. Core defines `Task[T]`, async functions,
+postfix suspension, structured task obligations, and terminal task outcomes.
+`Task.all`, `Task.any`, `Task.settled`, and `Task.race` are standard-library
+policies rather than keywords, operators, or additional control-flow syntax.
+Their callable signatures are specified in
 [Task composition](../standard-library/task-composition.md).
 
 ## Async calls and `.await`
@@ -76,10 +73,11 @@ user-callable cancellation, or source-level task handle duplication.
 
 `Task.all`, `Task.any`, `Task.settled`, and `Task.race` form the standard Task
 source API. They are not reserved syntax and user code cannot invoke the
-compiler/runtime join protocol directly. The version 0.3 frontend recognizes a
-closed qualified call and lowers it to a private structured-join primitive;
-that specialization does not change the source types, evaluation order, or
-fault semantics below.
+compiler/runtime join protocol directly. The semantic identity is the resolved
+standard-library declaration, which implementations may specialize without
+changing the source types, evaluation order, or fault semantics below. Version
+0.3 still has a temporary implementation gap: the frontend recognizes these
+exact qualified names before ordinary declaration resolution.
 
 A tuple of tasks can be awaited as one all-success operation:
 

@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `29` |
-| LCIR artifact identity | schema `30` |
-| LCIR native-object domain | `loom-lcir-native-object-v26` |
+| LCIR textual dump | version `30` |
+| LCIR artifact identity | schema `31` |
+| LCIR native-object domain | `loom-lcir-native-object-v27` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v31` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v32` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `19` |
@@ -163,7 +163,7 @@ boundaries are versioned separately above.
 Typed source-contract placement advances the LCIR dump to 16, artifact schema
 to 17, native-object domain to v13, and object-cache domain to v18. The encoded
 meaning now distinguishes checked-root wrappers from assumed bodies, places
-preconditions at concrete calls, checks receiver invariants at body entry, and
+synchronous preconditions at concrete calls, checks receiver invariants at body entry, and
 checks current receiver invariants and postconditions only after lexical
 cleanup. Checked contract arithmetic and its original runtime faults use
 existing control flow. This changes no physical value ABI, runtime symbol, or
@@ -266,6 +266,17 @@ identity with `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and
 `runtime-v13`. Typed-task v1, coroutine v2, wait v1, Text v3, and GC v9 remain
 unchanged. No universal value, source-visible runtime tag, or language syntax is
 added; the public join policies remain standard-library APIs.
+
+Async state-zero preconditions and creation-site blame advance the LCIR dump to
+30, artifact schema to 31, native-object domain to v27, and LLVM object-cache
+domain to v32. A checked coroutine plan now records whether its compiler-shaped
+frame carries the creating call's file/start/end coordinates. Contract metadata
+distinguishes that dynamic blame source from a static span. `TaskCreate` supplies
+the coordinates but does not inherit the child coroutine's `MAY_FAULT`; an async
+root receives its declaration span from the harness. The existing context-fault
+entry points and JSON wire schema are reused, so native runtime ABI component
+19, `runtime-v13`, typed-task v1, coroutine v2, wait v1, Text v3, and GC v9 do
+not change.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

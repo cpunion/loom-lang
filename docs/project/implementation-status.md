@@ -87,7 +87,7 @@ input tests.
 | Capability | Status and evidence boundary |
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
-| Code generation IR foundation | Production native preparation attempts one atomic whole-artifact direct MIR-to-LCIR lowering. The current slice covers primitives, literal-only, concatenated, and Unicode-scalar-selected direct `Text` on 64-bit targets, structural tuples, fully concrete acyclic generic and nongeneric records including managed Text leaves, fresh-source proven generic and nongeneric record invariants, established concrete refined values, nongeneric refined and invariant runtime construction returning exact `Result[..., ConstraintError]`, nongeneric portable proof `Recheck` with canonical typed runtime-fault guards, eligible concrete closed enums including managed Text payloads, concrete closed managed Lists with scalar/Text/product/sum/nested-List elements, compiler-private concrete closed TextMaps with scalar/Text/product/sum/List/nested-map values, bounded concrete direct generic function instances, and typed finite checks, integer/float parsing, Float formatting, and Duration operations. Async functions without explicit mutable parameters and with direct scalar/product/refined/Text or collision-free closed-sum frame values use checked stackless coroutine plans, typed Task handles, exact suspension roots, ordered single- and multi-child `AwaitTasks`, direct and stored nonempty fixed-arity heterogeneous `Task.all` with exact `TaskJoinAll` composites and atomic child adoption, nonempty immediately awaited fixed forms of all four standard-library Task join policies, sole-nonempty-List-literal specialization, exact `TaskOutcome[T]` capture for `settled` and `race`, explicit fallible `Task.sleep` construction over a zero-root typed timer, static LIFO `defer` and admitted `scoped` cleanup across suspension, and real executor-owned run/test root lifecycles. Coroutine bodies may call synchronous functional inout functions; their normal and fault writebacks update the frame-local SSA environment, and fault writeback precedes active lexical cleanup. A dynamic View parameter is copied by value into the Task frame rather than exposed as an inout signature. Every await has explicit normal, fault, and cancel edges over one identical exact live row; normal additionally receives mode-derived exact values, child fault activates source fault and cleans up before `ResumeFault`, and cancellation preserves inactive source fault and cleans up synchronously before `TaskCancelled`. Their `MAY_FAULT` paths preserve checked arithmetic, assertion, ordinary fallible-invoke, caller-side precondition, callee-side postcondition, and child-task primary fault metadata; source `Result` values, including managed Text results, remain ordinary successful Task completion. Direct `==`/`!=` expands through these scalar, Text, product, refined, sum, and finite List/TextMap-backed shapes in ordinary expressions and contracts; sum comparison reads only active payloads, while List and TextMap comparison use nonallocating proved loops over exact option values. Concrete static concept calls become ordinary direct typed calls. A dynamic view whose reachable concept-and-binding witness set proves exactly one closed nongeneric conformance is erased recursively to that concrete LCIR type in signatures, products, closed sums, generic arguments, managed Lists, and coroutine parameters, results, and recursively nested admitted frame shapes. Two or more exact artifact-closed conformances use one managed pointer to a candidate-specific precise box; a compiler-private ordinal switch reaches ordinary direct calls, and unused conformances or requirement slots remain absent. Records, sums, and Lists store the pointer directly. Readonly copies may share an immutable box; mutable dispatch performs concrete inout work followed by fresh-box writeback on normal and fault exits, preserving copy independence under moving GC. No witness pointer, fat pointer, runtime registry, universal value, or indirect call enters the artifact. Dynamic Text concat/get, Float formatting, and supported Text-bearing aggregates select one artifact-wide managed Text provenance mode; products and sums remain unboxed SSA, while exact live-after guarded leaves use the typed shadow stack without a universal value. `Text.get` returns the canonical managed `Option[Text]`, with nonallocating missing indices and a collecting found path. List literals, immutable append, length, and `get -> Option[T]` use exact repeated descriptors; independently validated unique local loops reuse geometric capacity. TextMap construction, functional insert/replace/remove, containment, length, exact `get -> Option[V]`, and structural equality reuse sorted entry semantics and the repeated allocator with precise key/value tracing and no universal map ABI. Tuple/product/sum SSA, bounded nested places, functional mutation/writeback, exhaustive match DAGs, canonical typed assertions, lexical `defer`, and `scoped` StaticConcept/File/Socket disposal remain part of the checked boundary. Source contracts use checked-root/assumed-body instances, exact call-site precondition blame, entry receiver invariants, typed `old` snapshots, post-cleanup exit invariant/postcondition checks, and the same exact managed-root analysis. Cleanup suffixes are static LIFO CFG on normal, return, fault, await-fault, and await-cancel exits; no runtime cleanup stack or synchronous executor is used. Complete artifacts use independently checked LCIR and its typed LLVM emitter; only reachable `Unsupported` input selects the complete legacy graph. Missing witnesses, open or generic/prerequisite-dependent dynamic sets, derived dynamic proof conversions, generic or unsupported-shape proof replay and runtime construction, contracts over unsupported value shapes, recursive nominal equality reached through Lists or TextMaps, Text inside transparent/refined carriers, other managed values, recursive or open sums, async root preconditions, explicit mutable coroutine parameters, raw readiness, empty/stored/computed/runtime-sized Task List joins, first-class `Task.any`, `Task.settled`, or `Task.race` results, List/TextMap coroutine frames, finite-catalog or open dynamic-concept coroutine frames, nested protected projected inout, and managed projected inout remain atomic fallback. |
+| Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic and fails closed to the complete legacy route when any reachable operation is unsupported. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64; a complete Windows x86-64 native CI gate is configured and must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
 | Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |
@@ -99,6 +99,38 @@ input tests.
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |
 | Cross executable | Implemented only through an exact runtime bundle plus explicit linker; the repository does not publish a general cross-runtime catalog. |
+
+### Typed LLVM route
+
+Production native preparation performs one whole-artifact MIR-to-LCIR attempt
+and independently validates the result before typed LLVM emission. Current
+direct coverage includes:
+
+- scalar and managed Text operations, structural tuples, concrete records,
+  refined values, closed sums, Lists, compiler-private TextMaps, and bounded
+  concrete generic instances;
+- supported contracts and proof replay, static concepts, closed dynamic-concept
+  catalogs, exact moving-GC roots, and static lexical cleanup;
+- checked stackless coroutines, typed Task handles, exact suspension rows,
+  fallible timers, and executor-owned roots;
+- nonempty static forms of the four standard-library Task policies, including
+  stored heterogeneous `Task.all`, sole-List-literal specialization, exact
+  `TaskOutcome[T]` capture, winner finalization, cancellation, and draining.
+
+Async `requires` checks run in child state zero. A created Task carries its
+creation-site blame, an async root carries its declaration span, and
+`TaskCreate` does not inherit child fault effects. Core gains no `all`, `any`,
+`settled`, or `race` syntax. Version 0.3 still recognizes those qualified names
+during source lowering; resolved standard-library intrinsic identity is the
+target boundary.
+
+Remaining atomic fallback includes open or prerequisite-dependent dynamic
+concepts, unsupported proof or contract value shapes, recursive nominal
+equality through managed collections, unsupported managed carriers, explicit
+mutable coroutine parameters, raw readiness, empty/stored/computed/runtime-sized
+Task List joins, first-class `Task.any`/`Task.settled`/`Task.race` results,
+List/TextMap or open-dynamic coroutine frames, and unsupported projected inout
+shapes.
 
 ## CI quality evidence
 

@@ -9,13 +9,10 @@ promise type, coroutine trait, or poll protocol.
 and `Async` are not aliases, and Core does not expose a manually completed
 promise primitive.
 
-The language surface stops at `Task[T]`, `async fn`, postfix `.await`, and the
-structured task obligation. `Task.all`, `Task.any`, `Task.settled`, and
-`Task.race` are standard-library source APIs. Version 0.3 recognizes their
-qualified calls in the frontend and specializes closed fixed-arity forms to a
-private compiler/runtime join primitive. Moving that recognition behind
-ordinary library declarations is a future implementation cleanup; it does not
-add keywords, a source-level polling protocol, or runtime type erasure.
+Core stops at `Task[T]`, `async fn`, postfix `.await`, structured task
+obligations, and terminal task outcomes. `Task.all`, `Task.any`,
+`Task.settled`, and `Task.race` are standard-library policies. They add no
+keywords, source-level polling protocol, or runtime type erasure.
 See the normative [Task composition](../reference/standard-library/task-composition.md)
 reference for the complete signatures.
 

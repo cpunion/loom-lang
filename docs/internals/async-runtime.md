@@ -21,7 +21,8 @@ arena.
 
 The first typed-LCIR coroutine slice uses the existing `typed-task-v1` runtime
 wire with a different, exact compiler-shaped descriptor. LLVM target data lays
-out one frame containing state, parameters, the ordered children and live values
+out one frame containing state, parameters, optional creation-site span
+coordinates for state-zero preconditions, the ordered children and live values
 for each suspension, and the result. The descriptor publishes frame
 size/alignment, resume/cancel callbacks, result size/alignment, exact
 managed-leaf byte offsets, and one live bitmap per resume state plus
@@ -88,17 +89,20 @@ exact pointer offsets, and pack leaves inactive pointer lanes zero. This applies
 equally to coroutine parameters, suspension rows, completed Task results, and
 exact stored-join tuple results without changing typed-task v1. A fallible
 callback creates one activation-local fault context attached to its executor.
-Checked arithmetic, assertions, ordinary fallible invokes, caller-side
+Checked arithmetic, assertions, ordinary fallible invokes, async state-zero
 preconditions, and callee-side postconditions record only the first fault on the
-active Task. Await propagates a child's `Faulted` or `Cancelled` state; it never
+active Task. An async precondition reads its creation-site span from the Task
+frame; a root Task receives its declaration span from the harness. Await
+propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-Selected async roots with `requires`, explicit mutable coroutine parameters,
-raw readiness, dynamically sized or computed-List Task joins, `Task.any`,
+Selected async functions with explicit mutable coroutine parameters, raw
+readiness, dynamically sized or computed-List Task joins, `Task.any`,
 `Task.settled`, or `Task.race` whose result is stored or otherwise used
 first-class, List/TextMap frame values, and finite-catalog or open
-dynamic-concept frame values still select the complete legacy route.
+dynamic-concept frame values still select the complete legacy route. Async
+roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor
 
@@ -175,12 +179,14 @@ root, or new scheduler protocol.
 ## Private primitives for static standard-library joins
 
 The source names `Task.all`, `Task.any`, `Task.settled`, and `Task.race` define
-the standard-library source API. Version 0.3 frontend lowering recognizes those
-qualified names directly; replacing that name matching with ordinary library
-declarations plus intrinsic metadata is follow-up work. LCIR records only the
-private structured-join policy needed by an immediately awaited closed call,
-not a second source-language construct. This keeps future library evolution
-above a small compiler/runtime boundary.
+standard-library policies. Version 0.3 source lowering still recognizes those
+qualified names directly; this temporary name match must be replaced by
+ordinary library resolution followed by stable compiler-private intrinsic
+identity. The target private substrate exposes only typed join/select readiness,
+exact result or outcome extraction, and structured cancellation-and-drain. It
+does not make the four public policy names source-language constructs. The
+current `AwaitMode` variants are the migration representation of those policies,
+not the intended public or long-term library boundary.
 
 Inside an admitted async function, a nonempty fixed argument list preserves its
 heterogeneous child outputs as `Task[(T0, ..., Tn)]`. Children are evaluated

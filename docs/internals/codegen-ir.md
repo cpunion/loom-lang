@@ -342,7 +342,7 @@ Typed source-contract placement then advances the artifact identity to schema
 17, the dump to `lcir 16`, the LCIR native-object domain to
 `loom-lcir-native-object-v13`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v18`. These domains now encode checked-root versus
-assumed-body identity, call-site preconditions, entry and exit invariant
+assumed-body identity, synchronous call-site preconditions, entry and exit invariant
 checks, post-cleanup postconditions, and the protected-receiver transient
 update form. No runtime symbol, physical value representation, or runtime ABI
 component changes.
@@ -438,6 +438,15 @@ native runtime to component 19 with `typed-task-winner-finalize-v1`,
 `typed-task-outcome-v1`, and `runtime-v13`. Typed-task v1 and coroutine v2
 remain unchanged.
 
+Async state-zero preconditions and coroutine-carried creation-site blame then
+advance the artifact identity to schema 31, the dump to `lcir 30`, the LCIR
+native-object domain to `loom-lcir-native-object-v27`, and the CLI object-cache
+domain to `loom-llvm-object-cache-v32`. The checked plan records whether the
+frame carries a caller span, and precondition metadata distinguishes a static
+span from that dynamic coroutine creation span. Async roots receive their
+declaration span from the harness. This reuses the existing fault-context entry
+points and does not change native runtime ABI component 19 or `runtime-v13`.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -455,12 +464,14 @@ suspension frames may also use direct scalar/refined/product/Text shapes and
 closed sums whose payload graphs contain those shapes, including when lexical
 cleanup is active across a suspension. Their bodies may call synchronous
 functions with functional inout parameters. These coroutines preserve
-`MAY_FAULT` from checked operations, assertions, ordinary fallible invokes,
-child contracts, await fault propagation, and checked timer construction. A
+`MAY_FAULT` from checked operations, assertions, state-zero preconditions,
+ordinary fallible invokes, await fault propagation, and checked timer
+construction. A
 source `Result[T, E]`, including a managed-Text result, is an ordinary completed
-value; Task `Faulted` and `Cancelled` states remain control outcomes. Selected
-async roots with `requires` and functions declaring explicit mutable coroutine
-parameters still fail closed before LCIR creation. Coverage includes bounded
+value; Task `Faulted` and `Cancelled` states remain control outcomes. Async
+roots with `requires` use the same typed state-zero check and receive their
+declaration span as blame from the root harness. Functions declaring explicit
+mutable coroutine parameters still fail closed before LCIR creation. Coverage includes bounded
 direct generic calls whose concrete types use those representations. Concrete
 static concept calls use the selected witness method directly, including
 conditional proof applications and normalized associated bindings. A unique
@@ -520,9 +531,12 @@ set has independent `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`,
 `NEEDS_EXECUTOR`, and `MAY_SUSPEND` capabilities. Collection implies an active
 runtime; suspension implies an executor, which implies an active runtime.
 `MAY_FAULT` intentionally implies none of those capabilities because checked
-scalar faults use only the local fault context. A caller gains `MAY_FAULT`
-when it executes an unknown precondition; the assumed callee body does not gain
-that effect merely because it declares `requires`. `TextConcat` and `TextGet`
+scalar faults use only the local fault context. A synchronous caller gains
+`MAY_FAULT` when it executes an unknown callee precondition; the assumed
+synchronous body does not gain that effect merely because it declares
+`requires`. An async precondition instead contributes `MAY_FAULT` to the child
+coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
+`TextConcat` and `TextGet`
 are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
 `MAY_SUSPEND`.
@@ -532,12 +546,16 @@ are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
 wait for it. Assertions, deferred blocks, and scoped disposal lower into direct
 lexical CFG.
 
-Supported source contracts also lower directly. Every ordinary closed-world
-call evaluates all arguments and inout reads before it checks `requires` at the
-call-expression span, then targets the callee's assumed body. A root with
-preconditions uses a same-signature checked wrapper; the callable ABI never
-carries a dynamic caller span. An inherent receiver invariant executes at body
-entry. `old` values are entry SSA values, while exit contracts read the current
+Supported source contracts also lower directly. A synchronous closed-world call
+evaluates all arguments and inout reads before checking `requires` at the call
+expression, then targets the callee's assumed body. A synchronous root with
+preconditions uses a same-signature checked wrapper. An async call creates its
+child without checking the child's contracts in the parent. The coroutine
+checks `requires` in state zero before its body, using the creation-site span
+carried in the frame; an async root receives its declaration span from the
+harness. No source callable accepts a caller-span parameter, and Task creation
+does not become fallible because the child may fault. An inherent receiver
+invariant executes at body entry. `old` values are entry SSA values, while exit contracts read the current
 receiver writeback and logical result. Normal tails and explicit returns expand
 their cleanup suffix before checking the receiver invariant and `ensures`.
 Contract predicates cover typed constants, values, bindings, fields, unary and
@@ -643,7 +661,8 @@ global layout registry.
 ## Typed stackless coroutines
 
 An admitted async function carries a checked `CoroutinePlan` in addition to its
-ordinary LCIR signature and CFG. The plan fixes the output type and the dense
+ordinary LCIR signature and CFG. The plan fixes the output type, whether the
+frame carries a creation-site span for state-zero preconditions, and the dense
 resume-state sequence `1..n`. Each row records an `AwaitMode` and one ordered
 exact output type for every child, followed by, in deterministic MIR-local
 order, the exact LCIR types forwarded across that suspension. The child-output
@@ -662,7 +681,9 @@ input.
 
 `TaskCreate` constructs a scheduler-owned `Task[T]` for one exact coroutine
 instance. The handle is a stable opaque pointer, not a moving object and not a
-Promise or universal value. The hidden executor comes only from the active
+Promise or universal value. It carries the instruction's source span into a
+callee frame only when the checked coroutine plan requires dynamic precondition
+blame; this does not copy the callee's fault effects to `TaskCreate`. The hidden executor comes only from the active
 coroutine callback or the async root harness. `AwaitTasks` stores all ordered
 children and the row's live values, prepares one structured mode-specific join,
 publishes the frame/root state, and exposes explicit normal, child-fault, and
@@ -721,13 +742,18 @@ no payload, and existing live outcomes are rooted across later captures.
 
 A sole nonempty List literal is flattened to the same static child row without
 constructing the input List. `all` and `settled` build a fresh result List from
-the ordered resumed values; `any` and `race` retain their scalar result. This is
-a compiler specialization of standard-library calls, not a source-level join
-operator. Empty, stored, computed, and runtime-sized Lists are deliberately not
-classified as fixed rows.
+the ordered resumed values; `any` and `race` retain their scalar result. Version
+0.3 still reaches this path through temporary qualified-name recognition. The
+target design resolves ordinary standard-library declarations first and
+selects specialization by their stable intrinsic identity. Its private
+substrate is limited to typed join/select readiness, exact value or outcome
+extraction, and structured cancellation-and-drain; it does not encode public
+policy names as source operators. Empty, stored, computed, and runtime-sized
+Lists are deliberately not classified as fixed rows.
 
-LLVM derives a target-laid-out frame containing state, parameters, one ordered
-child-pointer row plus one live-value row per suspension, and the typed result.
+LLVM derives a target-laid-out frame containing state, parameters, optional
+creation-site span coordinates, one ordered child-pointer row plus one
+live-value row per suspension, and the typed result.
 The coroutine result must use the semantic type's canonical LCIR
 representation: `Task[T]` intentionally carries no second hidden layout ID, so
 producer and consumer cannot disagree about the result ABI. LLVM emits one
@@ -1083,9 +1109,12 @@ These checks apply both to explicit clients and to the whole-artifact typed
 lowerer. The production automatic route consumes only the resulting checked
 artifact when the complete reachable graph is supported. Supported source
 contracts use the same validated metadata and control flow as explicit LCIR
-clients. Assertions keep their exact source span; preconditions keep their
-contract span plus the concrete closed-world call-expression blame span. Their
-fault edges traverse the same lexical cleanup suffix as any other fault.
+clients. Assertions keep their exact source span. Synchronous preconditions keep
+their contract span plus a static closed-world call-expression blame span;
+async preconditions keep the same contract span plus the validated creation-site
+span carried in the coroutine frame. Root async Tasks receive their declaration
+span from the harness. Their fault edges traverse the same lexical cleanup
+suffix as any other fault.
 Contracts over an unsupported representation or operation still select one
 atomic legacy artifact rather than mixing the two native routes.
 
@@ -1108,11 +1137,12 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 29` text includes
+text even when the graphs are otherwise equivalent. The `lcir 30` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
-typed coroutine plans and Task control flow, including fallible `task.sleep`,
+typed coroutine plans, optional carried caller-span metadata, dynamic
+precondition blame, and Task control flow, including fallible `task.sleep`,
 explicit await modes and normal/fault/cancel targets, `task.outcome_take`, and
 `task.cancelled`,
 typed runtime/contract fault identity including proof-replay and Duration

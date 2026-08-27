@@ -29,8 +29,9 @@ The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
 primitive values, literal or concat-produced `Text`, structural tuples, closed
 records, established transparent refined values, concrete managed Lists, and
 compiler-private concrete `TextMap[V]` values. Its checked coroutine slice also
-covers ordered multi-child awaits and nonempty fixed-arity heterogeneous
-`Task.all` values.
+covers ordered multi-child awaits, nonempty static forms of all four standard
+Task composition policies, exact terminal outcomes, and async state-zero
+preconditions with creation-site blame.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -60,15 +61,15 @@ whole-artifact classification, but an `Unsupported` result is a structured
 facts for every unsupported reachable site. `LegacyOnly` skips LCIR
 classification and exists for focused backend validation.
 
-Source contracts remain outside that routing slice. Hand-built LCIR now carries
-canonical assertion, precondition, postcondition, and invariant fault metadata,
-including bounded user code, message, contract span, and concrete blame span.
-The LLVM emitter preserves the existing contract-channel JSON schema exactly.
-The direct source lowerer emits assertions with their exact source metadata and
-routes assertion faults through the active lexical cleanup suffix. Source
-contracts remain `Unsupported` until call-site precondition blame and the other
-contract placements are materialized. The vocabulary does not permit a partial
-contract route.
+Source contracts are part of the checked direct route. LCIR carries canonical
+assertion, precondition, postcondition, and invariant fault metadata, including
+bounded user code, message, contract span, and either a static blame span or the
+validated creation-site span carried by a coroutine frame. Synchronous callers
+check `requires` before entering an assumed body. Async Tasks check it in state
+zero, so Task construction does not inherit the child's fault effect; the root
+harness supplies the declaration span when no creation expression exists. The
+LLVM emitter preserves the established contract-channel JSON schema and routes
+all contract faults through the active lexical cleanup suffix.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
@@ -391,11 +392,16 @@ arity of one.
 
 The generated source-coroutine resume callback is also the descriptor's cancel
 callback. Its prologue checks the Task cancel-request bit before dispatching by
-frame state. The ordinary dispatch enters state zero or the structured join
-step. The cancellation dispatch terminates state zero directly and, for a
-suspended state, reloads the row and enters that await's checked cancel target.
-This uses the existing typed-task cancellation query and callback ABI. Stored
-`Task.all` composites continue to use the shared generic cancel callback.
+frame state. A coroutine with `requires` also has three `i64` frame fields for
+the creating call's file, start, and end coordinates. Its constructor stores the
+`TaskCreate` origin there; the root harness stores the root declaration span.
+State zero checks those preconditions before the body and emits the same
+contract JSON schema with the carried blame. The ordinary dispatch enters state
+zero or the structured join step. The cancellation dispatch terminates state
+zero directly and, for a suspended state, reloads the row and enters that
+await's checked cancel target. This uses the existing typed-task cancellation
+query and callback ABI. Stored `Task.all` composites continue to use the shared
+generic cancel callback.
 
 An immediately awaited fixed tuple or fixed-argument `Task.all` lowers directly
 to multi-child `AwaitTasks`, then constructs the heterogeneous result tuple in
@@ -444,8 +450,12 @@ literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
 computed, or runtime-sized List joins and first-class `any`, `settled`, or
 `race` results remain reachable `Unsupported` input and select the complete
-legacy object. These are specializations of standard-library calls over a
-private join primitive, not language operators.
+legacy object. Version 0.3 still selects these specializations through temporary
+qualified-name recognition. The target design resolves ordinary
+standard-library declarations and selects a stable intrinsic identity. Its
+minimum private substrate provides typed join/select readiness, exact result or
+outcome extraction, and structured cancellation-and-drain; public policy names
+are not language operators.
 
 ## Direct lexical cleanup
 
@@ -536,10 +546,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 29`, and the checked artifact identity uses
-schema 30. Object identities are route-separated:
+The canonical textual dump is `lcir 30`, and the checked artifact identity uses
+schema 31. Object identities are route-separated:
 
-- `loom-lcir-native-object-v26` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v27` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -551,7 +561,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v31` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v32` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -564,8 +574,9 @@ uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, fallible timer construction, ordered multi-child
 suspension edges, exact stored `Task.all` composites, direct static forms of
 all four standard Task join policies, explicit terminal-outcome capture, and
-exact frame-root rows, including explicit join modes, normal/fault/cancel await
-targets, and static cleanup across suspension, plus
+exact frame-root rows, including optional coroutine caller-span fields, dynamic
+precondition blame, explicit join modes, normal/fault/cancel await targets, and
+static cleanup across suspension, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -631,6 +642,13 @@ publishes fault code/message Text through caller-provided rooted cells, and
 retires the child only after a successful transfer. It does not add a universal
 value or source-visible runtime type tag. `typed-task-v1`, coroutine v2,
 `typed-timer-v1`, `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
+
+Async state-zero preconditions add optional caller-span fields to compiler-shaped
+coroutine frames and pass those coordinates through compiler-internal
+constructors. Dynamic contract detail assembly reuses the established context
+fault entry point and wire schema. This advances only the LCIR dump, artifact,
+native-object, and object-cache domains described above; native runtime ABI
+component 19 and `runtime-v13` remain unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

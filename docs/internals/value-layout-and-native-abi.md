@@ -124,7 +124,8 @@ or managed-heap reference to the handle. Task handles are stable for their
 scheduler lifetime and are not moving-GC roots.
 
 A typed coroutine frame is target-laid out from its checked plan. It contains
-state, parameters, one ordered child-handle row and exact live-value row per
+state, parameters, optional creation-site span coordinates for async
+preconditions, one ordered child-handle row and exact live-value row per
 `AwaitTasks` suspension, and the exact completed result. Each plan row records
 the output type of every awaited child before the forwarded live types. The
 descriptor lists managed-leaf offsets only for values live in each state and

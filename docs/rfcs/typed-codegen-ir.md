@@ -83,8 +83,9 @@ representation from an expression shape, or create new callable instances.
 The implemented instance planner closes direct calls from the selected
 exported run or test roots. Identity contains the source function, exact type
 arguments, complete static witness arguments, and the source-contract boundary
-role. Ordinary calls target an `AssumedBody`; an exported root with
-preconditions receives a same-signature `CheckedRoot` wrapper. It deduplicates identical
+role. Ordinary synchronous calls target an `AssumedBody`; an exported
+synchronous root with preconditions receives a same-signature `CheckedRoot`
+wrapper. An async instance checks its own preconditions in state zero. The planner deduplicates identical
 instances across roots, permits exact regular recursion, and rejects
 nonregular recursion or finite planning-budget exhaustion before LCIR
 construction. Proof-only witness identity remains compile-time data; it does
@@ -271,16 +272,18 @@ faults remain distinguishable.
 Contract metadata is authoritative checked LCIR data, not a source lookup. It
 contains one canonical assertion/precondition/postcondition/invariant kind,
 optional bounded user code, the canonical message, and concrete contract and
-blame spans. A precondition can blame its materialized call site; every other
-kind must blame its own contract/assertion span. Independent validation rejects
+blame sources. A synchronous precondition carries its materialized call site;
+an async precondition names the creation-site span carried in its coroutine
+frame. Every other kind must blame its own contract/assertion span. Independent validation rejects
 forged combinations and applies a 4 KiB UTF-8 limit to each text field before
-dumping or LLVM global/detail encoding. Each closed-world call evaluates all
-arguments first, checks the callee's `requires` clauses with the concrete call
-expression as blame, and then enters the assumed body. Root harnesses perform
-the same checks in a checked wrapper, using the root declaration span because
-there is no source call expression. No caller-span argument is added to the
-physical callable ABI, and `requires` alone does not make an assumed body
-fallible.
+dumping or LLVM global/detail encoding. A synchronous closed-world call
+evaluates all arguments, checks `requires` with the call expression as blame,
+and enters the assumed body. An async call constructs its child first; the
+coroutine checks `requires` in state zero and records failure on that child.
+Its compiler-private constructor carries the creation span, while an async root
+receives its declaration span from the harness. No source callable accepts a
+caller-span argument. Task creation does not inherit the child's fault effect,
+and `requires` alone does not make an assumed synchronous body fallible.
 
 An inherent receiver invariant executes at assumed-body entry. Entry values
 for `old(self)` and `old(arguments)` remain typed SSA values. On every normal
@@ -351,7 +354,10 @@ single fallibility flag. `MAY_FAULT` remains independent; checked scalar faults
 do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
-closure over direct, invoke, and Task-creation edges. `TextConcat` and
+closure over direct and invoke edges. A synchronous caller inherits the effect
+of a precondition it evaluates. An async precondition belongs to the child
+coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
+`TextConcat` and
 `TextGet` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
@@ -377,21 +383,24 @@ budgets are exceeded.
 The harness creates no runtime for a pure direct root. It creates a runtime,
 but no executor, for a synchronous faulting or collecting root. An async root
 creates one executor, constructs the root Task, runs it to a terminal state,
-takes its exact typed result, and destroys the executor.
+takes its exact typed result, and destroys the executor. When the async root has
+preconditions, construction supplies its declaration span as state-zero blame.
 
 Each admitted async instance has a checked `CoroutinePlan` with an exact output
-type and dense resume states. Every state records an `AwaitMode`, the exact
+type, an optional carried creation span for state-zero preconditions, and dense
+resume states. Every state records an `AwaitMode`, the exact
 output type of every child in task order, and the live value types forwarded to
 its continuation. The complete child-output row is independent of the normal
 value arity: `all` injects every output, homogeneous `any` injects one
 successful output, `settled` injects every terminal child handle, and
 homogeneous `race` injects the terminal winner handle.
-LLVM target data shapes a frame containing state, parameters, one ordered
-child/live row per suspension, and result. An immutable typed-task descriptor
+LLVM target data shapes a frame containing state, parameters, optional caller
+span coordinates, one ordered child/live row per suspension, and result. An immutable typed-task descriptor
 publishes exact managed-leaf byte offsets and per-state bitmaps. The callback is
 used for both the source coroutine's descriptor resume and cancel entries. It
 checks the Task cancel request before state dispatch: ordinary state zero enters
-the LCIR entry, later ordinary states use the structured join-step ABI, and
+the LCIR entry and checks any preconditions before the body, later ordinary
+states use the structured join-step ABI, and
 cancellation enters the corresponding state-specific cancel edge. Normal join
 completion takes the mode-derived typed values into the leading continuation
 parameters; child fault and cancellation forward only the identical exact live
@@ -447,6 +456,13 @@ finalization with `any`. A sole nonempty List literal is flattened to the same
 static child row without constructing the input List; `all` and `settled`
 construct their List result after resume. These are compiler specializations of
 standard-library APIs, not additional language syntax.
+
+Version 0.3 still selects these specializations by recognizing the qualified
+source names. The target pipeline will first perform ordinary standard-library
+resolution, then select specialization through stable intrinsic identity on the
+resolved declaration. Its minimum private substrate provides typed join/select
+readiness, exact result or outcome extraction, and structured
+cancellation-and-drain. Public policy names do not become LCIR source operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
 parameters, Lists, TextMaps, finite-catalog or open dynamic-concept frame values,
@@ -547,6 +563,15 @@ object-cache domain to `loom-llvm-object-cache-v31`. The additive
 finalization advance the exact native runtime identity to component 19 with
 `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
 Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+
+Async state-zero preconditions and coroutine-carried creation-site blame advance
+the canonical dump to `lcir 30`, artifact identity to schema 31, LCIR
+native-object domain to `loom-lcir-native-object-v27`, and CLI object-cache
+domain to `loom-llvm-object-cache-v32`. The checked plan and contract metadata
+encode the optional caller span; the root harness supplies the declaration span
+when no creating call exists. Existing fault-context entry points and the JSON
+wire schema are reused, so native runtime component 19 and `runtime-v13` do not
+change.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

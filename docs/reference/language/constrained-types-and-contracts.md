@@ -147,6 +147,13 @@ fn clamp(value Float, low Float, high Float) Float
 }
 ```
 
+A synchronous call checks `requires` after evaluating its arguments and before
+entering the body. An async call first creates its child `Task`; that child
+checks `requires` in state zero before entering the async body. Failure keeps the
+creation expression as its blame site but becomes the child's primary fault, so
+creating the Task does not unwind the parent. An exported async root has no
+creation expression and uses its declaration span for blame.
+
 Multiple clauses are combined logically. Every `requires` clause must precede
 every `ensures` clause.
 
@@ -200,19 +207,31 @@ but not a mutable `var`.
 
 ## Checking order
 
-For a closed-world function call, the observable order is:
+For a synchronous closed-world function call, the observable order is:
 
 ```text
 evaluate arguments -> requires -> old snapshots -> body -> lexical cleanup -> ensures
 ```
 
-For an inherent or concept method, receiver invariants surround the same
-sequence:
+For a synchronous inherent or concept method, receiver invariants surround the
+same sequence:
 
 ```text
 evaluate receiver and arguments -> requires -> entry invariant -> old snapshots
 -> body -> lexical cleanup -> exit invariant -> ensures
 ```
+
+An async call has two observable phases:
+
+```text
+caller: evaluate receiver and arguments -> create child Task
+child state zero: entry invariant (method only) -> requires -> old snapshots
+-> body -> lexical cleanup -> exit invariant (method only) -> ensures
+```
+
+The child retains the creation expression as precondition blame. An exported
+async root substitutes its declaration span because no caller expression
+exists. A state-zero failure faults the child and does not unwind the creator.
 
 If the body returns normally through either a tail expression or `return`, the
 lexical cleanup suffix runs before exit checks. An `Err` is a normal return and
@@ -222,4 +241,5 @@ the earlier invariant check determines the reported fault.
 
 Conformance calls use the concept requirement's contract and the concrete
 receiver's invariant. Static dispatch, interface parameters, and first-class
-`dyn` dispatch have the same contract order.
+`dyn` dispatch follow the synchronous or async order appropriate to the
+requirement.
