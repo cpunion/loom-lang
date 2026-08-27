@@ -3592,16 +3592,21 @@ mod tests {
                 GC_OK,
             );
             assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], inner_before);
-            let built = chain_values(
-                frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
-                inputs.len(),
-            );
-            assert_eq!(
-                built[0].words[VALUE_WORD_DATA],
-                frame.roots[0].words[VALUE_WORD_DATA]
-            );
-            assert_eq!(text::text_value_bytes(&built[1]), Some(&b"moving text"[..]),);
-            assert_eq!(built[2].words[VALUE_WORD_SCALAR], 303);
+            {
+                // This snapshot is valid only until the next managed
+                // allocation. Later assertions reload the rooted chain after
+                // clone_value's forced collection boundaries.
+                let built = chain_values(
+                    frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
+                    inputs.len(),
+                );
+                assert_eq!(
+                    built[0].words[VALUE_WORD_DATA],
+                    frame.roots[0].words[VALUE_WORD_DATA]
+                );
+                assert_eq!(text::text_value_bytes(&built[1]), Some(&b"moving text"[..]),);
+                assert_eq!(built[2].words[VALUE_WORD_SCALAR], 303);
+            }
 
             frame.roots[4].words[VALUE_WORD_TAG] = VALUE_TAG_TUPLE;
             frame.roots[4].words[VALUE_WORD_AUX] = inputs.len() as u64;
@@ -3615,23 +3620,40 @@ mod tests {
                 GC_OK,
             );
             assert!((*runtime).heap.collections >= collections_before + inputs.len() as u64);
+            let source = chain_values(
+                frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
+                inputs.len(),
+            );
             let cloned = chain_values(
                 frame.roots[5].words[VALUE_WORD_DATA] as *const ValueNode,
                 inputs.len(),
             );
+            assert_eq!(
+                source[0].words[VALUE_WORD_DATA],
+                frame.roots[0].words[VALUE_WORD_DATA],
+            );
             assert_eq!(cloned[0].words[VALUE_WORD_TAG], VALUE_TAG_REFINED);
             assert_ne!(
                 cloned[0].words[VALUE_WORD_DATA],
-                built[0].words[VALUE_WORD_DATA],
+                source[0].words[VALUE_WORD_DATA],
+            );
+            assert_eq!(
+                (*(source[0].words[VALUE_WORD_DATA] as *const ValueSlot)).words[VALUE_WORD_SCALAR],
+                101,
             );
             assert_eq!(
                 (*(cloned[0].words[VALUE_WORD_DATA] as *const ValueSlot)).words[VALUE_WORD_SCALAR],
                 101,
             );
             assert_eq!(
+                text::text_value_bytes(&source[1]),
+                Some(&b"moving text"[..])
+            );
+            assert_eq!(
                 text::text_value_bytes(&cloned[1]),
                 Some(&b"moving text"[..])
             );
+            assert_eq!(source[2].words[VALUE_WORD_SCALAR], 303);
             assert_eq!(cloned[2].words[VALUE_WORD_SCALAR], 303);
             (*runtime).heap.collect_before_every_allocation = false;
 
