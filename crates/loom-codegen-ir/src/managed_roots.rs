@@ -330,7 +330,9 @@ fn collect_safepoint_values(
             );
             let collecting = matches!(
                 instruction.kind(),
-                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                InstructionKind::TextConcat { .. }
+                    | InstructionKind::TextGet { .. }
+                    | InstructionKind::FormatFloat { .. }
             ) || list_allocation
                 || matches!(
                     instruction.kind(),
@@ -460,7 +462,9 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
             vec![normal.block, fault.block]
         }
         TerminatorKind::Invoke { normal, unwind, .. } => vec![normal.block, unwind.block],
-        TerminatorKind::Assert { success, fault, .. } => vec![success.block, fault.block],
+        TerminatorKind::Assert { success, fault, .. } => {
+            vec![success.block, fault.block]
+        }
         TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
             Vec::new()
         }

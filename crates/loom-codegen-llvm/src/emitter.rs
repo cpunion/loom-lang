@@ -26,7 +26,8 @@ use loom_codegen_ir::{ReachableSourceGraph, SourceRoots};
 use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
+    INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
@@ -36,9 +37,10 @@ use loom_mir::{
     WitnessRef, disclosure_type_summary,
 };
 use loom_runtime_abi::{
-    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, SHADOW_STACK_ABI_VERSION,
-    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
+    PARSE_INT_SYMBOL, SHADOW_STACK_ABI_VERSION, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE,
 };
 
 use crate::CodegenError;
@@ -178,6 +180,7 @@ fn native_fault_message(code: &str) -> &str {
         INTEGER_OVERFLOW_FAULT_CODE => INTEGER_OVERFLOW_FAULT_MESSAGE,
         "IntegerDivisionByZero" => "integer division by zero",
         "IntegerDivisionOverflow" => "integer division overflowed",
+        INVALID_DURATION_FAULT_CODE => INVALID_DURATION_FAULT_MESSAGE,
         "InvalidSleepDuration" => "sleep duration must not be negative",
         "SleepDurationOverflow" => "sleep duration overflowed",
         "InvalidPort" => "socket port must fit UInt16",
@@ -1948,7 +1951,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
 
     fn native_parse_float(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_runtime_parse_float")
+            .get_function(PARSE_FLOAT_SYMBOL)
             .unwrap_or_else(|| {
                 let function_type = self.context.i32_type().fn_type(
                     &[
@@ -1959,13 +1962,13 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     false,
                 );
                 self.module
-                    .add_function("loom_runtime_parse_float", function_type, None)
+                    .add_function(PARSE_FLOAT_SYMBOL, function_type, None)
             })
     }
 
     fn native_parse_int(&self) -> FunctionValue<'ctx> {
         self.module
-            .get_function("loom_runtime_parse_int")
+            .get_function(PARSE_INT_SYMBOL)
             .unwrap_or_else(|| {
                 let function_type = self.context.i32_type().fn_type(
                     &[
@@ -1976,7 +1979,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     false,
                 );
                 self.module
-                    .add_function("loom_runtime_parse_int", function_type, None)
+                    .add_function(PARSE_INT_SYMBOL, function_type, None)
             })
     }
 
@@ -12118,7 +12121,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                         "duration.negative",
                     )
                     .map_err(builder_error)?;
-                self.fail_if(negative, "InvalidDuration")?;
+                self.fail_if(negative, INVALID_DURATION_FAULT_CODE)?;
                 let ty =
                     self.backend.program.prelude.duration.ok_or_else(|| {
                         CodegenError::new("InvalidPrelude", "Duration is missing")

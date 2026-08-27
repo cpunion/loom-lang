@@ -501,6 +501,35 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
+    /// Parses one canonical Text value as a signed `Int` and constructs the
+    /// exact closed `Result[Int, ParseIntError]` selected by the checked
+    /// source program. Runtime status 0 selects `ok_variant`; statuses 1 and
+    /// 2 select the nested `invalid_syntax_variant` and
+    /// `out_of_range_variant` through `error_variant`.
+    ParseInt {
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_syntax_variant: u32,
+        out_of_range_variant: u32,
+    },
+    /// Parses one canonical Text value as a binary64 `Float` and constructs
+    /// the exact closed `Result[Float, ParseFloatError]` selected by the
+    /// checked source program. The status and variant contract matches
+    /// [`InstructionKind::ParseInt`].
+    ParseFloat {
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_syntax_variant: u32,
+        out_of_range_variant: u32,
+    },
+    /// Formats one binary64 `Float` into a freshly allocated canonical Text.
+    /// The typed runtime publishes the managed pointer through a stable output
+    /// cell at this instruction's exact collection safepoint.
+    FormatFloat {
+        value: ValueId,
+    },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
     ProductConstruct {
@@ -636,7 +665,9 @@ impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
-            Self::TextLength { text } => vec![*text],
+            Self::TextLength { text }
+            | Self::ParseInt { text, .. }
+            | Self::ParseFloat { text, .. } => vec![*text],
             Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::ListConstruct { elements } => elements.to_vec(),
             Self::ListLength { list } => vec![*list],
@@ -654,7 +685,8 @@ impl InstructionKind {
             Self::RefineProven { value }
             | Self::Unrefine { value }
             | Self::BoolNot { value }
-            | Self::FloatNegate { value } => vec![*value],
+            | Self::FloatNegate { value }
+            | Self::FormatFloat { value } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }
@@ -769,6 +801,7 @@ pub enum FaultCode {
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
+    InvalidDuration,
     ResourceClose,
 }
 

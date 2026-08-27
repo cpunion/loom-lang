@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `18` |
-| LCIR artifact identity | schema `19` |
-| LCIR native-object domain | `loom-lcir-native-object-v15` |
+| LCIR textual dump | version `19` |
+| LCIR artifact identity | schema `20` |
+| LCIR native-object domain | `loom-lcir-native-object-v16` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v20` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v21` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `14` |
+| Native runtime ABI component | `15` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -67,6 +67,15 @@ checked predicate is explicit typed CFG, rejection raises the canonical
 `ArtifactProofRejected` `RuntimeFault`, and the established nominal value is
 created only on the accepted edge. This reuses the existing fault-context ABI
 and changes no runtime component.
+
+Typed scalar builtins advance the LCIR dump to 19, artifact schema to 20,
+native-object domain to v16, and LLVM object-cache domain to v21. `ParseInt`
+and `ParseFloat` reuse their existing closed status ABI; `IsFinite` and
+`Duration` lower to typed comparisons, products, and canonical runtime-fault
+assertions. `FormatFloat` adds
+`loom_runtime_format_float_typed_v1(value, out_cell)`, advancing the native
+runtime ABI component to 15 with `format-float-v1` and `runtime-v9`. The Text
+layout remains `text-v3`, and collection remains `gc-v9`.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC
@@ -232,6 +241,12 @@ The typed Text scalar-selection helper adds a direct pointer output and a
 three-value found/missing/invalid status boundary without using the universal
 envelope. It advances Text identity to `text-v3` and the native runtime ABI
 component to 14 with `runtime-v8`; `gc-v9` and both typed allocation wires are
+unchanged.
+
+The typed Float formatter adds a direct managed-Text output cell and a closed
+success/error status without using the universal envelope. It advances the
+native runtime ABI component to 15 with `format-float-v1` and `runtime-v9`;
+the established `text-v3` layout, `gc-v9`, and typed allocation wires remain
 unchanged.
 
 ## Reproducibility and rollback

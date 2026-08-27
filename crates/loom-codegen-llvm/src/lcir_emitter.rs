@@ -42,12 +42,15 @@ use loom_codegen_ir::{
 };
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
+    INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
-    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
-    GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+    FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
+    GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
+    GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+    PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
     TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
     TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
     TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
@@ -2251,6 +2254,41 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_format_float_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(FORMAT_FLOAT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[self.context.f64_type().into(), self.ptr_type.into()],
+                    false,
+                );
+                self.module
+                    .add_function(FORMAT_FLOAT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn runtime_parse_int(&self) -> FunctionValue<'ctx> {
+        self.runtime_parse_scalar(PARSE_INT_SYMBOL)
+    }
+
+    fn runtime_parse_float(&self) -> FunctionValue<'ctx> {
+        self.runtime_parse_scalar(PARSE_FLOAT_SYMBOL)
+    }
+
+    fn runtime_parse_scalar(&self, symbol: &str) -> FunctionValue<'ctx> {
+        self.module.get_function(symbol).unwrap_or_else(|| {
+            let function_type = self.context.i32_type().fn_type(
+                &[
+                    self.ptr_type.into(),
+                    self.context.i64_type().into(),
+                    self.ptr_type.into(),
+                ],
+                false,
+            );
+            self.module.add_function(symbol, function_type, None)
+        })
+    }
+
     fn runtime_resource_close_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_RESOURCE_CLOSE_SYMBOL)
@@ -2378,12 +2416,100 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.builder.position_at_end(success);
         Ok(found)
     }
+
+    fn require_parse_status(
+        &self,
+        status: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmBuilderFailed",
+                    "parse status guard has no active function",
+                )
+            })?;
+        let success = self
+            .context
+            .append_basic_block(function, &format!("{name}.status.ok"));
+        let failure = self
+            .context
+            .append_basic_block(function, &format!("{name}.status.failed"));
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_int(
+                    u64::try_from(PARSE_STATUS_OK).expect("parse success status is nonnegative"),
+                    false,
+                ),
+                &format!("{name}.ok"),
+            )
+            .map_err(builder_error)?;
+        let invalid = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_int(
+                    u64::try_from(PARSE_STATUS_INVALID_SYNTAX)
+                        .expect("parse invalid-syntax status is nonnegative"),
+                    false,
+                ),
+                &format!("{name}.invalid_syntax"),
+            )
+            .map_err(builder_error)?;
+        let out_of_range = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_int(
+                    u64::try_from(PARSE_STATUS_OUT_OF_RANGE)
+                        .expect("parse out-of-range status is nonnegative"),
+                    false,
+                ),
+                &format!("{name}.out_of_range"),
+            )
+            .map_err(builder_error)?;
+        let known_failure = self
+            .builder
+            .build_or(invalid, out_of_range, &format!("{name}.known_failure"))
+            .map_err(builder_error)?;
+        let valid = self
+            .builder
+            .build_or(ok, known_failure, &format!("{name}.status.valid"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], &format!("{name}.status.trap"))
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(success);
+        Ok((ok, out_of_range))
+    }
 }
 
 #[derive(Clone, Copy)]
 enum FaultEmission<'metadata> {
     Runtime { code: FaultCode, origin: Origin },
     Contract(&'metadata ContractFaultMetadata),
+}
+
+#[derive(Clone, Copy)]
+enum ParseScalar {
+    Int,
+    Float,
 }
 
 struct FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -2402,6 +2528,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_state: Option<PointerValue<'ctx>>,
     resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
     text_output_cells: Vec<Option<PointerValue<'ctx>>>,
+    parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -2469,6 +2596,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_state: None,
             resource_close_cells: vec![None; source.blocks().len()],
             text_output_cells: vec![None; source.instructions().len()],
+            parse_output_cells: vec![None; source.instructions().len()],
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
@@ -2633,7 +2761,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         for instruction in self.source.instructions() {
             if !matches!(
                 instruction.kind(),
-                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                InstructionKind::TextConcat { .. }
+                    | InstructionKind::TextGet { .. }
+                    | InstructionKind::FormatFloat { .. }
             ) {
                 continue;
             }
@@ -2662,6 +2792,51 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 CodegenError::new(
                     "LlvmAbiDefect",
                     format!("collecting Text instruction {instruction} has no output cell"),
+                )
+            })
+    }
+
+    fn prepare_parse_output_cells(&mut self) -> Result<(), CodegenError> {
+        let entry = self.source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", self.source.id()),
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(self.blocks[entry.index()]);
+        for instruction in self.source.instructions() {
+            let scalar_type: BasicTypeEnum<'ctx> = match instruction.kind() {
+                InstructionKind::ParseInt { .. } => self.backend.context.i64_type().into(),
+                InstructionKind::ParseFloat { .. } => self.backend.context.f64_type().into(),
+                _ => continue,
+            };
+            let cell = self
+                .backend
+                .builder
+                .build_alloca(
+                    scalar_type,
+                    &format!("parse.output.i{}", instruction.id().raw()),
+                )
+                .map_err(builder_error)?;
+            self.parse_output_cells[instruction.id().index()] = Some(cell);
+        }
+        Ok(())
+    }
+
+    fn parse_output_cell(
+        &self,
+        instruction: InstructionId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.parse_output_cells
+            .get(instruction.index())
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("parse instruction {instruction} has no scalar output cell"),
                 )
             })
     }
@@ -3465,6 +3640,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn compile(mut self) -> Result<(), CodegenError> {
         self.prepare_resource_close_cells()?;
         self.prepare_text_output_cells()?;
+        self.prepare_parse_output_cells()?;
         self.prepare_root_frame()?;
         for index in 0..self.emission_order.len() {
             let block_id = self.emission_order[index];
@@ -3794,6 +3970,63 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 };
                 one(compared.into())
             }
+            InstructionKind::ParseInt {
+                text,
+                ok_variant,
+                error_variant,
+                invalid_syntax_variant,
+                out_of_range_variant,
+            } => one(self.emit_parse_instruction(
+                instruction,
+                ParseScalar::Int,
+                *text,
+                *ok_variant,
+                *error_variant,
+                *invalid_syntax_variant,
+                *out_of_range_variant,
+            )?),
+            InstructionKind::ParseFloat {
+                text,
+                ok_variant,
+                error_variant,
+                invalid_syntax_variant,
+                out_of_range_variant,
+            } => one(self.emit_parse_instruction(
+                instruction,
+                ParseScalar::Float,
+                *text,
+                *ok_variant,
+                *error_variant,
+                *invalid_syntax_variant,
+                *out_of_range_variant,
+            )?),
+            InstructionKind::FormatFloat { value } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Float formatting has no Text result")
+                })?;
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output = if let Some(cell) = self.direct_root_cell(result)? {
+                    cell
+                } else {
+                    self.text_output_cell(instruction.id())?
+                };
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_format_float_typed(),
+                    &[self.value(*value)?.into_float_value().into(), output.into()],
+                    "format.float.status",
+                )?;
+                self.backend.require_zero_status(status, "format.float")?;
+                one(self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "format.float.result")
+                    .map_err(builder_error)?)
+            }
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
@@ -4084,6 +4317,134 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             self.record_value(result, value)?;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the checked parse opcode carries the complete outer and nested sum identity"
+    )]
+    fn emit_parse_instruction(
+        &self,
+        instruction: &Instruction,
+        scalar: ParseScalar,
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_syntax_variant: u32,
+        out_of_range_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result =
+            instruction.results().first().copied().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "parse instruction has no result")
+            })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "parse result value is missing"))?
+            .ty();
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let output = self.parse_output_cell(instruction.id())?;
+        let (runtime, zero, output_type, name): (
+            FunctionValue<'ctx>,
+            BasicValueEnum<'ctx>,
+            BasicTypeEnum<'ctx>,
+            &str,
+        ) = match scalar {
+            ParseScalar::Int => (
+                self.backend.runtime_parse_int(),
+                self.backend.context.i64_type().const_zero().into(),
+                self.backend.context.i64_type().into(),
+                "parse.int",
+            ),
+            ParseScalar::Float => (
+                self.backend.runtime_parse_float(),
+                self.backend.context.f64_type().const_zero().into(),
+                self.backend.context.f64_type().into(),
+                "parse.float",
+            ),
+        };
+        self.backend
+            .builder
+            .build_store(output, zero)
+            .map_err(builder_error)?;
+        let (data, length) = self.backend.text_parts(
+            self.value(text)?.into_pointer_value(),
+            &format!("{name}.text"),
+        )?;
+        let status = call_int(
+            &self.backend.builder,
+            runtime,
+            &[data.into(), length.into(), output.into()],
+            &format!("{name}.status"),
+        )?;
+        let (ok, out_of_range) = self.backend.require_parse_status(status, name)?;
+        let parsed = self
+            .backend
+            .builder
+            .build_load(output_type, output, &format!("{name}.value"))
+            .map_err(builder_error)?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[parsed])?;
+        let invalid_error =
+            self.emit_sum_construct_values(error_ty, invalid_syntax_variant, &[])?;
+        let range_error = self.emit_sum_construct_values(error_ty, out_of_range_variant, &[])?;
+        let selected_error = self
+            .backend
+            .builder
+            .build_select(
+                out_of_range,
+                range_error,
+                invalid_error,
+                &format!("{name}.error"),
+            )
+            .map_err(builder_error)?;
+        let error_value =
+            self.emit_sum_construct_values(result_ty, error_variant, &[selected_error])?;
+        self.backend
+            .builder
+            .build_select(ok, ok_value, error_value, &format!("{name}.result"))
+            .map_err(builder_error)
+    }
+
+    fn sum_variant_field_type(
+        &self,
+        ty: ValueTypeId,
+        variant: u32,
+        field: usize,
+    ) -> Result<ValueTypeId, CodegenError> {
+        let representations = self.backend.artifact.representations();
+        let value_type = representations.value_type(ty).ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", format!("missing parse result type {ty}"))
+        })?;
+        let Repr::Sum(sum) = representations
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("missing parse result repr for {ty}"),
+                )
+            })?
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("parse result type {ty} is not a sum"),
+            ));
+        };
+        representations
+            .sum(sum)
+            .and_then(|sum| {
+                usize::try_from(variant)
+                    .ok()
+                    .and_then(|variant| sum.variants().get(variant))
+            })
+            .and_then(|variant| variant.fields().get(field))
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("parse result type {ty} has no variant {variant} field {field}"),
+                )
+            })
     }
 
     fn emit_sum_construct(
@@ -6904,7 +7265,9 @@ impl<'ctx> Backend<'ctx, '_> {
         // diagnostic contracts are specified separately.
         let detail = if matches!(
             fault,
-            FaultCode::IntegerOverflow | FaultCode::ArtifactProofRejected
+            FaultCode::IntegerOverflow
+                | FaultCode::ArtifactProofRejected
+                | FaultCode::InvalidDuration
         ) {
             serde_json::json!({
                 "channel": "runtime",
@@ -7090,6 +7453,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
         FaultCode::IntegerDivisionOverflow => {
             ("IntegerDivisionOverflow", "integer division overflowed")
         }
+        FaultCode::InvalidDuration => (INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE),
         FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
     }
 }

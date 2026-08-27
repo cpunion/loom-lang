@@ -1,6 +1,12 @@
 //! Canonical binary64 text boundary used by compiler-generated builtins.
 
-use std::ffi::{c_char, c_int};
+use std::ffi::{c_char, c_int, c_void};
+use std::mem::align_of;
+use std::ptr;
+
+use loom_runtime_abi::{
+    GC_INVALID_ARGUMENT, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+};
 
 use crate::scheduler::ValueSlot;
 
@@ -71,15 +77,15 @@ pub(crate) fn canonical_text(value: f64) -> String {
 #[unsafe(export_name = "loom_runtime_parse_float")]
 pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *mut f64) -> c_int {
     let Ok(length) = usize::try_from(length) else {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     };
     if data.is_null() || output.is_null() || length > isize::MAX as usize {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     }
     // SAFETY: the compiler passes a live Text payload and its checked length.
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     };
     let value = match text {
         "NaN" => f64::from_bits(CANONICAL_NAN),
@@ -87,18 +93,18 @@ pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *
         "-Infinity" => f64::NEG_INFINITY,
         _ if has_float_syntax(text) => {
             let Ok(value) = text.parse::<f64>() else {
-                return 1;
+                return PARSE_STATUS_INVALID_SYNTAX;
             };
             if value.is_infinite() {
-                return 2;
+                return PARSE_STATUS_OUT_OF_RANGE;
             }
             value
         }
-        _ => return 1,
+        _ => return PARSE_STATUS_INVALID_SYNTAX,
     };
     // SAFETY: output was checked non-null and is an LLVM stack slot for f64.
     unsafe { output.write(value) };
-    0
+    PARSE_STATUS_OK
 }
 
 /// Formats a binary64 value into one managed Text object.
@@ -116,9 +122,108 @@ pub unsafe extern "C" fn format_float(value: f64, output: *mut ValueSlot) -> c_i
     0
 }
 
+/// Formats a binary64 value and publishes one direct managed Text pointer.
+///
+/// Canonical formatting completes in non-GC staging storage before the typed
+/// allocation safepoint. The output cell is cleared before any failure and is
+/// published only after the managed leaf is fully initialized.
+#[unsafe(export_name = "loom_runtime_format_float_typed_v1")]
+pub unsafe extern "C" fn format_float_typed_v1(value: f64, output: *mut *mut c_void) -> c_int {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+    let text = canonical_text(value);
+    let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
+        std::process::abort();
+    };
+    unsafe { crate::text::allocate_typed_text(text.as_bytes(), scalar_length, output) }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use loom_runtime_abi::{
+        GC_INVALID_ARGUMENT, GC_OK, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
+        PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+        TYPED_SHADOW_STACK_ABI_VERSION,
+    };
+
     use super::{canonical_text, has_float_syntax};
+
+    fn parse(text: &str, output: &mut f64) -> i32 {
+        // SAFETY: the test supplies a live UTF-8 slice and writable scalar cell.
+        unsafe {
+            super::parse_float(
+                text.as_ptr().cast(),
+                u64::try_from(text.len()).expect("test input length"),
+                output,
+            )
+        }
+    }
+
+    #[test]
+    fn scalar_boundary_uses_the_shared_closed_status_contract() {
+        let mut output = 1.0;
+        assert_eq!(parse("-0.0", &mut output), PARSE_STATUS_OK);
+        assert_eq!(output.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(parse("1", &mut output), PARSE_STATUS_INVALID_SYNTAX);
+        assert_eq!(parse("1e999", &mut output), PARSE_STATUS_OUT_OF_RANGE);
+    }
+
+    #[test]
+    fn typed_formatter_publishes_canonical_text_across_forced_moving_collection() {
+        let runtime = crate::runtime::runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 3_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 2,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut kept: *mut c_void = ptr::null_mut();
+            let mut output: *mut c_void = ptr::null_mut();
+            let slots = [
+                (&raw mut kept).cast::<c_void>(),
+                (&raw mut output).cast::<c_void>(),
+            ];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(crate::gc::typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(super::format_float_typed_v1(12.5, &raw mut kept), GC_OK);
+            assert_eq!(crate::text::text_bytes(kept), Some(&b"12.5"[..]));
+            assert_eq!(super::format_float_typed_v1(-0.0, &raw mut output), GC_OK);
+            assert_eq!(crate::text::text_bytes(kept), Some(&b"12.5"[..]));
+            assert_eq!(crate::text::text_bytes(output), Some(&b"-0.0"[..]));
+            assert!((*runtime).heap.collections >= 2);
+
+            assert_eq!(crate::gc::typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(crate::runtime::runtime_destroy_v1(runtime), GC_OK);
+        }
+
+        assert_eq!(
+            unsafe { super::format_float_typed_v1(1.0, ptr::null_mut()) },
+            GC_INVALID_ARGUMENT
+        );
+    }
 
     #[test]
     fn text_boundary_matches_language_contract() {

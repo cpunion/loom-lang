@@ -209,6 +209,71 @@ fn malformed_sum_construction_and_switch_are_rejected_independently() {
 }
 
 #[test]
+fn forged_parse_status_variants_are_rejected_at_the_typed_boundary() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let text = builder
+        .add_immortal_text_type()
+        .expect("register canonical Text");
+    let parse_error_semantic = nominal(31);
+    let _parse_error = builder
+        .add_sum_type(parse_error_semantic.clone(), &[Box::new([]), Box::new([])])
+        .expect("ParseIntError");
+    let result = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(32), vec![Type::Int, parse_error_semantic.clone()]),
+            &[Box::from([Type::Int]), Box::from([parse_error_semantic])],
+        )
+        .expect("Result[Int, ParseIntError]");
+    let origin = Origin::synthetic(FunctionId(31));
+    let root = builder
+        .declare_function(
+            origin,
+            "parse.forged_status_variants",
+            Signature::new(Vec::new(), result),
+            Effects::NONE,
+        )
+        .expect("declare");
+    {
+        let mut function = builder.function(root).expect("builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let input = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral { utf8: "1".into() },
+                &[text],
+                origin,
+            )
+            .expect("input")[0];
+        let parsed = function
+            .append_instruction(
+                entry,
+                InstructionKind::ParseInt {
+                    text: input,
+                    ok_variant: 0,
+                    error_variant: 1,
+                    invalid_syntax_variant: 0,
+                    out_of_range_variant: 0,
+                },
+                &[result],
+                origin,
+            )
+            .expect("unchecked forged parse")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(parsed), origin),
+            )
+            .expect("return");
+    }
+
+    let errors = validate_program(&builder.finish()).expect_err("forged parse variants must fail");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InstructionShape && error.path().contains("error_variants")
+    }));
+}
+
+#[test]
 fn aggregate_validation_scales_with_uses_without_copying_schemas() {
     const VARIANTS: usize = 128;
     const FIELDS: usize = 64;

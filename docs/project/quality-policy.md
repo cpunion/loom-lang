@@ -57,10 +57,10 @@ either direction fails the runner, so newly supported coverage requires removal
 of its stale allowance.
 
 Run and test artifacts are judged independently because their exact reachable
-graphs may differ. Core 0.1's main artifact is required to use typed LCIR now
-that its source contracts are direct; its negative test artifact retains a
-named legacy allowance only for deliberate runtime-checked constrained-value
-and invariant construction.
+graphs may differ. Core 0.1 requires typed LCIR for both graphs now that source
+contracts and nongeneric runtime-checked constrained construction are direct.
+Only generic or unsupported-shape runtime construction may retain a reviewed
+allowance in another fixture.
 
 Those time bounds detect gross regressions and runaway behavior on CI; they are
 not user latency service-level objectives. The C3 label in the report means

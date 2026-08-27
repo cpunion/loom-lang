@@ -332,10 +332,19 @@ the dump to `lcir 17`, the native-object domain to
 `typed-repeated-v1` wire are unchanged. Typed nongeneric proof replay then
 advances the artifact identity to schema 19, the dump to `lcir 18`, the LCIR
 native-object domain to `loom-lcir-native-object-v15`, and the CLI object-cache
-domain to `loom-llvm-object-cache-v20`. `Assert` now carries either canonical contract or
-runtime fault metadata, allowing `ArtifactProofRejected` to share the exact
-typed unwind and lexical-cleanup path. No runtime symbol, physical value
-representation, or runtime ABI component changes.
+domain to `loom-llvm-object-cache-v20`. `Assert` now carries either canonical
+contract or runtime fault metadata, allowing `ArtifactProofRejected` to share
+the exact typed unwind and lexical-cleanup path. No runtime symbol, physical
+value representation, or runtime ABI component changes.
+Typed scalar builtins then advance the artifact identity to schema 20, the
+dump to `lcir 19`, the LCIR native-object domain to
+`loom-lcir-native-object-v16`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v21`. `ParseInt` and `ParseFloat` reuse their existing
+closed status boundaries. `IsFinite` and `Duration` expand into typed LCIR;
+negative Duration construction uses the canonical runtime-fault `Assert`
+path. `FormatFloat` adds `loom_runtime_format_float_typed_v1`, advancing the
+native runtime component to 15 with `format-float-v1` and `runtime-v9` while
+retaining `text-v3`, `gc-v9`, and the existing typed allocation wires.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -357,7 +366,9 @@ covers constants, locals and assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
-recursion. Plain record construction, whole-value copy and move, nested field
+recursion. Finite checks, integer/float parsing, float formatting, and Duration
+construction/extraction also lower directly. Plain record construction,
+whole-value copy and move, nested field
 read/write, tuple/record nesting, product block parameters, parameters,
 returns, and loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
@@ -616,6 +627,9 @@ The current instruction set is deliberately small:
 - explicitly ordered or unordered floating-point comparisons;
 - typed Text literal, concat, Unicode-scalar get, length, containment, and
   content comparison operations;
+- closed integer/float parsing, managed float formatting, and Duration
+  construction/extraction through existing scalar, sum, product, and fault
+  shapes;
 - ordinary and invariant-proven product construction, field extraction,
   immutable field insertion, and checked-MIR-only transient protected-receiver
   insertion before an exit invariant check;
@@ -644,14 +658,15 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values other than Text leaves in supported products and eligible closed
-sums, open or recursive enums, runtime-checked refined values, dynamic
-dispatch, contracts over unsupported value shapes, and coroutine control flow
-are not implemented. The current CFG represents direct products, concrete
-closed sums, both direct Text modes, and the scalar operations and fault-state
-transitions which later slices use.
-Here “refined values” means runtime-checked or otherwise unproved values;
-statically established monomorphic refinements are represented directly.
+Managed values other than Text leaves in supported products and eligible
+closed sums, open or recursive enums, generic or unsupported-shape runtime
+construction and proof replay, dynamic dispatch, contracts over unsupported
+value shapes, and coroutine control flow are not implemented. Nongeneric
+refined and invariant runtime construction is direct typed CFG returning the
+exact `Result[..., ConstraintError]`; portable nongeneric proof replay uses a
+canonical runtime-fault assertion before nominal publication. The current CFG
+represents direct products, concrete closed sums, both direct Text modes, and
+the scalar operations and fault-state transitions which later slices use.
 
 `Origin` records a source MIR function, optional MIR expression, and source
 span for each function, instruction, and terminator. There is no inlining
@@ -754,11 +769,12 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 18` text includes
+text even when the graphs are otherwise equivalent. The `lcir 19` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
-typed runtime/contract fault identity including proof-replay guards,
+typed runtime/contract fault identity including proof-replay and Duration
+guards, closed parse operations, and managed Float formatting,
 managed-pointer representations and
 `text.concat`, `text.get`, typed resource-close edges, transient
 protected-receiver updates, and the checked value type of every block parameter

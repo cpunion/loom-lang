@@ -10,6 +10,12 @@ pub const INTEGER_OVERFLOW_FAULT_CODE: &str = "IntegerOverflow";
 /// Stable user-facing message for checked signed-integer arithmetic overflow.
 pub const INTEGER_OVERFLOW_FAULT_MESSAGE: &str = "integer arithmetic overflowed";
 
+/// Stable runtime-fault code for a negative Duration construction.
+pub const INVALID_DURATION_FAULT_CODE: &str = "InvalidDuration";
+
+/// Stable user-facing message for a negative Duration construction.
+pub const INVALID_DURATION_FAULT_MESSAGE: &str = "Duration milliseconds cannot be negative";
+
 /// Stable runtime-fault code emitted when a serialized construction proof
 /// fails independent replay at an artifact trust boundary.
 pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";

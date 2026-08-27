@@ -213,6 +213,13 @@ for found indices. It copies the scalar before collection, so source relocation
 cannot invalidate the read. This advances Text identity to `text-v3` and the
 native runtime component to 14 with `runtime-v8`; GC remains `gc-v9`.
 
+The additive `loom_runtime_format_float_typed_v1(value, out_cell)` helper
+publishes canonical binary64 text through the same direct managed pointer
+representation. Its output cell remains stable across allocation and is
+published only after complete initialization. This advances the native runtime
+component to 15 with `format-float-v1` and `runtime-v9`; `text-v3`, `gc-v9`,
+and both typed allocation wires remain unchanged.
+
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
 arena because generated hidden arguments can retain their address across a

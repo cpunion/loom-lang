@@ -2474,11 +2474,21 @@ impl<'program> Classifier<'program> {
                         | mir::Builtin::TextConcat
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListLength
-                        | mir::Builtin::ListGet,
+                        | mir::Builtin::ListGet
+                        | mir::Builtin::IsFinite
+                        | mir::Builtin::ParseInt
+                        | mir::Builtin::ParseFloat
+                        | mir::Builtin::FormatFloat
+                        | mir::Builtin::DurationMilliseconds
+                        | mir::Builtin::DurationAsMilliseconds,
                     ) => {
                         if matches!(
                             target,
-                            CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+                            CallTarget::Builtin(
+                                mir::Builtin::TextConcat
+                                    | mir::Builtin::TextGet
+                                    | mir::Builtin::FormatFloat
+                            )
                         ) {
                             self.managed_text = true;
                         }
@@ -2823,34 +2833,32 @@ fn scan_effect_expr(
             ..
         } => {
             let continues = scan_effect_exprs(program, fields, summary);
-            if continues {
-                if *construction == mir::ConstructionMode::Recheck {
-                    summary.include(Effects::MAY_FAULT);
-                } else if *construction == mir::ConstructionMode::Runtime
-                    && program.type_def(*ty).is_some_and(|definition| {
-                        let mir::TypeDefKind::Record {
-                            invariant: Some(invariant),
-                            ..
-                        } = &definition.kind
-                        else {
-                            return false;
-                        };
-                        contract_expr_may_fault(
-                            program,
-                            &invariant.expression,
-                            &ContractTypeContext {
-                                receiver: Some(Type::Nominal(*ty, Vec::new())),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                        )
-                    })
-                {
-                    summary.include(Effects::MAY_FAULT);
-                }
+            if continues
+                && (*construction == mir::ConstructionMode::Recheck
+                    || (*construction == mir::ConstructionMode::Runtime
+                        && program.type_def(*ty).is_some_and(|definition| {
+                            let mir::TypeDefKind::Record {
+                                invariant: Some(invariant),
+                                ..
+                            } = &definition.kind
+                            else {
+                                return false;
+                            };
+                            contract_expr_may_fault(
+                                program,
+                                &invariant.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(Type::Nominal(*ty, Vec::new())),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                            )
+                        })))
+            {
+                summary.include(Effects::MAY_FAULT);
             }
             continues
         }
@@ -2862,30 +2870,29 @@ fn scan_effect_expr(
             ..
         } => {
             let continues = scan_effect_expr(program, value, summary);
-            if continues {
-                if *construction == mir::ConstructionMode::Recheck {
-                    summary.include(Effects::MAY_FAULT);
-                } else if *construction == mir::ConstructionMode::Runtime
-                    && program.type_def(*ty).is_some_and(|definition| {
-                        let mir::TypeDefKind::Refined { base, predicate } = &definition.kind else {
-                            return false;
-                        };
-                        contract_expr_may_fault(
-                            program,
-                            &predicate.expression,
-                            &ContractTypeContext {
-                                receiver: Some(base.clone()),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                        )
-                    })
-                {
-                    summary.include(Effects::MAY_FAULT);
-                }
+            if continues
+                && (*construction == mir::ConstructionMode::Recheck
+                    || (*construction == mir::ConstructionMode::Runtime
+                        && program.type_def(*ty).is_some_and(|definition| {
+                            let mir::TypeDefKind::Refined { base, predicate } = &definition.kind
+                            else {
+                                return false;
+                            };
+                            contract_expr_may_fault(
+                                program,
+                                &predicate.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(base.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                            )
+                        })))
+            {
+                summary.include(Effects::MAY_FAULT);
             }
             continues
         }
@@ -2904,10 +2911,18 @@ fn scan_effect_expr(
             } else if matches!(
                 target,
                 CallTarget::Builtin(
-                    mir::Builtin::TextConcat | mir::Builtin::TextGet | mir::Builtin::ListAdd
+                    mir::Builtin::TextConcat
+                        | mir::Builtin::TextGet
+                        | mir::Builtin::ListAdd
+                        | mir::Builtin::FormatFloat
                 )
             ) {
                 summary.include(Effects::MAY_COLLECT);
+            } else if matches!(
+                target,
+                CallTarget::Builtin(mir::Builtin::DurationMilliseconds)
+            ) {
+                summary.include(Effects::MAY_FAULT);
             }
             expression.ty != Type::Never
         }
@@ -4567,7 +4582,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 if operand.ty != Type::Float {
                     return Err(self.unsupported_reached("contract is_finite operand"));
                 }
-                self.lower_contract_is_finite(flow, operand.value, origin)
+                self.lower_float_is_finite(flow, operand.value, origin)
             }
             ContractExprKind::Match { scrutinee, arms } => {
                 self.lower_contract_match(flow, scrutinee, arms, expression, context)
@@ -4805,7 +4820,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         })
     }
 
-    fn lower_contract_is_finite(
+    fn lower_float_is_finite(
         &mut self,
         flow: Flow,
         value: ValueId,
@@ -6234,6 +6249,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accepted and disclosure-safe rejected record construction share one typed control-flow boundary"
+    )]
     fn lower_runtime_checked_record(
         &mut self,
         mut flow: Flow,
@@ -6375,6 +6394,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accepted and disclosure-safe rejected refinement construction share one typed control-flow boundary"
+    )]
     fn lower_runtime_checked_refinement(
         &mut self,
         flow: Flow,
@@ -8488,16 +8511,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     ) -> Result<EvalFlow, LoweringError> {
         if let CallTarget::Builtin(builtin) = target {
             return match builtin {
-                mir::Builtin::TextLength
-                | mir::Builtin::TextConcat
-                | mir::Builtin::TextGet
-                | mir::Builtin::TextContains => {
-                    self.lower_text_builtin(flow, *builtin, arguments, expression)
-                }
                 mir::Builtin::ListAdd | mir::Builtin::ListLength | mir::Builtin::ListGet => {
                     self.lower_list_builtin(flow, *builtin, arguments, expression)
                 }
-                _ => Err(self.unsupported_reached("builtin call")),
+                _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
@@ -8734,7 +8751,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         })
     }
 
-    fn lower_text_builtin(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive typed builtin boundary keeps classification and lowering aligned"
+    )]
+    fn lower_builtin(
         &mut self,
         mut flow: Flow,
         builtin: mir::Builtin,
@@ -8744,7 +8765,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let mut values = Vec::with_capacity(arguments.len());
         for argument in arguments {
             let CallArgument::Value(argument) = argument else {
-                return Err(self.unsupported_reached("Text builtin inout argument"));
+                return Err(self.unsupported_reached("builtin inout argument"));
             };
             let EvalFlow::Continue {
                 flow: next_flow,
@@ -8756,29 +8777,112 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow = next_flow;
             values.push(value);
         }
+        let origin = self.expression_origin(expression);
         let kind = match (builtin, values.as_slice()) {
-            (mir::Builtin::TextLength, [text]) => InstructionKind::TextLength { text: *text },
+            (mir::Builtin::TextLength, [text]) => Some(InstructionKind::TextLength { text: *text }),
             (mir::Builtin::TextConcat, [left, right]) => InstructionKind::TextConcat {
                 left: *left,
                 right: *right,
-            },
+            }
+            .into(),
             (mir::Builtin::TextGet, [text, index]) => InstructionKind::TextGet {
                 text: *text,
                 index: *index,
                 missing_variant: 0,
                 found_variant: 1,
-            },
+            }
+            .into(),
             (mir::Builtin::TextContains, [text, needle]) => InstructionKind::TextContains {
                 text: *text,
                 needle: *needle,
-            },
-            _ => return Err(self.unsupported_reached("unsupported Text builtin")),
+            }
+            .into(),
+            (mir::Builtin::ParseInt, [text]) => InstructionKind::ParseInt {
+                text: *text,
+                ok_variant: 0,
+                error_variant: 1,
+                invalid_syntax_variant: 0,
+                out_of_range_variant: 1,
+            }
+            .into(),
+            (mir::Builtin::ParseFloat, [text]) => InstructionKind::ParseFloat {
+                text: *text,
+                ok_variant: 0,
+                error_variant: 1,
+                invalid_syntax_variant: 0,
+                out_of_range_variant: 1,
+            }
+            .into(),
+            (mir::Builtin::FormatFloat, [value]) => {
+                InstructionKind::FormatFloat { value: *value }.into()
+            }
+            (mir::Builtin::IsFinite, [value]) => {
+                return self.lower_float_is_finite(flow, *value, origin);
+            }
+            (mir::Builtin::DurationMilliseconds, [milliseconds]) => {
+                let EvalFlow::Continue { flow, value: zero } =
+                    self.constant(flow, Constant::Int(0), &Type::Int, origin)?
+                else {
+                    return Err(self.unsupported_reached("Duration zero constant"));
+                };
+                let EvalFlow::Continue {
+                    flow,
+                    value: nonnegative,
+                } = self.one_instruction(
+                    flow,
+                    InstructionKind::IntCompare {
+                        predicate: IntPredicate::GreaterEqual,
+                        left: *milliseconds,
+                        right: zero,
+                    },
+                    self.type_id(&Type::Bool)?,
+                    origin,
+                )?
+                else {
+                    return Err(self.unsupported_reached("Duration nonnegative comparison"));
+                };
+                let success = self.create_block()?;
+                let fault = self.fault_target(flow)?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Assert {
+                        condition: nonnegative,
+                        metadata: FaultMetadata::runtime(FaultCode::InvalidDuration),
+                        success: BlockTarget::new(success, []),
+                        fault,
+                    },
+                    origin,
+                )?;
+                return self.one_instruction(
+                    Flow {
+                        block: success,
+                        env: flow.env,
+                    },
+                    InstructionKind::ProductConstruct {
+                        fields: [*milliseconds].into(),
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                );
+            }
+            (mir::Builtin::DurationAsMilliseconds, [duration]) => {
+                return self.one_instruction(
+                    flow,
+                    InstructionKind::ProductExtract {
+                        aggregate: *duration,
+                        field: 0,
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                );
+            }
+            _ => return Err(self.unsupported_reached("unsupported builtin")),
         };
         self.one_instruction(
             flow,
-            kind,
+            kind.expect("supported non-control-flow builtin has an instruction"),
             self.type_id(&expression.ty)?,
-            self.expression_origin(expression),
+            origin,
         )
     }
 

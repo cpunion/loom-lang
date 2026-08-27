@@ -22,7 +22,10 @@ use loom_mir::{
     Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, Pattern, PreludeIds,
     Program, ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
 };
-use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
+use loom_runtime_abi::{
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FORMAT_FLOAT_TYPED_SYMBOL,
+    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+};
 
 mod support;
 use support::{emit_native, link_native_object};
@@ -731,6 +734,413 @@ pub fn main() Unit {
     assert_eq!(native.output.stdout, b"Unit\n");
     assert!(native.ir.contains("fcmp olt"), "{}", native.ir);
     assert_pure_surface(&native.ir);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate covers every scalar builtin status, managed Text input, target object, and legacy-surface exclusion"
+)]
+fn scalar_builtins_match_interpreter_and_legacy_without_universal_values() {
+    let source = r#"module lcir_scalar_builtins
+
+import standard.float.is_finite
+import standard.float.parse_float
+import standard.int.parse_int
+import standard.time.milliseconds
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn parsedIntEquals(input Text, expected Int) Bool {
+    match parse_int(input) {
+        Ok(value) => value == expected
+        Err(_) => false
+    }
+}
+
+fn intInvalid(input Text) Bool {
+    match parse_int(input) {
+        Err(ParseIntError.InvalidSyntax) => true
+        _ => false
+    }
+}
+
+fn intOutOfRange(input Text) Bool {
+    match parse_int(input) {
+        Err(ParseIntError.OutOfRange) => true
+        _ => false
+    }
+}
+
+fn parsedFloatEquals(input Text, expected Float) Bool {
+    match parse_float(input) {
+        Ok(value) => value == expected
+        Err(_) => false
+    }
+}
+
+fn floatInvalid(input Text) Bool {
+    match parse_float(input) {
+        Err(standard.float.ParseFloatError.InvalidSyntax) => true
+        _ => false
+    }
+}
+
+fn floatOutOfRange(input Text) Bool {
+    match parse_float(input) {
+        Err(standard.float.ParseFloatError.OutOfRange) => true
+        _ => false
+    }
+}
+
+pub fn main() Unit {
+    let managed = join("92", "23372036854775807")
+    let maxInt = parsedIntEquals(managed, 9223372036854775807)
+    let minInt = parsedIntEquals("-9223372036854775808", -9223372036854775807 - 1)
+    let plusInt = parsedIntEquals("+17", 17)
+    let invalidInt = intInvalid("17x")
+    let positiveIntOverflow = intOutOfRange("9223372036854775808")
+    let negativeIntOverflow = intOutOfRange("-9223372036854775809")
+    assert maxInt
+    assert minInt
+    assert plusInt
+    assert invalidInt
+    assert positiveIntOverflow
+    assert negativeIntOverflow
+
+    let finiteFloat = parsedFloatEquals("1.25e2", 125.0)
+    let positiveInfinity = parsedFloatEquals("Infinity", 1.0 / 0.0)
+    let negativeInfinity = parsedFloatEquals("-Infinity", -1.0 / 0.0)
+    let parsedNaN = match parse_float("NaN") {
+        Ok(value) => !is_finite(value)
+        Err(_) => false
+    }
+    let parsedNegativeZero = match parse_float("-0.0") {
+        Ok(value) => 1.0 / value == -1.0 / 0.0
+        Err(_) => false
+    }
+    let invalidFloat = floatInvalid("1")
+    let floatOverflow = floatOutOfRange("1e999")
+    let finiteZero = is_finite(0.0)
+    let finiteNegativeZero = is_finite(-0.0)
+    let finiteNaN = is_finite(0.0 / 0.0)
+    let finiteInfinity = is_finite(1.0 / 0.0)
+    assert finiteFloat
+    assert positiveInfinity
+    assert negativeInfinity
+    assert parsedNaN
+    assert parsedNegativeZero
+    assert invalidFloat
+    assert floatOverflow
+    assert finiteZero
+    assert finiteNegativeZero
+    assert !finiteNaN
+    assert !finiteInfinity
+
+    let delay = milliseconds(42)
+    let observed = delay.as_milliseconds()
+    assert observed == 42
+    Unit
+}
+"#;
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "parse.int",
+        "parse.float",
+        "float.compare.ordered_greater_equal",
+        "float.compare.ordered_less_equal",
+        "runtime InvalidDuration",
+        "product.construct",
+        "product.extract",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    let native = emit_and_run_lcir(&artifact, "source-scalar-builtins");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-scalar-builtins");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        PARSE_INT_SYMBOL,
+        PARSE_FLOAT_SYMBOL,
+        "parse.int.status.valid",
+        "parse.float.status.valid",
+        "parse.int.status.failed",
+        "parse.float.status.failed",
+        "call void @llvm.trap()",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "scalar builtin IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for parse in ["parse.int", "parse.float"] {
+        let failed = format!("{parse}.status.failed:");
+        let start = native
+            .ir
+            .rfind(&failed)
+            .unwrap_or_else(|| panic!("missing unexpected-status block `{failed}`"));
+        let end = native.ir.len().min(start + 512);
+        assert!(
+            native.ir[start..end].contains("call void @llvm.trap()"),
+            "{parse} must trap an ABI-forged status outside 0/1/2:\n{}",
+            &native.ir[start..end]
+        );
+    }
+    let parse_integer = emitted_lcir_function(&native.ir, &artifact, "parsedIntEquals");
+    assert!(!parse_integer.contains("loom_gc_typed_root_push_v1"));
+    assert!(!parse_integer.contains("loom_gc_typed_root_pop_v1"));
+    assert_no_legacy_surface(&native.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create scalar builtin target directory");
+        let object = directory.path().join("scalar-builtins.o");
+        let ir_path = directory.path().join("scalar-builtins.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit scalar builtin object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing scalar builtin object for {target}"
+        );
+        let ir = std::fs::read_to_string(ir_path).expect("read scalar builtin target IR");
+        assert!(ir.contains(PARSE_INT_SYMBOL), "{ir}");
+        assert!(ir.contains(PARSE_FLOAT_SYMBOL), "{ir}");
+        assert_no_legacy_surface(&ir);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate covers canonical formatting, moving roots, runtime status integrity, and portable objects"
+)]
+fn typed_float_formatting_matches_all_backends_and_preserves_moving_text() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = format!(
+        r#"module lcir_typed_float_format
+
+import standard.float.format_float
+
+fn join(left Text, right Text) Text {{ left.concat(right) }}
+
+fn render(value Float) Text {{ format_float(value) }}
+
+pub fn main() Unit {{
+    let kept = join("K", "eep")
+    let pressure = "{pressure}".concat("{pressure}")
+    discard pressure.length()
+    let finite = render(1.25)
+    let integral = render(1e20)
+    let small = render(1e-7)
+    let negativeZero = render(-0.0)
+    let positiveInfinity = render(1.0 / 0.0)
+    let negativeInfinity = render(-1.0 / 0.0)
+    let notANumber = render(0.0 / 0.0)
+    assert kept == "Keep"
+    assert finite == "1.25"
+    assert integral == "100000000000000000000.0"
+    assert small == "0.0000001"
+    assert negativeZero == "-0.0"
+    assert positiveInfinity == "Infinity"
+    assert negativeInfinity == "-Infinity"
+    assert notANumber == "NaN"
+    Unit
+}}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let render = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("render"))
+        .expect("typed formatter function");
+    assert!(render.effects().contains(Effects::MAY_COLLECT));
+    assert!(render.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!render.effects().contains(Effects::MAY_FAULT));
+    assert!(!render.effects().contains(Effects::NEEDS_EXECUTOR));
+    assert!(!render.effects().contains(Effects::MAY_SUSPEND));
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("format.float"), "{dump}");
+
+    let native = emit_and_run_lcir(&artifact, "source-typed-float-format");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-float-format");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        FORMAT_FLOAT_TYPED_SYMBOL,
+        "format.float.failed",
+        "call void @llvm.trap()",
+        "managed.root.reload",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "typed format IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    let failed = native
+        .ir
+        .rfind("format.float.failed:")
+        .expect("unexpected format status block");
+    let failed_end = native.ir.len().min(failed + 512);
+    assert!(
+        native.ir[failed..failed_end].contains("call void @llvm.trap()"),
+        "unexpected typed formatter status must trap:\n{}",
+        &native.ir[failed..failed_end]
+    );
+    for forbidden in [
+        "@loom_runtime_format_float(",
+        "%loom.Value",
+        "loom_gc_root_push_v1",
+        "loom_executor_",
+        "landingpad",
+        "personality ptr",
+    ] {
+        assert!(!native.ir.contains(forbidden), "{}", native.ir);
+    }
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create float format target directory");
+        let object = directory.path().join("float-format.o");
+        let ir_path = directory.path().join("float-format.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed float format object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing typed float format object for {target}"
+        );
+        let ir = std::fs::read_to_string(ir_path).expect("read typed float format target IR");
+        assert!(ir.contains(FORMAT_FLOAT_TYPED_SYMBOL), "{ir}");
+        assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
+        assert!(!ir.contains("@loom_runtime_format_float("), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+    }
+}
+
+#[test]
+fn negative_duration_fault_matches_interpreter_and_legacy() {
+    let source = r"module lcir_negative_duration
+
+import standard.time.milliseconds
+
+pub fn main() Unit {
+    discard milliseconds(-1)
+    Unit
+}
+";
+    let program = compile_source(source);
+    let interpreted = serde_json::to_value(
+        interpret_run(&program, "main").expect_err("negative Duration must fault"),
+    )
+    .expect("serialize Duration fault");
+    assert_eq!(interpreted["fault"]["code"], "InvalidDuration");
+    assert_eq!(
+        interpreted["fault"]["message"],
+        "Duration milliseconds cannot be negative"
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("assert"), "{dump}");
+    assert!(dump.contains("InvalidDuration"), "{dump}");
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-negative-duration");
+    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-negative-duration");
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!legacy.status.success(), "{legacy:?}");
+    let lcir_fault = machine_fault(&lcir.output);
+    let legacy_fault = machine_fault(&legacy);
+    assert_eq!(lcir_fault["fault"]["code"], "InvalidDuration");
+    assert_eq!(
+        lcir_fault["fault"]["message"],
+        "Duration milliseconds cannot be negative"
+    );
+    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
+    assert_eq!(
+        legacy_fault["fault"]["message"],
+        interpreted["fault"]["message"]
+    );
+    assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn invalid_duration_during_cleanup_cannot_replace_the_primary_fault() {
+    let source = r"module lcir_duration_cleanup_fault
+
+import standard.time.milliseconds
+
+pub fn main() Unit {
+    defer {
+        discard milliseconds(-1)
+    }
+    discard 1 / 0
+    Unit
+}
+";
+    let program = compile_source(source);
+    let interpreted = serde_json::to_value(
+        interpret_run(&program, "main").expect_err("the body must originate the primary fault"),
+    )
+    .expect("serialize primary fault");
+    assert_eq!(interpreted["fault"]["code"], "IntegerDivisionByZero");
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("assert"), "{dump}");
+    assert!(dump.contains("InvalidDuration"), "{dump}");
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-duration-cleanup-primary");
+    let legacy =
+        emit_and_run_legacy_machine_fault(&program, "main", "legacy-duration-cleanup-primary");
+    let lcir_fault = machine_fault(&lcir.output);
+    let legacy_fault = machine_fault(&legacy);
+    assert_eq!(lcir_fault["code"], interpreted["fault"]["code"]);
+    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
 }
 
 #[test]
@@ -3817,7 +4227,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn runtime_refinement_checks_still_select_atomic_fallback() {
+fn runtime_refinement_checks_return_typed_constraint_results() {
     let source = r"module lcir_source_dynamic_refined
 
 type Money = Float where self >= 0.0
@@ -3827,29 +4237,40 @@ fn checked(raw Float) Result[Money, ConstraintError] {
 }
 
 pub fn main() Unit {
-    discard checked(-1.0)
+    let accepted = match checked(1.0) {
+        Ok(value) => value == 1.0
+        Err(_) => false
+    }
+    let rejected = match checked(-1.0) {
+        Err(_) => true
+        Ok(_) => false
+    }
+    assert accepted
+    assert rejected
     Unit
 }
 ";
     let program = compile_source(source);
-    let outcome = lower_typed_artifact(
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
-        host_layout(),
-    )
-    .expect("classify runtime refinement");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("runtime refinement must not enter the proven-only LCIR slice")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| { item.feature() == loom_codegen_ir::UnsupportedFeature::RefinedValue }),
-        "{report:?}"
     );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("ConstraintViolation"), "{dump}");
+    assert!(dump.contains("sum.construct variant 0"), "{dump}");
+    assert!(dump.contains("sum.construct variant 1"), "{dump}");
+
+    let lcir = emit_and_run_lcir(&artifact, "runtime-refinement");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-runtime-refinement");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_no_legacy_surface(&lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
 
 #[test]
