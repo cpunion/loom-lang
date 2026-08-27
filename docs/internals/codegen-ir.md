@@ -432,25 +432,31 @@ LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
-signatures. Non-inout async signatures and suspension frames may
-also use direct scalar/refined/product/Text shapes and closed sums whose payload
-graphs contain those shapes, including when lexical cleanup is active across a
-suspension. These coroutines preserve `MAY_FAULT` from checked operations,
-assertions, ordinary fallible invokes, child contracts, await fault propagation,
-and checked timer construction. A source `Result[T, E]`, including a managed-Text
-result, is an ordinary completed value; Task `Faulted` and `Cancelled` states
-remain control outcomes. Selected async roots with `requires` and async
-inout/writeback still fail closed before LCIR creation. Coverage
-includes bounded direct generic calls whose concrete types use those
-representations. Concrete static concept calls
-use the selected witness method directly, including conditional proof
-applications and normalized associated bindings. A unique closed dynamic
-witness is erased to its concrete type. Two or more artifact-closed exact
-witnesses use checked `dyn.construct` and `dyn.switch` operations backed by one
-managed pointer and direct candidate calls. It covers constants, locals and
-assignment, tuple construction
-and immutable `let` destructuring, blocks and conditionals,
-short-circuit Boolean operations, integer ranges, pure scalar operations,
+signatures. Async signatures without explicit mutable parameters and their
+suspension frames may also use direct scalar/refined/product/Text shapes and
+closed sums whose payload graphs contain those shapes, including when lexical
+cleanup is active across a suspension. Their bodies may call synchronous
+functions with functional inout parameters. These coroutines preserve
+`MAY_FAULT` from checked operations, assertions, ordinary fallible invokes,
+child contracts, await fault propagation, and checked timer construction. A
+source `Result[T, E]`, including a managed-Text result, is an ordinary completed
+value; Task `Faulted` and `Cancelled` states remain control outcomes. Selected
+async roots with `requires` and functions declaring explicit mutable coroutine
+parameters still fail closed before LCIR creation. Coverage includes bounded
+direct generic calls whose concrete types use those representations. Concrete
+static concept calls use the selected witness method directly, including
+conditional proof applications and normalized associated bindings. A unique
+closed dynamic witness is erased to its concrete type, including in async
+parameters, results, and recursively nested admitted frame shapes. A dynamic
+View parameter used by mutable dispatch in an async body is a by-value
+Task-frame value rather than an inout callable boundary; dispatch updates that
+independent copy. Two or more artifact-closed exact witnesses use checked
+`dyn.construct` and `dyn.switch` operations backed by one managed pointer and
+direct candidate calls in ordinary supported value flow,
+but that finite-catalog View does not enter a coroutine frame. It covers
+constants, locals and assignment, tuple construction and immutable `let`
+destructuring, blocks and conditionals, short-circuit Boolean operations,
+integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
 recursion. Finite checks, integer/float parsing, float formatting, Duration
 construction/extraction, and async `Task.sleep` also lower directly. Plain
@@ -485,7 +491,11 @@ the callee returns its current product on both normal and fault exits. A direct
 mutable inherent call may also borrow an invariant-free record at a projected
 place when the leaf has the exact receiver type. Its leaf writeback is rebuilt
 into the current aggregate root on both exits; unsupported receiver shapes
-select atomic fallback.
+select atomic fallback. The same synchronous call ABI is valid inside an async
+body. Its normal edge installs the result and writebacks before ordinary
+continuation. Its fault bridge installs every writeback before requesting the
+coroutine's fault target, so `defer` and `scoped` cleanup observe the callee's
+latest mutation rather than the pre-call snapshot.
 A dense reverse-call worklist computes the least transitive effect fixed point
 in linear time and chooses direct calls versus fallible invokes. The effect
 set has independent `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`,
@@ -683,13 +693,22 @@ The run/test harness creates an executor for the root Task, runs it to a
 terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
 
-The current source boundary is deliberately smaller than the runtime ABI:
-coroutines have no inout parameters or writebacks; parameter, result, and live
-frame values are limited to direct scalar/refined/product/Text
-shapes and admitted closed sums, with Task handles additionally allowed only in
-suspension-live rows. List, TextMap, dynamic-concept frame values, raw readiness,
-dynamic Task collections, non-`all` join modes, and cancellation sources remain
-atomic whole-artifact fallback.
+The current source boundary is deliberately smaller than the runtime ABI. A
+coroutine signature has no functional inout parameters or writeback results,
+and a declaration with an explicit mutable coroutine parameter fails closed.
+A dynamic View parameter is instead copied by value into the Task frame, so
+synchronous mutable dispatch updates only that independent copy. The body may
+call a synchronous function with functional inout parameters. Its normal and
+fault writebacks update the coroutine's current SSA environment; a fault
+writeback is installed before control enters the active static cleanup suffix.
+
+Parameters, results, and live frame values are limited to direct
+scalar/refined/product/Text shapes and admitted closed sums, with Task handles
+additionally allowed only in suspension-live rows. A unique closed dynamic
+witness is recursively physicalized to its concrete representation in those
+locations. List, TextMap, finite-catalog or open dynamic-concept frame values,
+raw readiness, dynamic Task collections, non-`all` join modes, and cancellation
+sources remain atomic whole-artifact fallback.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
@@ -1092,9 +1111,15 @@ rows on all three await exits, static LIFO cleanup after normal resumption,
 child fault, and cancellation, scoped-resource cleanup across suspension,
 cancel-request state dispatch, and rejection of suspending or forged
 cancellation paths.
-Malformed-LCIR tests
-prove that ordinary products cannot forge an invariant and that refinement
-cannot accept a merely layout-compatible, non-base value.
+Async-writeback regressions additionally cover synchronous functional inout
+calls before and after suspension, normal and fault receiver writeback, fault
+writeback before lexical cleanup, by-value dynamic View parameters with mutable
+dispatch, unique closed dynamic erasure in coroutine parameters, results, and
+nested frame shapes, and finite dynamic calls whose values are not
+suspension-live.
+
+Malformed-LCIR tests prove that ordinary products cannot forge an invariant and
+that refinement cannot accept a merely layout-compatible, non-base value.
 Structural regressions cover thousands of live locals and identity branches,
 bounded persistent-map allocation, and sparse-map reference differentials.
 LLVM-side tests additionally cover typed ABIs, block insertion order independent

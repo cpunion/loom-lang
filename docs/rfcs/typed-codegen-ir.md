@@ -23,11 +23,11 @@ generic instances over those representations and eligible concrete
 closed-enum artifacts including managed Text payloads, lexical cleanup, and
 the supported source-contract subset, plus checked stackless coroutines with
 typed Task handles, `Task.sleep`, and nonempty fixed-arity heterogeneous
-`Task.all`, including static lexical cleanup across suspension and cancellation,
-into typed LCIR and falls back atomically for reachable unsupported features.
-The broader
-representation migration and legacy deletion gates in this record are not
-complete.
+`Task.all` into typed LCIR. Coroutine coverage includes static lexical cleanup
+across suspension and cancellation, plus synchronous functional inout calls
+from coroutine bodies. Reachable unsupported features fall back atomically.
+The broader representation migration and legacy deletion gates in this record
+are not complete.
 
 ## Motivation
 
@@ -222,6 +222,13 @@ resume edge. Ordered functional inout writebacks follow a fallible result on the
 normal edge and are also injected on the fault edge. Forwarded edge arguments
 are modeled separately from implicit results.
 
+That rule also applies when the caller is a coroutine. A synchronous callee's
+normal or fault writebacks replace the corresponding values in the current
+coroutine SSA environment. On a fault edge, writeback precedes the active
+static cleanup suffix, so cleanup observes the callee's final receiver and
+argument values. This does not give the coroutine itself an inout signature or
+writeback-bearing Task result.
+
 The scalar fault slice adds forms equivalent to:
 
 ```text
@@ -247,6 +254,8 @@ task.join_all(tasks...) -> Task[(T0, ..., Tn)]
 
 await_tasks state, (task0, ..., taskN)
     normal target(result0, ..., resultN; exact_live_values...)
+    fault target(exact_live_values...)
+    cancel target(exact_live_values...)
 
 fault runtime code | contract metadata
 
@@ -387,6 +396,21 @@ returns a first-class typed `Task[Unit]` on its normal edge, and preserves
 canonical negative-duration or overflow faults on its fault edge. A source
 `Duration` is normalized through product extraction before this terminator.
 
+A coroutine declaration has no functional inout parameters or writeback
+result. An explicit mutable coroutine parameter remains unsupported. The body
+may nevertheless invoke synchronous functional inout callees: normal and fault
+writebacks update its current frame-local environment, with fault writeback
+installed before coroutine cleanup. A dynamic View parameter is copied by value
+into the Task frame, and mutable dispatch changes only that copy rather than
+aliasing the value that created the Task.
+
+When closed-world analysis proves exactly one closed nongeneric witness for a
+dynamic concept, planning recursively replaces that View with the witness's
+concrete physical type. This admits the value in coroutine parameters, results,
+and nested product, sum, and suspension-frame shapes. A finite multi-witness
+dynamic View or an open dynamic View has no coroutine-frame representation in
+this slice.
+
 An immediately awaited fixed tuple or fixed-argument `Task.all` evaluates its
 children left to right and lowers directly to one multi-child `AwaitTasks`, with
 no intermediate composite. Its continuation constructs the exact heterogeneous
@@ -398,10 +422,10 @@ immutable descriptor, and callback per distinct static result shape. The
 callback uses the existing structured `all` join-step protocol, takes exact
 child results in order, and publishes the tuple without a universal envelope.
 
-The remaining fallback boundary includes async inout/writeback, Lists, TextMaps,
-dynamic-concept frame values, raw readiness,
-dynamically sized Task joins, and every `Task.settled`, `Task.any`, or
-`Task.race` form.
+The remaining fallback boundary includes explicit mutable coroutine
+parameters, Lists, TextMaps, finite-catalog or open dynamic-concept frame values,
+raw readiness, dynamically sized Task joins, and every `Task.settled`,
+`Task.any`, or `Task.race` form.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
