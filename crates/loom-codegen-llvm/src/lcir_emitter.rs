@@ -1270,8 +1270,23 @@ fn debug_info_error(error: &inkwell::error::Error) -> CodegenError {
 struct SumLayout<'ctx> {
     tag: SumTagRepr,
     payloads: Vec<StructType<'ctx>>,
+    payload_byte_offsets: Vec<u64>,
     carrier: Option<StructType<'ctx>>,
     physical: BasicTypeEnum<'ctx>,
+}
+
+impl SumLayout<'_> {
+    fn payload_byte_offset(&self, variant: usize) -> Result<u64, CodegenError> {
+        self.payload_byte_offsets
+            .get(variant)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("sum variant {variant} has no carrier byte offset"),
+                )
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -2135,6 +2150,54 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         }
     }
 
+    /// Recognizes the canonical recursive Json storage graph without relying
+    /// on a source-visible type id. Keeping scalar payload bytes disjoint from
+    /// the one managed payload cell makes repeated List/Map tracing exact for
+    /// every Json variant rather than conservatively interpreting Float bits
+    /// as a possible pointer.
+    fn has_recursive_json_storage_shape(&self, ty: ValueTypeId, sum: &SumRepr) -> bool {
+        let representations = self.artifact.representations();
+        let Some(value_type) = representations.value_type(ty) else {
+            return false;
+        };
+        let Type::Nominal(_, arguments) = value_type.semantic() else {
+            return false;
+        };
+        if !arguments.is_empty() {
+            return false;
+        }
+        let variants = sum.variants();
+        let [null, boolean, number, text, array, object] = variants else {
+            return false;
+        };
+        let field_semantic = |variant: &loom_codegen_ir::SumVariantRepr| {
+            let [field] = variant.fields() else {
+                return None;
+            };
+            representations
+                .value_type(*field)
+                .map(loom_codegen_ir::ValueType::semantic)
+        };
+        if !null.fields().is_empty()
+            || field_semantic(boolean) != Some(&Type::Bool)
+            || field_semantic(number) != Some(&Type::Float)
+            || field_semantic(text) != Some(&Type::Text)
+        {
+            return false;
+        }
+        let semantic = value_type.semantic();
+        let array_is_recursive = field_semantic(array).is_some_and(
+            |field| matches!(field, Type::List(element) if element.as_ref() == semantic),
+        );
+        let object_is_recursive = object.fields().as_ref().first().is_some_and(|field| {
+            representations.value_type(*field).is_some_and(|field| {
+                field.kind() == ValueTypeKind::ManagedTextMap
+                    && matches!(field.semantic(), Type::Nominal(_, values) if values.as_slice() == std::slice::from_ref(semantic))
+            })
+        }) && object.fields().len() == 1;
+        array_is_recursive && object_is_recursive
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "sum layout selection and its target-data size/alignment proof are intentionally one atomic computation"
@@ -2163,6 +2226,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })?;
             return Ok(SumLayout {
                 tag: sum.tag(),
+                payload_byte_offsets: vec![0; payloads.len()],
                 payloads,
                 carrier: None,
                 physical: physical.into(),
@@ -2177,19 +2241,30 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         if sum.is_tag_only() {
             return Ok(SumLayout {
                 tag: sum.tag(),
+                payload_byte_offsets: vec![0; payloads.len()],
                 payloads,
                 carrier: None,
                 physical: tag_type.into(),
             });
         }
 
+        let payload_byte_offsets: Vec<u64> = if self.has_recursive_json_storage_shape(ty, sum) {
+            // Bool/Number use bytes 0..8. Text/List/TextMap use the aligned
+            // pointer cell at byte 8. Null carries neither.
+            vec![0_u64, 0, 0, 8, 8, 8]
+        } else {
+            vec![0_u64; payloads.len()]
+        };
         let mut maximum_size = 0_u64;
         let mut anchor = None;
         let mut maximum_alignment = 0_u32;
-        for payload in &payloads {
+        for (payload, byte_offset) in payloads.iter().zip(&payload_byte_offsets) {
             let size = self.target_data.get_abi_size(payload);
             let alignment = self.target_data.get_abi_alignment(payload);
-            maximum_size = maximum_size.max(size);
+            let extent = (*byte_offset).checked_add(size).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "sum payload carrier extent overflowed")
+            })?;
+            maximum_size = maximum_size.max(extent);
             if alignment > maximum_alignment {
                 maximum_alignment = alignment;
                 anchor = Some(*payload);
@@ -2240,6 +2315,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(SumLayout {
             tag: sum.tag(),
             payloads,
+            payload_byte_offsets,
             carrier: Some(carrier),
             physical,
         })
@@ -2453,8 +2529,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                                     "tagged List sum carrier offset overflowed",
                                 )
                             })?;
-                        for (variant, payload) in sum.variants().iter().zip(&layout.payloads).rev()
+                        for (variant_index, (variant, payload)) in sum
+                            .variants()
+                            .iter()
+                            .zip(&layout.payloads)
+                            .enumerate()
+                            .rev()
                         {
+                            let variant_offset = layout
+                                .payload_byte_offsets
+                                .get(variant_index)
+                                .copied()
+                                .ok_or_else(|| {
+                                    CodegenError::new(
+                                        "LlvmAbiDefect",
+                                        "tagged sum payload offset disappeared",
+                                    )
+                                })?;
                             for (index, field) in variant.fields().iter().copied().enumerate().rev()
                             {
                                 let index = u32::try_from(index).map_err(|_| {
@@ -2474,12 +2565,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                                     })?;
                                 pending.push((
                                     field,
-                                    payload_base.checked_add(field_offset).ok_or_else(|| {
-                                        CodegenError::new(
-                                            "ProgramTooLarge",
-                                            "tagged List sum pointer offset overflowed",
-                                        )
-                                    })?,
+                                    payload_base
+                                        .checked_add(variant_offset)
+                                        .and_then(|offset| offset.checked_add(field_offset))
+                                        .ok_or_else(|| {
+                                            CodegenError::new(
+                                                "ProgramTooLarge",
+                                                "tagged repeated sum pointer offset overflowed",
+                                            )
+                                        })?,
                                     depth.saturating_add(1),
                                 ));
                             }
@@ -4712,7 +4806,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                                     "managed.root.sum.safe.carrier",
                                 )
                                 .map_err(builder_error)?;
-                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?
+                            self.unpack_sum_carrier(
+                                safe_carrier,
+                                carrier_type,
+                                payload_type,
+                                layout.payload_byte_offset(variant_index)?,
+                            )?
                         }
                     };
                     value = self
@@ -4922,8 +5021,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                                 "managed.root.rebuild.sum.safe.carrier",
                             )
                             .map_err(builder_error)?;
-                        let payload =
-                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?;
+                        let variant_index = usize::try_from(*variant).map_err(|_| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "managed sum rebuild variant is too wide",
+                            )
+                        })?;
+                        let payload = self.unpack_sum_carrier(
+                            safe_carrier,
+                            carrier_type,
+                            payload_type,
+                            layout.payload_byte_offset(variant_index)?,
+                        )?;
                         let child = self
                             .backend
                             .builder
@@ -4942,7 +5051,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                             )
                             .map_err(builder_error)?
                             .into_struct_value();
-                        let carrier = self.pack_sum_carrier(payload, payload_type, carrier_type)?;
+                        let carrier = self.pack_sum_carrier(
+                            payload,
+                            payload_type,
+                            carrier_type,
+                            layout.payload_byte_offset(variant_index)?,
+                        )?;
                         let rebuilt = self
                             .backend
                             .builder
@@ -6273,7 +6387,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     }
                     return Ok(tag.into());
                 };
-                let carrier = self.pack_sum_carrier(payload_value, payload_type, carrier_type)?;
+                let carrier = self.pack_sum_carrier(
+                    payload_value,
+                    payload_type,
+                    carrier_type,
+                    layout.payload_byte_offset(variant_index)?,
+                )?;
                 let physical = layout.physical.into_struct_type();
                 let tagged = self
                     .backend
@@ -7662,6 +7781,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         payload: inkwell::values::StructValue<'ctx>,
         payload_type: StructType<'ctx>,
         carrier_type: StructType<'ctx>,
+        byte_offset: u64,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(carrier_type.const_zero().into());
@@ -7675,7 +7795,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             byte_array_type.const_zero(),
             payload.into(),
             payload_type.into(),
-            0,
+            byte_offset,
         )?;
         Ok(self
             .backend
@@ -7691,6 +7811,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         carrier: BasicValueEnum<'ctx>,
         carrier_type: StructType<'ctx>,
         payload_type: StructType<'ctx>,
+        byte_offset: u64,
     ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(payload_type.const_zero());
@@ -7703,7 +7824,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)?
             .into_array_value();
         Ok(self
-            .unpack_value_bytes(byte_array, payload_type.into(), 0)?
+            .unpack_value_bytes(byte_array, payload_type.into(), byte_offset)?
             .into_struct_value())
     }
 
@@ -8715,18 +8836,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
         for (case, edge) in cases.iter().zip(edges) {
             self.backend.builder.position_at_end(edge);
-            let payload_type = layout
-                .payloads
-                .get(usize::try_from(case.variant).map_err(|_| {
-                    CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
-                })?)
-                .copied()
-                .ok_or_else(|| {
-                    CodegenError::new(
-                        "LlvmAbiDefect",
-                        format!("sum type {ty} has no case variant {}", case.variant),
-                    )
-                })?;
+            let variant_index = usize::try_from(case.variant).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
+            })?;
+            let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("sum type {ty} has no case variant {}", case.variant),
+                )
+            })?;
             let payload = match layout.tag {
                 SumTagRepr::Tagless => value.into_struct_value(),
                 SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
@@ -8740,6 +8858,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                             })?,
                             carrier_type,
                             payload_type,
+                            layout.payload_byte_offset(variant_index)?,
                         )?
                     } else {
                         payload_type.const_zero()

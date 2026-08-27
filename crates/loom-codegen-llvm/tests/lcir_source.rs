@@ -2342,6 +2342,155 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate keeps recursive Json carrier layout, exact tracing, forced relocation, backend differential behavior, and cross-target emission together"
+)]
+fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
+    let source = include_str!("../../../fixtures/lcir-typed-json/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:?}");
+    assert_eq!(interpreted[0].status, TestStatus::Passed, "{interpreted:?}");
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native = emit_and_run_lcir(&artifact, "source-recursive-json");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("typedJson"),
+        "{:?}",
+        native.output
+    );
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.list.descriptor",
+        "loom.lcir.text_map.descriptor",
+        "loom.lcir.list.pointer_offsets",
+        "loom.lcir.text_map.pointer_offsets",
+        "managed.root.rebuild.active.sum",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_text_map_get",
+        "loom_runtime_text_map_insert",
+        "ValueNode",
+        "loom_executor_",
+        "loom_gc_root_push_v1",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "recursive Json IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    let json_list_offsets = native
+        .ir
+        .lines()
+        .find(|line| line.contains("@loom.lcir.list.pointer_offsets") && line.contains("[i64 16]"))
+        .unwrap_or_else(|| panic!("Json List must trace only carrier byte 16:\n{}", native.ir));
+    let json_list_suffix = json_list_offsets
+        .split_once(" = ")
+        .expect("Json List offsets global")
+        .1;
+    assert_eq!(
+        json_list_suffix,
+        "private unnamed_addr constant [1 x i64] [i64 16]"
+    );
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.list.descriptor")
+            && line.contains("i64 16, i64 8")
+            && line.contains("i64 24, i64 1")
+    }));
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.text_map.pointer_offsets")
+            && line.contains("[2 x i64] [i64 0, i64 24]")
+    }));
+    assert!(native.ir.lines().any(|line| {
+        line.contains("@loom.lcir.text_map.descriptor")
+            && line.contains("i64 8, i64 8")
+            && line.contains("i64 32, i64 2")
+    }));
+
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-recursive-json");
+    assert_eq!(legacy.status.success(), native.output.status.success());
+    assert_eq!(legacy.stdout, native.output.stdout);
+    assert_eq!(legacy.stderr, native.output.stderr);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create recursive Json target directory");
+        let object = directory.path().join("recursive-json.o");
+        let ir_path = directory.path().join("recursive-json.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit recursive Json object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read recursive Json target IR");
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("@loom.lcir.list.pointer_offsets") && line.contains("[i64 16]")
+            }),
+            "{target} lost the exact Json List pointer cell:\n{ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("@loom.lcir.text_map.pointer_offsets")
+                    && line.contains("[2 x i64] [i64 0, i64 24]")
+            }),
+            "{target} lost the exact Json TextMap pointer cells:\n{ir}"
+        );
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
+    let program = compile_source(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let artifact = lower_source_artifact_with_layout(
+        &program,
+        &request,
+        TargetLayout::new(64).expect("64-bit target"),
+    );
+    assert!(dump_program(artifact.program()).contains("text_map.construct"));
+    match lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit recursive Json")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| {
+                matches!(
+                    item.feature(),
+                    UnsupportedFeature::ExpressionType | UnsupportedFeature::SignatureType
+                )
+            }),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit recursive Json must fail closed"),
+    }
+}
+
+#[test]
 fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
         "module text_map_target\npub fn main() Unit {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    discard values.get(\"answer\")\n    Unit\n}\n",
