@@ -35,17 +35,20 @@ use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
-    InstructionKind, IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootProjection,
-    ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
-    SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
-    ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
+    InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
+    ManagedRootPlan, ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr,
+    ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_mir::Type;
 use loom_runtime_abi::{
-    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, TEXT_CONCAT_TYPED_SYMBOL,
-    TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
-    TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
-    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
+    GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
     TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
     TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
 };
@@ -174,6 +177,7 @@ struct DebugState<'ctx> {
     int_type: DIType<'ctx>,
     float_type: DIType<'ctx>,
     text_type: DIType<'ctx>,
+    list_type: DIType<'ctx>,
     status_type: DIType<'ctx>,
     fault_context_pointer_type: DIType<'ctx>,
     fallible_unit_type: DIType<'ctx>,
@@ -295,6 +299,35 @@ impl<'ctx> DebugState<'ctx> {
                 AddressSpace::default(),
             )
             .as_type();
+        let list_header_type = context.struct_type(
+            &[context.i64_type().into(), context.i64_type().into()],
+            false,
+        );
+        let list_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "ListObject",
+                file,
+                0,
+                target_data.get_bit_size(&list_header_type),
+                abi_alignment_bits(target_data, &list_header_type)?,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.ListObject",
+            )
+            .as_type();
+        let list_type = builder
+            .create_pointer_type(
+                "List",
+                list_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
         let status_type = builder
             .create_basic_type("LoomStatus", 32, 0x05, DIFlags::ARTIFICIAL)
             .map_err(|error| debug_info_error(&error))?
@@ -374,6 +407,7 @@ impl<'ctx> DebugState<'ctx> {
             int_type,
             float_type,
             text_type,
+            list_type,
             status_type,
             fault_context_pointer_type,
             fallible_unit_type,
@@ -448,7 +482,15 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
-            Some(Repr::ImmortalText | Repr::ManagedPointer) => Ok(self.text_type),
+            Some(Repr::ImmortalText) => Ok(self.text_type),
+            Some(Repr::ManagedPointer) => match value_type.semantic() {
+                Type::Text => Ok(self.text_type),
+                Type::List(_) => Ok(self.list_type),
+                semantic => Err(CodegenError::new(
+                    "LlvmDebugInfoFailed",
+                    format!("managed LCIR type {semantic:?} has no debug representation"),
+                )),
+            },
             Some(Repr::Product(product)) => {
                 if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
                     return Ok(existing);
@@ -652,7 +694,7 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.fallible_bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.fallible_int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.fallible_float_type),
-            Some(Repr::ImmortalText | Repr::ManagedPointer) => create_fallible_debug_type(
+            Some(Repr::ImmortalText) => create_fallible_debug_type(
                 backend.context,
                 &self.builder,
                 self.type_file,
@@ -662,6 +704,30 @@ impl<'ctx> DebugState<'ctx> {
                 backend.ptr_type.into(),
                 self.status_type,
             ),
+            Some(Repr::ManagedPointer) => {
+                let (name, debug_type) = match value_type.semantic() {
+                    Type::Text => ("Text", self.text_type),
+                    Type::List(_) => ("List", self.list_type),
+                    semantic => {
+                        return Err(CodegenError::new(
+                            "LlvmDebugInfoFailed",
+                            format!(
+                                "managed LCIR type {semantic:?} has no fallible debug representation"
+                            ),
+                        ));
+                    }
+                };
+                create_fallible_debug_type(
+                    backend.context,
+                    &self.builder,
+                    self.type_file,
+                    &backend.target_data,
+                    name,
+                    debug_type,
+                    backend.ptr_type.into(),
+                    self.status_type,
+                )
+            }
             Some(Repr::Product(_)) => create_fallible_debug_type(
                 backend.context,
                 &self.builder,
@@ -1130,6 +1196,17 @@ struct SumLayout<'ctx> {
     physical: BasicTypeEnum<'ctx>,
 }
 
+#[derive(Clone)]
+struct ListLayout<'ctx> {
+    object: StructType<'ctx>,
+    element: BasicTypeEnum<'ctx>,
+    fixed_size: u64,
+    object_align: u64,
+    element_stride: u64,
+    element_align: u32,
+    pointer_offsets: Vec<u64>,
+}
+
 struct Backend<'ctx, 'artifact> {
     context: &'ctx Context,
     artifact: &'artifact CheckedArtifact,
@@ -1146,6 +1223,10 @@ struct Backend<'ctx, 'artifact> {
 }
 
 impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "backend construction validates the complete target ABI before publishing any LLVM module state"
+    )]
     fn new(
         context: &'ctx Context,
         artifact: &'artifact CheckedArtifact,
@@ -1173,9 +1254,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         );
         if artifact
             .representations()
-            .reprs()
+            .value_types()
             .iter()
-            .any(|repr| matches!(repr, Repr::ImmortalText | Repr::ManagedPointer))
+            .any(|value| value.semantic() == &Type::Text)
         {
             let actual_size = target_data.get_abi_size(&text_object_type);
             let actual_alignment = u64::from(target_data.get_abi_alignment(&text_object_type));
@@ -1184,6 +1265,44 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     "LcirTextAbiMismatch",
                     format!(
                         "LLVM target {} gives the runtime Text header size/alignment {actual_size}/{actual_alignment}, expected {TEXT_OBJECT_HEADER_SIZE}/{TEXT_OBJECT_ALIGNMENT}",
+                        target.triple
+                    ),
+                ));
+            }
+        }
+        let has_lists = artifact
+            .representations()
+            .value_types()
+            .iter()
+            .any(|value| matches!(value.semantic(), Type::List(_)));
+        if has_lists {
+            let pointer_size = target_data.get_abi_size(&ptr_type);
+            let pointer_align = target_data.get_abi_alignment(&ptr_type);
+            let descriptor_type = context.struct_type(
+                &[
+                    context.i32_type().into(),
+                    context.i32_type().into(),
+                    context.i64_type().into(),
+                    context.i64_type().into(),
+                    context.i64_type().into(),
+                    ptr_type.into(),
+                    context.i64_type().into(),
+                    context.i64_type().into(),
+                    ptr_type.into(),
+                ],
+                false,
+            );
+            let descriptor_size = target_data.get_abi_size(&descriptor_type);
+            let descriptor_align = target_data.get_abi_alignment(&descriptor_type);
+            if pointer_size != 8
+                || pointer_align != 8
+                || descriptor_size != 64
+                || descriptor_align != 8
+            {
+                return Err(CodegenError::new(
+                    "LcirListAbiMismatch",
+                    format!(
+                        "LLVM target {} gives pointer size/alignment {pointer_size}/{pointer_align} and repeated descriptor size/alignment {descriptor_size}/{descriptor_align}; typed List requires 8/8 and 64/8",
                         target.triple
                     ),
                 ));
@@ -1471,6 +1590,388 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         })
     }
 
+    fn list_element_type(&self, ty: ValueTypeId) -> Result<ValueTypeId, CodegenError> {
+        let value_type = self
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
+        let Type::List(element) = value_type.semantic() else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("LCIR type {ty} is not a List"),
+            ));
+        };
+        self.artifact
+            .representations()
+            .type_id(element)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("List type {ty} has no canonical element representation"),
+                )
+            })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one bounded target-layout walk must keep products, nested sums, and pointer leaves under the same offset and alignment checks"
+    )]
+    fn managed_element_offsets(&self, root: ValueTypeId) -> Result<Vec<u64>, CodegenError> {
+        let mut offsets = BTreeSet::new();
+        let mut pending = vec![(root, 0_u64, 0_usize)];
+        let mut visited_nodes = 0_usize;
+        while let Some((ty, base, depth)) = pending.pop() {
+            visited_nodes = visited_nodes.checked_add(1).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "List element pointer walk overflowed")
+            })?;
+            if depth > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
+                || visited_nodes > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
+            {
+                return Err(CodegenError::new(
+                    "ProgramTooLarge",
+                    "List element managed-pointer graph exceeds its structural budget",
+                ));
+            }
+            let value_type = self
+                .artifact
+                .representations()
+                .value_type(ty)
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}"))
+                })?;
+            let repr = self
+                .artifact
+                .representations()
+                .repr(value_type.repr())
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("missing representation for LCIR type {ty}"),
+                    )
+                })?;
+            match repr {
+                Repr::ManagedPointer => {
+                    offsets.insert(base);
+                    if offsets.len() > usize::try_from(GC_MAX_OBJECT_POINTERS).unwrap_or(usize::MAX)
+                    {
+                        return Err(CodegenError::new(
+                            "ProgramTooLarge",
+                            "List element has too many exact managed-pointer offsets",
+                        ));
+                    }
+                }
+                Repr::Product(product) => {
+                    let fields = self
+                        .artifact
+                        .representations()
+                        .product(product)
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!("missing product representation {product}"),
+                            )
+                        })?
+                        .fields();
+                    let physical = self.llvm_type(ty)?.into_struct_type();
+                    for (index, field) in fields.iter().copied().enumerate().rev() {
+                        let index = u32::try_from(index).map_err(|_| {
+                            CodegenError::new("ProgramTooLarge", "too many List product fields")
+                        })?;
+                        let field_offset = self
+                            .target_data
+                            .offset_of_element(&physical, index)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    format!("missing target offset for List product field {index}"),
+                                )
+                            })?;
+                        pending.push((
+                            field,
+                            base.checked_add(field_offset).ok_or_else(|| {
+                                CodegenError::new(
+                                    "ProgramTooLarge",
+                                    "List product pointer offset overflowed",
+                                )
+                            })?,
+                            depth.saturating_add(1),
+                        ));
+                    }
+                }
+                Repr::Sum(_) => {
+                    let sum = self.sum_repr(ty)?;
+                    let layout = self.sum_layout(ty)?;
+                    if layout.tag == SumTagRepr::Tagless {
+                        let payload = layout.payloads.first().copied().ok_or_else(|| {
+                            CodegenError::new("LlvmAbiDefect", "tagless List sum has no payload")
+                        })?;
+                        let variant = sum.variants().first().ok_or_else(|| {
+                            CodegenError::new("LlvmAbiDefect", "tagless List sum has no variant")
+                        })?;
+                        for (index, field) in variant.fields().iter().copied().enumerate().rev() {
+                            let index = u32::try_from(index).map_err(|_| {
+                                CodegenError::new("ProgramTooLarge", "too many List sum fields")
+                            })?;
+                            let field_offset = self
+                                .target_data
+                                .offset_of_element(&payload, index)
+                                .ok_or_else(|| {
+                                    CodegenError::new(
+                                        "LlvmAbiDefect",
+                                        "missing target offset for tagless List sum field",
+                                    )
+                                })?;
+                            pending.push((
+                                field,
+                                base.checked_add(field_offset).ok_or_else(|| {
+                                    CodegenError::new(
+                                        "ProgramTooLarge",
+                                        "tagless List sum pointer offset overflowed",
+                                    )
+                                })?,
+                                depth.saturating_add(1),
+                            ));
+                        }
+                    } else if let Some(carrier) = layout.carrier {
+                        let physical = layout.physical.into_struct_type();
+                        let carrier_offset = self
+                            .target_data
+                            .offset_of_element(&physical, 1)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "missing tagged List sum carrier offset",
+                                )
+                            })?;
+                        let bytes_offset = self
+                            .target_data
+                            .offset_of_element(&carrier, 1)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "missing tagged List sum byte-carrier offset",
+                                )
+                            })?;
+                        let payload_base = base
+                            .checked_add(carrier_offset)
+                            .and_then(|offset| offset.checked_add(bytes_offset))
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "ProgramTooLarge",
+                                    "tagged List sum carrier offset overflowed",
+                                )
+                            })?;
+                        for (variant, payload) in sum.variants().iter().zip(&layout.payloads).rev()
+                        {
+                            for (index, field) in variant.fields().iter().copied().enumerate().rev()
+                            {
+                                let index = u32::try_from(index).map_err(|_| {
+                                    CodegenError::new(
+                                        "ProgramTooLarge",
+                                        "too many List sum payload fields",
+                                    )
+                                })?;
+                                let field_offset = self
+                                    .target_data
+                                    .offset_of_element(payload, index)
+                                    .ok_or_else(|| {
+                                        CodegenError::new(
+                                            "LlvmAbiDefect",
+                                            "missing target offset for tagged List sum field",
+                                        )
+                                    })?;
+                                pending.push((
+                                    field,
+                                    payload_base.checked_add(field_offset).ok_or_else(|| {
+                                        CodegenError::new(
+                                            "ProgramTooLarge",
+                                            "tagged List sum pointer offset overflowed",
+                                        )
+                                    })?,
+                                    depth.saturating_add(1),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Repr::Uninhabited | Repr::ImmortalText => {
+                    return Err(CodegenError::new(
+                        "LcirListDescriptorUnsupported",
+                        format!("List element type {root} contains an unsupported {repr:?} leaf"),
+                    ));
+                }
+                Repr::Zst | Repr::Scalar(_) => {}
+            }
+        }
+        Ok(offsets.into_iter().collect())
+    }
+
+    fn list_layout(&self, ty: ValueTypeId) -> Result<ListLayout<'ctx>, CodegenError> {
+        let element_ty = self.list_element_type(ty)?;
+        let element = self.llvm_type(element_ty)?;
+        let element_size = self.target_data.get_abi_size(&element);
+        let storage = if element_size == 0 {
+            self.context.i8_type().into()
+        } else {
+            element
+        };
+        let element_stride = self.target_data.get_abi_size(&storage);
+        let element_align = self.target_data.get_abi_alignment(&storage);
+        let object = self.context.struct_type(
+            &[
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                storage.array_type(0).into(),
+            ],
+            false,
+        );
+        let fixed_size = self
+            .target_data
+            .offset_of_element(&object, 2)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "List data offset is missing"))?;
+        let object_size = self.target_data.get_abi_size(&object);
+        let object_align = u64::from(self.target_data.get_abi_alignment(&object));
+        if fixed_size == 0
+            || fixed_size != object_size
+            || element_stride == 0
+            || object_align == 0
+            || !object_align.is_power_of_two()
+            || object_align > GC_MAX_OBJECT_ALIGNMENT
+            || u64::from(element_align) > object_align
+        {
+            return Err(CodegenError::new(
+                "LcirListDescriptorUnsupported",
+                format!(
+                    "List type {ty} has unsupported fixed-size/object-align/stride/element-align {fixed_size}/{object_align}/{element_stride}/{element_align}"
+                ),
+            ));
+        }
+        let pointer_offsets = self.managed_element_offsets(element_ty)?;
+        let pointer_size = self.target_data.get_abi_size(&self.ptr_type);
+        let pointer_align = u64::from(self.target_data.get_abi_alignment(&self.ptr_type));
+        for offset in &pointer_offsets {
+            if !offset.is_multiple_of(pointer_align)
+                || offset
+                    .checked_add(pointer_size)
+                    .is_none_or(|end| end > element_stride)
+            {
+                return Err(CodegenError::new(
+                    "LcirListDescriptorUnsupported",
+                    format!(
+                        "List type {ty} has out-of-stride or unaligned managed offset {offset} for stride {element_stride}"
+                    ),
+                ));
+            }
+        }
+        if !pointer_offsets.is_empty()
+            && (!fixed_size.is_multiple_of(pointer_align)
+                || !element_stride.is_multiple_of(pointer_align)
+                || object_align < pointer_align)
+        {
+            return Err(CodegenError::new(
+                "LcirListDescriptorUnsupported",
+                format!("List type {ty} cannot satisfy repeated pointer-cell alignment"),
+            ));
+        }
+        Ok(ListLayout {
+            object,
+            element,
+            fixed_size,
+            object_align,
+            element_stride,
+            element_align,
+            pointer_offsets,
+        })
+    }
+
+    fn list_descriptor(
+        &self,
+        ty: ValueTypeId,
+        layout: &ListLayout<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let descriptor_name = format!("loom.lcir.list.descriptor.{}", ty.raw());
+        if let Some(existing) = self.module.get_global(&descriptor_name) {
+            return Ok(existing.as_pointer_value());
+        }
+        let offsets_pointer = if layout.pointer_offsets.is_empty() {
+            self.ptr_type.const_null()
+        } else {
+            let values = layout
+                .pointer_offsets
+                .iter()
+                .map(|offset| self.context.i64_type().const_int(*offset, false))
+                .collect::<Vec<_>>();
+            let count = u32::try_from(values.len()).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "too many List element pointer offsets")
+            })?;
+            let array_type = self.context.i64_type().array_type(count);
+            let offsets = self.module.add_global(
+                array_type,
+                None,
+                &format!("loom.lcir.list.pointer_offsets.{}", ty.raw()),
+            );
+            offsets.set_initializer(&self.context.i64_type().const_array(&values));
+            offsets.set_constant(true);
+            offsets.set_linkage(Linkage::Private);
+            offsets.set_unnamed_address(UnnamedAddress::Global);
+            offsets.as_pointer_value()
+        };
+        let descriptor_type = self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.ptr_type.into(),
+            ],
+            false,
+        );
+        let descriptor = self
+            .module
+            .add_global(descriptor_type, None, &descriptor_name);
+        let pointer_count = u64::try_from(layout.pointer_offsets.len()).map_err(|_| {
+            CodegenError::new("ProgramTooLarge", "too many List element pointer offsets")
+        })?;
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_GC_REPEATED_ABI_VERSION), false)
+                    .into(),
+                self.context.i32_type().const_zero().into(),
+                self.context
+                    .i64_type()
+                    .const_int(layout.fixed_size, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(layout.object_align, false)
+                    .into(),
+                self.context.i64_type().const_zero().into(),
+                self.ptr_type.const_null().into(),
+                self.context
+                    .i64_type()
+                    .const_int(layout.element_stride, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(pointer_count, false)
+                    .into(),
+                offsets_pointer.into(),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(descriptor.as_pointer_value())
+    }
+
     fn signature_writeback_types(source: &Function) -> Result<Vec<ValueTypeId>, CodegenError> {
         source
             .signature()
@@ -1727,6 +2228,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 );
                 self.module
                     .add_function(TEXT_GET_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn typed_repeated_alloc(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_GC_REPEATED_ALLOC_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_GC_REPEATED_ALLOC_SYMBOL, function_type, None)
             })
     }
 
@@ -3360,6 +3878,30 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .ty();
                 one(self.emit_sum_construct(ty, *variant, payload)?)
             }
+            InstructionKind::ListConstruct { elements } => {
+                one(self.emit_list_construct(instruction, elements)?.into())
+            }
+            InstructionKind::ListAppend { list, value } => one(self
+                .emit_list_append(instruction, *list, *value, false)?
+                .into()),
+            InstructionKind::ListAppendUnique { list, value } => one(self
+                .emit_list_append(instruction, *list, *value, true)?
+                .into()),
+            InstructionKind::ListLength { list } => one(self.emit_list_length(*list)?.into()),
+            InstructionKind::ListGet { list, index } => {
+                let result =
+                    instruction.results().first().copied().ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "List.get has no result")
+                    })?;
+                let result_ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "List.get result is missing")
+                    })?
+                    .ty();
+                one(self.emit_list_get(*list, *index, result_ty)?)
+            }
             InstructionKind::BoolNot { value } => one(self
                 .backend
                 .builder
@@ -3626,6 +4168,671 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .into())
             }
         }
+    }
+
+    fn list_type_of_value(&self, value: ValueId) -> Result<ValueTypeId, CodegenError> {
+        self.source
+            .value(value)
+            .map(loom_codegen_ir::Value::ty)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", format!("missing List value {value}"))
+            })
+    }
+
+    fn list_field_pointer(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.backend
+            .builder
+            .build_struct_gep(layout.object, object, field, name)
+            .map_err(builder_error)
+    }
+
+    fn list_element_pointer(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let data = self.list_field_pointer(layout, object, 2, &format!("{name}.data"))?;
+        let address = self
+            .backend
+            .builder
+            .build_ptr_to_int(
+                data,
+                self.backend.context.i64_type(),
+                &format!("{name}.base"),
+            )
+            .map_err(builder_error)?;
+        let offset = self
+            .backend
+            .builder
+            .build_int_mul(
+                index,
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(layout.element_stride, false),
+                &format!("{name}.offset"),
+            )
+            .map_err(builder_error)?;
+        let address = self
+            .backend
+            .builder
+            .build_int_add(address, offset, &format!("{name}.address"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_int_to_ptr(address, self.backend.ptr_type, name)
+            .map_err(builder_error)
+    }
+
+    fn load_list_header(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let source = self.current_block()?;
+        let function = source
+            .get_parent()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "List header has no function"))?;
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.empty"));
+        let present = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.present"));
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.merge"));
+        let is_null = self
+            .backend
+            .builder
+            .build_is_null(object, &format!("{name}.is_null"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(is_null, empty, present)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(empty);
+        let zero = self.backend.context.i64_type().const_zero();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(present);
+        let length_pointer = self.list_field_pointer(layout, object, 0, "list.length.pointer")?;
+        let capacity_pointer =
+            self.list_field_pointer(layout, object, 1, "list.capacity.pointer")?;
+        let length = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                length_pointer,
+                "list.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let capacity = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                capacity_pointer,
+                "list.capacity",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let length_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), &format!("{name}.length"))
+            .map_err(builder_error)?;
+        length_phi.add_incoming(&[(&zero, empty), (&length, present)]);
+        let capacity_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), &format!("{name}.capacity"))
+            .map_err(builder_error)?;
+        capacity_phi.add_incoming(&[(&zero, empty), (&capacity, present)]);
+        Ok((
+            length_phi.as_basic_value().into_int_value(),
+            capacity_phi.as_basic_value().into_int_value(),
+        ))
+    }
+
+    fn validate_static_list_capacity(
+        layout: &ListLayout<'ctx>,
+        capacity: u64,
+    ) -> Result<(), CodegenError> {
+        let allocation = layout
+            .element_stride
+            .checked_mul(capacity)
+            .and_then(|bytes| bytes.checked_add(layout.fixed_size));
+        let pointer_cells = u64::try_from(layout.pointer_offsets.len())
+            .ok()
+            .and_then(|count| count.checked_mul(capacity));
+        if allocation.is_none_or(|bytes| bytes > GC_MAX_OBJECT_BYTES)
+            || pointer_cells.is_none_or(|cells| cells > GC_MAX_REPEATED_POINTER_CELLS)
+        {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                "typed List literal exceeds repeated-allocation runtime limits",
+            ));
+        }
+        Ok(())
+    }
+
+    fn allocate_list(
+        &self,
+        ty: ValueTypeId,
+        layout: &ListLayout<'ctx>,
+        capacity: IntValue<'ctx>,
+        result: ValueId,
+        site: ManagedSafepoint,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let output = if let Some(cell) = self.direct_root_cell(result)? {
+            cell
+        } else {
+            self.backend
+                .builder
+                .build_alloca(self.backend.ptr_type, &format!("{name}.output"))
+                .map_err(builder_error)?
+        };
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(site)?;
+        let descriptor = self.backend.list_descriptor(ty, layout)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_repeated_alloc(),
+            &[descriptor.into(), capacity.into(), output.into()],
+            &format!("{name}.status"),
+        )?;
+        self.backend.require_zero_status(status, name)?;
+        self.backend
+            .builder
+            .build_load(self.backend.ptr_type, output, &format!("{name}.result"))
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn store_list_header(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        length: IntValue<'ctx>,
+        capacity: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let length_pointer = self.list_field_pointer(layout, object, 0, "list.store.length")?;
+        let capacity_pointer = self.list_field_pointer(layout, object, 1, "list.store.capacity")?;
+        self.backend
+            .builder
+            .build_store(length_pointer, length)
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(capacity_pointer, capacity)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn store_list_element(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        if self.backend.target_data.get_abi_size(&layout.element) == 0 {
+            return Ok(());
+        }
+        let pointer = self.list_element_pointer(layout, object, index, name)?;
+        self.backend
+            .builder
+            .build_store(pointer, value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_list_construct(
+        &self,
+        instruction: &Instruction,
+        elements: &[ValueId],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result =
+            instruction.results().first().copied().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "List construction has no result")
+            })?;
+        let ty = self.list_type_of_value(result)?;
+        if elements.is_empty() {
+            return Ok(self.backend.ptr_type.const_null());
+        }
+        let length = u64::try_from(elements.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "List literal is too large"))?;
+        let capacity = length.checked_next_power_of_two().ok_or_else(|| {
+            CodegenError::new("ProgramTooLarge", "List literal capacity overflowed")
+        })?;
+        let layout = self.backend.list_layout(ty)?;
+        Self::validate_static_list_capacity(&layout, capacity)?;
+        let length_value = self.backend.context.i64_type().const_int(length, false);
+        let capacity_value = self.backend.context.i64_type().const_int(capacity, false);
+        let object = self.allocate_list(
+            ty,
+            &layout,
+            capacity_value,
+            result,
+            ManagedSafepoint::Instruction(instruction.id()),
+            "list.construct",
+        )?;
+        self.store_list_header(&layout, object, length_value, capacity_value)?;
+        for (index, element) in elements.iter().copied().enumerate() {
+            let index = u64::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "List index exceeds u64"))?;
+            let index = self.backend.context.i64_type().const_int(index, false);
+            // Reload only after the allocator: managed siblings and aliases may
+            // all have moved at this safepoint.
+            let value = self.value(element)?;
+            self.store_list_element(&layout, object, index, value, "list.construct.element")?;
+        }
+        Ok(object)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "immutable append keeps capacity math, allocation, post-GC reload, copy, and publication in one audited sequence"
+    )]
+    fn emit_list_append(
+        &self,
+        instruction: &Instruction,
+        list: ValueId,
+        value: ValueId,
+        unique: bool,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result = instruction
+            .results()
+            .first()
+            .copied()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "List append has no result"))?;
+        let ty = self.list_type_of_value(result)?;
+        let layout = self.backend.list_layout(ty)?;
+        let old_object = self.value(list)?.into_pointer_value();
+        let (old_length, old_capacity) =
+            self.load_list_header(&layout, old_object, "list.append.old")?;
+        let one = self.backend.context.i64_type().const_int(1, false);
+        let new_length = self
+            .backend
+            .builder
+            .build_int_add(old_length, one, "list.append.new_length")
+            .map_err(builder_error)?;
+        let needs_growth = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                old_capacity,
+                new_length,
+                "list.append.needs_growth",
+            )
+            .map_err(builder_error)?;
+        let doubled = self
+            .backend
+            .builder
+            .build_int_mul(
+                old_capacity,
+                self.backend.context.i64_type().const_int(2, false),
+                "list.append.doubled_capacity",
+            )
+            .map_err(builder_error)?;
+        let doubled_or_one = self
+            .backend
+            .builder
+            .build_select(
+                self.backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::ULT,
+                        doubled,
+                        one,
+                        "list.append.capacity_below_one",
+                    )
+                    .map_err(builder_error)?,
+                one,
+                doubled,
+                "list.append.grown_capacity",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let new_capacity = self
+            .backend
+            .builder
+            .build_select(
+                needs_growth,
+                doubled_or_one,
+                old_capacity,
+                "list.append.new_capacity",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        if unique {
+            let source = self.current_block()?;
+            let function = source.get_parent().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "List.append has no function")
+            })?;
+            let reuse = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.reuse");
+            let grow = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.grow");
+            let merge = self
+                .backend
+                .context
+                .append_basic_block(function, "list.append.unique.merge");
+            let non_null = self
+                .backend
+                .builder
+                .build_is_not_null(old_object, "list.append.unique.non_null")
+                .map_err(builder_error)?;
+            let has_capacity = self
+                .backend
+                .builder
+                .build_not(needs_growth, "list.append.unique.has_capacity")
+                .map_err(builder_error)?;
+            let can_reuse = self
+                .backend
+                .builder
+                .build_and(non_null, has_capacity, "list.append.unique.can_reuse")
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_conditional_branch(can_reuse, reuse, grow)
+                .map_err(builder_error)?;
+
+            self.backend.builder.position_at_end(reuse);
+            let appended = self.value(value)?;
+            self.store_list_element(
+                &layout,
+                old_object,
+                old_length,
+                appended,
+                "list.append.unique.element",
+            )?;
+            let length_pointer =
+                self.list_field_pointer(&layout, old_object, 0, "list.append.unique.store_length")?;
+            self.backend
+                .builder
+                .build_store(length_pointer, new_length)
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(merge)
+                .map_err(builder_error)?;
+            let reuse_end = self.current_block()?;
+
+            self.backend.builder.position_at_end(grow);
+            let object = self.emit_allocating_list_append(
+                instruction,
+                list,
+                value,
+                result,
+                ty,
+                &layout,
+                old_length,
+                new_length,
+                new_capacity,
+            )?;
+            self.backend
+                .builder
+                .build_unconditional_branch(merge)
+                .map_err(builder_error)?;
+            let grow_end = self.current_block()?;
+
+            self.backend.builder.position_at_end(merge);
+            let object_phi = self
+                .backend
+                .builder
+                .build_phi(self.backend.ptr_type, "list.append.unique.result")
+                .map_err(builder_error)?;
+            object_phi.add_incoming(&[(&old_object, reuse_end), (&object, grow_end)]);
+            return Ok(object_phi.as_basic_value().into_pointer_value());
+        }
+
+        self.emit_allocating_list_append(
+            instruction,
+            list,
+            value,
+            result,
+            ty,
+            &layout,
+            old_length,
+            new_length,
+            new_capacity,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_allocating_list_append(
+        &self,
+        instruction: &Instruction,
+        list: ValueId,
+        value: ValueId,
+        result: ValueId,
+        ty: ValueTypeId,
+        layout: &ListLayout<'ctx>,
+        old_length: IntValue<'ctx>,
+        new_length: IntValue<'ctx>,
+        new_capacity: IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let object = self.allocate_list(
+            ty,
+            layout,
+            new_capacity,
+            result,
+            ManagedSafepoint::Instruction(instruction.id()),
+            "list.append",
+        )?;
+        self.store_list_header(layout, object, new_length, new_capacity)?;
+
+        // Reload the old base only after allocation. Selecting the fresh object
+        // for an empty/null source keeps even zero-byte memcpy away from null.
+        let old_object = self.value(list)?.into_pointer_value();
+        let copy_source = self
+            .backend
+            .builder
+            .build_select(
+                self.backend
+                    .builder
+                    .build_is_null(old_object, "list.append.old.is_null")
+                    .map_err(builder_error)?,
+                object,
+                old_object,
+                "list.append.copy_source",
+            )
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let source = self.list_field_pointer(layout, copy_source, 2, "list.append.source")?;
+        let destination = self.list_field_pointer(layout, object, 2, "list.append.destination")?;
+        let copy_bytes = self
+            .backend
+            .builder
+            .build_int_mul(
+                old_length,
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(layout.element_stride, false),
+                "list.append.copy_bytes",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_memcpy(
+                destination,
+                layout.element_align,
+                source,
+                layout.element_align,
+                copy_bytes,
+            )
+            .map_err(builder_error)?;
+        let appended = self.value(value)?;
+        self.store_list_element(layout, object, old_length, appended, "list.append.element")?;
+        Ok(object)
+    }
+
+    fn emit_list_length(&self, list: ValueId) -> Result<IntValue<'ctx>, CodegenError> {
+        let ty = self.list_type_of_value(list)?;
+        let layout = self.backend.list_layout(ty)?;
+        let object = self.value(list)?.into_pointer_value();
+        self.load_list_header(&layout, object, "list.length")
+            .map(|(length, _)| length)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "bounds checking and exact Option construction form one control-flow operation with no runtime helper"
+    )]
+    fn emit_list_get(
+        &self,
+        list: ValueId,
+        index: ValueId,
+        result_ty: ValueTypeId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let list_ty = self.list_type_of_value(list)?;
+        let layout = self.backend.list_layout(list_ty)?;
+        let object = self.value(list)?.into_pointer_value();
+        let index = self.int(index)?;
+        let source = self.current_block()?;
+        let function = source
+            .get_parent()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "List.get has no function"))?;
+        let bounds = self
+            .backend
+            .context
+            .append_basic_block(function, "list.get.bounds");
+        let some = self
+            .backend
+            .context
+            .append_basic_block(function, "list.get.some");
+        let none = self
+            .backend
+            .context
+            .append_basic_block(function, "list.get.none");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "list.get.merge");
+        let not_null = self
+            .backend
+            .builder
+            .build_is_not_null(object, "list.get.not_null")
+            .map_err(builder_error)?;
+        let nonnegative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SGE,
+                index,
+                self.backend.context.i64_type().const_zero(),
+                "list.get.nonnegative",
+            )
+            .map_err(builder_error)?;
+        let can_check = self
+            .backend
+            .builder
+            .build_and(not_null, nonnegative, "list.get.can_check")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(can_check, bounds, none)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(bounds);
+        let length_pointer =
+            self.list_field_pointer(&layout, object, 0, "list.get.length.pointer")?;
+        let length = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                length_pointer,
+                "list.get.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let in_bounds = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, length, "list.get.in_bounds")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(in_bounds, some, none)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(none);
+        let none_value = self.emit_sum_construct_values(result_ty, 0, &[])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(some);
+        let element = if self.backend.target_data.get_abi_size(&layout.element) == 0 {
+            match layout.element {
+                BasicTypeEnum::ArrayType(ty) => ty.const_zero().into(),
+                BasicTypeEnum::FloatType(ty) => ty.const_zero().into(),
+                BasicTypeEnum::IntType(ty) => ty.const_zero().into(),
+                BasicTypeEnum::PointerType(ty) => ty.const_null().into(),
+                BasicTypeEnum::StructType(ty) => ty.const_zero().into(),
+                BasicTypeEnum::VectorType(ty) => ty.const_zero().into(),
+                BasicTypeEnum::ScalableVectorType(ty) => ty.const_zero().into(),
+            }
+        } else {
+            let pointer = self.list_element_pointer(&layout, object, index, "list.get.element")?;
+            self.backend
+                .builder
+                .build_load(layout.element, pointer, "list.get.value")
+                .map_err(builder_error)?
+        };
+        let some_value = self.emit_sum_construct_values(result_ty, 1, &[element])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.llvm_type(result_ty)?, "list.get.result")
+            .map_err(builder_error)?;
+        phi.add_incoming(&[(&none_value, none), (&some_value, some)]);
+        Ok(phi.as_basic_value())
     }
 
     fn pack_sum_carrier(

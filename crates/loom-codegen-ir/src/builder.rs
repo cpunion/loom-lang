@@ -22,6 +22,7 @@ pub enum BuildErrorCode {
     InvalidBlock,
     InvalidValueType,
     InvalidTextType,
+    InvalidListType,
     InvalidProductType,
     InvalidSumType,
     DuplicateEntry,
@@ -142,6 +143,33 @@ impl ProgramBuilder {
                 "LCIR managed Text requires one unique registration on a 64-bit target",
             )
         })
+    }
+
+    /// Registers one concrete immutable List as an exact managed object-base
+    /// pointer. Its element type is validated against the complete canonical
+    /// representation table after all mutually recursive List-broken shapes
+    /// have been registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a non-64-bit target,
+    /// for a duplicate/non-List semantic type, or when an identity table is
+    /// exhausted.
+    pub fn add_managed_list_type(&mut self, semantic: Type) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidListType,
+                "LCIR managed List types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_managed_list(semantic)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidListType,
+                    "LCIR managed List requires one unique concrete List type on a 64-bit target",
+                )
+            })
     }
 
     /// Adds one concrete record instantiation whose fields have canonical direct
@@ -454,6 +482,10 @@ impl FunctionBuilder<'_> {
         self.representations
     }
 
+    pub(crate) fn value_type(&self, value: ValueId) -> Option<ValueTypeId> {
+        self.function.value(value).map(|value| value.ty)
+    }
+
     /// Appends a block. Blocks and values use independent dense identity
     /// domains within this function.
     ///
@@ -545,6 +577,7 @@ impl FunctionBuilder<'_> {
             InstructionKind::RefineProven { .. }
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
+                | InstructionKind::ListAppendUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,
@@ -570,6 +603,7 @@ impl FunctionBuilder<'_> {
             InstructionKind::RefineProven { .. }
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
+                | InstructionKind::ListAppendUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,

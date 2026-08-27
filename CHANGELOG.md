@@ -51,6 +51,16 @@ artifact, or runtime compatibility.
   object evidence without a universal value or executor. Existing LCIR,
   artifact, object, cache, and runtime ABI versions are unchanged because this
   extends accepted source coverage without changing their formats.
+- Typed LCIR now lowers concrete closed managed `List[T]` values on 64-bit
+  targets through direct typed repeated storage, including literals, immutable
+  value-semantic append, length, and `get -> Option[T]`. Exact target-layout
+  pointer maps support Text, products, sums, and nested Lists; collecting growth
+  roots and reloads old backings and managed elements. A checked-MIR-only,
+  independently validated uniqueness certificate gives canonical local append
+  loops geometric capacity reuse without exposing mutation to copies or
+  aliases. This advances the LCIR dump to 17, artifact identity to schema 18,
+  native-object domain to v14, and CLI object cache to v19 while reusing native
+  runtime ABI component 14 and `typed-repeated-v1`.
 - Typed LCIR now places source contracts at explicit checked boundaries.
   Closed-world calls evaluate every argument before checking `requires` with
   exact call-expression blame, then enter an assumed body whose receiver

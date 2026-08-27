@@ -60,20 +60,23 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | one-variant closed enum | tagless `Sum(variant payload...)` |
 | multi-variant closed enum with no payload fields | minimal integer tag |
 | other closed concrete enum | `{ minimal integer tag, exact aligned payload carrier }` |
+| concrete closed `List[T]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated storage |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. Products and sums are immutable register aggregates.
 Their fields may be primitive values or other acyclic direct aggregates, so
-tuples, records, and pointer-free closed sums may contain one another. Products
-may additionally contain managed Text leaves; sums and transparent/refined
-carriers remain pointer-free.
+tuples, records, and closed sums may contain one another. Products and sums may
+additionally contain managed Text leaves; transparent/refined carriers remain
+pointer-free.
 Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Generic records, runtime-checked constructions, recursive
-sums, and aggregates containing lists, Task, dynamic witnesses, or uninhabited
-fields are not selected. Managed Text is admitted through product fields and
-closed sum variants, but not transparent/refined carriers. `InvariantRecordProven` is the only
+sums, Task, dynamic witnesses, and uninhabited fields are not selected. A
+concrete List breaks by-value aggregate recursion and may contain any already
+registered closed direct scalar, Text, product, sum, or nested List element.
+Managed Text is admitted through product fields, closed sum variants, and List
+elements, but not transparent/refined carriers. `InvariantRecordProven` is the only
 construction for an invariant product; `RefineProven` and exact `Unrefine`
 preserve the physical SSA value while retaining the proof boundary.
 
@@ -103,8 +106,8 @@ and `TextCompare` work in either mode, and equality compares content, never
 object addresses. `TextGet` returns the canonical closed `Option[Text]` sum;
 negative or out-of-range indices select `None` without allocating, while a
 found Unicode scalar is allocated through the typed helper. Other dynamic Text
-producers, Text inside transparent/refined carriers, and managed lists still
-select atomic whole-artifact fallback.
+producers and Text inside transparent/refined carriers still select atomic
+whole-artifact fallback.
 
 Text planning is bounded before LCIR allocation or source storage is cloned.
 One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
@@ -268,8 +271,9 @@ dump to `lcir 13`, the LCIR native-object domain to
 need no runtime cleanup representation.
 The additive repeated-element allocator then advances only the runtime
 boundary: native component 13, `runtime-v7`, `gc-v9`, and
-`typed-repeated-v1`. Fixed-offset typed allocations remain `typed-gc-v1`; LCIR
-does not use the repeated symbol until monomorphized List lowering lands.
+`typed-repeated-v1`. Fixed-offset typed allocations remain `typed-gc-v1`;
+monomorphized List lowering consumes the repeated symbol without another
+runtime ABI change.
 Managed Text leaves in closed unboxed sums then advance the artifact identity
 to schema 15, the dump to `lcir 14`, the LCIR native-object domain to
 `loom-lcir-native-object-v11`, and the CLI object-cache domain to
@@ -292,6 +296,11 @@ assumed-body identity, call-site preconditions, entry and exit invariant
 checks, post-cleanup postconditions, and the protected-receiver transient
 update form. No runtime symbol, physical value representation, or runtime ABI
 component changes.
+Monomorphized managed Lists then advance the artifact identity to schema 18,
+the dump to `lcir 17`, the native-object domain to
+`loom-lcir-native-object-v14`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v19`. The existing runtime ABI component 14 and
+`typed-repeated-v1` wire are unchanged.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -402,9 +411,10 @@ but their pointers share the same callable ABI as dynamically allocated Text.
 resource exhaustion is an uncatchable process fault, while malformed runtime
 status fails closed. `TextGet` maps the typed helper's missing/found status to a
 zero-initialized `Option[Text]` carrier and traps on any other runtime status.
-Products and closed sums remain unboxed exact SSA aggregates. Text inside
-transparent/refined carriers, managed lists, and other dynamic Text producers
-still select whole-artifact fallback.
+Products and closed sums remain unboxed exact SSA aggregates. Concrete closed
+Lists use direct managed pointers and exact repeated descriptors. Text inside
+transparent/refined carriers and other dynamic Text producers still select
+whole-artifact fallback.
 
 `plan_managed_roots` computes exact managed SSA liveness with a predecessor
 worklist. It records the live-after set at each collecting instruction or call,
@@ -421,6 +431,14 @@ empty, and identical rows are deduplicated. A function with no managed leaf
 live across a safepoint has no typed shadow frame. The runtime ABI limits are
 checked during LLVM emission; an excess is `ProgramTooLarge`, never legacy
 fallback.
+
+`ListConstruct`, immutable `ListAppend`, `ListLength`, and `ListGet` are
+first-class typed instructions. Allocation sites root even otherwise-dead List
+and managed-element operands before calling `typed-repeated-v1`, then reload
+them before copying. The checked-MIR-only `ListAppendUnique` consumes a
+greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
+entry values, copies, calls, aggregate embedding, projections, and ambiguous
+joins are `Shared`. Raw LCIR builders cannot forge this certificate.
 
 ## Typed projected places
 

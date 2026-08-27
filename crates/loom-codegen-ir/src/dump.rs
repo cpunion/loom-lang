@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 16")?;
+    writeln!(output, "lcir 17")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -252,6 +252,21 @@ fn write_instruction(
             write!(output, "sum.construct variant {variant} (")?;
             write_arguments(output, payload)?;
             write!(output, ")")
+        }
+        InstructionKind::ListConstruct { elements } => {
+            write!(output, "list.construct (")?;
+            write_arguments(output, elements)?;
+            write!(output, ")")
+        }
+        InstructionKind::ListAppend { list, value } => {
+            write!(output, "list.append %{list}, %{value}")
+        }
+        InstructionKind::ListAppendUnique { list, value } => {
+            write!(output, "list.append.unique %{list}, %{value}")
+        }
+        InstructionKind::ListLength { list } => write!(output, "list.length %{list}"),
+        InstructionKind::ListGet { list, index } => {
+            write!(output, "list.get %{list}, %{index}")
         }
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {

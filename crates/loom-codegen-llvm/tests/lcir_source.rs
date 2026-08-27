@@ -1587,6 +1587,212 @@ fn managed_sum_leaves_relocate_only_for_the_active_variant() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one native differential gate keeps managed List element shapes, immutable aliasing, List.get matching, forced relocation, unused-capacity zeroing, and cross-target descriptors together"
+)]
+fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation() {
+    let fields = (0..31)
+        .map(|index| format!("    n{index} Int"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let initializers = (0..31)
+        .map(|index| format!("n{index} = {index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let repeated = std::iter::repeat_n("wide", 129)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let pressure = format!(
+        "record Wide {{\n    text Text\n{fields}\n}}\n\nfn forcedLists() Bool {{\n    let kept = join(\"Rel\", \"ocated\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = [{repeated}]\n    let alias = values\n    values.add(wide)\n    let trigger = [{repeated}]\n    (trigger.length() == 129\n        && values.length() == 130\n        && alias.length() == 129\n        && match values.get(129) {{ Some(item) => item.text == \"Relocated\", None => false }}\n        && match alias.get(0) {{ Some(item) => item.text == \"Relocated\", None => false }})\n}}\n\nfn uniqueForcedLists() Bool {{\n    let kept = join(\"Uni\", \"que\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = List[Wide]()\n    for index in 0..130 {{\n        values.add(wide)\n        Unit\n    }}\n    (values.length() == 130\n        && match values.get(0) {{ Some(item) => item.text == \"Unique\", None => false }}\n        && match values.get(129) {{ Some(item) => item.text == \"Unique\", None => false }})\n}}\n\n"
+    );
+    let source = include_str!("../../../fixtures/lcir-managed-lists/main.loom")
+        .replace(
+            "fn join(left Text, right Text) Text",
+            &(pressure + "fn join(left Text, right Text) Text"),
+        )
+        .replace(
+            "    verdict(\n",
+            "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
+        );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "list.construct",
+        "list.append",
+        "list.append.unique",
+        "list.length",
+        "list.get",
+        "sum.switch",
+        "inout=[0]",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-managed-lists");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("managedLists"),
+        "{:?}",
+        native.output
+    );
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.list.descriptor",
+        "loom.lcir.list.pointer_offsets",
+        "llvm.memcpy",
+        "managed.root.reload",
+        "list.append.copy_bytes",
+        "list.get.in_bounds",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "managed List IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_list_add",
+        "loom_runtime_list_get",
+        "loom_int_list_reserve_v1",
+        "loom_executor_",
+        "loom_gc_root_push_v1",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "managed List IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    let unique = emitted_lcir_function(&native.ir, &artifact, "uniqueForcedLists");
+    for required in [
+        "list.append.unique.can_reuse",
+        "list.append.unique.reuse",
+        "list.append.unique.grow",
+        "managed.root.reload",
+    ] {
+        assert!(unique.contains(required), "missing `{required}`:\n{unique}");
+    }
+    assert_eq!(
+        unique.matches("@loom_gc_typed_repeated_alloc_v1").count(),
+        1,
+        "one loop append site must contain one conditional allocator call:\n{unique}"
+    );
+    let shared = emitted_lcir_function(&native.ir, &artifact, "forcedLists");
+    assert!(
+        !shared.contains("list.append.unique.reuse"),
+        "the aliased append must remain immutable:\n{shared}"
+    );
+
+    let release_directory = tempfile::tempdir().expect("create release List directory");
+    let release_object = release_directory.path().join("managed-lists-release.o");
+    let release_ir_path = release_directory.path().join("managed-lists-release.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &release_object,
+        &NativeObjectOptions {
+            emit_ir: Some(release_ir_path.clone()),
+            optimization: OptimizationProfile::Release,
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit release managed-List object");
+    let release_ir = std::fs::read_to_string(release_ir_path).expect("read release List IR");
+    let release_unique = emitted_lcir_function(&release_ir, &artifact, "uniqueForcedLists");
+    assert_eq!(
+        release_unique
+            .matches("@loom_gc_typed_repeated_alloc_v1")
+            .count(),
+        1,
+        "release loop must retain one conditional allocator call site:\n{release_unique}"
+    );
+    assert!(
+        release_unique.contains("list.append.unique.can_reuse")
+            || (release_unique.contains("icmp") && release_unique.contains("br i1")),
+        "release IR lost the capacity reuse guard:\n{release_unique}"
+    );
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create managed-List target directory");
+        let object = directory.path().join("managed-lists.o");
+        let ir_path = directory.path().join("managed-lists.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed-List object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read managed-List target IR");
+        for required in [
+            "loom_gc_typed_repeated_alloc_v1",
+            "loom.lcir.list.descriptor",
+            "managed.root.reload",
+            "llvm.memcpy",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+fn managed_list_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
+    let program = compile_source(
+        "module list_target\npub fn main() Unit {\n    let values = [1, 2]\n    discard values.length()\n    Unit\n}\n",
+    );
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let artifact = lower_source_artifact_with_layout(
+        &program,
+        &request,
+        TargetLayout::new(64).expect("64-bit target"),
+    );
+    assert!(
+        dump_program(artifact.program()).contains("list.construct"),
+        "64-bit List[Int] must remain direct LCIR"
+    );
+    match lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit List")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| {
+                matches!(
+                    item.feature(),
+                    loom_codegen_ir::UnsupportedFeature::ExpressionType
+                        | loom_codegen_ir::UnsupportedFeature::SignatureType
+                )
+            }),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit managed List must fail closed"),
+    }
+}
+
+#[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
     let program = compile_source(source);

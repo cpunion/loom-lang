@@ -2601,6 +2601,26 @@ pub fn main() Unit {
 }
 
 #[test]
+fn canonical_direct_local_list_loop_carries_a_trusted_unique_certificate() {
+    let dump = complete_dump(
+        r"module list_unique_loop
+
+pub fn main() Unit {
+    var values = List[Int]()
+    for index in 0..128 {
+        values.add(index)
+        Unit
+    }
+    let count = values.length()
+    Unit
+}
+",
+    );
+    assert_eq!(dump.matches("list.append.unique").count(), 1, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
+}
+
+#[test]
 fn assert_and_defer_lower_to_direct_lexical_cleanup_control_flow() {
     let dump = complete_dump(
         r"module cleanup
@@ -2973,6 +2993,19 @@ pub fn main() Unit {
         matches!(lower_run(managed), LoweringOutcome::Complete(_)),
         "a closed sum with exact managed leaves must lower as one LCIR artifact"
     );
+    let list_sum = r"module list_sum
+
+enum Values { Items(List[Int]) }
+
+pub fn main() Unit {
+    discard Values.Items(List[Int]())
+    Unit
+}
+";
+    assert!(
+        matches!(lower_run(list_sum), LoweringOutcome::Complete(_)),
+        "a closed sum containing a concrete List must lower as one LCIR artifact"
+    );
 
     for source in [
         r"module recursive_sum
@@ -2984,15 +3017,6 @@ enum Chain {
 
 pub fn main() Unit {
     discard Chain.End
-    Unit
-}
-",
-        r"module list_sum
-
-enum Values { Items(List[Int]) }
-
-pub fn main() Unit {
-    discard Values.Items(List[Int]())
     Unit
 }
 ",

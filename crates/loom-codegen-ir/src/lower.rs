@@ -1669,7 +1669,9 @@ impl<'program> Classifier<'program> {
                 if !self.visit_exprs(function, key, elements, &format!("{path}.elements")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::ListValue, function, expression, path);
+                if elements.len() > crate::LIST_LITERAL_MAX_ELEMENTS {
+                    self.expression_item(UnsupportedFeature::ListValue, function, expression, path);
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
@@ -2069,13 +2071,22 @@ impl<'program> Classifier<'program> {
                                 PlaceSite::expression(expression),
                                 &format!("{path}.arguments[{index}].place"),
                             );
-                            let allowed = index == 0
-                                && mutable_receiver.as_ref() == place_type.as_ref()
-                                && place_type.as_ref().is_some_and(|ty| {
-                                    self.supported_record_type(ty)
-                                        || (is_invariant_record_type(self.program, ty)
-                                            && self.aggregates.supports_value_type(ty))
-                                });
+                            let allowed =
+                                if matches!(target, CallTarget::Builtin(mir::Builtin::ListAdd)) {
+                                    index == 0
+                                        && place_type.as_ref().is_some_and(|ty| {
+                                            matches!(ty, Type::List(_))
+                                                && self.supported_value_type(ty)
+                                        })
+                                } else {
+                                    index == 0
+                                        && mutable_receiver.as_ref() == place_type.as_ref()
+                                        && place_type.as_ref().is_some_and(|ty| {
+                                            self.supported_record_type(ty)
+                                                || (is_invariant_record_type(self.program, ty)
+                                                    && self.aggregates.supports_value_type(ty))
+                                        })
+                                };
                             if !allowed {
                                 self.expression_item(
                                     UnsupportedFeature::InOutArgument,
@@ -2096,7 +2107,10 @@ impl<'program> Classifier<'program> {
                         mir::Builtin::TextLength
                         | mir::Builtin::TextContains
                         | mir::Builtin::TextGet
-                        | mir::Builtin::TextConcat,
+                        | mir::Builtin::TextConcat
+                        | mir::Builtin::ListAdd
+                        | mir::Builtin::ListLength
+                        | mir::Builtin::ListGet,
                     ) => {
                         if matches!(
                             target,
@@ -2373,7 +2387,14 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
         | ExprKind::ReborrowView { .. } => true,
-        ExprKind::Tuple(values) | ExprKind::List(values) => scan_effect_exprs(values, summary),
+        ExprKind::Tuple(values) => scan_effect_exprs(values, summary),
+        ExprKind::List(values) => {
+            let continues = scan_effect_exprs(values, summary);
+            if continues && !values.is_empty() {
+                summary.include(Effects::MAY_COLLECT);
+            }
+            continues
+        }
         ExprKind::Unary(operator, operand) => {
             if !scan_effect_expr(operand, summary) {
                 return false;
@@ -2436,7 +2457,9 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
                 summary.calls.insert(*callee);
             } else if matches!(
                 target,
-                CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+                CallTarget::Builtin(
+                    mir::Builtin::TextConcat | mir::Builtin::TextGet | mir::Builtin::ListAdd
+                )
             ) {
                 summary.include(Effects::MAY_COLLECT);
             }
@@ -2458,6 +2481,158 @@ fn scan_effect_exprs(expressions: &[mir::Expr], summary: &mut EffectSummary) -> 
 fn continuing_mutations(block: &mir::Block) -> Option<BTreeSet<LocalId>> {
     let mut changed = BTreeSet::new();
     scan_mutation_block(block, &mut changed).then_some(changed)
+}
+
+fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
+    let mut append_count = 0_usize;
+    for statement in &block.statements {
+        if let StatementKind::Evaluate(expression) = &statement.kind
+            && let ExprKind::Call {
+                target: CallTarget::Builtin(mir::Builtin::ListAdd),
+                arguments,
+                ..
+            } = &expression.kind
+            && let [CallArgument::InOut(receiver), CallArgument::Value(value)] =
+                arguments.as_slice()
+            && receiver.local == local
+            && receiver.projection.is_empty()
+            && !expr_mentions_local(value, local)
+        {
+            append_count = append_count.saturating_add(1);
+            continue;
+        }
+        if statement_mentions_local(statement, local) {
+            return false;
+        }
+    }
+    append_count != 0
+        && block
+            .tail
+            .as_deref()
+            .is_none_or(|tail| !expr_mentions_local(tail, local))
+}
+
+fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool {
+    match &statement.kind {
+        StatementKind::Let { value, .. }
+        | StatementKind::Scoped { value, .. }
+        | StatementKind::LetTuple { value, .. }
+        | StatementKind::Assert { condition: value }
+        | StatementKind::Evaluate(value) => expr_mentions_local(value, local),
+        StatementKind::ForRange {
+            local: loop_local,
+            start,
+            end,
+            body,
+        } => {
+            *loop_local == local
+                || expr_mentions_local(start, local)
+                || expr_mentions_local(end, local)
+                || body
+                    .statements
+                    .iter()
+                    .any(|statement| statement_mentions_local(statement, local))
+                || body
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+        }
+        StatementKind::Assign { place, value } => {
+            place.local == local || expr_mentions_local(value, local)
+        }
+        StatementKind::Defer(cleanup) => {
+            cleanup
+                .statements
+                .iter()
+                .any(|statement| statement_mentions_local(statement, local))
+                || cleanup
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+        }
+        StatementKind::Return(value) => value
+            .as_ref()
+            .is_some_and(|value| expr_mentions_local(value, local)),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn expr_mentions_local(expression: &mir::Expr, local: LocalId) -> bool {
+    match &expression.kind {
+        ExprKind::Constant(_) => false,
+        ExprKind::Copy(place) | ExprKind::Move(place) => place.local == local,
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        } => values.iter().any(|value| expr_mentions_local(value, local)),
+        ExprKind::Unary(_, value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::Unrefine(value)
+        | ExprKind::Await { task: value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        } => expr_mentions_local(value, local),
+        ExprKind::Binary(_, left, right) => {
+            expr_mentions_local(left, local) || expr_mentions_local(right, local)
+        }
+        ExprKind::Block(block) => {
+            block
+                .statements
+                .iter()
+                .any(|statement| statement_mentions_local(statement, local))
+                || block
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+        }
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_mentions_local(condition, local)
+                || then_branch
+                    .statements
+                    .iter()
+                    .any(|statement| statement_mentions_local(statement, local))
+                || then_branch
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+                || else_branch
+                    .statements
+                    .iter()
+                    .any(|statement| statement_mentions_local(statement, local))
+                || else_branch
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expr_mentions_local(scrutinee, local)
+                || arms
+                    .iter()
+                    .any(|arm| expr_mentions_local(&arm.value, local))
+        }
+        ExprKind::Record { fields, .. } => {
+            fields.iter().any(|field| expr_mentions_local(field, local))
+        }
+        ExprKind::Variant { payload, .. } => payload
+            .iter()
+            .any(|value| expr_mentions_local(value, local)),
+        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| match argument {
+            CallArgument::Value(value) => expr_mentions_local(value, local),
+            CallArgument::InOut(place) => place.local == local,
+        }),
+        ExprKind::MakeView {
+            value, writeback, ..
+        } => {
+            expr_mentions_local(value, local)
+                || writeback.as_ref().is_some_and(|place| place.local == local)
+        }
+        ExprKind::ReborrowView { owner, .. } => owner.local == local,
+    }
 }
 
 fn scan_mutation_block(block: &mir::Block, changed: &mut BTreeSet<LocalId>) -> bool {
@@ -3027,6 +3202,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     cleanups: Vec<CleanupAction>,
     cleanup_expansions: usize,
     old_parameters: Vec<ContractOperand>,
+    unique_list_values: BTreeSet<ValueId>,
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
@@ -3069,6 +3245,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             cleanups: Vec::new(),
             cleanup_expansions: 0,
             old_parameters: Vec::new(),
+            unique_list_values: BTreeSet::new(),
+        }
+    }
+
+    fn is_list_value(&self, value: ValueId) -> bool {
+        self.builder
+            .value_type(value)
+            .and_then(|ty| self.builder.representations().value_type(ty))
+            .is_some_and(|ty| matches!(ty.semantic(), Type::List(_)))
+    }
+
+    fn share_list_value(&mut self, value: ValueId) {
+        if self.is_list_value(value) {
+            self.unique_list_values.remove(&value);
         }
     }
 
@@ -4648,6 +4838,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         ty: ValueTypeId,
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
+        match &kind {
+            InstructionKind::ListLength { .. } | InstructionKind::ListGet { .. } => {}
+            InstructionKind::ListAppend { value, .. } => self.share_list_value(*value),
+            InstructionKind::ListConstruct { elements } => {
+                for element in elements.iter().copied() {
+                    self.share_list_value(element);
+                }
+            }
+            _ => {
+                for operand in kind.operands() {
+                    self.share_list_value(operand);
+                }
+            }
+        }
+        let establishes_unique_list = matches!(
+            &kind,
+            InstructionKind::ListConstruct { .. } | InstructionKind::ListAppend { .. }
+        );
         let results = self
             .builder
             .append_instruction(flow.block, kind, &[ty], origin)
@@ -4658,6 +4866,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "one-result instruction returned no value",
             )
         })?;
+        if establishes_unique_list {
+            self.unique_list_values.insert(value);
+        }
         Ok(EvalFlow::Continue { flow, value })
     }
 
@@ -4668,6 +4879,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         ty: ValueTypeId,
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
+        let unique_append = if let InstructionKind::ListAppendUnique { list, value } = &kind {
+            self.share_list_value(*value);
+            Some(*list)
+        } else {
+            for operand in kind.operands() {
+                self.share_list_value(operand);
+            }
+            None
+        };
         let results = self
             .builder
             .append_trusted_instruction(flow.block, kind, &[ty], origin)
@@ -4678,6 +4898,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "one-result trusted instruction returned no value",
             )
         })?;
+        if let Some(list) = unique_append {
+            self.unique_list_values.remove(&list);
+            self.unique_list_values.insert(value);
+        }
         Ok(EvalFlow::Continue { flow, value })
     }
 
@@ -5252,7 +5476,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         "typed place read unexpectedly terminated",
                     ));
                 };
-                if matches!(expression.kind, ExprKind::Move(_)) {
+                if matches!(expression.kind, ExprKind::Copy(_)) {
+                    self.share_list_value(value);
+                } else {
                     flow.env = self.environments.remove(flow.env, place.local)?;
                 }
                 Ok(EvalFlow::Continue { flow, value })
@@ -5333,7 +5559,29 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             ExprKind::Tuple(values) => {
                 self.lower_product_values(flow, values, expression, ProductConstruction::Plain)
             }
-            ExprKind::List(values) => self.lower_unsupported_values(flow, values, "list value"),
+            ExprKind::List(values) => {
+                let mut flow = flow;
+                let mut elements = Vec::with_capacity(values.len());
+                for value in values {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, value)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    elements.push(value);
+                }
+                self.one_instruction(
+                    flow,
+                    InstructionKind::ListConstruct {
+                        elements: elements.into_boxed_slice(),
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                )
+            }
             ExprKind::Match { scrutinee, arms } => {
                 self.lower_match(flow, scrutinee, arms, expression)
             }
@@ -6072,10 +6320,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             {
                 merged = self.environments.set(merged, local, first)?;
             } else {
+                let incoming_unique = alternatives.iter().all(|environment| {
+                    self.environments
+                        .get(*environment, local)
+                        .is_some_and(|value| self.unique_list_values.contains(&value))
+                });
                 let parameter = self
                     .builder
                     .append_block_parameter(join, self.local_type(local)?)
                     .map_err(LoweringError::from)?;
+                if incoming_unique {
+                    self.unique_list_values.insert(parameter);
+                }
                 merged = self.environments.set(merged, local, parameter)?;
                 varying.push(local);
             }
@@ -6368,6 +6624,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .builder
                 .append_block_parameter(header, self.local_type(*outer_local)?)
                 .map_err(LoweringError::from)?;
+            if self.unique_list_values.contains(&incoming)
+                && canonical_unique_list_loop_body(body, *outer_local)
+            {
+                self.unique_list_values.insert(parameter);
+            }
             header_env = self.environments.set(header_env, *outer_local, parameter)?;
             preheader_arguments.push(incoming);
         }
@@ -6475,7 +6736,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         if let CallTarget::Builtin(builtin) = target {
-            return self.lower_text_builtin(flow, *builtin, arguments, expression);
+            return match builtin {
+                mir::Builtin::TextLength
+                | mir::Builtin::TextConcat
+                | mir::Builtin::TextGet
+                | mir::Builtin::TextContains => {
+                    self.lower_text_builtin(flow, *builtin, arguments, expression)
+                }
+                mir::Builtin::ListAdd | mir::Builtin::ListLength | mir::Builtin::ListGet => {
+                    self.lower_list_builtin(flow, *builtin, arguments, expression)
+                }
+                _ => Err(self.unsupported_reached("builtin call")),
+            };
         }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
         let substitution = InstanceSubstitution::new(self.program, self.key);
@@ -6756,6 +7028,97 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             self.type_id(&expression.ty)?,
             self.expression_origin(expression),
         )
+    }
+
+    fn lower_list_builtin(
+        &mut self,
+        mut flow: Flow,
+        builtin: mir::Builtin,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let origin = self.expression_origin(expression);
+        if builtin == mir::Builtin::ListAdd {
+            let [CallArgument::InOut(receiver), CallArgument::Value(value)] = arguments else {
+                return Err(self.unsupported_reached("List.add argument shape"));
+            };
+            let receiver = self.place_plan(receiver, PlaceUse::InOut)?;
+            let direct_local = receiver.steps().is_empty();
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value: list,
+            } = self.read_place(flow, &receiver, origin)?
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "typed List.add receiver read unexpectedly terminated",
+                ));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(next_flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value: appended,
+            } = (if direct_local && self.unique_list_values.contains(&list) {
+                self.one_trusted_instruction(
+                    next_flow,
+                    InstructionKind::ListAppendUnique { list, value },
+                    receiver.leaf_type(),
+                    origin,
+                )?
+            } else {
+                self.one_instruction(
+                    next_flow,
+                    InstructionKind::ListAppend { list, value },
+                    receiver.leaf_type(),
+                    origin,
+                )?
+            })
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "typed List.append unexpectedly terminated",
+                ));
+            };
+            flow = self.write_place(next_flow, &receiver, appended, origin)?;
+            return self.constant(flow, Constant::Unit, &Type::Unit, origin);
+        }
+
+        let values = arguments
+            .iter()
+            .map(|argument| match argument {
+                CallArgument::Value(value) => Ok(value),
+                CallArgument::InOut(_) => {
+                    Err(self.unsupported_reached("List builtin inout argument"))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut lowered = Vec::with_capacity(values.len());
+        for value in values {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+        let kind = match (builtin, lowered.as_slice()) {
+            (mir::Builtin::ListLength, [list]) => InstructionKind::ListLength { list: *list },
+            (mir::Builtin::ListGet, [list, index]) => InstructionKind::ListGet {
+                list: *list,
+                index: *index,
+            },
+            _ => return Err(self.unsupported_reached("unsupported List builtin")),
+        };
+        self.one_instruction(flow, kind, self.type_id(&expression.ty)?, origin)
     }
 
     fn unsupported_reached(&self, what: &str) -> LoweringError {

@@ -123,7 +123,8 @@ pub enum ScalarRepr {
 /// rules. `ImmortalText` is deliberately narrower than a managed reference:
 /// admitted values can originate only in compiler-emitted literal objects, so
 /// no moving-GC root is required. `ManagedPointer` is one precisely rooted,
-/// direct managed-object base pointer; this slice registers it only for Text.
+/// direct managed-object base pointer; this slice registers it for dynamic
+/// Text and concrete managed List values.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Repr {
     /// Control-flow vocabulary for semantic `Never`. The direct foundation
@@ -435,10 +436,10 @@ impl RepresentationPlan {
     }
 
     /// Returns whether an already checked representation graph contains an
-    /// immortal and/or managed Text pointer. Missing or cyclic references are
+    /// immortal Text and/or managed pointer. Missing or cyclic references are
     /// rejected instead of being guessed; independent validation repeats the
     /// graph rules after construction.
-    fn text_pointer_kinds(&self, root: ValueTypeId) -> Option<(bool, bool)> {
+    fn pointer_kinds(&self, root: ValueTypeId) -> Option<(bool, bool)> {
         let mut pending = vec![root];
         let mut visited = BTreeSet::new();
         let mut immortal = false;
@@ -492,7 +493,7 @@ impl RepresentationPlan {
         // representation before registering a Text-bearing product.
         if fields
             .iter()
-            .any(|field| self.text_pointer_kinds(*field).is_none_or(|kinds| kinds.0))
+            .any(|field| self.pointer_kinds(*field).is_none_or(|kinds| kinds.0))
         {
             return None;
         }
@@ -567,6 +568,29 @@ impl RepresentationPlan {
         Some(ty)
     }
 
+    pub(crate) fn add_managed_list(&mut self, semantic: Type) -> Option<ValueTypeId> {
+        if self.target.pointer_bits() != 64
+            || self.type_id(&semantic).is_some()
+            || !matches!(semantic, Type::List(_))
+        {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::ManagedPointer);
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::Direct,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
+        Some(ty)
+    }
+
     pub(crate) fn add_invariant_record(
         &mut self,
         semantic: Type,
@@ -594,7 +618,7 @@ impl RepresentationPlan {
         let repr = self.value_type(base)?.repr;
         if matches!(self.repr(repr), Some(Repr::Uninhabited))
             || self
-                .text_pointer_kinds(base)
+                .pointer_kinds(base)
                 .is_none_or(|(immortal, managed)| immortal || managed)
         {
             return None;
@@ -640,7 +664,7 @@ impl RepresentationPlan {
         // separate provenance proof.
         if variants.iter().any(|variant| {
             variant.fields.iter().any(|field| {
-                self.text_pointer_kinds(*field)
+                self.pointer_kinds(*field)
                     .is_none_or(|(immortal, _)| immortal)
             })
         }) {
