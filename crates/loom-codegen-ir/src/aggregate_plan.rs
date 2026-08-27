@@ -332,6 +332,7 @@ enum AggregateShape {
     Transparent(Type),
     Sum(Box<[Box<[Type]>]>),
     ManagedList(Type),
+    ManagedTextMap(Type),
 }
 
 impl AggregateShape {
@@ -342,7 +343,7 @@ impl AggregateShape {
             Self::Sum(variants) => Box::new(variants.iter().flat_map(|variant| variant.iter())),
             // A List is one pointer in its containing value. Its element graph
             // is checked independently, not as a by-value registration edge.
-            Self::ManagedList(_) => Box::new(std::iter::empty()),
+            Self::ManagedList(_) | Self::ManagedTextMap(_) => Box::new(std::iter::empty()),
         }
     }
 
@@ -357,7 +358,7 @@ impl AggregateShape {
                 .try_fold(1_usize.checked_add(variants.len())?, |nodes, variant| {
                     nodes.checked_add(variant.len())
                 }),
-            Self::ManagedList(_) => Some(1),
+            Self::ManagedList(_) | Self::ManagedTextMap(_) => Some(1),
         }
     }
 }
@@ -381,6 +382,12 @@ fn direct_aggregate_shape(
     concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
+        Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
+            let [value] = arguments.as_slice() else {
+                return None;
+            };
+            Some(AggregateShape::ManagedTextMap(value.clone()))
+        }
         Type::Nominal(id, _) => {
             let definition = program.type_def(*id)?;
             match &definition.kind {
@@ -482,6 +489,7 @@ fn has_by_value_nominal_cycle(program: &mir::Program, root: TypeId) -> Option<bo
                 Type::Tuple(elements) => {
                     push_schema_types(&mut types, elements, inspected)?;
                 }
+                Type::Nominal(dependency, _) if is_text_map_nominal(program, *dependency) => {}
                 Type::Nominal(dependency, arguments) => {
                     dependencies.insert(*dependency);
                     push_schema_types(&mut types, arguments, inspected)?;
@@ -510,6 +518,10 @@ fn has_by_value_nominal_cycle(program: &mir::Program, root: TypeId) -> Option<bo
         );
     }
     Some(false)
+}
+
+fn is_text_map_nominal(program: &mir::Program, id: TypeId) -> bool {
+    program.prelude.text_map == Some(id)
 }
 
 fn push_schema_types<'a>(
@@ -676,10 +688,18 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                     break;
                 }
                 structural_nodes = next_structural_nodes;
-                if let AggregateShape::ManagedList(element) = &shape {
+                if let AggregateShape::ManagedList(element)
+                | AggregateShape::ManagedTextMap(element) = &shape
+                {
                     if !managed_path || !self.supports_managed_text {
                         supported = false;
                         break;
+                    }
+                    if matches!(shape, AggregateShape::ManagedTextMap(_)) {
+                        // Every map entry owns a Text key even when `V` is
+                        // pointer-free, so the artifact must use the managed-
+                        // capable Text provenance mode.
+                        uses_text_aggregate_leaf = true;
                     }
                     if element == &Type::Text {
                         if !self.supports_managed_text {
@@ -788,6 +808,14 @@ impl AggregatePlan {
                     "managed List {semantic:?} has an unplanned element value type"
                 )));
             }
+            if let AggregateShape::ManagedTextMap(value) = shape
+                && !is_direct_product_leaf(value)
+                && !self.entries.contains_key(value)
+            {
+                return Err(AggregateRegistrationError::Inconsistent(format!(
+                    "managed TextMap {semantic:?} has an unplanned value type"
+                )));
+            }
             if shape
                 .dependencies()
                 .any(|field| !is_direct_product_leaf(field) && !self.entries.contains_key(field))
@@ -840,6 +868,11 @@ impl AggregatePlan {
                     if element.as_ref() == planned =>
                 {
                     builder.add_managed_list_type(semantic.clone())
+                }
+                (Type::Nominal(_, arguments), AggregateShape::ManagedTextMap(planned))
+                    if arguments.as_slice() == std::slice::from_ref(planned) =>
+                {
+                    builder.add_managed_text_map_type(semantic.clone())
                 }
                 _ => {
                     return Err(AggregateRegistrationError::Inconsistent(format!(
@@ -1141,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn concrete_generic_products_and_refinements_register_but_text_map_stays_opaque() {
+    fn concrete_generic_products_refinements_and_closed_text_maps_register() {
         let program = generic_product_program();
         let boxed = TypeId(0);
         let guarded = TypeId(1);
@@ -1167,7 +1200,7 @@ mod tests {
         assert!(planner.supports_value_type(&boxed_int));
         assert!(planner.supports_value_type(&guarded_text));
         assert!(planner.supports_value_type(&refined_int));
-        assert!(!planner.supports_value_type(&map_int));
+        assert!(planner.supports_value_type(&map_int));
         let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
         builder
             .add_managed_text_type()
@@ -1175,10 +1208,18 @@ mod tests {
         planner
             .finish()
             .register(&mut builder)
-            .unwrap_or_else(|_| panic!("concrete generic products must register"));
+            .unwrap_or_else(|_| panic!("concrete generic values must register"));
         assert!(builder.type_id(&boxed_int).is_some());
         assert!(builder.type_id(&guarded_text).is_some());
         assert!(builder.type_id(&refined_int).is_some());
-        assert!(builder.type_id(&map_int).is_none());
+        let map = builder.type_id(&map_int).expect("registered TextMap[Int]");
+        assert_eq!(
+            builder
+                .representations()
+                .value_type(map)
+                .expect("TextMap value type")
+                .kind(),
+            crate::ValueTypeKind::ManagedTextMap
+        );
     }
 }

@@ -23,6 +23,7 @@ pub enum BuildErrorCode {
     InvalidValueType,
     InvalidTextType,
     InvalidListType,
+    InvalidTextMapType,
     InvalidProductType,
     InvalidSumType,
     DuplicateEntry,
@@ -168,6 +169,33 @@ impl ProgramBuilder {
                 BuildError::new(
                     BuildErrorCode::InvalidListType,
                     "LCIR managed List requires one unique concrete List type on a 64-bit target",
+                )
+            })
+    }
+
+    /// Registers one closed compiler-private `TextMap[V]` as a single exact
+    /// managed object-base pointer. The value graph is checked after the
+    /// complete representation catalog has been registered, which permits a
+    /// map edge to break otherwise recursive by-value shapes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a non-64-bit target,
+    /// for a duplicate/non-unary nominal semantic type, or when an identity
+    /// table is exhausted.
+    pub fn add_managed_text_map_type(&mut self, semantic: Type) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidTextMapType,
+                "LCIR managed TextMap types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_managed_text_map(semantic)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidTextMapType,
+                    "LCIR managed TextMap requires one unique closed unary nominal type on a 64-bit target",
                 )
             })
     }

@@ -247,7 +247,14 @@ pub struct ValueType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValueTypeKind {
     Direct,
-    Transparent { base: ValueTypeId },
+    /// Compiler-private single-pointer representation of one closed
+    /// `TextMap[V]`. The semantic argument identifies `V`; keeping this marker
+    /// separate from ordinary direct values lets independent validation reject
+    /// forged nominal managed pointers without introducing source-visible RTTI.
+    ManagedTextMap,
+    Transparent {
+        base: ValueTypeId,
+    },
     InvariantProduct,
 }
 
@@ -582,6 +589,32 @@ impl RepresentationPlan {
             semantic: semantic.clone(),
             repr,
             kind: ValueTypeKind::Direct,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
+        Some(ty)
+    }
+
+    pub(crate) fn add_managed_text_map(&mut self, semantic: Type) -> Option<ValueTypeId> {
+        let Type::Nominal(_, arguments) = &semantic else {
+            return None;
+        };
+        if self.target.pointer_bits() != 64
+            || self.type_id(&semantic).is_some()
+            || arguments.len() != 1
+        {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::ManagedPointer);
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::ManagedTextMap,
         });
         self.registrations.push(TypeRegistration {
             semantic: semantic.clone(),
