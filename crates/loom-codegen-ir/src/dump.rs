@@ -71,6 +71,7 @@ pub fn write_program_with_options(
         write!(output, " => {}", value_type.repr())?;
         match value_type.kind() {
             ValueTypeKind::Direct => {}
+            ValueTypeKind::ManagedTextMap => output.write_str(" managed_text_map")?,
             ValueTypeKind::Transparent { base } => write!(output, " transparent({base})")?,
             ValueTypeKind::InvariantProduct => output.write_str(" invariant_product")?,
         }
@@ -288,6 +289,14 @@ fn write_instruction(
         InstructionKind::ListLength { list } => write!(output, "list.length %{list}"),
         InstructionKind::ListGet { list, index } => {
             write!(output, "list.get %{list}, %{index}")
+        }
+        InstructionKind::TextMapConstruct => output.write_str("text_map.construct"),
+        InstructionKind::TextMapInsert { map, key, value } => {
+            write!(output, "text_map.insert %{map}, %{key}, %{value}")
+        }
+        InstructionKind::TextMapLength { map } => write!(output, "text_map.length %{map}"),
+        InstructionKind::TextMapGet { map, key } => {
+            write!(output, "text_map.get %{map}, %{key}")
         }
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {

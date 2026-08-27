@@ -333,6 +333,7 @@ fn collect_safepoint_values(
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::FormatFloat { .. }
+                    | InstructionKind::TextMapInsert { .. }
             ) || list_allocation
                 || matches!(
                     instruction.kind(),
@@ -346,7 +347,9 @@ fn collect_safepoint_values(
                 // allocation copies its operands only after the collector can
                 // relocate them. They therefore belong to this row even when
                 // dead after the instruction.
-                if list_allocation {
+                if list_allocation
+                    || matches!(instruction.kind(), InstructionKind::TextMapInsert { .. })
+                {
                     add_managed(&mut live, instruction.kind().operands(), managed);
                 }
                 site_values.insert(

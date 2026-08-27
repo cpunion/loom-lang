@@ -613,6 +613,29 @@ pub enum InstructionKind {
         list: ValueId,
         index: ValueId,
     },
+    /// Constructs the canonical empty compiler-private `TextMap[V]`. The
+    /// representation is the null managed pointer, so this operation does not
+    /// allocate or collect.
+    TextMapConstruct,
+    /// Produces a new immutable map with `key` bound to `value`. The old map
+    /// remains independently usable; the backend allocates exact typed
+    /// repeated storage and copies/replaces entries at a moving-GC safepoint.
+    TextMapInsert {
+        map: ValueId,
+        key: ValueId,
+        value: ValueId,
+    },
+    /// Returns zero for the canonical empty map and otherwise its exact entry
+    /// count. This operation cannot collect.
+    TextMapLength {
+        map: ValueId,
+    },
+    /// Looks up a Text key without allocation and returns the canonical exact
+    /// `Option[V]` selected by the result type.
+    TextMapGet {
+        map: ValueId,
+        key: ValueId,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -664,7 +687,7 @@ pub enum InstructionKind {
 impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
-            Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
+            Self::Constant(_) | Self::TextLiteral { .. } | Self::TextMapConstruct => Vec::new(),
             Self::TextLength { text }
             | Self::ParseInt { text, .. }
             | Self::ParseFloat { text, .. } => vec![*text],
@@ -698,6 +721,9 @@ impl InstructionKind {
                 vec![*list, *value]
             }
             Self::ListGet { list, index } => vec![*list, *index],
+            Self::TextMapInsert { map, key, value } => vec![*map, *key, *value],
+            Self::TextMapLength { map } => vec![*map],
+            Self::TextMapGet { map, key } => vec![*map, *key],
             Self::IntSuccessorBelow {
                 value,
                 upper_bound,

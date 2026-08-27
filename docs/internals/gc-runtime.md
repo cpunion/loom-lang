@@ -122,6 +122,15 @@ allocation is zeroed and unused element cells stay null, so scanning capacity
 is exact rather than conservative. Each table is capped at 4,096 entries and
 one allocation may describe at most 16,777,216 pointer cells.
 
+Concrete Lists and compiler-private typed TextMaps share this descriptor wire.
+A TextMap object has a fixed length header and repeated `{ Text key, V value }`
+entries. Its element table always contains the key pointer offset plus every
+exact managed leaf offset in the concrete closed `V`; target data determines
+all padding and stride. There is no map-specific universal value, runtime tag,
+layout registry, or tracing callback. Nested Lists and TextMaps are ordinary
+managed-pointer leaves, while product and sum values contribute their precise
+projected cells.
+
 ## Moving collection
 
 The collector traces live universal values, managed nodes and sequences, text
@@ -165,11 +174,13 @@ post-safepoint aggregate uses are rebuilt from reloaded leaves.
 An edge argument is live only when the paired explicit successor parameter is
 live, and a call result cannot be live at its own safepoint. No live-across
 managed leaves means no typed frame. Synchronous concat/get and concrete closed
-List allocation use a runtime but construct no executor. A collecting List
-site roots and reloads its old backing and managed element; repeated pointer
-offsets precisely cover every used or zeroed capacity cell. Text inside
-transparent/refined carriers and other dynamic producers remain outside the
-current typed LCIR slice.
+List or TextMap allocation use a runtime but construct no executor. A
+collecting List site roots and reloads its old backing and managed element. A
+collecting TextMap insertion similarly roots and reloads its old backing, Text
+key, and exact managed leaves of its value before copying into fresh functional
+storage. Repeated pointer offsets precisely cover every used or zeroed capacity
+cell. Text inside transparent/refined carriers and other dynamic producers
+remain outside the current typed LCIR slice.
 
 ## Source semantics
 

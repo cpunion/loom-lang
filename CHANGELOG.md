@@ -85,11 +85,25 @@ artifact, or runtime compatibility.
   forced-relocation, copy-independence, and Linux/MSVC object evidence.
   Existing LCIR, artifact, object, cache, and runtime ABI versions are
   unchanged.
+- Typed LCIR now lowers compiler-private concrete closed `TextMap[V]` values on
+  64-bit targets as one managed pointer to exact typed repeated entries.
+  Construction, functional insert/replacement, length, and exact
+  `get -> Option[V]` support scalar, Text, product, closed-sum, List, and nested
+  TextMap values. Target-derived descriptors trace every Text key and managed
+  value leaf through moving collection; insertion roots and reloads all inputs
+  and never mutates shared aliases. The implementation reuses
+  `typed-repeated-v1` and adds no universal value, executor, runtime type tag,
+  callback registry, or map-specific runtime symbol. The
+  `lcir-typed-textmap` fixture closes real `check/build/test/run`, forced-GC
+  interpreter/legacy/typed differential execution, and Linux/MSVC object
+  emission. LCIR/artifact/object/cache version reservations remain deferred to
+  the integration rebase; the native runtime ABI is unchanged.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
   representations. Generic field projection, contract evaluation, calls,
-  returns, and managed `Text` leaves remain typed SSA; compiler-private
-  `TextMap[V]` stays opaque. The new `lcir-generic-products` fixture closes real
+  returns, and managed `Text` leaves remain typed SSA. That slice did not itself
+  admit compiler-private `TextMap[V]`; the later typed-TextMap slice above does.
+  The new `lcir-generic-products` fixture closes real
   `check/build/test/run`, host execution, legacy differential, and Linux/MSVC
   object evidence without a universal value or executor. Existing LCIR,
   artifact, object, cache, and runtime ABI versions are unchanged because this

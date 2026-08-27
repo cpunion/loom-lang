@@ -2207,6 +2207,183 @@ fn managed_list_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one native differential gate keeps typed TextMap value shapes, immutable aliasing, exact lookup, moving-GC roots, and cross-target descriptors together"
+)]
+fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
+    let source = include_str!("../../../fixtures/lcir-typed-textmap/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:?}");
+    assert_eq!(interpreted[0].status, TestStatus::Passed, "{interpreted:?}");
+
+    let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(tests_artifact.program());
+    for required in [
+        "text_map.construct",
+        "text_map.insert",
+        "text_map.length",
+        "text_map.get",
+        "list.construct",
+        "list.get",
+        "sum.switch",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(!dump.contains("unsupported"), "{dump}");
+
+    let native_tests = emit_and_run_lcir(&tests_artifact, "source-typed-text-maps-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(
+        String::from_utf8_lossy(&native_tests.output.stdout).contains("typedTextMap"),
+        "{:?}",
+        native_tests.output
+    );
+    for required in [
+        "loom_gc_typed_repeated_alloc_v1",
+        "loom.lcir.text_map.descriptor",
+        "loom.lcir.text_map.pointer_offsets",
+        "managed.root.reload",
+        "llvm.memcpy",
+        "text_map.lookup",
+        "memcmp",
+    ] {
+        assert!(
+            native_tests.ir.contains(required),
+            "typed TextMap IR omitted `{required}`:\n{}",
+            native_tests.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_text_map_get",
+        "loom_runtime_text_map_insert",
+        "ValueNode",
+        "loom_executor_",
+        "loom_gc_root_push_v1",
+    ] {
+        assert!(
+            !native_tests.ir.contains(forbidden),
+            "typed TextMap IR exposed `{forbidden}`:\n{}",
+            native_tests.ir
+        );
+    }
+
+    let verify = emitted_lcir_function(&native_tests.ir, &tests_artifact, "verify");
+    assert!(verify.contains("text_map.insert.copy_source"), "{verify}");
+    assert!(verify.contains("managed.root.reload"), "{verify}");
+    assert!(
+        verify.matches("@loom_gc_typed_repeated_alloc_v1").count() >= 10,
+        "every source insert site must retain an exact typed allocation:\n{verify}"
+    );
+
+    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-typed-text-maps-tests");
+    assert_eq!(
+        legacy_tests.status.success(),
+        native_tests.output.status.success()
+    );
+    assert_eq!(legacy_tests.stdout, native_tests.output.stdout);
+    assert_eq!(legacy_tests.stderr, native_tests.output.stderr);
+
+    let run_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native_run = emit_and_run_lcir(&run_artifact, "source-typed-text-maps-run");
+    assert!(
+        native_run.output.status.success(),
+        "{:?}",
+        native_run.output
+    );
+    assert_eq!(native_run.output.stdout, b"Unit\n");
+    let legacy_run = emit_and_run_legacy(&program, "main", "legacy-typed-text-maps-run");
+    assert_eq!(
+        legacy_run.status.success(),
+        native_run.output.status.success()
+    );
+    assert_eq!(legacy_run.stdout, native_run.output.stdout);
+    assert_eq!(legacy_run.stderr, native_run.output.stderr);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create typed TextMap target directory");
+        let object = directory.path().join("typed-text-map.o");
+        let ir_path = directory.path().join("typed-text-map.ll");
+        emit_lcir_native_object(
+            &tests_artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed TextMap object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read typed TextMap target IR");
+        for required in [
+            "loom_gc_typed_repeated_alloc_v1",
+            "loom.lcir.text_map.descriptor",
+            "managed.root.reload",
+            "llvm.memcpy",
+            "memcmp",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+    }
+}
+
+#[test]
+fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
+    let program = compile_source(
+        "module text_map_target\npub fn main() Unit {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    discard values.get(\"answer\")\n    Unit\n}\n",
+    );
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let artifact = lower_source_artifact_with_layout(
+        &program,
+        &request,
+        TargetLayout::new(64).expect("64-bit target"),
+    );
+    assert!(
+        dump_program(artifact.program()).contains("text_map.insert"),
+        "64-bit TextMap[Int] must remain direct LCIR"
+    );
+    match lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify 32-bit TextMap")
+    {
+        LoweringOutcome::Unsupported(report) => assert!(
+            report.items().iter().any(|item| {
+                matches!(
+                    item.feature(),
+                    UnsupportedFeature::ExpressionType | UnsupportedFeature::SignatureType
+                )
+            }),
+            "{report:?}"
+        ),
+        LoweringOutcome::Complete(_) => panic!("32-bit managed TextMap must fail closed"),
+    }
+}
+
+#[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
     let program = compile_source(source);

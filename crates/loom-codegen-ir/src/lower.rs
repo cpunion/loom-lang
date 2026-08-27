@@ -2568,6 +2568,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListLength
                         | mir::Builtin::ListGet
+                        | mir::Builtin::TextMapNew
+                        | mir::Builtin::TextMapInsert
+                        | mir::Builtin::TextMapLength
+                        | mir::Builtin::TextMapGet
                         | mir::Builtin::IsFinite
                         | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
@@ -2581,6 +2585,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                 mir::Builtin::TextConcat
                                     | mir::Builtin::TextGet
                                     | mir::Builtin::FormatFloat
+                                    | mir::Builtin::TextMapNew
+                                    | mir::Builtin::TextMapInsert
+                                    | mir::Builtin::TextMapLength
+                                    | mir::Builtin::TextMapGet
                             )
                         ) {
                             self.managed_text = true;
@@ -3080,6 +3088,7 @@ fn scan_effect_expr(
                     mir::Builtin::TextConcat
                         | mir::Builtin::TextGet
                         | mir::Builtin::ListAdd
+                        | mir::Builtin::TextMapInsert
                         | mir::Builtin::FormatFloat
                 )
             ) {
@@ -8726,6 +8735,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 mir::Builtin::ListAdd | mir::Builtin::ListLength | mir::Builtin::ListGet => {
                     self.lower_list_builtin(flow, *builtin, arguments, expression)
                 }
+                mir::Builtin::TextMapNew
+                | mir::Builtin::TextMapInsert
+                | mir::Builtin::TextMapLength
+                | mir::Builtin::TextMapGet => {
+                    self.lower_text_map_builtin(flow, *builtin, arguments, expression)
+                }
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
@@ -9306,6 +9321,50 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             _ => return Err(self.unsupported_reached("unsupported List builtin")),
         };
         self.one_instruction(flow, kind, self.type_id(&expression.ty)?, origin)
+    }
+
+    fn lower_text_map_builtin(
+        &mut self,
+        mut flow: Flow,
+        builtin: mir::Builtin,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let mut lowered = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let CallArgument::Value(value) = argument else {
+                return Err(self.unsupported_reached("TextMap builtin inout argument"));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+        let kind = match (builtin, lowered.as_slice()) {
+            (mir::Builtin::TextMapNew, []) => InstructionKind::TextMapConstruct,
+            (mir::Builtin::TextMapInsert, [map, key, value]) => InstructionKind::TextMapInsert {
+                map: *map,
+                key: *key,
+                value: *value,
+            },
+            (mir::Builtin::TextMapLength, [map]) => InstructionKind::TextMapLength { map: *map },
+            (mir::Builtin::TextMapGet, [map, key]) => InstructionKind::TextMapGet {
+                map: *map,
+                key: *key,
+            },
+            _ => return Err(self.unsupported_reached("unsupported TextMap builtin")),
+        };
+        self.one_instruction(
+            flow,
+            kind,
+            self.type_id(&expression.ty)?,
+            self.expression_origin(expression),
+        )
     }
 
     fn unsupported_reached(&self, what: &str) -> LoweringError {

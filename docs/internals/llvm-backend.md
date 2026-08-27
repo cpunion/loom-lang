@@ -27,7 +27,8 @@ workspace does not silently fall back to another LLVM major version.
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
 primitive values, literal or concat-produced `Text`, structural tuples, closed
-records, and established transparent refined values.
+records, established transparent refined values, concrete managed Lists, and
+compiler-private concrete `TextMap[V]` values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -285,6 +286,32 @@ aliasing from the managed backing. An allocation-pressure fixture crosses the
 moving-heap threshold before these reads and verifies that exact typed roots,
 not stable addresses, preserve the inputs.
 
+## Direct typed TextMaps
+
+A concrete closed `TextMap[V]` is also one direct managed pointer; null is its
+canonical empty value. A nonempty object contains `{ length, entries[] }`.
+Each target-laid-out entry is `{ Text key, V value }`, including ABI padding,
+and entries stay sorted by UTF-8 key bytes so lookup and replacement are
+deterministic without a hash seed or runtime type metadata.
+
+LLVM derives one exact repeated descriptor for each concrete map type. Offset
+zero of every entry traces the managed Text key, and the remaining offsets are
+the sorted, deduplicated managed leaves of the exact `V` representation. This
+covers scalar, Text, product, closed-sum, List, and nested TextMap values. The
+descriptor uses the existing `loom_gc_typed_repeated_alloc_v1` ABI; construct,
+insert, length, and lookup are typed LCIR operations emitted directly, not
+type-erased runtime map calls.
+
+Insert locates the canonical position before its safepoint, allocates exactly
+the new logical length, then reloads the rooted old map, key, and managed value
+leaves after a possible relocation. It copies the prefix and suffix and writes
+the replacement or inserted entry. It never mutates the source backing, so a
+shared alias retains its prior logical value. A future reuse path may be added
+only behind an independently validated uniqueness certificate. Length and
+`get -> Option[V]` do not allocate; lookup constructs the exact option carrier
+without a universal `Value`, witness/executor pointer, tag registry, or stable
+address assumption.
+
 ## Direct lexical cleanup
 
 LCIR contains the already expanded control flow for `defer`, `scoped`, and
@@ -386,7 +413,8 @@ The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, nongeneric proof-replay guards,
 source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
-monomorphized managed Lists and uniqueness certificates, and lexical cleanup.
+monomorphized managed Lists, compiler-private concrete TextMaps, List
+uniqueness certificates, and lexical cleanup.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

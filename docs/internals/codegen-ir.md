@@ -3,8 +3,9 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar, direct Text, closed-product, closed-sum, and
-transparent nominal representations, whole-artifact
+provides target-aware scalar, direct Text, closed-product, closed-sum,
+transparent nominal, managed List, and compiler-private typed TextMap
+representations, whole-artifact
 checked-MIR lowering, typed SSA data structures, builders, independent program
 and artifact-root validators, and a textual dump for tests and review.
 
@@ -61,6 +62,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | multi-variant closed enum with no payload fields | minimal integer tag |
 | other closed concrete enum | `{ minimal integer tag, exact aligned payload carrier }` |
 | concrete closed `List[T]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated storage |
+| concrete closed `TextMap[V]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated entry storage |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. Products and sums are immutable register aggregates.
@@ -74,10 +76,11 @@ closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
 Runtime-checked constructions, recursive
 sums, Task, dynamic witnesses, and uninhabited fields are not selected. A
-concrete List breaks by-value aggregate recursion and may contain any already
-registered closed direct scalar, Text, product, sum, or nested List element.
-Managed Text is admitted through product fields, closed sum variants, and List
-elements, but not transparent/refined carriers. `InvariantRecordProven` is the only
+concrete List or TextMap breaks by-value aggregate recursion and may contain any
+registered closed direct scalar, Text, product, sum, List, or TextMap value.
+Every TextMap also has managed Text keys. Managed Text is admitted through
+product fields, closed sum variants, List elements, and TextMap keys or values,
+but not transparent/refined carriers. `InvariantRecordProven` is the only
 construction for an invariant product; `RefineProven` and exact `Unrefine`
 preserve the physical SSA value while retaining the proof boundary.
 
@@ -450,7 +453,7 @@ runtime cleanup stack, or an executor. MIR rejects suspension in cleanup, and
 LCIR independently rejects a suspending exact callee or an invented suspension
 effect in the resulting cleanup graph.
 
-When any reachable instance contains `TextConcat`, `TextGet`, or a
+When any reachable instance contains `TextConcat`, `TextGet`, a TextMap, or a
 tuple/record/closed-sum containing Text, representation planning selects
 `ManagedPointer` for every `Text` in the artifact. `TextLiteral` continues to
 produce process-lifetime static objects,
@@ -460,9 +463,9 @@ resource exhaustion is an uncatchable process fault, while malformed runtime
 status fails closed. `TextGet` maps the typed helper's missing/found status to a
 zero-initialized `Option[Text]` carrier and traps on any other runtime status.
 Products and closed sums remain unboxed exact SSA aggregates. Concrete closed
-Lists use direct managed pointers and exact repeated descriptors. Text inside
-transparent/refined carriers and other dynamic Text producers still select
-whole-artifact fallback.
+Lists and TextMaps use direct managed pointers and exact repeated descriptors.
+Text inside transparent/refined carriers and other dynamic Text producers still
+select whole-artifact fallback.
 
 `plan_managed_roots` computes exact managed SSA liveness with a predecessor
 worklist. It records the live-after set at each collecting instruction or call,
@@ -487,6 +490,18 @@ them before copying. The checked-MIR-only `ListAppendUnique` consumes a
 greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
 entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
+
+`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`, and `TextMapGet`
+are likewise first-class typed instructions. The semantic value argument is
+part of the concrete map type, and `get` must return the exact canonical
+`Option[V]`; validation independently rejects an erased value or mismatched
+option. Construct uses the null empty representation. Insert always performs a
+functional copy in this slice, so aliases keep their previous logical value;
+future in-place update requires a checked-MIR-only uniqueness proof rather than
+an address or reference-count observation. The collecting insertion roots and
+reloads the old map, Text key, and every managed leaf of `V`. Length and lookup
+do not allocate. The compiler emits no universal map value, runtime type tag,
+executor, or global layout registry.
 
 ## Typed projected places
 
@@ -658,8 +673,8 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values other than Text leaves in supported products and eligible
-closed sums, open or recursive enums, generic or unsupported-shape runtime
+Managed values outside the admitted Text, List, and TextMap graphs, open or
+recursive enums, generic or unsupported-shape runtime
 construction and proof replay, dynamic dispatch, contracts over unsupported
 value shapes, and coroutine control flow are not implemented. Nongeneric
 refined and invariant runtime construction is direct typed CFG returning the
@@ -709,9 +724,12 @@ not repair a malformed program. Current checks include:
   payload parameters on every `SumSwitch` edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
   allocation-free, aggregate-free graph or `ManagedPointer` when concat/get or
-  a Text-bearing product/sum is present; literal budgets, concat/get
+  a Text-bearing product/sum or TextMap is present; literal budgets, concat/get
   operand/result types, canonical `Option[Text]` shape, collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
+- exact concrete closed `List[T]` and compiler-private `TextMap[V]`
+  registrations, including repeated-storage pointer leaves, matching operation
+  operands, canonical `Option[T]`/`Option[V]` results, and allocation effects;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - exact nominal one-handle File/Socket resource shape, typed close
   result/writeback edges, and required runtime/fault capabilities;

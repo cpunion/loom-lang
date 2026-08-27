@@ -1,0 +1,111 @@
+module lcir_typed_textmap
+
+enum Problem { WrongValue }
+
+record Pair {
+    label Text
+    count Int
+}
+
+enum Choice {
+    Number(Int)
+    Label(Text)
+    Pairing(Pair)
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn verdict(condition Bool) Result[Unit, Problem] {
+    if condition { Ok(Unit) } else { Err(Problem.WrongValue) }
+}
+
+fn verify() Result[Unit, Problem] {
+    let empty = TextMap[Int]()
+    let first = empty.insert("z", 9)
+    let alias = first
+    let ordered = first.insert("a", 1)
+    let replaced = ordered.insert("z", 10)
+
+    let text = TextMap[Text]().insert("name", join("Lo", "om"))
+    let pair = Pair { label = join("Pa", "ir"), count = 7 }
+    let pairs = TextMap[Pair]().insert("pair", pair)
+    let choices = TextMap[Choice]().insert("number", Choice.Number(12)).insert(
+    "label",
+    Choice.Label(join("Ty", "ped"))
+    ).insert("pair", Choice.Pairing(pair))
+    let lists = TextMap[List[Text]]().insert("items", [join("Nes", "ted"), "List"])
+    let inner = TextMap[Int]().insert("answer", 42)
+    let nested = TextMap[TextMap[Int]]().insert("inner", inner)
+
+    var moving = TextMap[Pair]().insert(
+    "moving",
+    Pair { label = join("Mo", "ved"), count = 0 }
+    )
+    for index in 0..2048 {
+        moving = moving.insert(
+        "moving",
+        Pair { label = join("Mo", "ved"), count = index }
+        )
+        Unit
+    }
+
+    verdict(
+    empty.length() == 0
+    && first.length() == 1
+    && ordered.length() == 2
+    && replaced.length() == 2
+    && alias.length() == 1
+    && match alias.get("z") { Some(value) => value == 9, None => false }
+    && match ordered.get("a") { Some(value) => value == 1, None => false }
+    && match replaced.get("z") { Some(value) => value == 10, None => false }
+    && match replaced.get("missing") { None => true, Some(_) => false }
+    && match text.get("name") { Some(value) => value == "Loom", None => false }
+    && match pairs.get("pair") {
+        Some(value) => value.label == "Pair" && value.count == 7,
+        None => false
+    }
+    && match choices.get("number") {
+        Some(Choice.Number(value)) => value == 12,
+        _ => false
+    }
+    && match choices.get("label") {
+        Some(Choice.Label(value)) => value == "Typed",
+        _ => false
+    }
+    && match choices.get("pair") {
+        Some(Choice.Pairing(value)) => value.label == "Pair" && value.count == 7,
+        _ => false
+    }
+    && match lists.get("items") {
+        Some(value) => value.length() == 2 && match value.get(0) {
+            Some(item) => item == "Nested",
+            None => false
+        },
+        None => false
+    }
+    && match nested.get("inner") {
+        Some(value) => match value.get("answer") {
+            Some(answer) => answer == 42,
+            None => false
+        },
+        None => false
+    }
+    && moving.length() == 1
+    && match moving.get("moving") {
+        Some(value) => value.label == "Moved" && value.count == 2047,
+        None => false
+    }
+    )
+}
+
+pub fn main() Unit {
+    match verify() {
+        Ok(_) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn typedTextMap() Result[Unit, Problem] { verify() }
