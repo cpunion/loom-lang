@@ -28,6 +28,12 @@ pub const SLEEP_DURATION_OVERFLOW_FAULT_CODE: &str = "SleepDurationOverflow";
 /// Stable user-facing message for Task.sleep timer-range overflow.
 pub const SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE: &str = "sleep duration overflowed";
 
+/// Stable runtime-fault code emitted when Task.any has no successful child.
+pub const TASK_ANY_FAILED_FAULT_CODE: &str = "TaskAnyFailed";
+
+/// Stable user-facing message when Task.any has no successful child.
+pub const TASK_ANY_FAILED_FAULT_MESSAGE: &str = "Task.any completed without a successful task";
+
 /// Stable runtime-fault code emitted when a serialized construction proof
 /// fails independent replay at an artifact trust boundary.
 pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";

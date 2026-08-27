@@ -18,6 +18,7 @@ use loom_core::{
         INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
         INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
         SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+        TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
     },
 };
 use loom_driver::AnalysisHost;
@@ -7005,6 +7006,97 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
             "missing typed Task.all object for {target}"
         );
     }
+}
+
+#[test]
+fn typed_fixed_task_any_selects_one_exact_winner_and_reports_all_failed() {
+    let source = r#"module lcir_typed_task_any
+
+async fn slow() Text {
+    Task.sleep(20).await
+    "slow"
+}
+
+async fn fast() Text { "fast" }
+
+async fn failed() Text {
+    assert false
+    "unreachable"
+}
+
+pub async fn main() Unit {
+    let winner = Task.any(slow(), fast()).await
+    assert winner == "fast"
+    let recovered = Task.any(failed(), fast()).await
+    assert recovered == "fast"
+    Unit
+}
+
+pub async fn allFailed() Unit {
+    discard Task.any(failed(), failed()).await
+}
+"#;
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("await_tasks any"), "{dump}");
+    assert!(!dump.contains("task.join_all"), "{dump}");
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-task-any-release",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
+    for required in [
+        "loom_task_prepare_join",
+        "loom_task_join_step",
+        "loom_task_join_winner",
+        "task.await.any.winner",
+        "task.await.any.result.take",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}` from typed Task.any release IR:\n{}",
+            lcir.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom.Value",
+        "loom_join_create",
+        "loom_task_write_join_result",
+        "loom_task_join_result",
+    ] {
+        assert!(
+            !lcir.ir.contains(forbidden),
+            "unexpected `{forbidden}` in typed Task.any release IR:\n{}",
+            lcir.ir
+        );
+    }
+
+    let expected = serde_json::to_value(
+        interpret_run(&program, "allFailed").expect_err("Task.any must fault without a winner"),
+    )
+    .expect("serialize interpreter Task.any fault");
+    assert_eq!(expected["fault"]["code"], TASK_ANY_FAILED_FAULT_CODE);
+    assert_eq!(expected["fault"]["message"], TASK_ANY_FAILED_FAULT_MESSAGE);
+    let failed_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "allFailed".into(),
+        },
+    );
+    let native = emit_and_run_lcir_machine_fault(&failed_artifact, "source-typed-task-any-failed");
+    assert!(!native.output.status.success(), "{:?}", native.output);
+    assert_eq!(machine_fault(&native.output), expected);
 }
 
 #[test]

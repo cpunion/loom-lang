@@ -314,11 +314,12 @@ impl CoroutinePlan {
     }
 }
 
-/// One nonzero MIR resume state, its exact awaited result types, and its
-/// forwarded live-value types.
+/// One nonzero MIR resume state, its exact child Task output types, join mode,
+/// and forwarded live-value types.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoroutineSuspension {
     state: u32,
+    mode: AwaitMode,
     awaited: Box<[ValueTypeId]>,
     live: Box<[ValueTypeId]>,
 }
@@ -327,11 +328,13 @@ impl CoroutineSuspension {
     #[must_use]
     pub fn new(
         state: u32,
+        mode: AwaitMode,
         awaited: impl Into<Box<[ValueTypeId]>>,
         live: impl Into<Box<[ValueTypeId]>>,
     ) -> Self {
         Self {
             state,
+            mode,
             awaited: awaited.into(),
             live: live.into(),
         }
@@ -340,6 +343,11 @@ impl CoroutineSuspension {
     #[must_use]
     pub const fn state(&self) -> u32 {
         self.state
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> AwaitMode {
+        self.mode
     }
 
     #[must_use]
@@ -959,7 +967,19 @@ pub enum FaultCode {
     InvalidDuration,
     InvalidSleepDuration,
     SleepDurationOverflow,
+    TaskAnyFailed,
     ResourceClose,
+}
+
+/// Structured join semantics for one directly awaited fixed child set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AwaitMode {
+    /// Completes only when every child succeeds and injects every result in
+    /// child order.
+    All,
+    /// Completes after the first successful child and injects only that
+    /// winner's result. All fixed children must have one common output type.
+    Any,
 }
 
 /// Statically known external-resource class for typed lexical disposal.
@@ -1213,13 +1233,15 @@ pub enum TerminatorKind {
     },
     /// Consumes one or more structured child Tasks. The initial callback
     /// invocation stores `normal.arguments`, attaches all children to one
-    /// exact `all` join, and returns pending when needed. Resume state `state`
-    /// injects each exact child result into the leading normal parameters in
-    /// task order before the forwarded values. `fault` and `cancel` receive
-    /// the same forwarded live row without child results, allowing lexical
-    /// cleanup to run before the scheduler-propagated terminal outcome.
+    /// exact mode-specific join, and returns pending when needed. Resume state
+    /// `state` injects either every exact child result in task order (`all`) or
+    /// the one successful winner (`any`) into the leading normal parameters
+    /// before the forwarded values. `fault` and `cancel` receive the same
+    /// forwarded live row without child results, allowing lexical cleanup to
+    /// run before the propagated terminal outcome.
     AwaitTasks {
         state: u32,
+        mode: AwaitMode,
         tasks: Box<[ValueId]>,
         normal: ResultTarget,
         fault: UnwindTarget,

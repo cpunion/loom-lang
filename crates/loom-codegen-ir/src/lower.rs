@@ -22,13 +22,13 @@ use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::text_plan::TextLiteralBudget;
 use crate::{
-    ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
-    CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind, ContractFaultMetadata,
-    CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
-    FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstanceRole,
-    InstructionKind, IntPredicate, Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature,
-    SourceRoots, SumCase, TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
-    ValueId, ValueTypeId, analyze_source_reachability,
+    ArtifactRootRequest, AwaitMode, BlockId, BlockTarget, BoolPredicate, BuildError,
+    BuildErrorCode, CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind,
+    ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
+    FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan,
+    InstanceRole, InstructionKind, IntPredicate, Origin, ProgramBuilder, ResourceKind,
+    ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId, analyze_source_reachability,
 };
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
@@ -653,7 +653,7 @@ pub fn lower_typed_artifact(
                                 ),
                             )
                         })?;
-                    let awaited = awaited_source_outputs(await_task)
+                    let await_source = await_source_plan(await_task)
                         .ok_or_else(|| {
                             LoweringError::defect(
                                 LoweringDefectCode::InconsistentPlan,
@@ -663,7 +663,7 @@ pub fn lower_typed_artifact(
                                 ),
                             )
                         })?;
-                    if awaited.is_empty() {
+                    if await_source.outputs.is_empty() {
                         return Err(LoweringError::defect(
                             LoweringDefectCode::InconsistentPlan,
                             format!(
@@ -672,7 +672,8 @@ pub fn lower_typed_artifact(
                             ),
                         ));
                     }
-                    let awaited = awaited
+                    let awaited = await_source
+                        .outputs
                         .into_iter()
                         .map(|ty| {
                             let ty = substitution.instantiate_type(&ty).map_err(|error| {
@@ -681,6 +682,19 @@ pub fn lower_typed_artifact(
                             required_type(&builder, &dyn_concepts, &ty)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
+                    if await_source.mode == AwaitMode::Any
+                        && awaited
+                            .first()
+                            .is_some_and(|first| awaited.iter().any(|output| output != first))
+                    {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "async function #{} suspension state {} has heterogeneous instantiated Task.any outputs",
+                                source.id.0, point.state
+                            ),
+                        ));
+                    }
                     let live = point
                         .live_locals
                         .iter()
@@ -705,7 +719,12 @@ pub fn lower_typed_artifact(
                             required_type(&builder, &dyn_concepts, &ty)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    Ok(CoroutineSuspension::new(point.state, awaited, live))
+                    Ok(CoroutineSuspension::new(
+                        point.state,
+                        await_source.mode,
+                        awaited,
+                        live,
+                    ))
                 })
                 .collect::<Result<Vec<_>, LoweringError>>()?;
             Some(CoroutinePlan::new(output, suspensions))
@@ -852,25 +871,52 @@ fn task_output_type(ty: &Type) -> Option<Type> {
     }
 }
 
-/// Returns the exact result slots injected by one checked await expression.
-/// Literal task tuples and immediately awaited fixed `Task.all` calls expose
-/// their heterogeneous children directly; every other Task produces one slot,
-/// including a first-class composite Task stored before it is awaited.
-fn awaited_source_outputs(task: &mir::Expr) -> Option<Vec<Type>> {
+struct AwaitSourcePlan {
+    mode: AwaitMode,
+    /// One exact output type for every directly consumed child Task.
+    outputs: Vec<Type>,
+}
+
+/// Returns the exact fixed child row consumed by one checked await expression.
+/// Literal task tuples and immediately awaited fixed joins expose their child
+/// handles directly; every first-class Task remains one ordinary `all` child.
+fn await_source_plan(task: &mir::Expr) -> Option<AwaitSourcePlan> {
     match &task.kind {
-        ExprKind::Tuple(tasks) => tasks
-            .iter()
-            .map(|task| task_output_type(&task.ty))
-            .collect(),
+        ExprKind::Tuple(tasks) => Some(AwaitSourcePlan {
+            mode: AwaitMode::All,
+            outputs: tasks
+                .iter()
+                .map(|task| task_output_type(&task.ty))
+                .collect::<Option<_>>()?,
+        }),
         ExprKind::TaskJoin {
             mode: mir::TaskJoinMode::All,
             arguments,
-        } => arguments
-            .iter()
-            .map(|task| task_output_type(&task.ty))
-            .collect(),
+        } => Some(AwaitSourcePlan {
+            mode: AwaitMode::All,
+            outputs: arguments
+                .iter()
+                .map(|task| task_output_type(&task.ty))
+                .collect::<Option<_>>()?,
+        }),
+        ExprKind::TaskJoin {
+            mode: mir::TaskJoinMode::Any,
+            arguments,
+        } => {
+            let outputs = arguments
+                .iter()
+                .map(|task| task_output_type(&task.ty))
+                .collect::<Option<Vec<_>>>()?;
+            (!outputs.is_empty()).then_some(AwaitSourcePlan {
+                mode: AwaitMode::Any,
+                outputs,
+            })
+        }
         ExprKind::TaskJoin { .. } => None,
-        _ => task_output_type(&task.ty).map(|output| vec![output]),
+        _ => task_output_type(&task.ty).map(|output| AwaitSourcePlan {
+            mode: AwaitMode::All,
+            outputs: vec![output],
+        }),
     }
 }
 
@@ -3075,10 +3121,23 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 true
             }
             ExprKind::Await { task, .. } => {
-                let task_continues = if let ExprKind::Tuple(tasks) = &task.kind {
-                    self.visit_exprs(function, key, tasks, &format!("{path}.task.elements"))
-                } else {
-                    self.visit_expr(function, key, task, &format!("{path}.task"))
+                let task_continues = match &task.kind {
+                    ExprKind::Tuple(tasks) => {
+                        self.visit_exprs(function, key, tasks, &format!("{path}.task.elements"))
+                    }
+                    // A fixed Task.any is represented only by its enclosing
+                    // await terminator. Visiting the join expression itself
+                    // would incorrectly require a first-class composite Task.
+                    ExprKind::TaskJoin {
+                        mode: mir::TaskJoinMode::Any,
+                        arguments,
+                    } => self.visit_exprs(
+                        function,
+                        key,
+                        arguments,
+                        &format!("{path}.task.arguments"),
+                    ),
+                    _ => self.visit_expr(function, key, task, &format!("{path}.task")),
                 };
                 if !task_continues {
                     return false;
@@ -3091,27 +3150,71 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let operand_matches = if let ExprKind::Tuple(tasks) = &task.kind {
-                    let outputs = tasks
-                        .iter()
-                        .enumerate()
-                        .map(|(index, task)| {
-                            self.instantiated_type(
-                                function,
-                                key,
-                                Some(task),
-                                &task.ty,
-                                task.span,
-                                &format!("{path}.task.elements[{index}].ty"),
-                            )
-                            .and_then(|ty| task_output_type(&ty))
-                        })
-                        .collect::<Option<Vec<_>>>();
-                    outputs
-                        .filter(|outputs| !outputs.is_empty())
-                        .is_some_and(|outputs| result == Some(Type::Tuple(outputs)))
-                } else {
-                    matches!(
+                let operand_matches = match &task.kind {
+                    ExprKind::Tuple(tasks) => {
+                        let outputs = tasks
+                            .iter()
+                            .enumerate()
+                            .map(|(index, task)| {
+                                self.instantiated_type(
+                                    function,
+                                    key,
+                                    Some(task),
+                                    &task.ty,
+                                    task.span,
+                                    &format!("{path}.task.elements[{index}].ty"),
+                                )
+                                .and_then(|ty| task_output_type(&ty))
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        outputs
+                            .filter(|outputs| !outputs.is_empty())
+                            .is_some_and(|outputs| result == Some(Type::Tuple(outputs)))
+                    }
+                    ExprKind::TaskJoin {
+                        mode: mir::TaskJoinMode::Any,
+                        arguments,
+                    } => {
+                        let outputs = arguments
+                            .iter()
+                            .enumerate()
+                            .map(|(index, argument)| {
+                                self.instantiated_type(
+                                    function,
+                                    key,
+                                    Some(argument),
+                                    &argument.ty,
+                                    argument.span,
+                                    &format!("{path}.task.arguments[{index}].ty"),
+                                )
+                                .and_then(|ty| task_output_type(&ty))
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        outputs
+                            .filter(|outputs| !outputs.is_empty())
+                            .and_then(|outputs| {
+                                let first = outputs.first()?.clone();
+                                outputs
+                                    .iter()
+                                    .all(|output| output == &first)
+                                    .then_some(first)
+                            })
+                            .is_some_and(|output| {
+                                result.as_ref() == Some(&output)
+                                    && matches!(
+                                        self.instantiated_type(
+                                            function,
+                                            key,
+                                            Some(task),
+                                            &task.ty,
+                                            task.span,
+                                            &format!("{path}.task.ty"),
+                                        ),
+                                        Some(Type::Task(task_output)) if task_output.as_ref() == &output
+                                    )
+                            })
+                    }
+                    _ => matches!(
                         self.instantiated_type(
                             function,
                             key,
@@ -3121,7 +3224,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             &format!("{path}.task.ty"),
                         ),
                         Some(Type::Task(output)) if Some(output.as_ref()) == result.as_ref()
-                    )
+                    ),
                 };
                 let supported = function.is_async && operand_matches;
                 if !supported {
@@ -7057,12 +7160,19 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let direct_children = match &task.kind {
                     ExprKind::Tuple(tasks) => Some(tasks.as_slice()),
                     ExprKind::TaskJoin {
-                        mode: mir::TaskJoinMode::All,
+                        mode: mir::TaskJoinMode::All | mir::TaskJoinMode::Any,
                         arguments,
                     } => Some(arguments.as_slice()),
                     _ => None,
                 };
-                let direct_results = direct_children.is_some();
+                let construct_tuple = matches!(
+                    &task.kind,
+                    ExprKind::Tuple(_)
+                        | ExprKind::TaskJoin {
+                            mode: mir::TaskJoinMode::All,
+                            ..
+                        }
+                );
                 let mut flow = flow;
                 let mut tasks = Vec::new();
                 if let Some(children) = direct_children {
@@ -7089,7 +7199,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     flow = next_flow;
                     tasks.push(value);
                 }
-                let output_types = awaited_source_outputs(task).ok_or_else(|| {
+                let await_source = await_source_plan(task).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!(
@@ -7098,14 +7208,36 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ),
                     )
                 })?;
-                if output_types.is_empty() || output_types.len() != tasks.len() {
+                if await_source.outputs.is_empty() || await_source.outputs.len() != tasks.len() {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!(
                             "classified await expression #{} has {} Task operands but {} result types",
                             expression.id.0,
                             tasks.len(),
-                            output_types.len()
+                            await_source.outputs.len()
+                        ),
+                    ));
+                }
+                let output_types = match await_source.mode {
+                    AwaitMode::All => await_source.outputs.clone(),
+                    AwaitMode::Any => vec![await_source.outputs[0].clone()],
+                };
+                let child_output_types = await_source
+                    .outputs
+                    .iter()
+                    .map(|output| self.type_id(output))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if await_source.mode == AwaitMode::Any
+                    && child_output_types.first().is_some_and(|first| {
+                        child_output_types.iter().any(|output| output != first)
+                    })
+                {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!(
+                            "classified await expression #{} has heterogeneous instantiated Task.any outputs",
+                            expression.id.0
                         ),
                     ));
                 }
@@ -7178,6 +7310,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     flow.block,
                     TerminatorKind::AwaitTasks {
                         state: *state,
+                        mode: await_source.mode,
                         tasks: tasks.into_boxed_slice(),
                         normal: ResultTarget::new(normal, arguments.clone()),
                         fault: UnwindTarget::new(fault, arguments.clone()),
@@ -7189,7 +7322,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     block: normal,
                     env: normal_env,
                 };
-                if direct_results {
+                if construct_tuple {
                     self.one_instruction(
                         resumed,
                         InstructionKind::ProductConstruct {

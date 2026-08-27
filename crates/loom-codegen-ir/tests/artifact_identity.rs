@@ -28,7 +28,7 @@ impl BodyOrigins {
 
 #[test]
 fn identity_schema_is_pinned_after_async_cleanup_edges() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 28);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 29);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,7 +559,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 28,
+        ARTIFACT_IDENTITY_SCHEMA, 29,
         "typed async cleanup control flow is an artifact identity input"
     );
 }

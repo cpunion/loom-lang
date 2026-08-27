@@ -212,6 +212,7 @@ struct TypedTaskStorage {
     dispose_invoked: bool,
     join_completion_pending: bool,
     join_cancel_authorized: bool,
+    join_any_finalized: bool,
 }
 
 impl TypedTaskStorage {
@@ -2309,6 +2310,7 @@ unsafe fn copy_typed_task_storage(
         dispose_invoked: false,
         join_completion_pending: false,
         join_cancel_authorized: false,
+        join_any_finalized: false,
     })
 }
 
@@ -4469,6 +4471,7 @@ pub unsafe extern "C" fn task_prepare_join(
         if let Some(typed) = (*parent).typed.as_mut() {
             typed.join_completion_pending = false;
             typed.join_cancel_authorized = false;
+            typed.join_any_finalized = false;
         }
     }
     WAIT_OK
@@ -4599,28 +4602,127 @@ pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
     }
 }
 
+/// Finalizes a typed `Task.any` child set before generated code observes its
+/// terminal step. The winner remains attached until its exact result is moved
+/// from the child frame; every non-winner is deterministically disposed and
+/// retired now so a long-lived parent cannot accumulate completed children.
+unsafe fn finalize_typed_any_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
+    if !executor_owns(executor, parent)
+        || unsafe { (*parent).typed.is_none() }
+        || unsafe { (*parent).join_mode } != TASK_JOIN_ANY
+        || unsafe { (*parent).typed.as_ref().unwrap().join_any_finalized }
+    {
+        return;
+    }
+    let children = unsafe { (*parent).join_children.clone() };
+    let winner_raw = unsafe { (*parent).join_winner };
+    let winner = (winner_raw != NO_JOIN_WINNER)
+        .then(|| usize::try_from(winner_raw).ok())
+        .flatten()
+        .filter(|winner| *winner < children.len());
+    let executor_pointer: *mut LoomExecutor = executor;
+    let children_valid = !children.is_empty()
+        && children
+            .iter()
+            .enumerate()
+            .all(|(index, child)| !children[..index].contains(child))
+        && children.iter().copied().all(|child| {
+            executor_owns(executor, child)
+                && unsafe {
+                    (*child).executor == executor_pointer
+                        && (*child).owner == parent
+                        && (*child).typed.is_some()
+                        && terminal((*child).status)
+                        && (*parent)
+                            .owned_children
+                            .iter()
+                            .filter(|owned| **owned == child)
+                            .count()
+                            == 1
+                }
+        });
+    let outcome_valid = children_valid
+        && match (unsafe { (*parent).join_step }, winner) {
+            (TASK_COMPLETED, Some(winner)) => {
+                (unsafe { (*children[winner]).status }) == TaskStatus::Completed
+            }
+            (TASK_FAULTED, None) if winner_raw == NO_JOIN_WINNER => children
+                .iter()
+                .all(|child| unsafe { (**child).status } != TaskStatus::Completed),
+            _ => false,
+        };
+    if !children_valid || !outcome_valid {
+        unsafe {
+            (*parent).typed.as_mut().unwrap().join_any_finalized = true;
+            record_typed_runtime_defect(
+                parent,
+                "LOOM_RUNTIME_TYPED_ANY_FINALIZE",
+                "typed Task.any completion had an invalid child topology or winner state",
+            );
+            (*parent).join_step = TASK_FAULTED;
+        }
+        return;
+    }
+    unsafe { (*parent).typed.as_mut().unwrap().join_any_finalized = true };
+
+    let mut first_non_clean = None;
+    for (index, child) in children.into_iter().enumerate().rev() {
+        if Some(index) == winner {
+            continue;
+        }
+        if unsafe { (*child).status } == TaskStatus::Completed {
+            let outcome = unsafe { dispose_typed_result(executor, child) };
+            if !outcome.is_clean() {
+                unsafe { (*child).status = TaskStatus::Faulted };
+                first_non_clean.get_or_insert(child);
+            }
+        }
+        unsafe { retire_typed_child(executor, parent, child) };
+    }
+
+    if let Some(failure) = first_non_clean {
+        unsafe { inherit_primary_task_fault(&mut *parent, &*failure) };
+        if !unsafe { (*parent).primary_fault_recorded } {
+            unsafe {
+                record_typed_runtime_defect(
+                    parent,
+                    "LOOM_RUNTIME_TYPED_ANY_DISPOSE",
+                    "a typed Task.any loser result could not be disposed",
+                );
+            }
+        }
+        unsafe { (*parent).join_step = TASK_FAULTED };
+    }
+}
+
 #[unsafe(export_name = "loom_task_join_step")]
 pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
     let parent_pointer = parent.cast_mut();
-    let Some(parent) = (unsafe { parent_pointer.as_mut() }) else {
+    if parent_pointer.is_null() {
         return TASK_FAULTED;
-    };
-    let step = parent.join_step;
-    let executor = parent.executor;
+    }
+    let executor = unsafe { (*parent_pointer).executor };
     let active_parent = !executor.is_null()
         && !unsafe { (*executor).cleanup_active() }
         && executor_owns(unsafe { &*executor }, parent_pointer)
         && unsafe { (*executor).active_task } == parent_pointer
-        && parent.status == TaskStatus::Running
-        && !parent.cancel_requested;
-    if let Some(typed) = parent.typed.as_mut() {
+        && unsafe { (*parent_pointer).status } == TaskStatus::Running
+        && !unsafe { (*parent_pointer).cancel_requested };
+    let join_step = unsafe { (*parent_pointer).join_step };
+    let completed = if let Some(typed) = unsafe { (*parent_pointer).typed.as_mut() } {
         // Only the scheduler can mint this token when a join becomes runnable.
         // Reading the outcome consumes it atomically, so an old Cancelled step
         // cannot authorize a later callback activation.
         let completed = active_parent && std::mem::take(&mut typed.join_completion_pending);
-        typed.join_cancel_authorized = completed && step == TASK_CANCELLED;
+        typed.join_cancel_authorized = completed && join_step == TASK_CANCELLED;
+        completed
+    } else {
+        false
+    };
+    if completed && unsafe { (*parent_pointer).join_mode } == TASK_JOIN_ANY {
+        unsafe { finalize_typed_any_join(&mut *executor, parent_pointer) };
     }
-    step
+    unsafe { (*parent_pointer).join_step }
 }
 
 #[unsafe(export_name = "loom_task_join_result_step")]
@@ -7773,6 +7875,8 @@ mod typed_task_tests {
     }
 
     static STRUCTURED_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static ANY_LOSER_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static ANY_JOIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     unsafe extern "C" fn count_structured_dispose(
         _task: *mut c_void,
@@ -7781,6 +7885,226 @@ mod typed_task_tests {
     ) -> i32 {
         STRUCTURED_DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
         TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn count_any_loser_dispose(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        ANY_LOSER_DISPOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        TASK_COMPLETED
+    }
+
+    #[test]
+    fn typed_any_finalizes_every_loser_once_and_detaches_the_winner() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        ANY_LOSER_DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let parent_descriptor = descriptor(remain_pending, cancel_noop);
+        let child_descriptor = descriptor(complete_u64, cancel_noop);
+        let mut disposable_descriptor = descriptor(complete_u64, cancel_noop);
+        disposable_descriptor.dispose_result = Some(count_any_loser_dispose);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &parent_descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+
+            for round in 0_u64..2 {
+                let expected_disposals = usize::try_from(round).unwrap() + 1;
+                let winner = create_typed_u64_child(executor, &child_descriptor);
+                let completed = create_typed_u64_child(executor, &disposable_descriptor);
+                let faulted = create_typed_u64_child(executor, &child_descriptor);
+                let cancelled = create_typed_u64_child(executor, &child_descriptor);
+                assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+                for child in [winner, completed, faulted, cancelled] {
+                    assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+                }
+                complete_typed_u64_for_test(winner, 40 + round);
+                complete_typed_u64_for_test(completed, 100 + round);
+                (*faulted).status = TaskStatus::Faulted;
+                (*cancelled).status = TaskStatus::Cancelled;
+                (*parent).status = TaskStatus::Waiting;
+                update_join(&mut *executor, parent);
+                activate_test_task(executor, parent);
+
+                assert_eq!(task_join_step(parent), TASK_COMPLETED);
+                assert_eq!(task_join_winner(parent), 0);
+                assert_eq!(
+                    ANY_LOSER_DISPOSE_CALLS.load(Ordering::SeqCst),
+                    expected_disposals
+                );
+                assert_eq!((*parent).owned_children.as_slice(), [winner]);
+                assert_eq!((*parent).join_children.as_slice(), [winner]);
+                assert!((*completed).typed.as_ref().unwrap().result_disposed);
+                assert!((*executor).retired_tasks.contains(&completed));
+                assert!((*executor).retired_tasks.contains(&faulted));
+                assert!((*executor).retired_tasks.contains(&cancelled));
+
+                // Reading the public step again cannot re-run finalization.
+                assert_eq!(task_join_step(parent), TASK_COMPLETED);
+                assert_eq!(
+                    ANY_LOSER_DISPOSE_CALLS.load(Ordering::SeqCst),
+                    expected_disposals
+                );
+
+                let mut result = 0_u64;
+                assert_eq!(
+                    typed_task_take_result_v1(
+                        winner,
+                        (&raw mut result).cast(),
+                        size_of::<u64>() as u64,
+                        align_of::<u64>() as u64,
+                    ),
+                    TYPED_TASK_OK
+                );
+                assert_eq!(result, 40 + round);
+                assert!((*parent).owned_children.is_empty());
+                assert!((*parent).join_children.is_empty());
+                reap_retired_tasks(&mut *executor, parent);
+            }
+            assert_eq!(ANY_LOSER_DISPOSE_CALLS.load(Ordering::SeqCst), 2);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_any_loser_dispose_fault_overrides_success_and_is_inherited() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let parent_descriptor = descriptor(remain_pending, cancel_noop);
+        let winner_descriptor = descriptor(complete_u64, cancel_noop);
+        let mut loser_descriptor = descriptor(complete_u64, cancel_noop);
+        loser_descriptor.dispose_result = Some(fault_during_result_dispose);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &parent_descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let winner = create_typed_u64_child(executor, &winner_descriptor);
+            let loser = create_typed_u64_child(executor, &loser_descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, winner), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, loser), WAIT_OK);
+            complete_typed_u64_for_test(winner, 42);
+            complete_typed_u64_for_test(loser, 99);
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+
+            assert_eq!(task_join_step(parent), TASK_FAULTED);
+            assert_eq!(task_join_winner(parent), 0);
+            assert_eq!((*parent).fault_code, "SuppressedDisposeCleanup");
+            assert_eq!((*parent).owned_children.as_slice(), [winner]);
+            assert_eq!((*parent).join_children.as_slice(), [winner]);
+            assert!((*loser).typed.as_ref().unwrap().result_disposed);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_any_all_failed_retires_the_complete_child_row_without_inheriting_one_child() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let faulted = create_typed_u64_child(executor, &descriptor);
+            let cancelled = create_typed_u64_child(executor, &descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, faulted), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, cancelled), WAIT_OK);
+            (*faulted).status = TaskStatus::Faulted;
+            (*cancelled).status = TaskStatus::Cancelled;
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+
+            assert_eq!(task_join_step(parent), TASK_FAULTED);
+            assert_eq!(task_join_winner(parent), NO_JOIN_WINNER);
+            assert!(!(*parent).primary_fault_recorded);
+            assert!((*parent).owned_children.is_empty());
+            assert!((*parent).join_children.is_empty());
+            assert!((*executor).retired_tasks.contains(&faulted));
+            assert!((*executor).retired_tasks.contains(&cancelled));
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_any_invalid_duplicate_topology_fails_before_changing_children() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let winner = create_typed_u64_child(executor, &descriptor);
+            let nonterminal = create_typed_u64_child(executor, &descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, winner), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, nonterminal), WAIT_OK);
+            complete_typed_u64_for_test(winner, 42);
+            complete_typed_u64_for_test(nonterminal, 43);
+            (*parent).join_children.push(winner);
+            (*parent).status = TaskStatus::Waiting;
+            (*parent).join_winner = 0;
+            (*parent).join_step = TASK_COMPLETED;
+            make_join_runnable(&mut *executor, parent);
+            activate_test_task(executor, parent);
+            let owned = (*parent).owned_children.clone();
+            let joined = (*parent).join_children.clone();
+
+            assert_eq!(task_join_step(parent), TASK_FAULTED);
+            assert_eq!((*parent).fault_code, "LOOM_RUNTIME_TYPED_ANY_FINALIZE");
+            assert_eq!((*parent).owned_children, owned);
+            assert_eq!((*parent).join_children, joined);
+            assert!(!(*winner).typed.as_ref().unwrap().result_disposed);
+            assert!((*executor).retired_tasks.is_empty());
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_any_loser_cleanup_primary_follows_reverse_input_order() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let parent_descriptor = descriptor(remain_pending, cancel_noop);
+        let winner_descriptor = descriptor(complete_u64, cancel_noop);
+        let mut later_defect_descriptor = descriptor(complete_u64, cancel_noop);
+        later_defect_descriptor.dispose_result = Some(pending_dispose);
+        let mut first_fault_descriptor = descriptor(complete_u64, cancel_noop);
+        first_fault_descriptor.dispose_result = Some(fault_during_result_dispose);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &parent_descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let winner = create_typed_u64_child(executor, &winner_descriptor);
+            let later_defect = create_typed_u64_child(executor, &later_defect_descriptor);
+            let first_fault = create_typed_u64_child(executor, &first_fault_descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+            for child in [winner, later_defect, first_fault] {
+                assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+                complete_typed_u64_for_test(child, 42);
+            }
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+
+            assert_eq!(task_join_step(parent), TASK_FAULTED);
+            assert_eq!(
+                (*parent).fault_code,
+                "SuppressedDisposeCleanup",
+                "the first non-clean reverse-input loser must remain primary"
+            );
+            assert_eq!((*parent).owned_children.as_slice(), [winner]);
+            assert_eq!((*parent).join_children.as_slice(), [winner]);
+            assert!((*first_fault).typed.as_ref().unwrap().result_disposed);
+            assert!((*later_defect).typed.as_ref().unwrap().result_disposed);
+            destroy(runtime, executor);
+        }
     }
 
     unsafe extern "C" fn parent_join_without_taking(

@@ -2,9 +2,10 @@ use std::fmt::{self, Write};
 
 use crate::instance::write_type_identity;
 use crate::{
-    BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, FloatBinaryOp,
-    FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin, Repr,
-    ResultTarget, ScalarRepr, SumTagRepr, Terminator, TerminatorKind, UnwindTarget, ValueTypeKind,
+    AwaitMode, BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant,
+    FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
+    Repr, ResultTarget, ScalarRepr, SumTagRepr, Terminator, TerminatorKind, UnwindTarget,
+    ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -52,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 27")?;
+    writeln!(output, "lcir 28")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -131,7 +132,12 @@ pub fn write_program_with_options(
                 if index != 0 {
                     write!(output, ", ")?;
                 }
-                write!(output, "{} awaited=(", suspension.state())?;
+                write!(
+                    output,
+                    "{} {} awaited=(",
+                    suspension.state(),
+                    await_mode_name(suspension.mode())
+                )?;
                 for (awaited_index, ty) in suspension.awaited().iter().enumerate() {
                     if awaited_index != 0 {
                         write!(output, ", ")?;
@@ -516,15 +522,24 @@ fn write_terminator(
         }
         TerminatorKind::AwaitTasks {
             state,
+            mode,
             tasks,
             normal,
             fault,
             cancel,
         } => {
-            write!(output, "await_tasks state {state}, (")?;
+            write!(
+                output,
+                "await_tasks {} state {state}, (",
+                await_mode_name(*mode)
+            )?;
             write_arguments(output, tasks)?;
             write!(output, "), normal ")?;
-            write_await_result_target(output, normal, tasks.len())?;
+            let result_count = match mode {
+                AwaitMode::All => tasks.len(),
+                AwaitMode::Any => 1,
+            };
+            write_await_result_target(output, normal, result_count)?;
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)?;
             write!(output, ", cancel ")?;
@@ -614,6 +629,13 @@ fn write_terminator(
         write!(output, ")")?;
     }
     Ok(())
+}
+
+const fn await_mode_name(mode: AwaitMode) -> &'static str {
+    match mode {
+        AwaitMode::All => "all",
+        AwaitMode::Any => "any",
+    }
 }
 
 fn write_target(output: &mut impl Write, target: &BlockTarget) -> fmt::Result {
@@ -834,6 +856,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::InvalidDuration => "InvalidDuration",
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
+        crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
         crate::FaultCode::ResourceClose => "ResourceCloseFault",
     }
 }
