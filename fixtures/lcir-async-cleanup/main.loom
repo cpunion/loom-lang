@@ -59,10 +59,19 @@ async fn failsAfterSuspension() Unit {
 
 async fn waitsWithCleanup(marker Int) Unit {
     defer {
-        assert marker == 1
+        assert marker == 2
         Unit
     }
     Task.sleep(100).await
+}
+
+pub async fn faultCleanupMain() Unit {
+    let marker = 1
+    defer {
+        assert marker == 2
+        Unit
+    }
+    failsAfterSuspension().await
 }
 
 pub async fn cancellationMain() Unit {

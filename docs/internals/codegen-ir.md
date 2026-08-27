@@ -902,7 +902,9 @@ an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 An `AwaitTasks` child-fault edge is an unwind edge and therefore activates this
 state. Its cancellation edge preserves inactive source fault state and may end
-only in `task.cancelled`; cancellation cleanup cannot reach another suspension.
+only in `task.cancelled`; cancellation cleanup cannot create, aggregate, or
+await Tasks, including through an executor-dependent callee. An active
+source-fault cleanup likewise cannot await again before `resume_fault`.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
 recursive enums, generic or unsupported-shape runtime construction and proof
@@ -975,7 +977,8 @@ not repair a malformed program. Current checks include:
   including capability implications and active-cleanup fault masking;
 - no suspending exact callee in a synchronous cleanup graph and no invented
   suspension capability without checked coroutine control flow; cancellation
-  cleanup and `task.cancelled` paths cannot suspend;
+  cleanup and `task.cancelled` paths remain scheduler-topology neutral, and an
+  active source-fault cleanup cannot await again;
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;

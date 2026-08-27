@@ -45,9 +45,11 @@ typed result in task order. A child fault activates the source fault state,
 enters the compiler-expanded static LIFO cleanup suffix, and ends in
 `ResumeFault`. Cancellation preserves an inactive source-fault state, enters
 the same statically selected cleanup suffix, and ends in `TaskCancelled`.
-Cancellation cleanup cannot suspend. If cleanup faults after cancellation is
-established, the runtime keeps cancellation primary and suppresses that cleanup
-fault while older actions continue.
+Cancellation cleanup cannot create, aggregate, or await Tasks, including
+through an executor-dependent callee. It remains scheduler-topology neutral. If
+cleanup faults after cancellation is established, the runtime keeps
+cancellation primary and suppresses that cleanup fault while older actions
+continue.
 
 An already terminal join enters the corresponding checked edge immediately;
 otherwise the callback returns pending and a completion notification puts the

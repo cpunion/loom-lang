@@ -168,6 +168,34 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
         );
     }
 
+    let expected_fault_cleanup = serde_json::to_value(
+        interpret_run(&program, "faultCleanupMain")
+            .expect_err("the awaited child must establish the primary fault"),
+    )
+    .expect("serialize child-fault cleanup fixture fault");
+    let fault_cleanup = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "faultCleanupMain".into(),
+        },
+    );
+    let faulted = emit_and_run_lcir_machine_fault(&fault_cleanup, "lcir-async-cleanup-child-fault");
+    let legacy_faulted = emit_and_run_legacy_machine_fault(
+        &program,
+        "faultCleanupMain",
+        "legacy-async-cleanup-child-fault",
+    );
+    assert!(!faulted.output.status.success(), "{:?}", faulted.output);
+    assert!(!legacy_faulted.status.success(), "{legacy_faulted:?}");
+    assert_eq!(machine_fault(&faulted.output), expected_fault_cleanup);
+    assert_eq!(machine_fault(&legacy_faulted), expected_fault_cleanup);
+    assert!(
+        faulted.ir.contains("task.await.fault.live")
+            && faulted.ir.contains("task.await.fault.active.pointer"),
+        "awaited child fault omitted source-fault activation and cleanup continuation:\n{}",
+        faulted.ir
+    );
+
     let expected = serde_json::to_value(
         interpret_run(&program, "cancellationMain")
             .expect_err("the first Task.all child must fault"),

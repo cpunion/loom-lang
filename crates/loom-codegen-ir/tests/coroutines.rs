@@ -298,7 +298,7 @@ fn task_join_all_program(
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let boolean = builder.type_id(&Type::Bool).expect("Bool");
-    let tuple = builder
+    let _tuple = builder
         .add_tuple_type(&[Type::Int, Type::Bool])
         .expect("(Int, Bool)");
     let task_int = builder
@@ -441,7 +441,6 @@ fn task_join_all_program(
             )
             .expect("return");
     }
-    let _ = tuple;
     builder.finish()
 }
 
@@ -1023,12 +1022,24 @@ fn await_tasks_program(
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let _tuple = builder
+        .add_tuple_type(&[Type::Int, Type::Bool])
+        .expect("(Int, Bool)");
     let task_int = builder
         .add_task_handle_type(Type::Task(Box::new(Type::Int)))
         .expect("Task[Int]");
     let task_bool = builder
         .add_task_handle_type(Type::Task(Box::new(Type::Bool)))
         .expect("Task[Bool]");
+    let task_unit = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Unit)))
+        .expect("Task[Unit]");
+    let task_tuple = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Tuple(vec![
+            Type::Int,
+            Type::Bool,
+        ]))))
+        .expect("Task[(Int, Bool)]");
 
     let int_child = builder
         .declare_function(
@@ -1109,7 +1120,10 @@ fn await_tasks_program(
             vec![integer, boolean]
         };
         let mut suspensions = vec![CoroutineSuspension::new(1, awaited, [integer])];
-        if matches!(exit_case, AwaitExitCase::CancelSuspends) {
+        if matches!(
+            exit_case,
+            AwaitExitCase::CancelSuspends | AwaitExitCase::FaultSuspends
+        ) {
             suspensions.push(CoroutineSuspension::new(2, [integer], []));
         }
         function
@@ -1170,7 +1184,7 @@ fn await_tasks_program(
         function
             .append_block_parameter(fault, integer)
             .expect("fault live Int");
-        function
+        let cancel_live = function
             .append_block_parameter(cancel, integer)
             .expect("cancel live Int");
         let fault_argument = if matches!(exit_case, AwaitExitCase::MismatchedFault) {
@@ -1202,9 +1216,64 @@ fn await_tasks_program(
                 ),
             )
             .expect("await_tasks");
-        function
-            .terminate(fault, Terminator::new(TerminatorKind::ResumeFault, origin))
-            .expect("propagate child fault");
+        if matches!(exit_case, AwaitExitCase::FaultSuspends) {
+            let resumed = function.create_block().expect("fault cleanup await normal");
+            let cleanup_fault = function.create_block().expect("fault cleanup await fault");
+            let cleanup_cancel = function
+                .create_block()
+                .expect("fault cleanup await cancellation");
+            let cleanup_task = function
+                .append_instruction(
+                    fault,
+                    InstructionKind::TaskCreate {
+                        coroutine: int_child,
+                        arguments: Box::new([]),
+                    },
+                    &[task_int],
+                    origin,
+                )
+                .expect("fault cleanup Task[Int]")[0];
+            function
+                .append_block_parameter(resumed, integer)
+                .expect("fault cleanup awaited Int");
+            function
+                .terminate(
+                    fault,
+                    Terminator::new(
+                        TerminatorKind::AwaitTasks {
+                            state: 2,
+                            tasks: Box::from([cleanup_task]),
+                            normal: ResultTarget::new(resumed, []),
+                            fault: UnwindTarget::new(cleanup_fault, []),
+                            cancel: BlockTarget::new(cleanup_cancel, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("invalid fault-cleanup suspension");
+            function
+                .terminate(
+                    resumed,
+                    Terminator::new(TerminatorKind::ResumeFault, origin),
+                )
+                .expect("resume original fault after invalid suspension");
+            function
+                .terminate(
+                    cleanup_fault,
+                    Terminator::new(TerminatorKind::ResumeFault, origin),
+                )
+                .expect("propagate cleanup child fault");
+            function
+                .terminate(
+                    cleanup_cancel,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("propagate cleanup child cancellation");
+        } else {
+            function
+                .terminate(fault, Terminator::new(TerminatorKind::ResumeFault, origin))
+                .expect("propagate child fault");
+        }
         if matches!(exit_case, AwaitExitCase::CancelSuspends) {
             let resumed = function.create_block().expect("cancel await normal");
             let cleanup_fault = function.create_block().expect("cancel await fault");
@@ -1264,6 +1333,76 @@ fn await_tasks_program(
                     Terminator::new(TerminatorKind::TaskCancelled, origin),
                 )
                 .expect("cleanup child cancellation");
+        } else if matches!(exit_case, AwaitExitCase::CancelMutatesTopology) {
+            let third = function
+                .append_instruction(
+                    cancel,
+                    InstructionKind::TaskCreate {
+                        coroutine: int_child,
+                        arguments: Box::new([]),
+                    },
+                    &[task_int],
+                    origin,
+                )
+                .expect("cancellation Task[Int]")[0];
+            let fourth = function
+                .append_instruction(
+                    cancel,
+                    InstructionKind::TaskCreate {
+                        coroutine: bool_child,
+                        arguments: Box::new([]),
+                    },
+                    &[task_bool],
+                    origin,
+                )
+                .expect("cancellation Task[Bool]")[0];
+            function
+                .append_instruction(
+                    cancel,
+                    InstructionKind::TaskJoinAll {
+                        tasks: Box::from([third, fourth]),
+                    },
+                    &[task_tuple],
+                    origin,
+                )
+                .expect("cancellation Task[(Int, Bool)]");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid topology mutation");
+        } else if matches!(exit_case, AwaitExitCase::CancelSleeps) {
+            let sleep_normal = function.create_block().expect("cancel sleep normal");
+            let sleep_fault = function.create_block().expect("cancel sleep fault");
+            function
+                .append_block_parameter(sleep_normal, task_unit)
+                .expect("cancel sleep Task[Unit]");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(
+                        TerminatorKind::TaskSleep {
+                            milliseconds: cancel_live,
+                            normal: ResultTarget::new(sleep_normal, []),
+                            fault: UnwindTarget::new(sleep_fault, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("invalid cancellation Task.sleep");
+            function
+                .terminate(
+                    sleep_normal,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid Task.sleep");
+            function
+                .terminate(
+                    sleep_fault,
+                    Terminator::new(TerminatorKind::ResumeFault, origin),
+                )
+                .expect("propagate invalid Task.sleep fault");
         } else if matches!(exit_case, AwaitExitCase::CancelReturns) {
             let result = function
                 .append_instruction(
@@ -1320,6 +1459,9 @@ enum AwaitExitCase {
     CancelReturns,
     NormalCancels,
     CancelSuspends,
+    CancelMutatesTopology,
+    CancelSleeps,
+    FaultSuspends,
 }
 
 #[test]
@@ -1394,6 +1536,51 @@ fn cancellation_cleanup_cannot_suspend_again() {
     .expect_err("a cancellation cleanup continuation cannot await another Task");
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InvalidCoroutinePlan
-            && error.message().contains("cannot suspend again")
+            && error
+                .message()
+                .contains("must remain scheduler-topology neutral")
+    }));
+}
+
+#[test]
+fn cancellation_cleanup_cannot_create_sleep_or_aggregate_tasks() {
+    let topology = validate_program(&await_tasks_program(
+        false,
+        false,
+        AwaitExitCase::CancelMutatesTopology,
+    ))
+    .expect_err("cancellation cleanup must not create or aggregate Tasks");
+    for operation in ["create a Task", "construct a Task join"] {
+        assert!(topology.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidCoroutinePlan
+                && error.message().contains(operation)
+        }));
+    }
+
+    let sleep = validate_program(&await_tasks_program(
+        false,
+        false,
+        AwaitExitCase::CancelSleeps,
+    ))
+    .expect_err("cancellation cleanup must not create a timer Task");
+    assert!(sleep.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error.message().contains("cannot create or await a Task")
+    }));
+}
+
+#[test]
+fn source_fault_cleanup_cannot_suspend_again() {
+    let errors = validate_program(&await_tasks_program(
+        false,
+        false,
+        AwaitExitCase::FaultSuspends,
+    ))
+    .expect_err("source-fault cleanup must finish without another await");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::FaultState
+            && error
+                .message()
+                .contains("source-fault cleanup cannot suspend again")
     }));
 }

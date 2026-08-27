@@ -1337,10 +1337,8 @@ impl<'a> Validator<'a> {
                     "block is reachable with both inactive and active source-fault state; split the control-flow merge",
                 );
             }
-            if let Some(terminator) = function
-                .blocks
-                .get(index)
-                .and_then(|block| block.terminator.as_ref())
+            if let Some(block) = function.blocks.get(index)
+                && let Some(terminator) = block.terminator.as_ref()
             {
                 self.validate_terminator_fault_state(terminator, state, index, &base);
                 let cancellation_state = cancellation_states
@@ -1361,7 +1359,9 @@ impl<'a> Validator<'a> {
                         "block is reachable from both ordinary and cancellation continuations; split the control-flow merge",
                     );
                 }
-                self.validate_terminator_cancellation_state(
+                self.validate_block_cancellation_state(
+                    function,
+                    block,
                     terminator,
                     cancellation_state,
                     index,
@@ -4372,6 +4372,13 @@ impl<'a> Validator<'a> {
                     "resume_fault requires an active source fault from an unwind edge",
                 );
             }
+            TerminatorKind::AwaitTasks { .. } if state == FaultStateSet::ACTIVE => {
+                self.error(
+                    ValidationCode::FaultState,
+                    path,
+                    "source-fault cleanup cannot suspend again; finish with resume_fault",
+                );
+            }
             _ => {}
         }
     }
@@ -4380,8 +4387,10 @@ impl<'a> Validator<'a> {
     /// may dispatch a requested cancellation directly to an `await_tasks`
     /// cancel target, so that path cannot merge back into ordinary execution,
     /// suspend again, or manufacture `task.cancelled` from a normal path.
-    fn validate_terminator_cancellation_state(
+    fn validate_block_cancellation_state(
         &mut self,
+        function: &Function,
+        block: &crate::Block,
         terminator: &Terminator,
         state: CancellationStateSet,
         block_index: usize,
@@ -4389,6 +4398,37 @@ impl<'a> Validator<'a> {
     ) {
         if state == CancellationStateSet::NONE {
             return;
+        }
+        if state.contains(CancellationStateSet::ACTIVE) {
+            for instruction_id in block.instructions() {
+                let Some(instruction) = function.instruction(*instruction_id) else {
+                    continue;
+                };
+                let operation = match instruction.kind() {
+                    InstructionKind::TaskCreate { .. } => Some("create a Task"),
+                    InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
+                    InstructionKind::DirectCall { callee, .. }
+                        if self
+                            .exact_effect(*callee)
+                            .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+                    {
+                        Some("call an executor-dependent function")
+                    }
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!(
+                            "{base}.block[{block_index}].instruction[{}]",
+                            instruction_id.raw()
+                        ),
+                        format!(
+                            "cancellation cleanup cannot {operation}; it must remain scheduler-topology neutral"
+                        ),
+                    );
+                }
+            }
         }
         let path = format!("{base}.block[{block_index}].terminator");
         match terminator.kind() {
@@ -4406,11 +4446,25 @@ impl<'a> Validator<'a> {
                     "an active coroutine cancellation cannot return normally; finish cleanup with task.cancelled",
                 );
             }
-            TerminatorKind::AwaitTasks { .. } if state.contains(CancellationStateSet::ACTIVE) => {
+            TerminatorKind::TaskSleep { .. } | TerminatorKind::AwaitTasks { .. }
+                if state.contains(CancellationStateSet::ACTIVE) =>
+            {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     path,
-                    "cancellation cleanup cannot suspend again",
+                    "cancellation cleanup cannot create or await a Task; it must remain scheduler-topology neutral",
+                );
+            }
+            TerminatorKind::Invoke { callee, .. }
+                if state.contains(CancellationStateSet::ACTIVE)
+                    && self
+                        .exact_effect(*callee)
+                        .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    path,
+                    "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
                 );
             }
             _ => {}

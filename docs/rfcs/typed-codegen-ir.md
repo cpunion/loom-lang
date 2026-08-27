@@ -296,9 +296,11 @@ statically on the other two edges. Child fault activates source fault and ends
 in `ResumeFault`. Cancellation preserves inactive source fault and ends in the
 coroutine-only `TaskCancelled` terminal. Validation rejects a cleanup call graph
 that invents a suspension effect or calls a suspending exact callee, and
-cancellation cleanup cannot suspend. If cancellation cleanup faults, the
-runtime keeps the established cancellation primary and continues older cleanup.
-No runtime cleanup stack or new runtime ABI is involved.
+cancellation cleanup cannot create, aggregate, or await Tasks, including
+through an executor-dependent callee. Active source-fault cleanup cannot await
+again. If cancellation cleanup faults, the runtime keeps the established
+cancellation primary and continues older cleanup. No runtime cleanup stack or
+new runtime ABI is involved.
 
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not
