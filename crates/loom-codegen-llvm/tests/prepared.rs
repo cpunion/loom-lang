@@ -64,12 +64,12 @@ pub fn main() Unit {
     )
 }
 
-fn unsupported_list_program() -> CheckedProgram {
+fn unsupported_timer_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_list
+        r"module prepared_timer
 
-pub fn main() Unit {
-    discard [1, 2, 3]
+pub async fn main() Unit {
+    Task.sleep(1).await
     Unit
 }
 ",
@@ -165,14 +165,14 @@ fn dead() Text { "unreachable" }
 }
 
 #[test]
-fn one_unsupported_list_test_selects_legacy_for_the_ordered_test_artifact() {
+fn one_unsupported_timer_test_selects_legacy_for_the_ordered_test_artifact() {
     let program = compile_source(
         r"module prepared_tests
 
 test fn scalar() Unit { Unit }
 
-test fn text() Unit {
-    discard [1, 2, 3]
+test async fn timer() Unit {
+    Task.sleep(1).await
     Unit
 }
 ",
@@ -229,7 +229,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = unsupported_list_program();
+    let program = unsupported_timer_program();
     let prepare = || {
         prepare_native_object(
             &program,
@@ -250,13 +250,20 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
         .expect("unsupported preparation carries its support report");
     assert!(!report.is_empty());
     assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::ListValue),
+        report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::AsyncFunction
+                | UnsupportedFeature::Suspension
+                | UnsupportedFeature::TaskOperation
+        )),
         "{report:#?}"
     );
-    assert!(first.message().contains("ListValue"), "{first}");
+    assert!(
+        ["AsyncFunction", "Suspension", "TaskOperation"]
+            .iter()
+            .any(|feature| first.message().contains(feature)),
+        "{first}"
+    );
     assert!(
         first.message().contains(report.items()[0].path()),
         "{first}"
@@ -291,17 +298,17 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
 
-    let list = unsupported_list_program();
-    let list_ir = directory.path().join("list.ll");
-    let mut list_options = EmitOptions::run("main");
-    list_options.emit_ir = Some(list_ir.clone());
-    let list_prepared = prepare_native_object(&list, list_options, NativeRoutePolicy::Automatic)
-        .expect("prepare unsupported List artifact");
-    emit_prepared_native_object(&list_prepared, &directory.path().join("list.o"))
+    let timer = unsupported_timer_program();
+    let timer_ir = directory.path().join("timer.ll");
+    let mut timer_options = EmitOptions::run("main");
+    timer_options.emit_ir = Some(timer_ir.clone());
+    let timer_prepared = prepare_native_object(&timer, timer_options, NativeRoutePolicy::Automatic)
+        .expect("prepare unsupported timer artifact");
+    emit_prepared_native_object(&timer_prepared, &directory.path().join("timer.o"))
         .expect("emit legacy MIR");
-    let list_ir = std::fs::read_to_string(list_ir).expect("read legacy IR");
-    assert!(list_ir.contains("%loom.Value"), "{list_ir}");
-    assert!(!list_ir.contains("loom.lcir.fn"), "{list_ir}");
+    let timer_ir = std::fs::read_to_string(timer_ir).expect("read legacy IR");
+    assert!(timer_ir.contains("%loom.Value"), "{timer_ir}");
+    assert!(!timer_ir.contains("loom.lcir.fn"), "{timer_ir}");
 }
 
 #[test]
