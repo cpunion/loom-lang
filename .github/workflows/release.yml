@@ -234,7 +234,7 @@ jobs:
           Copy-Item -LiteralPath target/release/loomc.exe -Destination $staging
           Copy-Item -LiteralPath target/release/loom-lsp.exe -Destination $staging
           Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "bin\LLVM-C.dll") -Destination $staging
-          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "LICENSE.TXT") -Destination (Join-Path $staging "LLVM-LICENSE.txt")
+          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "include\llvm\Support\LICENSE.TXT") -Destination (Join-Path $staging "LLVM-LICENSE.txt")
           foreach ($document in @(
             "README.md", "LICENSE", "CHANGELOG.md", "ROADMAP.md",
             "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
