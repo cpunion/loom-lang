@@ -2478,12 +2478,17 @@ impl<'program> Classifier<'program> {
                         | mir::Builtin::IsFinite
                         | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
+                        | mir::Builtin::FormatFloat
                         | mir::Builtin::DurationMilliseconds
                         | mir::Builtin::DurationAsMilliseconds,
                     ) => {
                         if matches!(
                             target,
-                            CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+                            CallTarget::Builtin(
+                                mir::Builtin::TextConcat
+                                    | mir::Builtin::TextGet
+                                    | mir::Builtin::FormatFloat
+                            )
                         ) {
                             self.managed_text = true;
                         }
@@ -2909,7 +2914,10 @@ fn scan_effect_expr(
             } else if matches!(
                 target,
                 CallTarget::Builtin(
-                    mir::Builtin::TextConcat | mir::Builtin::TextGet | mir::Builtin::ListAdd
+                    mir::Builtin::TextConcat
+                        | mir::Builtin::TextGet
+                        | mir::Builtin::ListAdd
+                        | mir::Builtin::FormatFloat
                 )
             ) {
                 summary.include(Effects::MAY_COLLECT);
@@ -8800,6 +8808,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 out_of_range_variant: 1,
             }
             .into(),
+            (mir::Builtin::FormatFloat, [value]) => {
+                InstructionKind::FormatFloat { value: *value }.into()
+            }
             (mir::Builtin::IsFinite, [value]) => {
                 return self.lower_float_is_finite(flow, *value, origin);
             }

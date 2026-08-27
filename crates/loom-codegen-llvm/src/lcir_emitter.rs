@@ -47,16 +47,16 @@ use loom_core::runtime_fault::{
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
-    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
-    GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
-    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK,
-    PARSE_STATUS_OUT_OF_RANGE, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
-    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
-    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_REPEATED_ABI_VERSION,
-    TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION,
+    FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
+    GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
+    GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+    PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
+    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -2254,6 +2254,19 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_format_float_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(FORMAT_FLOAT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[self.context.f64_type().into(), self.ptr_type.into()],
+                    false,
+                );
+                self.module
+                    .add_function(FORMAT_FLOAT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn runtime_parse_int(&self) -> FunctionValue<'ctx> {
         self.runtime_parse_scalar(PARSE_INT_SYMBOL)
     }
@@ -2748,7 +2761,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         for instruction in self.source.instructions() {
             if !matches!(
                 instruction.kind(),
-                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                InstructionKind::TextConcat { .. }
+                    | InstructionKind::TextGet { .. }
+                    | InstructionKind::FormatFloat { .. }
             ) {
                 continue;
             }
@@ -3986,6 +4001,33 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 *invalid_syntax_variant,
                 *out_of_range_variant,
             )?),
+            InstructionKind::FormatFloat { value } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Float formatting has no Text result")
+                })?;
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output = if let Some(cell) = self.direct_root_cell(result)? {
+                    cell
+                } else {
+                    self.text_output_cell(instruction.id())?
+                };
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_format_float_typed(),
+                    &[self.value(*value)?.into_float_value().into(), output.into()],
+                    "format.float.status",
+                )?;
+                self.backend.require_zero_status(status, "format.float")?;
+                one(self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "format.float.result")
+                    .map_err(builder_error)?)
+            }
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {

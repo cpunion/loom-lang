@@ -58,6 +58,8 @@ pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
 /// Stages two complete Text payloads before its typed allocation safepoint and
 /// publishes the initialized managed leaf through its output cell.
 pub const TEXT_CONCAT_TYPED_SYMBOL: &str = "loom_runtime_text_concat_typed_v1";
+/// Canonical binary64 formatter publishing one direct managed Text pointer.
+pub const FORMAT_FLOAT_TYPED_SYMBOL: &str = "loom_runtime_format_float_typed_v1";
 /// Reads one Unicode scalar and returns a freshly allocated direct Text.
 pub const TEXT_GET_TYPED_SYMBOL: &str = "loom_runtime_text_get_typed_v1";
 pub const TEXT_GET_TYPED_INVALID: i32 = -1;
@@ -440,11 +442,12 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::{
-        COROUTINE_ABI_VERSION, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
-        GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
-        GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT,
-        LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
-        LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
+        COROUTINE_ABI_VERSION, FORMAT_FLOAT_TYPED_SYMBOL, GC_DESCRIPTOR_INVALID,
+        GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
+        GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH,
+        GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
+        LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor,
+        LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
         LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, LoomWitnessDescriptor,
         LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
         PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
@@ -480,6 +483,10 @@ mod tests {
         assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
         assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
         assert_eq!(TEXT_GET_TYPED_SYMBOL, "loom_runtime_text_get_typed_v1");
+        assert_eq!(
+            FORMAT_FLOAT_TYPED_SYMBOL,
+            "loom_runtime_format_float_typed_v1"
+        );
         assert_eq!(TEXT_GET_TYPED_INVALID, -1);
         assert_eq!(TEXT_GET_TYPED_MISSING, 0);
         assert_eq!(TEXT_GET_TYPED_FOUND, 1);

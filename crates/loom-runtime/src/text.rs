@@ -143,7 +143,11 @@ pub unsafe extern "C" fn get_typed_v1(
     }
 }
 
-unsafe fn allocate_typed_text(staged: &[u8], scalar_length: u64, output: *mut *mut c_void) -> i32 {
+pub(crate) unsafe fn allocate_typed_text(
+    staged: &[u8],
+    scalar_length: u64,
+    output: *mut *mut c_void,
+) -> i32 {
     let Ok(byte_length) = u64::try_from(staged.len()) else {
         std::process::abort();
     };

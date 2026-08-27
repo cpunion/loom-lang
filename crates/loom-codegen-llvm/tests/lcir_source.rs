@@ -23,7 +23,8 @@ use loom_mir::{
     Program, ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
 };
 use loom_runtime_abi::{
-    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FORMAT_FLOAT_TYPED_SYMBOL,
+    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
 };
 
 mod support;
@@ -923,6 +924,134 @@ pub fn main() Unit {
         assert!(ir.contains(PARSE_INT_SYMBOL), "{ir}");
         assert!(ir.contains(PARSE_FLOAT_SYMBOL), "{ir}");
         assert_no_legacy_surface(&ir);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate covers canonical formatting, moving roots, runtime status integrity, and portable objects"
+)]
+fn typed_float_formatting_matches_all_backends_and_preserves_moving_text() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = format!(
+        r#"module lcir_typed_float_format
+
+import standard.float.format_float
+
+fn join(left Text, right Text) Text {{ left.concat(right) }}
+
+fn render(value Float) Text {{ format_float(value) }}
+
+pub fn main() Unit {{
+    let kept = join("K", "eep")
+    let pressure = "{pressure}".concat("{pressure}")
+    discard pressure.length()
+    let finite = render(1.25)
+    let integral = render(1e20)
+    let small = render(1e-7)
+    let negativeZero = render(-0.0)
+    let positiveInfinity = render(1.0 / 0.0)
+    let negativeInfinity = render(-1.0 / 0.0)
+    let notANumber = render(0.0 / 0.0)
+    assert kept == "Keep"
+    assert finite == "1.25"
+    assert integral == "100000000000000000000.0"
+    assert small == "0.0000001"
+    assert negativeZero == "-0.0"
+    assert positiveInfinity == "Infinity"
+    assert negativeInfinity == "-Infinity"
+    assert notANumber == "NaN"
+    Unit
+}}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let render = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("render"))
+        .expect("typed formatter function");
+    assert!(render.effects().contains(Effects::MAY_COLLECT));
+    assert!(render.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!render.effects().contains(Effects::MAY_FAULT));
+    assert!(!render.effects().contains(Effects::NEEDS_EXECUTOR));
+    assert!(!render.effects().contains(Effects::MAY_SUSPEND));
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("format.float"), "{dump}");
+
+    let native = emit_and_run_lcir(&artifact, "source-typed-float-format");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-float-format");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        FORMAT_FLOAT_TYPED_SYMBOL,
+        "format.float.failed",
+        "call void @llvm.trap()",
+        "managed.root.reload",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "typed format IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    let failed = native
+        .ir
+        .rfind("format.float.failed:")
+        .expect("unexpected format status block");
+    let failed_end = native.ir.len().min(failed + 512);
+    assert!(
+        native.ir[failed..failed_end].contains("call void @llvm.trap()"),
+        "unexpected typed formatter status must trap:\n{}",
+        &native.ir[failed..failed_end]
+    );
+    for forbidden in [
+        "@loom_runtime_format_float(",
+        "%loom.Value",
+        "loom_gc_root_push_v1",
+        "loom_executor_",
+        "landingpad",
+        "personality ptr",
+    ] {
+        assert!(!native.ir.contains(forbidden), "{}", native.ir);
+    }
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create float format target directory");
+        let object = directory.path().join("float-format.o");
+        let ir_path = directory.path().join("float-format.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed float format object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing typed float format object for {target}"
+        );
+        let ir = std::fs::read_to_string(ir_path).expect("read typed float format target IR");
+        assert!(ir.contains(FORMAT_FLOAT_TYPED_SYMBOL), "{ir}");
+        assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
+        assert!(!ir.contains("@loom_runtime_format_float("), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
     }
 }
 

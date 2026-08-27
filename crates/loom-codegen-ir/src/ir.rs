@@ -524,6 +524,12 @@ pub enum InstructionKind {
         invalid_syntax_variant: u32,
         out_of_range_variant: u32,
     },
+    /// Formats one binary64 `Float` into a freshly allocated canonical Text.
+    /// The typed runtime publishes the managed pointer through a stable output
+    /// cell at this instruction's exact collection safepoint.
+    FormatFloat {
+        value: ValueId,
+    },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
     ProductConstruct {
@@ -679,7 +685,8 @@ impl InstructionKind {
             Self::RefineProven { value }
             | Self::Unrefine { value }
             | Self::BoolNot { value }
-            | Self::FloatNegate { value } => vec![*value],
+            | Self::FloatNegate { value }
+            | Self::FormatFloat { value } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }

@@ -237,6 +237,7 @@ fn write_instruction(
             output,
             "parse.float %{text}, ok {ok_variant}, error {error_variant}, invalid_syntax {invalid_syntax_variant}, out_of_range {out_of_range_variant}"
         ),
+        InstructionKind::FormatFloat { value } => write!(output, "format.float %{value}"),
         InstructionKind::ProductConstruct { fields } => {
             write!(output, "product.construct (")?;
             write_arguments(output, fields)?;

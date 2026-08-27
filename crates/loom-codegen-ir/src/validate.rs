@@ -1834,6 +1834,21 @@ impl<'a> Validator<'a> {
                 *out_of_range_variant,
                 &path,
             ),
+            InstructionKind::FormatFloat { value } => {
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    self.scalar_type(&Type::Float),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.require_results(
+                    function,
+                    instruction,
+                    &[self.scalar_type(&Type::Text)],
+                    &path,
+                );
+            }
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 self.require_results(function, instruction, &[None], &path);
@@ -3889,6 +3904,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                     instruction.kind(),
                     InstructionKind::TextConcat { .. }
                         | InstructionKind::TextGet { .. }
+                        | InstructionKind::FormatFloat { .. }
                         | InstructionKind::ListAppend { .. }
                         | InstructionKind::ListAppendUnique { .. }
                 ) || matches!(

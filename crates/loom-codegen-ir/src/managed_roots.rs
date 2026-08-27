@@ -330,7 +330,9 @@ fn collect_safepoint_values(
             );
             let collecting = matches!(
                 instruction.kind(),
-                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                InstructionKind::TextConcat { .. }
+                    | InstructionKind::TextGet { .. }
+                    | InstructionKind::FormatFloat { .. }
             ) || list_allocation
                 || matches!(
                     instruction.kind(),
