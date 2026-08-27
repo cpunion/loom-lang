@@ -1,0 +1,72 @@
+module lcir_managed_products
+
+enum Problem { WrongText }
+
+record Pair {
+    left Text
+    right Text
+}
+
+record Bundle {
+    pair Pair
+    tail (Text, Int)
+    enabled Bool
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn collectPressure() Text { join("small", "pressure") }
+
+fn pointerFree(input (Int, Bool)) Int {
+    let number, enabled = input
+    if enabled { number + 1 } else { number }
+}
+
+fn retainParameter(input Bundle) Bundle {
+    let pressure = collectPressure()
+    discard pressure.length()
+    input
+}
+
+fn retainDefinition(kept Text) Bundle {
+    let built = Bundle {
+        pair = Pair { left = kept, right = kept },
+        tail = (kept, 41),
+        enabled = true,
+    }
+    let pressure = collectPressure()
+    discard pressure.length()
+    built
+}
+
+fn retain(input Bundle, takeInput Bool) Bundle {
+    let fallback = Bundle {
+        pair = Pair { left = "Fallback", right = "Fallback" },
+        tail = ("Fallback", 0),
+        enabled = false,
+    }
+    let selected = if takeInput { input } else { fallback }
+    let pressure = collectPressure()
+    discard pressure.length()
+    selected
+}
+
+fn verify() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let input = retainDefinition(kept)
+    let throughParameter = retainParameter(input)
+    let retained = retain(throughParameter, true)
+    let tailText, number = retained.tail
+    if retained.pair.left == "Keep" && retained.pair.right == "Keep" && tailText == "Keep" && retained.enabled && pointerFree((number, true)) == 42 {
+        Ok(Unit)
+    } else {
+        Err(Problem.WrongText)
+    }
+}
+
+pub fn main() Unit {
+    discard verify()
+    Unit
+}
+
+test fn managedProducts() Result[Unit, Problem] { verify() }

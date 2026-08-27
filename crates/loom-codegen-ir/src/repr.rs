@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -89,8 +89,9 @@ pub enum Repr {
     /// Static immortal objects are valid values of this representation too.
     ManagedPointer,
     /// An immutable register aggregate whose ordered fields are independently
-    /// typed LCIR values. Closed products may contain other products, but
-    /// validation rejects missing, uninhabited, or cyclic field graphs.
+    /// typed LCIR values. Closed products may contain other products and exact
+    /// managed-pointer leaves; validation rejects immortal-only Text leaves,
+    /// missing, uninhabited, or cyclic field graphs.
     Product(ProductReprId),
     /// A closed tagged union whose ordered variants carry independently typed
     /// payload fields. The sum plan fixes tag width and payload shape, while
@@ -383,6 +384,40 @@ impl RepresentationPlan {
         self.canonical_types.get(semantic).copied()
     }
 
+    /// Returns whether an already checked representation graph contains an
+    /// immortal and/or managed Text pointer. Missing or cyclic references are
+    /// rejected instead of being guessed; independent validation repeats the
+    /// graph rules after construction.
+    fn text_pointer_kinds(&self, root: ValueTypeId) -> Option<(bool, bool)> {
+        let mut pending = vec![root];
+        let mut visited = BTreeSet::new();
+        let mut immortal = false;
+        let mut managed = false;
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            let value = self.value_type(value)?;
+            match self.repr(value.repr())? {
+                Repr::ImmortalText => immortal = true,
+                Repr::ManagedPointer => managed = true,
+                Repr::Product(product) => {
+                    pending.extend(self.product(*product)?.fields().iter().copied());
+                }
+                Repr::Sum(sum) => {
+                    pending.extend(
+                        self.sum(*sum)?
+                            .variants()
+                            .iter()
+                            .flat_map(|variant| variant.fields().iter().copied()),
+                    );
+                }
+                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
+            }
+        }
+        Some((immortal, managed))
+    }
+
     fn add_product(
         &mut self,
         semantic: Type,
@@ -402,12 +437,13 @@ impl RepresentationPlan {
             .iter()
             .map(|field| self.type_id(field))
             .collect::<Option<Vec<_>>>()?;
-        if fields.iter().any(|field| {
-            matches!(
-                self.value_type(*field).and_then(|ty| self.repr(ty.repr())),
-                Some(Repr::ImmortalText | Repr::ManagedPointer)
-            )
-        }) {
+        // Products may contain managed pointers, but never immortal-only Text.
+        // Source classification selects one artifact-wide managed-capable Text
+        // representation before registering a Text-bearing product.
+        if fields
+            .iter()
+            .any(|field| self.text_pointer_kinds(*field).is_none_or(|kinds| kinds.0))
+        {
             return None;
         }
         let product = ProductReprId::from_index(self.brand, self.products.len())?;
@@ -508,10 +544,11 @@ impl RepresentationPlan {
         }
         let base = self.type_id(base)?;
         let repr = self.value_type(base)?.repr;
-        if matches!(
-            self.repr(repr),
-            Some(Repr::Uninhabited | Repr::ImmortalText | Repr::ManagedPointer)
-        ) {
+        if matches!(self.repr(repr), Some(Repr::Uninhabited))
+            || self
+                .text_pointer_kinds(base)
+                .is_none_or(|(immortal, managed)| immortal || managed)
+        {
             return None;
         }
         let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
@@ -551,10 +588,8 @@ impl RepresentationPlan {
             .collect::<Option<Vec<_>>>()?;
         if variants.iter().any(|variant| {
             variant.fields.iter().any(|field| {
-                matches!(
-                    self.value_type(*field).and_then(|ty| self.repr(ty.repr())),
-                    Some(Repr::ImmortalText | Repr::ManagedPointer)
-                )
+                self.text_pointer_kinds(*field)
+                    .is_none_or(|(immortal, managed)| immortal || managed)
             })
         }) {
             return None;
@@ -690,6 +725,73 @@ mod tests {
             Some(3),
             "canonical lookup remains fixed by its explicit registration"
         );
+    }
+
+    #[test]
+    fn independent_validation_enforces_text_container_boundaries() {
+        let mut immortal = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = immortal.add_immortal_text_type().expect("immortal Text");
+        let tuple = immortal
+            .add_tuple_type(&[Type::Int])
+            .expect("pointer-free product");
+        let mut immortal = immortal.finish();
+        let Repr::Product(product) = immortal.representations.reprs
+            [immortal.representations.types[tuple.index()].repr.index()]
+        else {
+            panic!("tuple must use a product")
+        };
+        immortal.representations.products[product.index()].fields[0] = text;
+        let errors = validate_program(&immortal)
+            .expect_err("an immortal-only Text pointer cannot be forged into a product");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.product[0].field[0]"
+                && error.message()
+                    == "product fields must reference inhabited direct values; Text leaves require ManagedPointer"
+        }));
+
+        let mut managed_sum = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = managed_sum.add_managed_text_type().expect("managed Text");
+        managed_sum
+            .add_sum_type(
+                Type::Nominal(TypeId(5_000), Vec::new()),
+                &[Box::from([Type::Int])],
+            )
+            .expect("pointer-free sum");
+        let mut managed_sum = managed_sum.finish();
+        managed_sum.representations.sums[0].variants[0].fields[0] = text;
+        let errors = validate_program(&managed_sum)
+            .expect_err("a managed Text pointer cannot be forged into a sum");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.sum[0].variant[0].field[0]"
+                && error.message()
+                    == "sum payloads must reference inhabited pointer-free direct value types"
+        }));
+
+        let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        transparent.add_managed_text_type().expect("managed Text");
+        let product = transparent
+            .add_tuple_type(&[Type::Text])
+            .expect("managed product");
+        let wrapper = transparent
+            .add_transparent_type(Type::Nominal(TypeId(5_001), Vec::new()), &Type::Float)
+            .expect("pointer-free transparent value");
+        let mut transparent = transparent.finish();
+        transparent.representations.types[wrapper.index()].kind =
+            ValueTypeKind::Transparent { base: product };
+        let errors = validate_program(&transparent)
+            .expect_err("a managed product cannot be forged into a transparent carrier");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path()
+                    == format!(
+                        "representations.type[{}].kind.transparent_base",
+                        wrapper.index()
+                    )
+                && error.message()
+                    == "transparent values must retain a pointer-free base representation"
+        }));
     }
 
     #[test]

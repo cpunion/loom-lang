@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `21` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `11` |
-| LCIR artifact identity | schema `12` |
-| LCIR native-object domain | `loom-lcir-native-object-v8` |
+| LCIR textual dump | version `12` |
+| LCIR artifact identity | schema `13` |
+| LCIR native-object domain | `loom-lcir-native-object-v9` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v13` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v14` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `11` |
 | Coroutine/Task ABI component | `2` |
@@ -41,14 +41,16 @@ foundation advanced the native runtime component to `9`, GC identity to
 `gc-v8`, and added `typed-gc-v1` plus `typed-shadow-stack-v1` identity
 components without emitting those calls from LCIR.
 
-Dynamic `Text.concat` now makes those typed root facilities part of generated
-LCIR. An artifact containing concat uses one `ManagedPointer` representation
-for all Text, publishes exact live-after typed shadow-stack bitmaps, and calls
-the specialized staging/allocation helper. This advances the current LCIR dump
-to 11, artifact schema to 12, native-object domain to v8, and object-cache
-domain to v13. The new helper advances the native runtime component to `10`
-and the exact identity components to `text-v2` and `runtime-v4`; the collector
-implementation remains `gc-v8`.
+Dynamic `Text.concat` makes those typed root facilities part of generated LCIR.
+An artifact containing concat or a Text-bearing tuple/record uses one
+`ManagedPointer` provenance mode for all Text. Products remain unboxed exact
+SSA aggregates; only their deterministic Text leaves receive stable root cells
+when the aggregate is live after a collecting operation. This advances the
+current LCIR dump to 12, artifact schema to 13, native-object domain to v9, and
+object-cache domain to v14. The concat helper previously advanced the native
+runtime component to `10` and the exact identity components to `text-v2` and
+`runtime-v4`; product leaf rooting reuses that typed-shadow-stack v1 wire and
+does not advance the runtime ABI. The collector remains `gc-v8`.
 
 The typed Task runtime foundation adds `typed-task-v1` beside the retained
 legacy `task-v2` identity and advances the runtime component to `runtime-v5`

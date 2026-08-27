@@ -1,8 +1,8 @@
 use loom_codegen_ir::{
-    ArtifactRootRequest, ArtifactValidationCode, BoolPredicate, Constant, Effects, InstructionKind,
-    ManagedSafepoint, Origin, ProgramBuilder, Repr, Signature, TEXT_LITERAL_MAX_BYTES,
-    TargetLayout, Terminator, TerminatorKind, ValidationCode, ValueDefinition, dump_program,
-    plan_managed_roots,
+    ArtifactRootRequest, ArtifactValidationCode, BlockTarget, BoolPredicate, Constant, Effects,
+    InstructionKind, ManagedSafepoint, Origin, ProgramBuilder, Repr, Signature,
+    TEXT_LITERAL_MAX_BYTES, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    ValueDefinition, dump_program, plan_managed_roots,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type};
 
@@ -259,10 +259,17 @@ fn managed_concat_has_exact_live_after_roots_and_ignores_dead_edge_arguments() {
         .into_artifact(ArtifactRootRequest::Run(root))
         .expect("closed managed Text artifact");
     let plan = plan_managed_roots(artifact.program(), root).expect("root plan");
-    assert_eq!(plan.slots(), [live]);
-    assert!(!plan.slots().contains(&dead));
-    assert!(!plan.slots().contains(&unused));
-    assert!(!plan.slots().contains(&concat_result));
+    assert_eq!(plan.slots().len(), 1);
+    assert_eq!(plan.slots()[0].value(), live);
+    assert!(plan.slots()[0].projection().is_empty());
+    assert!(!plan.slots().iter().any(|slot| slot.value() == dead));
+    assert!(!plan.slots().iter().any(|slot| slot.value() == unused));
+    assert!(
+        !plan
+            .slots()
+            .iter()
+            .any(|slot| slot.value() == concat_result)
+    );
     assert_eq!(plan.bitmap_words(), 1);
     assert_eq!(plan.bitmaps(), [0, 1]);
     let ValueDefinition::InstructionResult { instruction, .. } = artifact
@@ -282,6 +289,265 @@ fn managed_concat_has_exact_live_after_roots_and_ignores_dead_edge_arguments() {
             .representations()
             .repr(artifact.representations().value_type(text).unwrap().repr()),
         Some(&Repr::ManagedPointer)
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one manual CFG keeps nested projections, aliases, phis, dead edge arguments, and pointer-free values auditable together"
+)]
+fn nested_managed_products_expand_only_live_ssa_values_to_stable_leaf_slots() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let text = builder
+        .add_managed_text_type()
+        .expect("register managed Text");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let inner_semantic = Type::Tuple(vec![Type::Text, Type::Int]);
+    let inner = builder
+        .add_tuple_type(&[Type::Text, Type::Int])
+        .expect("inner managed product");
+    let outer = builder
+        .add_tuple_type(&[inner_semantic, Type::Text, Type::Bool])
+        .expect("outer managed product");
+    let pod = builder
+        .add_tuple_type(&[Type::Int, Type::Bool])
+        .expect("pointer-free product");
+    let root = builder
+        .declare_function(
+            origin(10),
+            "managed_products",
+            Signature::new([], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("root declaration");
+    let (alias, dead, selected, unused, stable_pod, concat_result) = {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        let then_block = function.create_block().expect("then");
+        let else_block = function.create_block().expect("else");
+        let join = function.create_block().expect("join");
+        function.set_entry(entry).expect("set entry");
+
+        let alias = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "alias".into(),
+                },
+                &[text],
+                origin(10),
+            )
+            .expect("alias")[0];
+        let dead = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "dead".into(),
+                },
+                &[text],
+                origin(10),
+            )
+            .expect("dead")[0];
+        let number = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(7)),
+                &[integer],
+                origin(10),
+            )
+            .expect("number")[0];
+        let condition = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Bool(true)),
+                &[boolean],
+                origin(10),
+            )
+            .expect("condition")[0];
+        let inner_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([alias, number]),
+                },
+                &[inner],
+                origin(10),
+            )
+            .expect("inner")[0];
+        let outer_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([inner_value, alias, condition]),
+                },
+                &[outer],
+                origin(10),
+            )
+            .expect("outer")[0];
+        let dead_inner = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([dead, number]),
+                },
+                &[inner],
+                origin(10),
+            )
+            .expect("dead inner")[0];
+        let dead_outer = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([dead_inner, dead, condition]),
+                },
+                &[outer],
+                origin(10),
+            )
+            .expect("dead outer")[0];
+        let pod_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([number, condition]),
+                },
+                &[pod],
+                origin(10),
+            )
+            .expect("pointer-free product")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition,
+                        then_target: BlockTarget::new(then_block, []),
+                        else_target: BlockTarget::new(else_block, []),
+                    },
+                    origin(10),
+                ),
+            )
+            .expect("branch");
+
+        let selected = function
+            .append_block_parameter(join, outer)
+            .expect("selected phi");
+        let unused = function
+            .append_block_parameter(join, outer)
+            .expect("unused phi");
+        let stable_pod = function.append_block_parameter(join, pod).expect("POD phi");
+        for block in [then_block, else_block] {
+            function
+                .terminate(
+                    block,
+                    Terminator::new(
+                        TerminatorKind::Jump(BlockTarget::new(
+                            join,
+                            [outer_value, dead_outer, pod_value],
+                        )),
+                        origin(10),
+                    ),
+                )
+                .expect("join edge");
+        }
+
+        let safepoint = function
+            .append_instruction(
+                join,
+                InstructionKind::TextConcat {
+                    left: alias,
+                    right: alias,
+                },
+                &[text],
+                origin(10),
+            )
+            .expect("concat");
+        let concat_result = safepoint[0];
+        let selected_inner = function
+            .append_instruction(
+                join,
+                InstructionKind::ProductExtract {
+                    aggregate: selected,
+                    field: 0,
+                },
+                &[inner],
+                origin(10),
+            )
+            .expect("extract inner")[0];
+        let kept = function
+            .append_instruction(
+                join,
+                InstructionKind::ProductExtract {
+                    aggregate: selected_inner,
+                    field: 0,
+                },
+                &[text],
+                origin(10),
+            )
+            .expect("extract managed leaf")[0];
+        function
+            .append_instruction(
+                join,
+                InstructionKind::TextLength { text: kept },
+                &[integer],
+                origin(10),
+            )
+            .expect("use managed leaf");
+        function
+            .append_instruction(
+                join,
+                InstructionKind::ProductExtract {
+                    aggregate: stable_pod,
+                    field: 0,
+                },
+                &[integer],
+                origin(10),
+            )
+            .expect("use pointer-free product");
+        let result = function
+            .append_instruction(
+                join,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin(10),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                join,
+                Terminator::new(TerminatorKind::Return(result), origin(10)),
+            )
+            .expect("return");
+        (alias, dead, selected, unused, stable_pod, concat_result)
+    };
+    let artifact = builder
+        .finish_checked()
+        .expect("checked managed-product LCIR")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("closed managed-product artifact");
+    let plan = plan_managed_roots(artifact.program(), root).expect("root plan");
+    assert_eq!(plan.slots().len(), 2);
+    assert!(plan.slots().iter().all(|slot| slot.value() == selected));
+    assert_eq!(plan.slots()[0].projection(), [0, 0]);
+    assert_eq!(plan.slots()[1].projection(), [1]);
+    for excluded in [alias, dead, unused, stable_pod, concat_result] {
+        assert!(!plan.slots().iter().any(|slot| slot.value() == excluded));
+    }
+    assert_eq!(plan.bitmap_words(), 1);
+    assert_eq!(plan.bitmaps(), [0, 3]);
+    let ValueDefinition::InstructionResult { instruction, .. } = artifact
+        .function(root)
+        .and_then(|function| function.value(concat_result))
+        .expect("concat result")
+        .definition()
+    else {
+        panic!("concat result must have an instruction definition")
+    };
+    assert_eq!(
+        plan.state(ManagedSafepoint::Instruction(instruction)),
+        Some(1)
     );
 }
 

@@ -124,10 +124,11 @@ witness instances use a separate non-moving arena because generated proof
 arguments can hold their addresses across a safepoint; unreachable instances
 are marked and swept.
 
-Typed LCIR uses two artifact-wide Text modes. A literal-only artifact keeps its
-immutable compiler-emitted `TextObject` globals outside the managed heap, so
-their process-lifetime pointers need no relocation. If any reachable function
-uses concat, every Text has the direct managed-capable pointer representation.
+Typed LCIR uses two artifact-wide Text modes. A literal-only, product-free
+artifact keeps its immutable compiler-emitted `TextObject` globals outside the
+managed heap, so their process-lifetime pointers need no relocation. If any
+reachable function uses concat or places Text in a tuple/record product, every
+Text has the direct managed-capable pointer representation.
 `loom_runtime_text_concat_typed_v1(left, right, output)` copies and validates
 both complete input byte sequences before its typed allocation can collect,
 then creates one pointer-free typed leaf with a 32-byte header and trailing
@@ -136,13 +137,16 @@ last. This staging rule also makes aliased inputs safe when collection moves
 the old object.
 
 LCIR functions publish exact live-after typed-root bitmap states at concat and
-at calls whose transitive effects may collect. Direct managed SSA values use
-stable pointer cells; definitions and block parameters update those cells and
-post-safepoint uses reload them. An edge argument is live only when the paired
-explicit successor parameter is live, and a call result cannot be live at its
-own safepoint. No live-across values means no typed frame. Synchronous concat
-uses a runtime but constructs no executor. Text inside aggregates, `Text.get`,
-and other dynamic producers remain outside the current typed LCIR slice.
+at calls whose transitive effects may collect. A direct Text value uses one
+stable pointer cell. A live unboxed tuple/record expands to one stable cell per
+deterministically projected Text leaf; definitions and block parameters update
+those cells, and post-safepoint aggregate uses are rebuilt from reloaded leaves.
+An edge argument is live only when the paired explicit successor parameter is
+live, and a call result cannot be live at its own safepoint. No live-across
+managed leaves means no typed frame. Synchronous concat uses a runtime but
+constructs no executor. `Text.get`, Text inside enums or transparent/refined
+carriers, managed lists, and other dynamic producers remain outside the current
+typed LCIR slice.
 
 ## Source semantics
 

@@ -448,6 +448,12 @@ pub fn lower_typed_artifact(
         managed_text,
         ..
     } = classifier;
+    // Product-contained Text uses the managed-capable pointer provenance mode
+    // even when every current value is a compiler literal. This keeps the
+    // product representation exact without expanding the separate immortal
+    // provenance proof through aggregate construction, projection, and phi
+    // flow. A literal pointer remains a valid typed managed-root cell value.
+    let managed_text = managed_text || aggregates.uses_text_product_leaf();
     let aggregate_plan = aggregates.finish();
     let summaries = closure
         .entries()
@@ -836,7 +842,7 @@ impl<'program> Classifier<'program> {
             program,
             target,
             items: Vec::new(),
-            aggregates: AggregatePlanner::new(program),
+            aggregates: AggregatePlanner::new(program, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
             places: PlaceBudget::default(),
             text_literals: TextLiteralBudget::default(),

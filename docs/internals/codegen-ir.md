@@ -52,7 +52,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
 | literal-only `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
-| artifact containing `Text.concat` on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
+| artifact containing `Text.concat` or a Text-bearing product on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
 | structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
 | closed record with a proven invariant | protected `Product(field value types...)` |
@@ -62,15 +62,18 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | other closed concrete enum | `{ minimal integer tag, exact aligned payload carrier }` |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
-signatures and SSA values. Products and sums are immutable register
-aggregates. Their fields may be primitive values or other acyclic direct
-aggregates, so tuples, records, and closed sums may contain one another.
+signatures and SSA values. Products and sums are immutable register aggregates.
+Their fields may be primitive values or other acyclic direct aggregates, so
+tuples, records, and pointer-free closed sums may contain one another. Products
+may additionally contain managed Text leaves; sums and transparent/refined
+carriers remain pointer-free.
 Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Generic records, runtime-checked constructions, recursive
-sums, and aggregates containing managed, list, Task, dynamic-witness, or
-uninhabited fields are not selected. `InvariantRecordProven` is the only
+sums, and aggregates containing lists, Task, dynamic witnesses, or uninhabited
+fields are not selected. Managed Text is admitted only through product fields,
+not sums or transparent/refined carriers. `InvariantRecordProven` is the only
 construction for an invariant product; `RefineProven` and exact `Unrefine`
 preserve the physical SSA value while retaining the proof boundary.
 
@@ -86,15 +89,18 @@ through locals, block parameters, direct calls, returns, and concrete generic
 identity functions. It cannot appear in products, sums, or transparent
 representations.
 
-If any reachable function uses concat, the canonical Text registration instead
-uses `ManagedPointer` throughout the artifact. Literals remain immutable
-process-lifetime objects in that direct pointer ABI, while concat results are
-typed moving-GC leaves. `TextConcat` is an infallible `MAY_COLLECT` operation;
-exact live-after SSA liveness and the typed shadow stack let the collector
-rewrite direct pointers at its safepoints. Allocation-free `TextLength`,
-`TextContains`, and `TextCompare` work in either mode, and equality compares
-content, never object addresses. `get`, every other dynamic Text producer, and
-every aggregate containing Text still select atomic whole-artifact fallback.
+If any reachable function uses concat or places Text in a tuple/record product,
+the canonical Text registration instead uses `ManagedPointer` throughout the
+artifact. Literals remain immutable process-lifetime objects in that direct
+pointer ABI, while concat results are typed moving-GC leaves. The product is
+still an unboxed exact SSA aggregate; `ManagedPointer` describes only its Text
+leaf provenance. `TextConcat` is an infallible `MAY_COLLECT` operation; exact
+live-after SSA liveness and the typed shadow stack let the collector rewrite
+direct pointers at its safepoints. Allocation-free `TextLength`, `TextContains`,
+and `TextCompare` work in either mode, and equality compares content, never
+object addresses. `get`, every other dynamic Text producer, Text inside sums or
+transparent/refined carriers, and managed lists still select atomic
+whole-artifact fallback.
 
 Text planning is bounded before LCIR allocation or source storage is cloned.
 One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
@@ -243,6 +249,12 @@ dump to `lcir 11`, the LCIR native-object domain to
 runtime helper and typed shadow-frame calls advance the native runtime ABI
 component to 10 and its text/runtime identity components to `text-v2` and
 `runtime-v4`; the underlying typed-GC component remains `gc-v8`.
+Managed Text leaves in unboxed products then advance the artifact identity to
+schema 13, the dump to `lcir 12`, the LCIR native-object domain to
+`loom-lcir-native-object-v9`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v14`. The existing typed-shadow-stack v1 descriptor,
+frame, bitmap, push, and pop wire is sufficient, so native runtime ABI component
+11 and its `runtime-v5` identity do not change.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -306,24 +318,28 @@ has no executor or suspending opcode. Cleanup
 registration and assertions are conservatively unsupported together until
 their complete normal/return/fault ladders can be emitted.
 
-When any reachable instance contains `TextConcat`, representation planning
-selects `ManagedPointer` for every `Text` in the artifact. `TextLiteral`
-continues to produce process-lifetime static objects, but their pointers share
-the same callable ABI as dynamically allocated Text. `TextConcat` returns one
-managed leaf and has no source fault edge: allocation resource exhaustion is
-an uncatchable process fault, while malformed runtime status fails closed.
-`Text.get`, Text inside products or sums, and other dynamic Text producers
-still select whole-artifact fallback.
+When any reachable instance contains `TextConcat` or a tuple/record containing
+Text, representation planning selects `ManagedPointer` for every `Text` in the
+artifact. `TextLiteral` continues to produce process-lifetime static objects,
+but their pointers share the same callable ABI as dynamically allocated Text.
+`TextConcat` returns one managed leaf and has no source fault edge: allocation
+resource exhaustion is an uncatchable process fault, while malformed runtime
+status fails closed. Products remain unboxed exact SSA aggregates. `Text.get`,
+Text inside sums or transparent/refined carriers, managed lists, and other
+dynamic Text producers still select whole-artifact fallback.
 
 `plan_managed_roots` computes exact managed SSA liveness with a predecessor
 worklist. It records the live-after set at each collecting instruction or call,
-excluding the result that does not exist until the call returns. Explicit edge
-arguments are retained only when their corresponding successor parameter is
-live; implicit result and unwind parameters are definitions, not incoming
-roots. Slot order is deterministic by `ValueId`, bitmap row zero is empty, and
-identical rows are deduplicated. A function with no value live across a
-safepoint has no typed shadow frame. The runtime ABI limits are checked during
-LLVM emission; an excess is `ProgramTooLarge`, never legacy fallback.
+excluding the result that does not exist until the call returns. Each live
+direct pointer has one empty projection; each live product expands by stable
+depth-first field order to `(ValueId, projection)` slots for all managed leaves.
+Explicit edge arguments are retained only when their corresponding successor
+parameter is live; implicit result and unwind parameters are definitions, not
+incoming roots. Slot order is deterministic by value and lexicographic
+projection, bitmap row zero is empty, and identical rows are deduplicated. A
+function with no managed leaf live across a safepoint has no typed shadow frame.
+The runtime ABI limits are checked during LLVM emission; an excess is
+`ProgramTooLarge`, never legacy fallback.
 
 ## Typed projected places
 
@@ -485,7 +501,7 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values other than direct Text concat results, open or managed enums,
+Managed values other than direct Text values in products, open or managed enums,
 runtime-checked refined values, dynamic dispatch, cleanup registration and
 ordering, and coroutine control flow are not implemented. The current CFG
 represents direct products, concrete closed sums, both direct Text modes, and
@@ -530,7 +546,8 @@ not repair a malformed program. Current checks include:
 - ordered exhaustive sum cases, exact construction payloads, and typed implicit
   payload parameters on every `SumSwitch` edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
-  allocation-free graph or `ManagedPointer` when concat is present; literal
+  allocation-free, product-free graph or `ManagedPointer` when concat or a
+  Text-bearing product is present; literal
   budgets, concat operand/result types and collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
 - implicit result/writeback parameter shape and type on normal and fault edges;
@@ -585,7 +602,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 11` text includes
+text even when the graphs are otherwise equivalent. The `lcir 12` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block and ordered effect set,
 typed runtime/contract fault identity, managed-pointer representations and
@@ -615,9 +632,11 @@ unreachable declarations, repeatable dumps and identities, and direct host and
 MSVC LLVM signatures. Text regressions cover bounded literal planning,
 representation rejection on 32-bit layouts, exact direct calls and generic
 identity flow, content comparison, dynamic concat, exact live-after root maps,
-linear worklist convergence on a large loop, forced relocation and alias
-reloads, host execution, Linux/MSVC object emission, and atomic fallback for
-derived or nested text. Malformed-LCIR tests
+linear worklist convergence on a large loop, deterministic nested-product leaf
+projections, phis, calls, dead edges, forced relocation and alias rebuilds,
+pointer-free product frame omission, host execution, Linux/MSVC object
+emission, and atomic fallback for derived Text or pointer-bearing sums.
+Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.
 Structural regressions cover thousands of live locals and identity branches,

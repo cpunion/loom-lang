@@ -35,9 +35,9 @@ use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
-    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedSafepoint, Origin, Repr,
-    ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan,
-    UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
+    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootSlot, ManagedSafepoint, Origin,
+    Repr, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_runtime_abi::{
@@ -1773,6 +1773,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     values: Vec<Option<BasicValueEnum<'ctx>>>,
     fault_context: Option<PointerValue<'ctx>>,
     root_plan: ManagedRootPlan,
+    root_slot_ranges: Vec<Option<(usize, usize)>>,
     root_cells: Vec<Option<PointerValue<'ctx>>>,
     root_frame: Option<PointerValue<'ctx>>,
     root_state: Option<PointerValue<'ctx>>,
@@ -1804,6 +1805,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 format!("{} exceeds the typed shadow-root ABI limits", source.id()),
             ));
         }
+        let root_slot_ranges = Self::managed_root_ranges(source, &root_plan)?;
+        let root_slot_count = root_plan.slots().len();
         let emission_order = Self::compute_emission_order(source)?;
         let mut blocks = vec![None; source.blocks().len()];
         for block_id in emission_order.iter().copied() {
@@ -1835,12 +1838,39 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             values: vec![None; source.values().len()],
             fault_context: None,
             root_plan,
-            root_cells: vec![None; source.values().len()],
+            root_slot_ranges,
+            root_cells: vec![None; root_slot_count],
             root_frame: None,
             root_state: None,
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
+    }
+
+    fn managed_root_ranges(
+        source: &Function,
+        plan: &ManagedRootPlan,
+    ) -> Result<Vec<Option<(usize, usize)>>, CodegenError> {
+        let mut ranges = vec![None; source.values().len()];
+        for (index, slot) in plan.slots().iter().enumerate() {
+            let range = ranges.get_mut(slot.value().index()).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("managed-root slot references missing {}", slot.value()),
+                )
+            })?;
+            match range {
+                None => *range = Some((index, index.saturating_add(1))),
+                Some((_, end)) if *end == index => *end = index.saturating_add(1),
+                Some(_) => {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("managed-root slots for {} are not contiguous", slot.value()),
+                    ));
+                }
+            }
+        }
+        Ok(ranges)
     }
 
     fn prepare_parameters(&mut self) -> Result<(), CodegenError> {
@@ -1936,24 +1966,36 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn prepare_root_cells(
         &mut self,
         entry: BlockId,
-        slots: &[ValueId],
+        slots: &[ManagedRootSlot],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        for value in slots.iter().copied() {
+        for (index, slot) in slots.iter().enumerate() {
+            let projection = slot
+                .projection()
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(".");
+            let name = if projection.is_empty() {
+                format!("managed.root.v{}", slot.value().raw())
+            } else {
+                format!("managed.root.v{}.p{projection}", slot.value().raw())
+            };
             let cell = self
                 .backend
                 .builder
-                .build_alloca(
-                    self.backend.ptr_type,
-                    &format!("managed.root.v{}", value.raw()),
-                )
+                .build_alloca(self.backend.ptr_type, &name)
                 .map_err(builder_error)?;
             self.backend
                 .builder
                 .build_store(cell, self.backend.ptr_type.const_null())
                 .map_err(builder_error)?;
-            self.root_cells[value.index()] = Some(cell);
+            self.root_cells[index] = Some(cell);
         }
-        for value in slots.iter().copied() {
+        let entry_values = slots
+            .iter()
+            .map(ManagedRootSlot::value)
+            .collect::<BTreeSet<_>>();
+        for value in entry_values {
             if matches!(
                 self.source
                     .value(value)
@@ -1966,13 +2008,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         format!("entry managed parameter {value} has no LLVM value"),
                     )
                 })?;
-                self.backend
-                    .builder
-                    .build_store(
-                        self.root_cells[value.index()].expect("root cell"),
-                        parameter,
-                    )
-                    .map_err(builder_error)?;
+                self.publish_root_value(value, parameter)?;
             }
         }
 
@@ -1983,8 +2019,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .build_alloca(slot_array_type, "managed.root.slots")
             .map_err(builder_error)?;
-        for (index, value) in slots.iter().copied().enumerate() {
-            let index = u32::try_from(index)
+        for (slot_index, _slot) in slots.iter().enumerate() {
+            let index = u32::try_from(slot_index)
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many managed roots"))?;
             let field = self
                 .backend
@@ -1993,7 +2029,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?;
             self.backend
                 .builder
-                .build_store(field, self.root_cells[value.index()].expect("root cell"))
+                .build_store(
+                    field,
+                    self.root_cells[slot_index].ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "managed-root cell is missing")
+                    })?,
+                )
                 .map_err(builder_error)?;
         }
         Ok(slot_array)
@@ -2143,21 +2184,162 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .block(block)
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "managed-root block disappeared"))?;
         for value in block.params().iter().copied() {
-            let Some(cell) = self.root_cells.get(value.index()).copied().flatten() else {
+            if self
+                .root_slot_ranges
+                .get(value.index())
+                .copied()
+                .flatten()
+                .is_none()
+            {
                 continue;
-            };
+            }
             let raw = self.values[value.index()].ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
                     format!("managed block parameter {value} has no LLVM value"),
                 )
             })?;
+            self.publish_root_value(value, raw)?;
+        }
+        Ok(())
+    }
+
+    fn publish_root_value(
+        &self,
+        value: ValueId,
+        raw: BasicValueEnum<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Some((start, end)) = self.root_slot_ranges.get(value.index()).copied().flatten() else {
+            return Ok(());
+        };
+        for index in start..end {
+            let slot = self.root_plan.slots().get(index).ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "managed-root slot disappeared")
+            })?;
+            if slot.value() != value {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("managed-root range for {value} contains {}", slot.value()),
+                ));
+            }
+            let leaf = self.project_value(raw, slot.projection())?;
+            let BasicValueEnum::PointerValue(pointer) = leaf else {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!(
+                        "managed-root projection {:?} of {value} is not a pointer",
+                        slot.projection()
+                    ),
+                ));
+            };
+            let cell = self
+                .root_cells
+                .get(index)
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "managed-root cell is missing")
+                })?;
             self.backend
                 .builder
-                .build_store(cell, raw)
+                .build_store(cell, pointer)
                 .map_err(builder_error)?;
         }
         Ok(())
+    }
+
+    fn project_value(
+        &self,
+        mut value: BasicValueEnum<'ctx>,
+        projection: &[u32],
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        for field in projection {
+            let BasicValueEnum::StructValue(aggregate) = value else {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("managed-root projection {projection:?} crosses a non-product"),
+                ));
+            };
+            value = self
+                .backend
+                .builder
+                .build_extract_value(aggregate, *field, "managed.root.extract")
+                .map_err(builder_error)?;
+        }
+        Ok(value)
+    }
+
+    fn rebuild_projected_value(
+        &self,
+        aggregate: BasicValueEnum<'ctx>,
+        projection: &[u32],
+        replacement: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if projection.is_empty() {
+            if !matches!(aggregate, BasicValueEnum::PointerValue(_)) {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "empty managed-root projection targets a non-pointer",
+                ));
+            }
+            return Ok(replacement.into());
+        }
+        let mut parents = Vec::with_capacity(projection.len());
+        let mut current = aggregate;
+        for field in projection {
+            let BasicValueEnum::StructValue(parent) = current else {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("managed-root projection {projection:?} crosses a non-product"),
+                ));
+            };
+            current = self
+                .backend
+                .builder
+                .build_extract_value(parent, *field, "managed.root.rebuild.extract")
+                .map_err(builder_error)?;
+            parents.push((parent, *field));
+        }
+        if !matches!(current, BasicValueEnum::PointerValue(_)) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("managed-root projection {projection:?} is not a pointer leaf"),
+            ));
+        }
+        let mut rebuilt: BasicValueEnum<'ctx> = replacement.into();
+        for (parent, field) in parents.into_iter().rev() {
+            rebuilt = self
+                .backend
+                .builder
+                .build_insert_value(parent, rebuilt, field, "managed.root.rebuild")
+                .map_err(builder_error)?
+                .into_struct_value()
+                .into();
+        }
+        Ok(rebuilt)
+    }
+
+    fn direct_root_cell(&self, value: ValueId) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
+        let Some((start, end)) = self.root_slot_ranges.get(value.index()).copied().flatten() else {
+            return Ok(None);
+        };
+        let slot =
+            self.root_plan.slots().get(start).ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "managed-root slot disappeared")
+            })?;
+        if end != start.saturating_add(1) || slot.value() != value || !slot.projection().is_empty()
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("direct managed value {value} has a non-direct root-slot range"),
+            ));
+        }
+        self.root_cells
+            .get(start)
+            .copied()
+            .flatten()
+            .map(Some)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "managed-root cell is missing"))
     }
 
     fn publish_root_state(&self, site: ManagedSafepoint) -> Result<(), CodegenError> {
@@ -2199,12 +2381,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         value: BasicValueEnum<'ctx>,
     ) -> Result<(), CodegenError> {
         self.values[id.index()] = Some(value);
-        if let Some(cell) = self.root_cells.get(id.index()).copied().flatten() {
-            self.backend
-                .builder
-                .build_store(cell, value)
-                .map_err(builder_error)?;
-        }
+        self.publish_root_value(id, value)?;
         Ok(())
     }
 
@@ -2376,15 +2553,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let left = self.value(*left)?.into_pointer_value();
                 let right = self.value(*right)?.into_pointer_value();
                 self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
-                let output =
-                    if let Some(cell) = self.root_cells.get(result.index()).copied().flatten() {
-                        cell
-                    } else {
-                        self.backend
-                            .builder
-                            .build_alloca(self.backend.ptr_type, "text.concat.output")
-                            .map_err(builder_error)?
-                    };
+                let output = if let Some(cell) = self.direct_root_cell(result)? {
+                    cell
+                } else {
+                    self.backend
+                        .builder
+                        .build_alloca(self.backend.ptr_type, "text.concat.output")
+                        .map_err(builder_error)?
+                };
                 self.backend
                     .builder
                     .build_store(output, self.backend.ptr_type.const_null())
@@ -4118,18 +4294,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn value(&self, id: ValueId) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        if let Some(cell) = self.root_cells.get(id.index()).copied().flatten() {
-            return self
-                .backend
-                .builder
-                .build_load(
-                    self.backend.ptr_type,
-                    cell,
-                    &format!("managed.root.reload.v{}", id.raw()),
-                )
-                .map_err(builder_error);
-        }
-        self.values
+        let mut value = self
+            .values
             .get(id.index())
             .copied()
             .flatten()
@@ -4138,7 +4304,43 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     "LlvmAbiDefect",
                     format!("LCIR value {id} has no LLVM definition"),
                 )
-            })
+            })?;
+        let Some((start, end)) = self.root_slot_ranges.get(id.index()).copied().flatten() else {
+            return Ok(value);
+        };
+        for index in start..end {
+            let slot = self.root_plan.slots().get(index).ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "managed-root slot disappeared")
+            })?;
+            let cell = self
+                .root_cells
+                .get(index)
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "managed-root cell is missing")
+                })?;
+            let pointer = self
+                .backend
+                .builder
+                .build_load(
+                    self.backend.ptr_type,
+                    cell,
+                    &format!(
+                        "managed.root.reload.v{}.p{}",
+                        id.raw(),
+                        slot.projection()
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    ),
+                )
+                .map_err(builder_error)?
+                .into_pointer_value();
+            value = self.rebuild_projected_value(value, slot.projection(), pointer)?;
+        }
+        Ok(value)
     }
 
     fn int(&self, id: ValueId) -> Result<IntValue<'ctx>, CodegenError> {
