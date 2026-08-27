@@ -375,12 +375,23 @@ fallback when reachable.
 On the currently pinned 64-bit typed-task ABI, each `AwaitTasks` terminator
 carries one or more ordered canonical Task handles. Its checked coroutine-plan
 row records the exact output type for every child, followed by the exact live
-values forwarded to the continuation. LLVM stores all child handles and live
+values forwarded across suspension. LLVM stores all child handles and live
 values in the target-laid-out suspension row, prepares one structured `all`
-join, and adds each child in source order. On completion it takes each result
-using that child's exact size/alignment, reloads the live row, and enters the
-continuation with the child results first. A normal one-child await is this same
-path with an arity of one.
+join, and adds each child in source order. The terminator has explicit normal,
+fault, and cancellation targets with one identical exact live row. On normal
+completion LLVM takes each result using that child's exact size/alignment,
+reloads the live row, and enters the normal target with the child results first.
+A child fault activates the source fault before entering its target; a cancel
+path forwards only the same live row and preserves inactive source-fault state.
+A normal one-child await is this same path with an arity of one.
+
+The generated source-coroutine resume callback is also the descriptor's cancel
+callback. Its prologue checks the Task cancel-request bit before dispatching by
+frame state. The ordinary dispatch enters state zero or the structured join
+step. The cancellation dispatch terminates state zero directly and, for a
+suspended state, reloads the row and enters that await's checked cancel target.
+This uses the existing typed-task cancellation query and callback ABI. Stored
+`Task.all` composites continue to use the shared generic cancel callback.
 
 An immediately awaited fixed tuple or fixed-argument `Task.all` lowers directly
 to multi-child `AwaitTasks`, then constructs the heterogeneous result tuple in
@@ -413,6 +424,15 @@ allocates a runtime cleanup stack. Each normal block exit, return, or fault edge
 enters its statically emitted newest-first suffix. If cleanup starts with a
 fault active, a later cleanup fault is suppressed while older cleanups continue
 and the original fault remains primary.
+
+An await with active cleanup has two additional compiler-expanded suffixes.
+Child fault enters the static LIFO suffix with source fault active and finishes
+at `ResumeFault`. Cancellation enters the corresponding static LIFO suffix with
+source fault inactive and finishes at `TaskCancelled`. Cancellation cannot
+suspend. If one of its cleanup actions faults, the established runtime
+cancellation remains primary, suppresses the cleanup fault, and continues older
+actions. The emitter therefore needs neither dynamic cleanup registration nor a
+second resource representation for suspended scopes.
 
 Static-concept disposal is an ordinary monomorphic direct call or fallible
 invoke with functional receiver writeback. Canonical File and Socket disposal
@@ -485,10 +505,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 26`, and the checked artifact identity uses
-schema 27. Object identities are route-separated:
+The canonical textual dump is `lcir 27`, and the checked artifact identity uses
+schema 28. Object identities are route-separated:
 
-- `loom-lcir-native-object-v23` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v24` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -500,7 +520,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v28` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v29` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -512,7 +532,8 @@ collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, fallible timer construction, ordered multi-child
 suspension edges, exact stored `Task.all` composites, and exact frame-root rows,
-plus
+including explicit normal/fault/cancel await targets and static cleanup across
+suspension, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -560,6 +581,8 @@ fallible reservations, then publishes the composite and rewrites ownership in
 one allocation-free commit. It advances the native component to 17 with
 `typed-task-adopt-v1` and `runtime-v11`; `typed-task-v1`, `typed-timer-v1`,
 `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
+Static coroutine cleanup/cancellation CFG reuses those boundaries, so the
+runtime remains native component 17 with `runtime-v11`.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

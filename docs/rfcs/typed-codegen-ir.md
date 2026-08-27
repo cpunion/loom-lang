@@ -23,8 +23,9 @@ generic instances over those representations and eligible concrete
 closed-enum artifacts including managed Text payloads, lexical cleanup, and
 the supported source-contract subset, plus checked stackless coroutines with
 typed Task handles, `Task.sleep`, and nonempty fixed-arity heterogeneous
-`Task.all`, into typed LCIR and falls back atomically for reachable unsupported
-features. The broader
+`Task.all`, including static lexical cleanup across suspension and cancellation,
+into typed LCIR and falls back atomically for reachable unsupported features.
+The broader
 representation migration and legacy deletion gates in this record are not
 complete.
 
@@ -288,10 +289,16 @@ lexical block expands its suffix newest-first on normal completion, return, and
 fault. A first fault remains primary; faults raised by cleanup are suppressed
 while every older cleanup still runs. Static-concept disposal uses a closed
 typed call with receiver writeback. File and Socket use the typed
-`resource_close` edge form. LCIR has an explicit checked suspension edge, but
-the current coroutine slice admits no active cleanup across it. Validation
-rejects a cleanup call graph that invents a suspension effect or calls a
-suspending exact callee.
+`resource_close` edge form. Each `AwaitTasks` terminator has explicit normal,
+fault, and cancellation targets that carry one identical exact live row; only
+normal receives leading child results. The lowerer expands the active suffix
+statically on the other two edges. Child fault activates source fault and ends
+in `ResumeFault`. Cancellation preserves inactive source fault and ends in the
+coroutine-only `TaskCancelled` terminal. Validation rejects a cleanup call graph
+that invents a suspension effect or calls a suspending exact callee, and
+cancellation cleanup cannot suspend. If cancellation cleanup faults, the
+runtime keeps the established cancellation primary and continues older cleanup.
+No runtime cleanup stack or new runtime ABI is involved.
 
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not
@@ -334,10 +341,10 @@ and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
 closure over direct, invoke, and Task-creation edges. `TextConcat` and
 `TextGet` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
-executor; neither operation itself suspends. `AwaitTasks` suspends the active
-coroutine and accepts one or more ordered children. The explicit fallible
-`TaskSleep` terminator requires `MAY_FAULT` and `NEEDS_EXECUTOR`, but does not
-itself add `MAY_SUSPEND` or `MAY_COLLECT`.
+executor; neither operation itself suspends. `AwaitTasks` contributes both
+`MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
+explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
+`NEEDS_EXECUTOR`, but does not itself add `MAY_SUSPEND` or `MAY_COLLECT`.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -366,9 +373,13 @@ in task order followed by the live value types forwarded to its continuation.
 LLVM target data shapes a frame containing state, parameters, one ordered
 child/live row per suspension, and result. An immutable typed-task descriptor
 publishes exact managed-leaf byte offsets and per-state bitmaps. The callback
-dispatches state zero to the LCIR entry, later states through the structured
-join-step ABI, takes each typed child result into the leading continuation
-parameters, and publishes completion through typed-task v1. `TaskSleep` accepts
+is used for both the source coroutine's descriptor resume and cancel entries.
+It checks the Task cancel request before state dispatch: ordinary state zero
+enters the LCIR entry, later ordinary states use the structured join-step ABI,
+and cancellation enters the corresponding state-specific cancel edge. Normal
+join completion takes each typed child result into the leading continuation
+parameters; child fault and cancellation forward only the identical exact live
+row. Completion is published through typed-task v1. `TaskSleep` accepts
 normalized `Int` milliseconds only inside that checked coroutine boundary,
 returns a first-class typed `Task[Unit]` on its normal edge, and preserves
 canonical negative-duration or overflow faults on its fault edge. A source
@@ -385,8 +396,8 @@ immutable descriptor, and callback per distinct static result shape. The
 callback uses the existing structured `all` join-step protocol, takes exact
 child results in order, and publishes the tuple without a universal envelope.
 
-The remaining fallback boundary includes async inout, Lists, TextMaps,
-dynamic-concept frame values, cleanup across suspension, raw readiness,
+The remaining fallback boundary includes async inout/writeback, Lists, TextMaps,
+dynamic-concept frame values, raw readiness,
 dynamically sized Task joins, and every `Task.settled`, `Task.any`, or
 `Task.race` form.
 
@@ -457,10 +468,13 @@ code aborts the unpublished composite and fails closed. This advances native
 component 17 with `typed-task-adopt-v1` and `runtime-v11`, while
 `typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
 
-The semantic and physical changes advance the canonical dump to `lcir 26`, the
+Static heterogeneous joins first advanced the canonical dump to `lcir 26`, the
 artifact identity to schema 27, the LCIR native-object domain to
 `loom-lcir-native-object-v23`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v28`.
+`loom-llvm-object-cache-v28`. Explicit async cleanup and cancellation exits then
+advance those compiler-private boundaries to `lcir 27`, schema 28,
+`loom-lcir-native-object-v24`, and `loom-llvm-object-cache-v29`. The runtime
+remains native component 17 with `runtime-v11`.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

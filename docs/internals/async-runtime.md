@@ -26,28 +26,45 @@ for each suspension, and the result. The descriptor publishes frame
 size/alignment, resume/cancel callbacks, result size/alignment, exact
 managed-leaf byte offsets, and one live bitmap per resume state plus
 completed-result state.
+For a source coroutine, the same generated callback fills both the resume and
+cancel descriptor entries. It first reads the Task's cancel-request bit, then
+dispatches by the stored coroutine state. A normal invocation enters state zero
+or the corresponding join-resume path. A cancellation invocation enters the
+state's checked cancellation edge; state zero can terminate immediately because
+there is no suspended lexical state to restore.
 `Task[T]` itself is a stable scheduler-owned handle and is never a moving-GC
 root. No universal value slot, witness arena, runtime type tag, or synchronous
 expression executor is introduced by this route.
 
 LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoinAll`, and `AwaitTasks`
 operations. `AwaitTasks` stores its checked ordered child row and live row,
-registers one structured `all` join, and publishes its state. An already
-terminal join enters the resume path immediately; otherwise the callback returns
-pending and a completion notification puts the parent back in the ready queue.
-The resume path takes every child's exact typed result in task order, reloads
-live values, and enters the checked continuation. A one-child await uses the
-same terminator with one operand. Typed async run/test harnesses create one
-executor for the root Task, drive it to a terminal state, take the exact result,
-and destroy the executor.
+registers one structured `all` join, and publishes its state. The terminator has
+explicit normal, fault, and cancellation edges. All three forward the same
+exact live-value row; only the normal edge prefixes it with every child's exact
+typed result in task order. A child fault activates the source fault state,
+enters the compiler-expanded static LIFO cleanup suffix, and ends in
+`ResumeFault`. Cancellation preserves an inactive source-fault state, enters
+the same statically selected cleanup suffix, and ends in `TaskCancelled`.
+Cancellation cleanup cannot suspend. If cleanup faults after cancellation is
+established, the runtime keeps cancellation primary and suppresses that cleanup
+fault while older actions continue.
 
-Current typed coverage includes cleanup-free, non-inout coroutines with direct
+An already terminal join enters the corresponding checked edge immediately;
+otherwise the callback returns pending and a completion notification puts the
+parent back in the ready queue. A one-child await uses the same terminator with
+one operand. Typed async run/test harnesses create one executor for the root
+Task, drive it to a terminal state, take the exact result, and destroy the
+executor. Cleanup is encoded entirely in LCIR control flow: this slice adds no
+runtime cleanup stack, runtime symbol, or runtime ABI revision.
+
+Current typed coverage includes non-inout coroutines with direct
 scalar/refined/product/Text parameters, results, and live values, plus closed
 sums whose payload graph uses those shapes and nonempty fixed-arity
-heterogeneous `Task.all`. The collision-free carrier gives managed sums one
-static union of exact pointer offsets, and pack leaves inactive pointer lanes
-zero. This applies equally to coroutine parameters, suspension rows, completed
-Task results, and exact stored-join tuple results without changing
+heterogeneous `Task.all`. Lexical `defer` and admitted `scoped` resources may
+remain active across suspension. The collision-free carrier gives managed sums
+one static union of exact pointer offsets, and pack leaves inactive pointer
+lanes zero. This applies equally to coroutine parameters, suspension rows,
+completed Task results, and exact stored-join tuple results without changing
 typed-task v1. A fallible callback creates one activation-local fault context
 attached to its executor. Checked arithmetic, assertions, ordinary fallible
 invokes, caller-side preconditions, and callee-side postconditions record only
@@ -55,8 +72,8 @@ the first fault on the active Task. Await propagates a child's `Faulted` or
 `Cancelled` state; it never converts either state into a source `Result`. Task
 handles may be live only as suspension bookkeeping.
 
-Selected async roots with `requires`, async inout/writeback, lexical cleanup
-across suspension, raw readiness, dynamically sized Task joins,
+Selected async roots with `requires`, async inout/writeback, raw readiness,
+dynamically sized Task joins,
 `Task.settled`, `Task.any`, `Task.race`, List/TextMap frame values, and dynamic
 concepts still select the complete legacy route.
 

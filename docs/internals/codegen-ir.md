@@ -414,6 +414,11 @@ the dump to `lcir 26`, the LCIR native-object domain to
 terminator; first-class stored joins use `TaskJoinAll` with an exact tuple
 result. The atomic child-adoption boundary advances the runtime ABI to
 component 17 with `typed-task-adopt-v1` and `runtime-v11`.
+Static cleanup and cancellation exits for suspension then advance the artifact
+identity to schema 28, the dump to `lcir 27`, the LCIR native-object domain to
+`loom-lcir-native-object-v24`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v29`. They reuse native runtime component 17 and
+`runtime-v11`; no runtime cleanup stack, symbol, or ABI component is added.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -427,14 +432,15 @@ LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
-signatures. Cleanup-free, non-inout async signatures and suspension frames may
+signatures. Non-inout async signatures and suspension frames may
 also use direct scalar/refined/product/Text shapes and closed sums whose payload
-graphs contain those shapes. These coroutines preserve `MAY_FAULT` from checked
-operations, assertions, ordinary fallible invokes, cleanup-free child
-contracts, and checked timer construction. A source `Result[T, E]`, including a
-managed-Text result, is an ordinary completed value; Task `Faulted` and
-`Cancelled` states remain control outcomes. Selected async roots with `requires`
-and async inout/writeback still fail closed before LCIR creation. Coverage
+graphs contain those shapes, including when lexical cleanup is active across a
+suspension. These coroutines preserve `MAY_FAULT` from checked operations,
+assertions, ordinary fallible invokes, child contracts, await fault propagation,
+and checked timer construction. A source `Result[T, E]`, including a managed-Text
+result, is an ordinary completed value; Task `Faulted` and `Cancelled` states
+remain control outcomes. Selected async roots with `requires` and async
+inout/writeback still fail closed before LCIR creation. Coverage
 includes bounded direct generic calls whose concrete types use those
 representations. Concrete static concept calls
 use the selected witness method directly, including conditional proof
@@ -490,7 +496,8 @@ scalar faults use only the local fault context. A caller gains `MAY_FAULT`
 when it executes an unknown precondition; the assumed callee body does not gain
 that effect merely because it declares `requires`. `TextConcat` and `TextGet`
 are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
-`NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_SUSPEND`.
+`NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
+`MAY_SUSPEND`.
 `TaskJoinAll` contributes `NEEDS_EXECUTOR` but does not itself suspend.
 `TaskSleep` contributes `MAY_FAULT` and `NEEDS_EXECUTOR`, but neither
 `MAY_SUSPEND` nor `MAY_COLLECT`: it constructs a first-class Task and does not
@@ -522,6 +529,14 @@ bodies are independent lexical scopes; they cannot leak registrations into a
 join. At most 1,024 actions may be simultaneously active in a function and at
 most 65,536 action expansions may be materialized. Exceeding either bound is a
 stable `ProgramTooLarge` error rather than fallback.
+
+At `AwaitTasks`, the lowerer snapshots one identical exact live-value row for
+the normal, child-fault, and cancellation edges. It expands the currently
+active cleanup suffix into both non-normal paths. The child-fault path activates
+source fault state and ends in `ResumeFault`; the cancellation path preserves
+inactive source fault state and ends in the coroutine-only `TaskCancelled`
+terminal. Cleanup remains synchronous on both paths. This is static CFG
+duplication under the same cleanup budgets, not a runtime registration stack.
 
 Scoped concept disposal is closed through the already selected concrete
 witness method and uses the ordinary direct or fallible typed call ABI. A
@@ -606,16 +621,23 @@ types followed by, in deterministic MIR-local order, the exact LCIR types
 forwarded across that suspension. Independent validation matches every row to
 exactly one `AwaitTasks` terminator, checks all child Tasks, continuation
 parameters, and forwarded values, rejects duplicate child handles, and rejects
-a Task edge without an active coroutine plan. The canonical dump includes the
-complete plan, so it is also an artifact-identity and object-cache input.
+a Task edge without an active coroutine plan. It also requires each await's
+normal, fault, and cancellation edges to carry the identical exact live row;
+only the normal edge has leading child results. `TaskCancelled` is valid only on
+a checked cancellation path and no cancellation path may suspend. The canonical
+dump includes the complete plan, so it is also an artifact-identity and
+object-cache input.
 
 `TaskCreate` constructs a scheduler-owned `Task[T]` for one exact coroutine
 instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. The hidden executor comes only from the active
 coroutine callback or the async root harness. `AwaitTasks` stores all ordered
 children and the row's live values, prepares one structured `all` join,
-publishes the frame/root state, and makes the exact child results exist only on
-the resume edge. A single-child await is the same operation with one child.
+publishes the frame/root state, and exposes explicit normal, child-fault, and
+cancellation edges: `normal` is a `ResultTarget`, `fault` is an `UnwindTarget`,
+and `cancel` is a `BlockTarget`. The exact child results exist only on the
+normal resume edge; all three edges receive the same exact live row. A
+single-child await is the same operation with one child.
 A join-suspend status of one returns `pending`; zero means the child was already
 terminal, so the runtime removes the redundant wake-up, keeps the active parent
 `Running`, and enters the same checked result/reload edge in the current
@@ -647,18 +669,23 @@ The coroutine result must use the semantic type's canonical LCIR
 representation: `Task[T]` intentionally carries no second hidden layout ID, so
 producer and consumer cannot disagree about the result ABI. LLVM emits one
 immutable typed-task descriptor with exact managed-leaf byte offsets and a
-bitmap for each resume state plus completed-result state. The resume callback
-dispatches state zero to the LCIR entry and nonzero states through the existing
-join-step ABI, takes every exact child result in source order, reloads the live
-row, and enters the LCIR continuation. Normal return publishes the exact typed
-result and completion.
+bitmap for each resume state plus completed-result state. A source coroutine's
+generated resume callback is also its descriptor cancel callback. It reads the
+cancel-request bit before dispatching by frame state: ordinary state zero enters
+the LCIR entry, ordinary nonzero states use the existing join-step ABI, and a
+cancel request enters the corresponding checked cancellation state. A normal
+join takes every exact child result in source order; a fault activates source
+fault state; cancellation leaves source fault inactive. Every nonzero path
+reloads the same exact live row before entering LCIR. Normal return publishes
+the exact typed result and completion; cleanup-expanded child-fault and cancel
+paths end in `ResumeFault` and `TaskCancelled`, respectively.
 The run/test harness creates an executor for the root Task, runs it to a
 terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
 
 The current source boundary is deliberately smaller than the runtime ABI:
-coroutines have no inout parameters or cleanup crossing suspension; parameter,
-result, and live frame values are limited to direct scalar/refined/product/Text
+coroutines have no inout parameters or writebacks; parameter, result, and live
+frame values are limited to direct scalar/refined/product/Text
 shapes and admitted closed sums, with Task handles additionally allowed only in
 suspension-live rows. List, TextMap, dynamic-concept frame values, raw readiness,
 dynamic Task collections, non-`all` join modes, and cancellation sources remain
@@ -668,7 +695,9 @@ any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
 an async caller.
 The callback forwards child fault/cancel terminal states without turning them
-into source `Result` values.
+into source `Result` values. Established cancellation remains primary if a
+cleanup action faults; the existing runtime suppression rule continues older
+cleanup and requires no new ABI.
 
 The LLVM layout planner applies one collision-free rule to every payload-bearing
 tagged sum. Target data supplies each payload's size, alignment, and recursive
@@ -854,7 +883,7 @@ The current instruction set is deliberately small:
 The current terminators include jump, conditional branch, return, terminal
 fault, checked integer negate/add/subtract/multiply/divide, assertion,
 fallible `invoke`, typed File/Socket `resource.close`, `task.await`, and
-`resume_fault`. A
+`resume_fault`, plus coroutine-only `task.cancelled`. A
 checked operation or invoke has a
 `ResultTarget`: the source result exists only on the normal edge, followed by
 ordered inout writebacks and separately forwarded arguments. An invoke's
@@ -871,6 +900,9 @@ cleanup operation preserves the primary fault on its normal edge; a later
 cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
+An `AwaitTasks` child-fault edge is an unwind edge and therefore activates this
+state. Its cancellation edge preserves inactive source fault state and may end
+only in `task.cancelled`; cancellation cleanup cannot reach another suspension.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
 recursive enums, generic or unsupported-shape runtime construction and proof
@@ -932,7 +964,9 @@ not repair a malformed program. Current checks include:
   operands, canonical `Option[T]`/`Option[V]` results, and allocation effects;
 - canonical concrete `Task[T]` handles, exact coroutine output/frame types,
   dense unique resume states, matching `task.create`/`task.await` edges,
-  continuation arguments, and executor/suspension effects;
+  identical exact live rows on normal/fault/cancel await edges, normal-only
+  child results, cancellation-path provenance, continuation arguments, and
+  executor/fault/suspension effects;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - exact nominal one-handle File/Socket resource shape, typed close
   result/writeback edges, and required runtime/fault capabilities;
@@ -940,7 +974,8 @@ not repair a malformed program. Current checks include:
 - the exact minimal transitive effect closure across the complete call graph,
   including capability implications and active-cleanup fault masking;
 - no suspending exact callee in a synchronous cleanup graph and no invented
-  suspension capability without checked coroutine control flow;
+  suspension capability without checked coroutine control flow; cancellation
+  cleanup and `task.cancelled` paths cannot suspend;
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
@@ -990,11 +1025,12 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 25` text includes
+text even when the graphs are otherwise equivalent. The `lcir 27` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
 typed coroutine plans and Task control flow, including fallible `task.sleep`,
+explicit await normal/fault/cancel targets, and `task.cancelled`,
 typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
@@ -1045,10 +1081,14 @@ threshold, run/test root lifecycle, interpreter/legacy/typed differential
 execution, and Linux/MSVC objects. Fallible coroutine regressions additionally
 cover managed `Result[Text, E]` completion, exact completed and suspension
 carrier offsets/bitmaps, active-tag shadow-root rebuilds, inactive zero lanes,
-two-stage forced relocation, checked invokes, assertions, cleanup-free
-preconditions and postconditions, exact primary-fault inheritance, sibling
+two-stage forced relocation, checked invokes, assertions, preconditions and
+postconditions, exact primary-fault inheritance, sibling
 cancellation, and balanced typed callback roots on completed, pending, faulted,
-and cancelled exits.
+and cancelled exits. Async-cleanup regressions additionally cover exact live
+rows on all three await exits, static LIFO cleanup after normal resumption,
+child fault, and cancellation, scoped-resource cleanup across suspension,
+cancel-request state dispatch, and rejection of suspending or forged
+cancellation paths.
 Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.

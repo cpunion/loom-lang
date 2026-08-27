@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `26` |
-| LCIR artifact identity | schema `27` |
-| LCIR native-object domain | `loom-lcir-native-object-v23` |
+| LCIR textual dump | version `27` |
+| LCIR artifact identity | schema `28` |
+| LCIR native-object domain | `loom-lcir-native-object-v24` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v28` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v29` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `17` |
@@ -225,6 +225,16 @@ composite task and advances the native runtime ABI component to 17 with
 complete transfer before atomically moving the ordered children from their
 active parent to the composite. It adds no universal result slot, runtime type
 tag, or change to `typed-task-v1`, `wait-v1`, `gc-v9`, or `typed-timer-v1`.
+
+Static cleanup and cancellation exits across `AwaitTasks` advance the LCIR dump
+to 27, artifact schema to 28, native-object domain to v24, and LLVM object-cache
+domain to v29. Each suspension now identifies explicit normal, fault, and
+cancel targets over one identical exact live row, and the artifact records the
+coroutine-only `TaskCancelled` terminal. Source coroutine descriptors reuse the
+generated resume callback as their cancel callback and dispatch by cancellation
+request plus frame state. Cleanup remains compiler-expanded LIFO CFG; no runtime
+cleanup stack or new runtime entry point is added. Native runtime component 17
+and `runtime-v11` therefore remain current.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing
