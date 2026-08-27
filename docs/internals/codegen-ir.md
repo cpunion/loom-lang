@@ -363,9 +363,9 @@ typed-task v1 and the existing scheduler/join ABI. Native runtime component 15,
 `runtime-v9`, `text-v3`, and `gc-v9` therefore remain unchanged.
 
 Artifact-closed finite dynamic catalogs then advance the artifact identity to
-schema 21, the dump to `lcir 20`, the LCIR native-object domain to
-`loom-lcir-native-object-v17`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v22`. `dyn.construct` allocates one candidate-specific
+schema 22, the dump to `lcir 21`, the LCIR native-object domain to
+`loom-lcir-native-object-v18`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v23`. `dyn.construct` allocates one candidate-specific
 exact box through the existing typed fixed-object allocator. `dyn.switch`
 validates and branches over the complete ordered candidate catalog, with one
 exact concrete payload block parameter per arm. The runtime ABI remains
