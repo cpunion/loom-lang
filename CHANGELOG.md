@@ -36,9 +36,6 @@ artifact, or runtime compatibility.
   instance closure with exact type and static-witness identity. Supported
   instances use direct typed LLVM signatures; nonregular or over-budget
   expansion selects whole-artifact fallback before LCIR construction.
-
-### Changed
-
 - Eligible closed enums and exhaustive matches now use bounded typed LCIR
   lowering with direct native sum layouts. Float patterns follow IEEE ordered
   equality, including equal signed zeros and non-matching NaNs.

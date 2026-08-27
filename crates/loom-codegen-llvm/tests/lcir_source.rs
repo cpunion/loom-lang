@@ -1372,6 +1372,12 @@ record Range {
     invariant self.low <= self.high
 }
 
+enum Holding {
+    Empty
+    Cash(Money)
+    Window(Range)
+}
+
 fn established() (Money, Range) {
     let money = Money(10.0)
     let range = Range { low = Money(1.0), high = Money(2.0) }
@@ -1382,10 +1388,22 @@ fn widen(value Money) Float {
     value
 }
 
+fn value(input Holding) Float {
+    match input {
+        Empty => 0.0
+        Cash(money) => money
+        Window(range) => {
+            discard range
+            2.0
+        }
+    }
+}
+
 pub fn main() Unit {
     let money, range = established()
-    if widen(money) == 10.0 {
-        discard range
+    let cash = value(Holding.Cash(money))
+    let window = value(Holding.Window(range))
+    if widen(money) == 10.0 && cash == 10.0 && window == 2.0 {
         Unit
     } else {
         discard 1 / 0
@@ -1414,6 +1432,8 @@ pub fn main() Unit {
     assert!(dump.contains("invariant_record.proven"), "{dump}");
     assert!(dump.contains("transparent(t4)"), "{dump}");
     assert!(dump.contains("invariant_product"), "{dump}");
+    assert!(dump.contains("sum.construct"), "{dump}");
+    assert!(dump.contains("sum.switch"), "{dump}");
 
     let lcir = emit_and_run_lcir_with_options(
         &artifact,
@@ -1424,6 +1444,7 @@ pub fn main() Unit {
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert!(legacy.status.success(), "{legacy:?}");
     assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(lcir.ir.contains("switch i8"), "{}", lcir.ir);
     let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
     for forbidden in [
         "alloca",

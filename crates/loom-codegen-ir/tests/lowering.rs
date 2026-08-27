@@ -98,10 +98,15 @@ record Range {
     invariant self.low <= self.high
 }
 
+enum Stored {
+    Amount(Money)
+    Interval(Range)
+}
+
 pub fn main() Unit {
     let money = Money(10.0)
-    discard money
-    discard Range { low = Money(1.0), high = Money(2.0) }
+    discard Stored.Amount(money)
+    discard Stored.Interval(Range { low = Money(1.0), high = Money(2.0) })
     Unit
 }
 ";
@@ -123,6 +128,7 @@ pub fn main() Unit {
         fresh_dump.contains("invariant_record.proven"),
         "{fresh_dump}"
     );
+    assert!(fresh_dump.contains("sum.construct"), "{fresh_dump}");
 
     let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
         .expect("encode portable proof artifact");
@@ -2153,6 +2159,53 @@ pub fn main() Unit {
 }
 
 #[test]
+fn refined_and_invariant_values_are_direct_sum_payloads() {
+    let dump = complete_dump(
+        r"module mixed_proven_sums
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+enum Holding {
+    Empty
+    Cash(Money)
+    Window(Range)
+}
+
+fn value(input Holding) Float {
+    match input {
+        Empty => 0.0
+        Cash(money) => money
+        Window(range) => {
+            discard range
+            2.0
+        }
+    }
+}
+
+pub fn main() Unit {
+    discard value(Holding.Cash(Money(10.0)))
+    discard value(Holding.Window(Range { low = Money(1.0), high = Money(2.0) }))
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("transparent(t4)"), "{dump}");
+    assert!(dump.contains("invariant_product"), "{dump}");
+    assert!(dump.contains("sum s0"), "{dump}");
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("sum.construct"), "{dump}");
+    assert!(dump.contains("sum.switch"), "{dump}");
+}
+
+#[test]
 fn wide_sum_match_shares_one_typed_capturing_arm_block() {
     const VARIANTS: usize = 128;
     let mut variants = String::new();
@@ -2286,17 +2339,6 @@ enum Values { Items(List[Int]) }
 
 pub fn main() Unit {
     discard Values.Items(List[Int]())
-    Unit
-}
-",
-        r"module refined_sum
-
-type Positive = Int where self >= 0
-
-enum Measure { Value(Positive) }
-
-pub fn main() Unit {
-    discard Measure.Value(Positive(1))
     Unit
 }
 ",

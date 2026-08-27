@@ -127,7 +127,7 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 6 carries
+compiler-private identity for that complete checked artifact. Schema 7 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -154,11 +154,13 @@ new direct tuple entries and future nominal-argument, task, view, and other type
 entries cannot collapse to a shared placeholder. Tuple lowering therefore
 reuses schema 5 and dump version 4: its complete semantic identity was already
 encoded before the representation became selectable. Transparent value
-provenance, its explicit proof operations, closed-sum representation and
-control-flow semantics, and explicit test outcome plans together advance the
-artifact identity to schema 6 and the dump to `lcir 5`. Transparent values and
-protected invariant records reuse their base/product ABIs, while sums add a
-new physical ABI. The LCIR native-object format is therefore
+provenance, its explicit proof operations, and explicit test outcome plans
+advance the artifact identity to schema 6 and the dump to `lcir 5`;
+transparent values and protected invariant records reuse their base/product
+ABIs. Closed-sum representation and control-flow semantics then advance the
+identity to schema 7 and the dump to `lcir 6`. Sums add a new physical ABI,
+including when transparent or protected products are payloads. The LCIR
+native-object format is therefore
 `loom-lcir-native-object-v3`, and the CLI cache domain is
 `loom-llvm-object-cache-v8`.
 Concrete generic-instance closure reuses those versions: the existing instance
@@ -423,7 +425,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 5` text includes
+text even when the graphs are otherwise equivalent. The `lcir 6` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block, and the checked value
 type of every block parameter and instruction result. Representation semantic

@@ -8,7 +8,7 @@ conventions, and external code must not depend on them.
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
 LCIR for primitive values, structural tuples, closed records, and
-compile-time-established refined values. Any
+compile-time-established refined values and eligible closed enums. Any
 reachable feature outside current LCIR coverage selects the complete legacy
 layout below; the two callable ABIs are never mixed in one object. In
 particular, portable MIR `Recheck` constructions use the legacy checker and

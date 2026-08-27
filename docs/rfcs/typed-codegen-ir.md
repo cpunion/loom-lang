@@ -19,7 +19,7 @@ current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
 primitive, structural-tuple, closed-record, and compile-time-established
 refined artifacts, plus bounded concrete direct generic instances over those
-representations, into typed LCIR
+representations and eligible concrete closed-enum artifacts, into typed LCIR
 and falls back atomically for reachable unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
@@ -28,8 +28,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed values, enums, runtime-checked constraints,
-concepts, contracts,
+native specializations. Managed values, unsupported or recursive enums,
+runtime-checked constraints, concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
 emitter. Some legacy functions may acquire universal, checked-native, and
@@ -112,9 +112,10 @@ vocabulary is:
   direct values. One variant is tagless, an all-empty multi-variant sum is tag
   only, and every other sum has a minimal tag plus an exact aligned carrier.
 
-Products and sums are immutable register aggregates. Tuples, records, and sums
-may recursively contain one another when the resulting by-value graph is acyclic. Each
-representation plan has an explicit canonical
+Products and sums are immutable register aggregates. Tuples, records, sums,
+established refinements, and protected invariant products may contain one
+another when the resulting by-value graph is acyclic. Each representation plan
+has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. Managed,
 dynamic-witness, erased, and coroutine representations are added only with
