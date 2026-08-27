@@ -1413,7 +1413,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             ty: &Type,
             allow_task_handle: bool,
             active: &mut BTreeSet<Type>,
+            remaining: &mut usize,
         ) -> bool {
+            let Some(next_remaining) = remaining.checked_sub(1) else {
+                return false;
+            };
+            *remaining = next_remaining;
             let Some(ty) = dyn_concepts.physical_type(ty) else {
                 return false;
             };
@@ -1421,23 +1426,23 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
                 Type::Tuple(elements) => elements
                     .iter()
-                    .all(|element| visit(program, dyn_concepts, element, false, active)),
+                    .all(|element| visit(program, dyn_concepts, element, false, active, remaining)),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
                         return false;
                     }
                     let supported = if let Some(fields) = concrete_any_record_fields(program, &ty) {
-                        fields
-                            .iter()
-                            .all(|field| visit(program, dyn_concepts, field, false, active))
+                        fields.iter().all(|field| {
+                            visit(program, dyn_concepts, field, false, active, remaining)
+                        })
                     } else if let Some(base) = concrete_refined_base(program, &ty) {
-                        visit(program, dyn_concepts, &base, false, active)
+                        visit(program, dyn_concepts, &base, false, active, remaining)
                     } else if let Some(variants) = closed_enum_variants(program, &ty) {
                         variants.iter().all(|variant| {
-                            variant
-                                .iter()
-                                .all(|payload| visit(program, dyn_concepts, payload, false, active))
+                            variant.iter().all(|payload| {
+                                visit(program, dyn_concepts, payload, false, active, remaining)
+                            })
                         })
                     } else {
                         false
@@ -1455,12 +1460,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
         }
 
+        let mut remaining = crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
         visit(
             self.program,
             self.dyn_concepts,
             ty,
             allow_task_handle,
             &mut BTreeSet::new(),
+            &mut remaining,
         )
     }
 

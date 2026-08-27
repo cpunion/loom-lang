@@ -4413,6 +4413,88 @@ fn checked_non_regular_spiral_fixture() -> loom_mir::CheckedProgram {
     .expect("bounded MIR validation must accept Spiral[Int].Done(0)")
 }
 
+fn checked_non_regular_spiral_coroutine_fixture() -> loom_mir::CheckedProgram {
+    use loom_core::Span;
+    use loom_mir::{
+        Block, CallPlan, CallTarget, Expr, ExprKind, Function, FunctionId, Statement,
+        StatementKind, SuspensionPoint, Type,
+    };
+
+    let span = Span::default();
+    let mut program = checked_non_regular_spiral_fixture().into_program();
+    let mut child = program.functions.remove(0);
+    let StatementKind::Evaluate(done) = child.body.statements.remove(0).kind else {
+        panic!("the manual Spiral fixture must construct one value")
+    };
+    let spiral_int = done.ty.clone();
+    child.id = FunctionId(1);
+    child.name = "manual.child".into();
+    child.is_async = true;
+    child.return_ty = spiral_int.clone();
+    child.body.statements.clear();
+    child.body.tail = Some(Box::new(done));
+    child
+        .renumber_expr_ids()
+        .expect("number raw async child fixture");
+
+    let task = Expr::new(
+        ExprKind::Call {
+            target: CallTarget::Direct(child.id),
+            type_arguments: Vec::new(),
+            arguments: Vec::new(),
+            witnesses: Vec::new(),
+        },
+        Type::Task(Box::new(spiral_int.clone())),
+        span,
+    );
+    let awaited = Expr::new(
+        ExprKind::Await {
+            state: 1,
+            task: Box::new(task),
+        },
+        spiral_int,
+        span,
+    );
+    let mut main = Function {
+        id: FunctionId(0),
+        name: "manual.main".into(),
+        span,
+        type_parameters: 0,
+        is_async: true,
+        suspension_points: vec![SuspensionPoint {
+            state: 1,
+            span,
+            live_locals: Vec::new(),
+        }],
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(awaited),
+                span,
+            }],
+            tail: Some(Box::new(Expr::new(
+                ExprKind::Constant(loom_mir::Constant::Unit),
+                Type::Unit,
+                span,
+            ))),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids()
+        .expect("number raw async root fixture");
+    program.functions = vec![main, child];
+    program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
+    program
+        .into_checked()
+        .expect("bounded MIR validation must accept the non-regular async fixture")
+}
+
 #[test]
 fn non_regular_generic_sum_lowering_child() {
     if std::env::var_os(NON_REGULAR_SUM_LOWERING_CHILD_ENV).is_none() {
@@ -4435,6 +4517,25 @@ fn non_regular_generic_sum_lowering_child() {
             .items()
             .iter()
             .any(|item| item.feature() == UnsupportedFeature::NominalValue),
+        "{report:?}"
+    );
+
+    let coroutine = lower_typed_artifact(
+        &checked_non_regular_spiral_coroutine_fixture(),
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("bounded coroutine-frame classification");
+    let LoweringOutcome::Unsupported(report) = coroutine else {
+        panic!("a non-regular coroutine frame must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
         "{report:?}"
     );
 }
