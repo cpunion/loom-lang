@@ -936,6 +936,8 @@ pub enum FaultCode {
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
     InvalidDuration,
+    InvalidSleepDuration,
+    SleepDurationOverflow,
     ResourceClose,
 }
 
@@ -1178,6 +1180,16 @@ pub enum TerminatorKind {
         cases: Box<[SumCase]>,
     },
     Return(ValueId),
+    /// Constructs one typed `Task[Unit]` backed by the executor's monotonic
+    /// timer reactor. `milliseconds` is the normalized signed Int payload of
+    /// either a source Int or Duration. The task handle exists only on
+    /// `normal`; a negative duration or checked timer-range overflow activates
+    /// the corresponding source fault and enters `fault`.
+    TaskSleep {
+        milliseconds: ValueId,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
     /// Consumes one structured child Task. The initial callback invocation
     /// stores `normal.arguments`, attaches the child to an `all` join, and
     /// returns pending when needed. Resume state `state` takes the exact child
@@ -1270,6 +1282,18 @@ impl TerminatorKind {
                 operands
             }
             Self::Return(value) => vec![*value],
+            Self::TaskSleep {
+                milliseconds,
+                normal,
+                fault,
+            } => {
+                let mut operands =
+                    Vec::with_capacity(1 + normal.arguments.len() + fault.arguments.len());
+                operands.push(*milliseconds);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
             Self::AwaitTask { task, normal, .. } => {
                 let mut operands = Vec::with_capacity(1 + normal.arguments.len());
                 operands.push(*task);
@@ -1367,6 +1391,9 @@ impl TerminatorKind {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
             Self::AwaitTask { normal, .. } => vec![preserve(normal.block)],
+            Self::TaskSleep { normal, fault, .. } => {
+                vec![preserve(normal.block), activate(fault.block)]
+            }
             Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
             | Self::ResourceClose { normal, fault, .. } => {

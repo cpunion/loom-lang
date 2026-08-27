@@ -16,6 +16,18 @@ pub const INVALID_DURATION_FAULT_CODE: &str = "InvalidDuration";
 /// Stable user-facing message for a negative Duration construction.
 pub const INVALID_DURATION_FAULT_MESSAGE: &str = "Duration milliseconds cannot be negative";
 
+/// Stable runtime-fault code for a negative Task.sleep duration.
+pub const INVALID_SLEEP_DURATION_FAULT_CODE: &str = "InvalidSleepDuration";
+
+/// Stable user-facing message for a negative Task.sleep duration.
+pub const INVALID_SLEEP_DURATION_FAULT_MESSAGE: &str = "sleep duration must not be negative";
+
+/// Stable runtime-fault code for Task.sleep timer-range overflow.
+pub const SLEEP_DURATION_OVERFLOW_FAULT_CODE: &str = "SleepDurationOverflow";
+
+/// Stable user-facing message for Task.sleep timer-range overflow.
+pub const SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE: &str = "sleep duration overflowed";
+
 /// Stable runtime-fault code emitted when a serialized construction proof
 /// fails independent replay at an artifact trust boundary.
 pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";

@@ -63,7 +63,7 @@ pub use scheduler::{
     typed_task_frame_v1, typed_task_initialize_v1, typed_task_is_cancel_requested_v1,
     typed_task_publish_result_v1, typed_task_publish_v1, typed_task_record_fault_v1,
     typed_task_request_cancel_v1, typed_task_set_root_state_v1, typed_task_status_v1,
-    typed_task_take_result_v1,
+    typed_task_take_result_v1, typed_timer_task_create_v1,
 };
 pub use standard::{
     JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_decode_utf8,
@@ -96,10 +96,10 @@ pub use loom_runtime_abi::{
     TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
     TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
     TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY, TYPED_TASK_OK,
-    TYPED_TASK_STATUS_INVALID, WAIT_ABI_VERSION, WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT,
-    WAIT_NO_MEMORY, WAIT_OK, WAIT_READABLE, WAIT_SOURCE_COMPLETION, WAIT_SOURCE_IO,
-    WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION, WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE,
-    WITNESS_ABI_VERSION,
+    TYPED_TASK_STATUS_INVALID, TYPED_TIMER_TASK_CREATE_SYMBOL, WAIT_ABI_VERSION,
+    WAIT_DUPLICATE_SOURCE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_READABLE,
+    WAIT_SOURCE_COMPLETION, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER, WAIT_STALE_REGISTRATION,
+    WAIT_SYSTEM_ERROR, WAIT_UNSUPPORTED, WAIT_WRITABLE, WITNESS_ABI_VERSION,
 };
 
 pub const WAIT_INFINITE: u64 = u64::MAX;

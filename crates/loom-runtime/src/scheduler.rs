@@ -1535,6 +1535,84 @@ unsafe extern "C" fn resume_wait_leaf(task: *mut LoomTask, executor: *mut LoomEx
     }
 }
 
+const TYPED_TIMER_REGISTRATION_FAULT_CODE: &str = "TimerRegistrationFault";
+const TYPED_TIMER_REGISTRATION_FAULT_MESSAGE: &str = "could not register timer wait";
+
+/// Runtime-owned callback for the narrow typed `Task[Unit]` timer factory.
+/// The absolute deadline lives in the scheduler's existing copied WaitSource;
+/// the one-byte typed frame is intentionally rootless and carries no source
+/// value or legacy universal envelope.
+unsafe extern "C" fn resume_typed_timer(
+    task: *mut c_void,
+    executor: *mut c_void,
+    _frame: *mut c_void,
+) -> i32 {
+    let task = task.cast::<LoomTask>();
+    let executor = executor.cast::<LoomExecutor>();
+    if task.is_null()
+        || executor.is_null()
+        || unsafe { (*task).typed.is_none() }
+        || !unsafe { (*task).wait_leaf }
+        || unsafe { (*task).wait_source.kind } != WAIT_SOURCE_TIMER
+    {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_TIMER_STATE",
+                "typed timer Task has invalid runtime state",
+            )
+        };
+    }
+    match unsafe { (*task).state } {
+        0 => {
+            let source = unsafe { (*task).wait_source };
+            let status = unsafe { task_suspend_wait(executor, task, &raw const source) };
+            if status != WAIT_OK {
+                return unsafe {
+                    fail_message(
+                        task,
+                        TYPED_TIMER_REGISTRATION_FAULT_CODE,
+                        TYPED_TIMER_REGISTRATION_FAULT_MESSAGE,
+                    )
+                };
+            }
+            unsafe { (*task).state = 1 };
+            TASK_PENDING
+        }
+        1 => {
+            let status = unsafe { typed_task_publish_result_v1(task) };
+            if status != TYPED_TASK_OK {
+                return unsafe {
+                    fail_message(
+                        task,
+                        "LOOM_RUNTIME_TYPED_TIMER_RESULT",
+                        "typed timer Task could not publish its Unit result",
+                    )
+                };
+            }
+            TASK_COMPLETED
+        }
+        _ => unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_TIMER_STATE",
+                "typed timer Task resumed from an invalid state",
+            )
+        },
+    }
+}
+
+unsafe extern "C" fn cancel_typed_timer(
+    task: *mut c_void,
+    executor: *mut c_void,
+    _frame: *mut c_void,
+) -> i32 {
+    if task.is_null() || executor.is_null() {
+        return TASK_FAULTED;
+    }
+    TASK_CANCELLED
+}
+
 unsafe extern "C" fn resume_composite(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
     if executor.is_null() || task.is_null() || unsafe { (*task).composite_spec.is_null() } {
         return TASK_FAULTED;
@@ -2421,6 +2499,57 @@ pub unsafe extern "C" fn typed_task_abort_unpublished_v1(
     } else {
         TYPED_TASK_CLEANUP_FAULTED
     }
+}
+
+/// Creates and publishes a zero-root typed `Task[Unit]` backed by the existing
+/// platform-neutral timer WaitSource and executor reactor.
+#[unsafe(export_name = "loom_typed_timer_task_create_v1")]
+pub unsafe extern "C" fn typed_timer_task_create_v1(
+    executor: *mut LoomExecutor,
+    deadline_ns: u64,
+) -> *mut LoomTask {
+    let descriptor = LoomTypedCoroutineDescriptor {
+        abi_version: TYPED_TASK_ABI_VERSION,
+        flags: 0,
+        resume: Some(resume_typed_timer),
+        cancel: Some(cancel_typed_timer),
+        dispose_result: None,
+        frame_size: 1,
+        frame_align: 1,
+        result_offset: 0,
+        result_size: 0,
+        result_align: 1,
+        root_slot_count: 0,
+        root_state_count: 1,
+        root_bitmap_words: 0,
+        root_offsets: ptr::null(),
+        live_bitmaps: ptr::null(),
+        completed_root_state: 0,
+    };
+    let task = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        (*task).wait_leaf = true;
+        (*task).wait_source = LoomWaitSource {
+            abi_version: WAIT_ABI_VERSION,
+            kind: WAIT_SOURCE_TIMER,
+            handle: -1,
+            interests: 0,
+            reserved: 0,
+            deadline_ns,
+        };
+    }
+    if unsafe { typed_task_initialize_v1(task, 0) } != TYPED_TASK_OK {
+        let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
+        return ptr::null_mut();
+    }
+    if unsafe { typed_task_publish_v1(executor, task) } != TYPED_TASK_OK {
+        let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
+        return ptr::null_mut();
+    }
+    task
 }
 
 #[unsafe(export_name = "loom_typed_task_set_root_state_v1")]
@@ -5622,6 +5751,93 @@ mod typed_task_tests {
         unsafe {
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_timer_task_completes_with_a_zero_sized_unit_result() {
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let timer = typed_timer_task_create_v1(executor, crate::reactor::wait_now_ns());
+            assert!(!timer.is_null());
+            assert_eq!(executor_run(executor, timer), TASK_COMPLETED);
+            assert_eq!(typed_task_status_v1(timer), TASK_COMPLETED);
+            assert_eq!(
+                typed_task_take_result_v1(timer, ptr::null_mut(), 0, 1),
+                TYPED_TASK_OK
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_timer_registration_failure_records_a_primary_task_fault() {
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let timer = typed_timer_task_create_v1(executor, u64::MAX);
+            assert!(!timer.is_null());
+            (*timer).wait_source.reserved = 1;
+            assert_eq!(executor_run(executor, timer), TASK_FAULTED);
+            let mut fault = LoomTypedTaskFaultView::default();
+            assert_eq!(
+                typed_task_fault_view_v1(timer, &raw mut fault),
+                TYPED_TASK_OK
+            );
+            let bytes = |view: LoomByteView| {
+                if view.length == 0 {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts(view.data, view.length as usize)
+                }
+            };
+            assert_eq!(
+                bytes(fault.code),
+                TYPED_TIMER_REGISTRATION_FAULT_CODE.as_bytes()
+            );
+            assert_eq!(
+                bytes(fault.message),
+                TYPED_TIMER_REGISTRATION_FAULT_MESSAGE.as_bytes()
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_timer_cancellation_drops_registration_and_ignores_stale_ready() {
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let timer = typed_timer_task_create_v1(executor, crate::reactor::wait_now_ns());
+            assert!(!timer.is_null());
+            (*executor).runnable.clear();
+            (*timer).queued = false;
+            (*timer).status = TaskStatus::Running;
+            (*executor).active_task = timer;
+            assert_eq!(run_typed_task_step(executor, timer), TASK_PENDING);
+            (*executor).active_task = ptr::null_mut();
+            assert!((*timer).status == TaskStatus::Waiting);
+            assert_eq!((*timer).waits.len(), 1);
+            assert!(has_registrations(&*executor));
+
+            let mut ready = 0;
+            assert_eq!(wait_for_scheduler(executor, &raw mut ready), WAIT_OK);
+            assert_eq!(ready, 1);
+            assert!(!has_registrations(&*executor));
+            assert_eq!((*timer).waits.len(), 1);
+
+            assert_eq!(typed_task_request_cancel_v1(executor, timer), TYPED_TASK_OK);
+            assert!((*timer).waits.is_empty());
+            consume_notifications(executor);
+            assert_eq!(
+                (*executor)
+                    .runnable
+                    .iter()
+                    .filter(|candidate| **candidate == timer)
+                    .count(),
+                1
+            );
+            assert_eq!(executor_run(executor, timer), TASK_CANCELLED);
+            assert_eq!(typed_task_status_v1(timer), TASK_CANCELLED);
+            destroy(runtime, executor);
         }
     }
 

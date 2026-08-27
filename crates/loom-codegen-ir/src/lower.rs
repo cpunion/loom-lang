@@ -3104,12 +3104,43 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 if !self.visit_expr(function, key, milliseconds, &format!("{path}.milliseconds")) {
                     return false;
                 }
-                self.expression_item(
-                    UnsupportedFeature::TaskOperation,
+                let duration = self.instantiated_type(
                     function,
-                    expression,
-                    path,
+                    key,
+                    Some(milliseconds),
+                    &milliseconds.ty,
+                    milliseconds.span,
+                    &format!("{path}.milliseconds.ty"),
                 );
+                let result = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let valid_duration = duration.as_ref().is_some_and(|ty| {
+                    ty == &Type::Int
+                        || matches!(
+                            ty,
+                            Type::Nominal(id, arguments)
+                                if Some(*id) == self.program.prelude.duration
+                                    && arguments.is_empty()
+                        )
+                });
+                let valid_result = matches!(
+                    result,
+                    Some(Type::Task(output)) if output.as_ref() == &Type::Unit
+                );
+                if !function.is_async || !valid_duration || !valid_result {
+                    self.expression_item(
+                        UnsupportedFeature::TaskOperation,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::TaskJoin { arguments, .. } => {
@@ -3563,7 +3594,13 @@ fn scan_effect_expr(
         }
         ExprKind::Sleep {
             milliseconds: value,
-        } => scan_effect_expr(program, value, summary),
+        } => {
+            let continues = scan_effect_expr(program, value, summary);
+            if continues {
+                summary.include(Effects::MAY_FAULT.union(Effects::NEEDS_EXECUTOR));
+            }
+            continues
+        }
         ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(program, arguments, summary),
     }
 }
@@ -6977,7 +7014,64 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 })
             }
             ExprKind::Sleep { milliseconds } => {
-                self.lower_unsupported_operand(flow, milliseconds, "sleep")
+                let EvalFlow::Continue {
+                    flow,
+                    value: milliseconds_value,
+                } = self.lower_expr(flow, milliseconds)?
+                else {
+                    return Ok(EvalFlow::Terminated);
+                };
+                let milliseconds_ty = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(&milliseconds.ty)
+                    .map_err(|error| {
+                        instantiation_defect(self.source.id, Some(milliseconds.id), error)
+                    })?;
+                let (flow, milliseconds_value) = if matches!(
+                    milliseconds_ty,
+                    Type::Nominal(id, ref arguments)
+                        if Some(id) == self.program.prelude.duration && arguments.is_empty()
+                ) {
+                    let EvalFlow::Continue { flow, value } = self.one_instruction(
+                        flow,
+                        InstructionKind::ProductExtract {
+                            aggregate: milliseconds_value,
+                            field: 0,
+                        },
+                        self.type_id(&Type::Int)?,
+                        origin,
+                    )?
+                    else {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::Builder,
+                            "Duration normalization unexpectedly terminated",
+                        ));
+                    };
+                    (flow, value)
+                } else {
+                    (flow, milliseconds_value)
+                };
+                let normal = self.create_block()?;
+                let task = self
+                    .builder
+                    .append_block_parameter(normal, self.type_id(&expression.ty)?)
+                    .map_err(LoweringError::from)?;
+                let fault = self.fault_target(flow)?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::TaskSleep {
+                        milliseconds: milliseconds_value,
+                        normal: ResultTarget::new(normal, []),
+                        fault,
+                    },
+                    origin,
+                )?;
+                Ok(EvalFlow::Continue {
+                    flow: Flow {
+                        block: normal,
+                        env: flow.env,
+                    },
+                    value: task,
+                })
             }
             ExprKind::TaskJoin { arguments, .. } => {
                 self.lower_unsupported_values(flow, arguments, "task join")
@@ -7935,18 +8029,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 Ok(())
             }
-        }
-    }
-
-    fn lower_unsupported_operand(
-        &mut self,
-        flow: Flow,
-        operand: &mir::Expr,
-        operation: &str,
-    ) -> Result<EvalFlow, LoweringError> {
-        match self.lower_expr(flow, operand)? {
-            EvalFlow::Continue { .. } => Err(self.unsupported_reached(operation)),
-            EvalFlow::Terminated => Ok(EvalFlow::Terminated),
         }
     }
 

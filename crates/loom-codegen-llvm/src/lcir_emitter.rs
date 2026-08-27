@@ -46,6 +46,10 @@ use loom_core::runtime_fault::{
     INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
     INVALID_DURATION_FAULT_MESSAGE,
 };
+use loom_core::runtime_fault::{
+    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
+    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+};
 use loom_mir::Type;
 use loom_runtime_abi::{
     FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
@@ -59,7 +63,7 @@ use loom_runtime_abi::{
     TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
     TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
     TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -3862,6 +3866,33 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn typed_timer_task_create(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_TIMER_TASK_CREATE_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    TYPED_TIMER_TASK_CREATE_SYMBOL,
+                    self.ptr_type.fn_type(
+                        &[self.ptr_type.into(), self.context.i64_type().into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn wait_now_ns(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_wait_now_ns")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "loom_wait_now_ns",
+                    self.context.i64_type().fn_type(&[], false),
+                    None,
+                )
+            })
+    }
+
     fn task_i32_u64_function(&self, name: &str) -> FunctionValue<'ctx> {
         self.module.get_function(name).unwrap_or_else(|| {
             let function_type = self.context.i32_type().fn_type(
@@ -6003,6 +6034,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 }
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+                | TerminatorKind::TaskSleep { normal, fault, .. }
                 | TerminatorKind::ResourceClose { normal, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(normal.block);
@@ -9058,6 +9090,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             TerminatorKind::Return(value) => {
                 self.emit_return(self.value(*value)?, terminator.writebacks())
             }
+            TerminatorKind::TaskSleep {
+                milliseconds,
+                normal,
+                fault,
+            } => self.emit_task_sleep(*milliseconds, terminator.origin(), normal, fault),
             TerminatorKind::AwaitTask {
                 state,
                 task,
@@ -9679,6 +9716,97 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)?
             .into_int_value();
         Ok((result, overflow))
+    }
+
+    fn emit_task_sleep(
+        &mut self,
+        milliseconds: ValueId,
+        origin: Origin,
+        normal: &ResultTarget,
+        fault: &UnwindTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "task.sleep terminator has no active coroutine executor",
+            )
+        })?;
+        let milliseconds = self.int(milliseconds)?;
+        let check_duration = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.sleep.check.duration");
+        let invalid_duration = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.sleep.invalid.duration");
+        let check_deadline = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.sleep.check.deadline");
+        let overflow = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.sleep.overflow");
+        let create = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.sleep.create");
+        let negative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                milliseconds,
+                self.backend.context.i64_type().const_zero(),
+                "task.sleep.duration.negative",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(negative, invalid_duration, check_duration)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid_duration);
+        self.emit_source_fault(FaultCode::InvalidSleepDuration, origin)?;
+        self.unwind_branch(fault)?;
+
+        self.backend.builder.position_at_end(check_duration);
+        let million = self.backend.context.i64_type().const_int(1_000_000, false);
+        let (nanoseconds, duration_overflow) =
+            self.checked_intrinsic("llvm.smul.with.overflow", milliseconds, million)?;
+        self.backend
+            .builder
+            .build_conditional_branch(duration_overflow, overflow, check_deadline)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(check_deadline);
+        let now = call_int(
+            &self.backend.builder,
+            self.backend.wait_now_ns(),
+            &[],
+            "task.sleep.now",
+        )?;
+        let (deadline, deadline_overflow) =
+            self.checked_intrinsic("llvm.uadd.with.overflow", now, nanoseconds)?;
+        self.backend
+            .builder
+            .build_conditional_branch(deadline_overflow, overflow, create)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(overflow);
+        self.emit_source_fault(FaultCode::SleepDurationOverflow, origin)?;
+        self.unwind_branch(fault)?;
+
+        self.backend.builder.position_at_end(create);
+        let task = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_timer_task_create(),
+            &[coroutine.executor.into(), deadline.into()],
+            "task.sleep.create",
+        )?;
+        self.backend.require_nonnull(task, "task.sleep.create")?;
+        self.result_branch(normal, task.into())
     }
 
     fn checked_intrinsic_branch(
@@ -11180,6 +11308,8 @@ impl<'ctx> Backend<'ctx, '_> {
             FaultCode::IntegerOverflow
                 | FaultCode::ArtifactProofRejected
                 | FaultCode::InvalidDuration
+                | FaultCode::InvalidSleepDuration
+                | FaultCode::SleepDurationOverflow
         ) {
             serde_json::json!({
                 "channel": "runtime",
@@ -11366,6 +11496,14 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
             ("IntegerDivisionOverflow", "integer division overflowed")
         }
         FaultCode::InvalidDuration => (INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE),
+        FaultCode::InvalidSleepDuration => (
+            INVALID_SLEEP_DURATION_FAULT_CODE,
+            INVALID_SLEEP_DURATION_FAULT_MESSAGE,
+        ),
+        FaultCode::SleepDurationOverflow => (
+            SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+            SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+        ),
         FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
     }
 }

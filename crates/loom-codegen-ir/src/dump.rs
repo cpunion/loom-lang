@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 24")?;
+    writeln!(output, "lcir 25")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -492,6 +492,16 @@ fn write_terminator(
             Ok(())
         }
         TerminatorKind::Return(value) => write!(output, "return %{value}"),
+        TerminatorKind::TaskSleep {
+            milliseconds,
+            normal,
+            fault,
+        } => {
+            write!(output, "task.sleep %{milliseconds}, normal ")?;
+            write_result_target(output, normal, 0)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 0)
+        }
         TerminatorKind::AwaitTask {
             state,
             task,
@@ -780,6 +790,8 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
         crate::FaultCode::InvalidDuration => "InvalidDuration",
+        crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
+        crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::ResourceClose => "ResourceCloseFault",
     }
 }
