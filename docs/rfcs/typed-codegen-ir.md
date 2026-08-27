@@ -18,7 +18,8 @@ The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
 primitive, structural-tuple, closed-record, and compile-time-established
-refined artifacts into typed LCIR
+refined artifacts, plus bounded concrete direct generic instances over those
+representations, into typed LCIR
 and falls back atomically for reachable unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
@@ -69,6 +70,15 @@ Each stage has one responsibility:
 
 Target emission must not resolve names, reinterpret contracts, infer a physical
 representation from an expression shape, or create new callable instances.
+
+The implemented instance planner closes direct calls from the selected
+exported run or test roots. Identity contains the source function, exact type
+arguments, and complete static witness arguments. It deduplicates identical
+instances across roots, permits exact regular recursion, and rejects
+nonregular recursion or finite planning-budget exhaustion before LCIR
+construction. Proof-only witness identity remains compile-time data; it does
+not force a runtime witness parameter. Static concept calls and associated
+projections remain a later whole-artifact slice.
 
 For a statically established source predicate, fresh checked MIR is also the
 process-local proof boundary. The public raw LCIR builder cannot mint
