@@ -26,6 +26,7 @@ mod builder;
 mod dump;
 mod ids;
 mod instance;
+mod instance_closure;
 mod ir;
 mod lower;
 mod repr;
@@ -46,6 +47,7 @@ pub use instance::{
     INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstancePlan, InstanceWitnessArgument,
     PlannedInstance,
 };
+pub use instance_closure::{INSTANCE_CLOSURE_MAX_CALL_EDGES, INSTANCE_CLOSURE_MAX_INSTANCES};
 pub use ir::{
     Block, BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, Effects, FaultCode,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,

@@ -308,7 +308,7 @@ pub fn main() Unit { helper() }
 }
 
 #[test]
-fn callable_instance_foundation_does_not_enable_generic_lowering() {
+fn reachable_generic_calls_lower_to_exact_concrete_instances() {
     let outcome = lower_run(
         r"module generic_fallback
 
@@ -320,21 +320,24 @@ pub fn main() Unit {
 }
 ",
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("generic source must still select whole-artifact fallback")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("bounded generic source should lower completely")
     };
+    let program = artifact.program().as_program();
+    assert_eq!(program.instances().entries().len(), 2);
+    let identity = program
+        .instances()
+        .entries()
+        .iter()
+        .find(|instance| !instance.key().is_monomorphic())
+        .expect("generic identity instance");
+    assert_eq!(identity.key().type_arguments(), &[loom_mir::Type::Int]);
+    let dump = dump_program(artifact.program());
     assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::GenericFunction)
+        dump.contains("instance i0 = source=f0 types=[Int] witnesses=[]"),
+        "{dump}"
     );
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::GenericCall)
-    );
+    assert!(dump.contains("call i0"), "{dump}");
 }
 
 #[test]

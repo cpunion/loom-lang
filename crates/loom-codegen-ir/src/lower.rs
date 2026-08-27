@@ -11,6 +11,10 @@ use loom_mir::{
 use crate::aggregate_plan::{
     AggregatePlanner, AggregateRegistrationError, closed_record_fields, is_direct_scalar,
 };
+use crate::instance_closure::{
+    InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
+    InstanceSubstitution, InstantiationError, plan_instance_closure,
+};
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
@@ -233,6 +237,9 @@ pub enum UnsupportedFeature {
     DynamicDispatch,
     BuiltinCall,
     GenericCall,
+    GenericInstanceBudget,
+    NonRegularGenericRecursion,
+    UnresolvedGenericInstantiation,
     WitnessArguments,
     InOutArgument,
     View,
@@ -265,6 +272,9 @@ impl UnsupportedFeature {
             Self::DynamicDispatch => "DynamicDispatch",
             Self::BuiltinCall => "BuiltinCall",
             Self::GenericCall => "GenericCall",
+            Self::GenericInstanceBudget => "GenericInstanceBudget",
+            Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
+            Self::UnresolvedGenericInstantiation => "UnresolvedGenericInstantiation",
             Self::WitnessArguments => "WitnessArguments",
             Self::InOutArgument => "InOutArgument",
             Self::View => "View",
@@ -376,21 +386,48 @@ pub fn lower_typed_artifact(
     target: TargetLayout,
 ) -> Result<LoweringOutcome, LoweringError> {
     let selected = select_roots(mir, request)?;
-    let graph = analyze_source_reachability(mir, &selected.source).map_err(|error| {
+    let _graph = analyze_source_reachability(mir, &selected.source).map_err(|error| {
         LoweringError::defect(
             LoweringDefectCode::SourceGraph,
             format!("checked-MIR reachability failed: {error}"),
         )
     })?;
+    let closure = match plan_instance_closure(mir.as_program(), &selected.ordered)
+        .map_err(instance_closure_error)?
+    {
+        InstanceClosureOutcome::Complete(closure) => closure,
+        InstanceClosureOutcome::Unsupported(issue) => {
+            let feature = match issue.kind {
+                InstanceClosureUnsupportedKind::InstanceBudget => {
+                    UnsupportedFeature::GenericInstanceBudget
+                }
+                InstanceClosureUnsupportedKind::NonRegularRecursion => {
+                    UnsupportedFeature::NonRegularGenericRecursion
+                }
+                InstanceClosureUnsupportedKind::Instantiation => {
+                    UnsupportedFeature::UnresolvedGenericInstantiation
+                }
+            };
+            return Ok(LoweringOutcome::Unsupported(SupportReport {
+                items: vec![UnsupportedItem {
+                    feature,
+                    function: issue.function,
+                    expression: issue.expression,
+                    span: issue.span,
+                    path: issue.path,
+                }],
+            }));
+        }
+    };
     let mut classifier = Classifier::new(mir.as_program());
-    for function in &graph.functions {
-        let source = mir.function(*function).ok_or_else(|| {
+    for key in closure.entries() {
+        let source = mir.function(key.source()).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::SourceGraph,
-                format!("reachable function #{} does not exist", function.0),
+                format!("reachable function #{} does not exist", key.source().0),
             )
         })?;
-        classifier.classify_function(source);
+        classifier.classify_function(source, key);
     }
     if !classifier.items.is_empty() {
         return Ok(LoweringOutcome::Unsupported(SupportReport {
@@ -398,20 +435,23 @@ pub fn lower_typed_artifact(
         }));
     }
     let aggregate_plan = classifier.aggregates.finish();
-    let summaries = graph
-        .functions
+    let summaries = closure
+        .entries()
         .iter()
-        .map(|id| {
-            let function = mir.function(*id).ok_or_else(|| {
+        .map(|key| {
+            let function = mir.function(key.source()).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::SourceGraph,
-                    format!("reachable function #{} disappeared", id.0),
+                    format!("reachable function #{} disappeared", key.source().0),
                 )
             })?;
-            Ok(InstanceEffectSummary::monomorphic(
-                *id,
-                summarize_effects(function),
-            ))
+            let calls = closure.calls(key).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("instance closure omitted call edges for {key}"),
+                )
+            })?;
+            Ok(summarize_effects(function, key, calls))
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
     let effects = solve_effects(summaries)?;
@@ -432,12 +472,21 @@ pub fn lower_typed_artifact(
                 format!("reachable function #{} disappeared", function_id.0),
             )
         })?;
+        let substitution = InstanceSubstitution::new(&planned.key);
         let params = function
             .params
             .iter()
-            .map(|parameter| required_type(&builder, &parameter.ty))
+            .map(|parameter| {
+                let ty = substitution
+                    .instantiate_type(&parameter.ty)
+                    .map_err(|error| instantiation_defect(function.id, None, error))?;
+                required_type(&builder, &ty)
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        let result = required_type(&builder, &function.return_ty)?;
+        let result_ty = substitution
+            .instantiate_type(&function.return_ty)
+            .map_err(|error| instantiation_defect(function.id, None, error))?;
+        let result = required_type(&builder, &result_ty)?;
         let signature = if function.receiver == Some(mir::Receiver::Mutable) {
             Signature::with_inout_params(params, effect_result(result), [0_u32])
         } else {
@@ -489,6 +538,7 @@ pub fn lower_typed_artifact(
         FunctionLowerer::new(
             mir.as_program(),
             source,
+            &planned.key,
             function_builder,
             &instances,
             &instance_effects,
@@ -531,6 +581,46 @@ pub fn lower_typed_artifact(
         )
     })?;
     Ok(LoweringOutcome::Complete(artifact))
+}
+
+fn instance_closure_error(error: InstanceClosureError) -> LoweringError {
+    let message = match error {
+        InstanceClosureError::MissingFunction(function) => {
+            format!(
+                "instance closure references missing function #{}",
+                function.0
+            )
+        }
+        InstanceClosureError::InvalidInstanceArity {
+            function,
+            expected_types,
+            actual_types,
+            expected_witnesses,
+            actual_witnesses,
+        } => format!(
+            "instance of function #{} has {actual_types}/{actual_witnesses} type/witness argument(s), expected {expected_types}/{expected_witnesses}",
+            function.0
+        ),
+    };
+    LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
+}
+
+fn instantiation_defect(
+    function: FunctionId,
+    expression: Option<ExprId>,
+    error: InstantiationError,
+) -> LoweringError {
+    LoweringError::defect(
+        LoweringDefectCode::InconsistentPlan,
+        format!(
+            "planned instance of function #{}{} failed bounded type substitution: {error:?}",
+            function.0,
+            expression.map_or_else(String::new, |expression| format!(
+                " expression #{}",
+                expression.0
+            ))
+        ),
+    )
 }
 
 // Keeps signature construction visibly separate from semantic type lookup;
@@ -683,14 +773,47 @@ impl<'program> Classifier<'program> {
             .map(|candidate| &candidate.ty)
     }
 
-    fn supported_projected_place(&mut self, function: &mir::Function, place: &mir::Place) -> bool {
+    fn instantiated_type(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        expression: Option<&mir::Expr>,
+        ty: &Type,
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
+        match InstanceSubstitution::new(key).instantiate_type(ty) {
+            Ok(ty) => Some(ty),
+            Err(_) => {
+                self.item(
+                    UnsupportedFeature::UnresolvedGenericInstantiation,
+                    function.id,
+                    expression.map(|expression| expression.id),
+                    span,
+                    path.to_owned(),
+                );
+                None
+            }
+        }
+    }
+
+    fn supported_projected_place(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        place: &mir::Place,
+        span: Span,
+        path: &str,
+    ) -> bool {
         if place.projection.is_empty() {
             return true;
         }
         let Some(base) = Self::local_type(function, place.local) else {
             return false;
         };
-        let mut ty = base.clone();
+        let Some(mut ty) = self.instantiated_type(function, key, None, base, span, path) else {
+            return false;
+        };
         if !self.supported_value_type(&ty) {
             return false;
         }
@@ -710,22 +833,26 @@ impl<'program> Classifier<'program> {
         self.supported_value_type(&ty)
     }
 
-    fn classify_function(&mut self, function: &mir::Function) {
+    fn classify_function(&mut self, function: &mir::Function, key: &InstanceKey) {
         let base = format!("function[{}]", function.id.0);
-        if function.type_parameters != 0 {
-            self.function_item(UnsupportedFeature::GenericFunction, function, &base);
-        }
         if function.is_async || !function.suspension_points.is_empty() {
             self.function_item(UnsupportedFeature::AsyncFunction, function, &base);
-        }
-        if !function.witness_params.is_empty() || function.witness_prefix_count != 0 {
-            self.function_item(UnsupportedFeature::WitnessParameters, function, &base);
         }
         let mutable_pod_receiver = function.receiver == Some(mir::Receiver::Mutable)
             && function
                 .params
                 .first()
-                .is_some_and(|parameter| self.supported_record_type(&parameter.ty));
+                .and_then(|parameter| {
+                    self.instantiated_type(
+                        function,
+                        key,
+                        None,
+                        &parameter.ty,
+                        parameter.span,
+                        &format!("{base}.params[0]"),
+                    )
+                })
+                .is_some_and(|ty| self.supported_record_type(&ty));
         if function.receiver == Some(mir::Receiver::Mutable) && !mutable_pod_receiver {
             self.function_item(UnsupportedFeature::MutableReceiver, function, &base);
         }
@@ -743,7 +870,9 @@ impl<'program> Classifier<'program> {
             let path = format!("{base}.params[{index}]");
             let supported_inout_receiver = index == 0
                 && function.receiver == Some(mir::Receiver::Mutable)
-                && self.supported_record_type(&parameter.ty);
+                && InstanceSubstitution::new(key)
+                    .instantiate_type(&parameter.ty)
+                    .is_ok_and(|ty| self.supported_record_type(&ty));
             if parameter.mutable && !supported_inout_receiver {
                 self.item(
                     UnsupportedFeature::MutableParameter,
@@ -753,7 +882,10 @@ impl<'program> Classifier<'program> {
                     path.clone(),
                 );
             }
-            if !self.supported_value_type(&parameter.ty) {
+            let supported = self
+                .instantiated_type(function, key, None, &parameter.ty, parameter.span, &path)
+                .is_some_and(|ty| self.supported_value_type(&ty));
+            if !supported {
                 self.item(
                     UnsupportedFeature::SignatureType,
                     function.id,
@@ -763,20 +895,31 @@ impl<'program> Classifier<'program> {
                 );
             }
         }
-        if !self.supported_value_type(&function.return_ty) {
+        let return_path = format!("{base}.return_ty");
+        let supported_return = self
+            .instantiated_type(
+                function,
+                key,
+                None,
+                &function.return_ty,
+                function.span,
+                &return_path,
+            )
+            .is_some_and(|ty| self.supported_value_type(&ty));
+        if !supported_return {
             self.item(
                 UnsupportedFeature::SignatureType,
                 function.id,
                 None,
                 function.span,
-                format!("{base}.return_ty"),
+                return_path,
             );
         }
         // Function-local declarations include values from syntactically dead
         // regions. Reachable expressions below carry their checked types, so
         // classifying uses rather than the whole declaration table keeps DCE
         // exact while still rejecting every executable unsupported value.
-        self.visit_block(function, &function.body, &format!("{base}.body"));
+        self.visit_block(function, key, &function.body, &format!("{base}.body"));
     }
 
     fn function_item(&mut self, feature: UnsupportedFeature, function: &mir::Function, path: &str) {
@@ -819,12 +962,13 @@ impl<'program> Classifier<'program> {
     fn projected_place(
         &mut self,
         function: &mir::Function,
+        key: &InstanceKey,
         expression: Option<&mir::Expr>,
         place: &mir::Place,
         span: Span,
         path: &str,
     ) {
-        if !self.supported_projected_place(function, place) {
+        if !self.supported_projected_place(function, key, place, span, path) {
             self.item(
                 UnsupportedFeature::ProjectedPlace,
                 function.id,
@@ -835,15 +979,21 @@ impl<'program> Classifier<'program> {
         }
     }
 
-    fn visit_block(&mut self, function: &mir::Function, block: &mir::Block, path: &str) -> bool {
+    fn visit_block(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        block: &mir::Block,
+        path: &str,
+    ) -> bool {
         for (index, statement) in block.statements.iter().enumerate() {
             let statement_path = format!("{path}.statements[{index}]");
-            if !self.visit_statement(function, statement, &statement_path) {
+            if !self.visit_statement(function, key, statement, &statement_path) {
                 return false;
             }
         }
         if let Some(tail) = block.tail.as_deref() {
-            self.visit_expr(function, tail, &format!("{path}.tail"))
+            self.visit_expr(function, key, tail, &format!("{path}.tail"))
         } else {
             true
         }
@@ -853,33 +1003,36 @@ impl<'program> Classifier<'program> {
     fn visit_statement(
         &mut self,
         function: &mir::Function,
+        key: &InstanceKey,
         statement: &mir::Statement,
         path: &str,
     ) -> bool {
         match &statement.kind {
             StatementKind::Let { value, .. } | StatementKind::LetTuple { value, .. } => {
-                self.visit_expr(function, value, &format!("{path}.value"))
+                self.visit_expr(function, key, value, &format!("{path}.value"))
             }
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
-                let start_continues = self.visit_expr(function, start, &format!("{path}.start"));
+                let start_continues =
+                    self.visit_expr(function, key, start, &format!("{path}.start"));
                 if !start_continues {
                     return false;
                 }
-                let end_continues = self.visit_expr(function, end, &format!("{path}.end"));
+                let end_continues = self.visit_expr(function, key, end, &format!("{path}.end"));
                 if !end_continues {
                     return false;
                 }
-                self.visit_block(function, body, &format!("{path}.body"));
+                self.visit_block(function, key, body, &format!("{path}.body"));
                 true
             }
             StatementKind::Assign { place, value } => {
-                if !self.visit_expr(function, value, &format!("{path}.value")) {
+                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
                 }
                 self.projected_place(
                     function,
+                    key,
                     None,
                     place,
                     statement.span,
@@ -888,7 +1041,7 @@ impl<'program> Classifier<'program> {
                 true
             }
             StatementKind::Assert { condition } => {
-                if !self.visit_expr(function, condition, &format!("{path}.condition")) {
+                if !self.visit_expr(function, key, condition, &format!("{path}.condition")) {
                     return false;
                 }
                 self.item(
@@ -901,7 +1054,7 @@ impl<'program> Classifier<'program> {
                 true
             }
             StatementKind::Evaluate(expression) => {
-                self.visit_expr(function, expression, &format!("{path}.value"))
+                self.visit_expr(function, key, expression, &format!("{path}.value"))
             }
             StatementKind::Defer(cleanup) => {
                 self.item(
@@ -911,12 +1064,12 @@ impl<'program> Classifier<'program> {
                     statement.span,
                     path.to_owned(),
                 );
-                self.visit_block(function, cleanup, &format!("{path}.cleanup"));
+                self.visit_block(function, key, cleanup, &format!("{path}.cleanup"));
                 true
             }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    self.visit_expr(function, value, &format!("{path}.value"));
+                    self.visit_expr(function, key, value, &format!("{path}.value"));
                 }
                 false
             }
@@ -924,7 +1077,13 @@ impl<'program> Classifier<'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn visit_expr(&mut self, function: &mir::Function, expression: &mir::Expr, path: &str) -> bool {
+    fn visit_expr(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        expression: &mir::Expr,
+        path: &str,
+    ) -> bool {
         let continues = match &expression.kind {
             ExprKind::Constant(mir::Constant::Text(_)) => {
                 self.expression_item(UnsupportedFeature::TextConstant, function, expression, path);
@@ -932,13 +1091,13 @@ impl<'program> Classifier<'program> {
             }
             ExprKind::Constant(_) => true,
             ExprKind::Tuple(elements) => {
-                if !self.visit_exprs(function, elements, &format!("{path}.elements")) {
+                if !self.visit_exprs(function, key, elements, &format!("{path}.elements")) {
                     return false;
                 }
                 expression.ty != Type::Never
             }
             ExprKind::List(elements) => {
-                if !self.visit_exprs(function, elements, &format!("{path}.elements")) {
+                if !self.visit_exprs(function, key, elements, &format!("{path}.elements")) {
                     return false;
                 }
                 self.expression_item(UnsupportedFeature::ListValue, function, expression, path);
@@ -956,6 +1115,7 @@ impl<'program> Classifier<'program> {
                 } else {
                     self.projected_place(
                         function,
+                        key,
                         Some(expression),
                         place,
                         expression.span,
@@ -965,8 +1125,18 @@ impl<'program> Classifier<'program> {
                 true
             }
             ExprKind::Unary(_, operand) => {
-                let continues = self.visit_expr(function, operand, &format!("{path}.operand"));
-                if continues && !is_scalar_type(&operand.ty) {
+                let continues = self.visit_expr(function, key, operand, &format!("{path}.operand"));
+                let scalar = self
+                    .instantiated_type(
+                        function,
+                        key,
+                        Some(operand),
+                        &operand.ty,
+                        operand.span,
+                        &format!("{path}.operand.ty"),
+                    )
+                    .is_some_and(|ty| is_scalar_type(&ty));
+                if continues && !scalar {
                     self.expression_item(
                         UnsupportedFeature::NominalValue,
                         function,
@@ -977,10 +1147,20 @@ impl<'program> Classifier<'program> {
                 continues && expression.ty != Type::Never
             }
             ExprKind::Binary(operator, left, right) => {
-                if self.visit_expr(function, left, &format!("{path}.left")) {
+                if self.visit_expr(function, key, left, &format!("{path}.left")) {
                     let right_continues =
-                        self.visit_expr(function, right, &format!("{path}.right"));
-                    if right_continues && !is_scalar_type(&left.ty) {
+                        self.visit_expr(function, key, right, &format!("{path}.right"));
+                    let scalar = self
+                        .instantiated_type(
+                            function,
+                            key,
+                            Some(left),
+                            &left.ty,
+                            left.span,
+                            &format!("{path}.left.ty"),
+                        )
+                        .is_some_and(|ty| is_scalar_type(&ty));
+                    if right_continues && !scalar {
                         self.expression_item(
                             UnsupportedFeature::NominalValue,
                             function,
@@ -994,7 +1174,7 @@ impl<'program> Classifier<'program> {
                 }
             }
             ExprKind::Block(block) => {
-                self.visit_block(function, block, &format!("{path}.block"))
+                self.visit_block(function, key, block, &format!("{path}.block"))
                     && expression.ty != Type::Never
             }
             ExprKind::If {
@@ -1002,17 +1182,17 @@ impl<'program> Classifier<'program> {
                 then_branch,
                 else_branch,
             } => {
-                if !self.visit_expr(function, condition, &format!("{path}.condition")) {
+                if !self.visit_expr(function, key, condition, &format!("{path}.condition")) {
                     return false;
                 }
                 let then_continues =
-                    self.visit_block(function, then_branch, &format!("{path}.then"));
+                    self.visit_block(function, key, then_branch, &format!("{path}.then"));
                 let else_continues =
-                    self.visit_block(function, else_branch, &format!("{path}.else"));
+                    self.visit_block(function, key, else_branch, &format!("{path}.else"));
                 then_continues || else_continues
             }
             ExprKind::Match { scrutinee, arms } => {
-                if !self.visit_expr(function, scrutinee, &format!("{path}.scrutinee")) {
+                if !self.visit_expr(function, key, scrutinee, &format!("{path}.scrutinee")) {
                     return false;
                 }
                 self.expression_item(UnsupportedFeature::PatternMatch, function, expression, path);
@@ -1020,6 +1200,7 @@ impl<'program> Classifier<'program> {
                 for (index, arm) in arms.iter().enumerate() {
                     continues |= self.visit_expr(
                         function,
+                        key,
                         &arm.value,
                         &format!("{path}.arms[{index}].value"),
                     );
@@ -1032,7 +1213,7 @@ impl<'program> Classifier<'program> {
                 fields,
                 construction,
             } => {
-                if !self.visit_exprs(function, fields, &format!("{path}.fields")) {
+                if !self.visit_exprs(function, key, fields, &format!("{path}.fields")) {
                     return false;
                 }
                 if *construction == mir::ConstructionMode::Recheck {
@@ -1044,9 +1225,22 @@ impl<'program> Classifier<'program> {
                     );
                     return expression.ty != Type::Never;
                 }
-                let direct_product = type_arguments.is_empty()
-                    && expression.ty == Type::Nominal(*ty, Vec::new())
-                    && self.supported_value_type(&expression.ty)
+                let expression_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let instantiated_arguments =
+                    InstanceSubstitution::new(key).instantiate_types(type_arguments);
+                let direct_product = instantiated_arguments
+                    .is_ok_and(|arguments| arguments.is_empty())
+                    && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
+                    && expression_ty
+                        .as_ref()
+                        .is_some_and(|ty| self.supported_value_type(ty))
                     && self.program.type_def(*ty).is_some_and(|definition| {
                         definition.type_parameters == 0
                             && matches!(
@@ -1077,7 +1271,7 @@ impl<'program> Classifier<'program> {
                 expression.ty != Type::Never
             }
             ExprKind::Variant { payload, .. } => {
-                if !self.visit_exprs(function, payload, &format!("{path}.payload")) {
+                if !self.visit_exprs(function, key, payload, &format!("{path}.payload")) {
                     return false;
                 }
                 self.expression_item(UnsupportedFeature::NominalValue, function, expression, path);
@@ -1088,7 +1282,7 @@ impl<'program> Classifier<'program> {
                 value,
                 construction,
             } => {
-                if !self.visit_expr(function, value, &format!("{path}.value")) {
+                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
                 }
                 if *construction == mir::ConstructionMode::Recheck {
@@ -1100,14 +1294,33 @@ impl<'program> Classifier<'program> {
                     );
                     return expression.ty != Type::Never;
                 }
+                let expression_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let value_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(value),
+                    &value.ty,
+                    value.span,
+                    &format!("{path}.value.ty"),
+                );
                 let proven = *construction == mir::ConstructionMode::Proven
-                    && expression.ty == Type::Nominal(*ty, Vec::new())
-                    && self.supported_value_type(&expression.ty)
+                    && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
+                    && expression_ty
+                        .as_ref()
+                        .is_some_and(|ty| self.supported_value_type(ty))
                     && self.program.type_def(*ty).is_some_and(|definition| {
                         definition.type_parameters == 0
                             && matches!(
                                 &definition.kind,
-                                mir::TypeDefKind::Refined { base, .. } if base == &value.ty
+                                mir::TypeDefKind::Refined { base, .. }
+                                    if value_ty.as_ref() == Some(base)
                             )
                     });
                 if !proven {
@@ -1121,20 +1334,38 @@ impl<'program> Classifier<'program> {
                 expression.ty != Type::Never
             }
             ExprKind::Unrefine(value) => {
-                if !self.visit_expr(function, value, &format!("{path}.value")) {
+                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
                 }
-                let supported = match &value.ty {
-                    Type::Nominal(ty, arguments) if arguments.is_empty() => {
+                let value_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(value),
+                    &value.ty,
+                    value.span,
+                    &format!("{path}.value.ty"),
+                );
+                let expression_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let supported = match value_ty.as_ref() {
+                    Some(Type::Nominal(ty, arguments)) if arguments.is_empty() => {
                         self.program.type_def(*ty).is_some_and(|definition| {
                             definition.type_parameters == 0
                                 && matches!(
                                     &definition.kind,
                                     mir::TypeDefKind::Refined { base, .. }
-                                        if base == &expression.ty
+                                        if expression_ty.as_ref() == Some(base)
                                 )
-                        }) && self.supported_value_type(&value.ty)
-                            && self.supported_value_type(&expression.ty)
+                        }) && self.supported_value_type(value_ty.as_ref().expect("matched"))
+                            && expression_ty
+                                .as_ref()
+                                .is_some_and(|ty| self.supported_value_type(ty))
                     }
                     _ => false,
                 };
@@ -1154,16 +1385,26 @@ impl<'program> Classifier<'program> {
                 arguments,
                 witnesses,
             } => {
-                let mutable_receiver = match target {
-                    CallTarget::Inherent(callee) => {
-                        self.program.function(*callee).and_then(|callee| {
-                            (callee.receiver == Some(mir::Receiver::Mutable))
-                                .then(|| {
-                                    callee.params.first().map(|parameter| parameter.ty.clone())
-                                })
-                                .flatten()
-                        })
+                let callee_key = match target {
+                    CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
+                        InstanceSubstitution::new(key)
+                            .call_key(*callee, type_arguments, witnesses)
+                            .ok()
                     }
+                    _ => None,
+                };
+                let mutable_receiver = match (target, callee_key.as_ref()) {
+                    (CallTarget::Inherent(callee), Some(callee_key)) => self
+                        .program
+                        .function(*callee)
+                        .filter(|callee| callee.receiver == Some(mir::Receiver::Mutable))
+                        .and_then(|callee| {
+                            callee.params.first().and_then(|parameter| {
+                                InstanceSubstitution::new(callee_key)
+                                    .instantiate_type(&parameter.ty)
+                                    .ok()
+                            })
+                        }),
                     _ => None,
                 };
                 for (index, argument) in arguments.iter().enumerate() {
@@ -1171,6 +1412,7 @@ impl<'program> Classifier<'program> {
                         CallArgument::Value(value) => {
                             if !self.visit_expr(
                                 function,
+                                key,
                                 value,
                                 &format!("{path}.arguments[{index}].value"),
                             ) {
@@ -1178,7 +1420,10 @@ impl<'program> Classifier<'program> {
                             }
                         }
                         CallArgument::InOut(place) => {
-                            let local_type = Self::local_type(function, place.local).cloned();
+                            let local_type =
+                                Self::local_type(function, place.local).and_then(|ty| {
+                                    InstanceSubstitution::new(key).instantiate_type(ty).ok()
+                                });
                             let allowed = index == 0
                                 && place.projection.is_empty()
                                 && mutable_receiver.as_ref() == local_type.as_ref()
@@ -1205,22 +1450,6 @@ impl<'program> Classifier<'program> {
                         }
                     }
                 }
-                if !type_arguments.is_empty() {
-                    self.expression_item(
-                        UnsupportedFeature::GenericCall,
-                        function,
-                        expression,
-                        &format!("{path}.type_arguments"),
-                    );
-                }
-                if !witnesses.is_empty() {
-                    self.expression_item(
-                        UnsupportedFeature::WitnessArguments,
-                        function,
-                        expression,
-                        &format!("{path}.witnesses"),
-                    );
-                }
                 let target_feature = match target {
                     CallTarget::Direct(_) | CallTarget::Inherent(_) => None,
                     CallTarget::StaticConcept { .. } => Some(UnsupportedFeature::StaticDispatch),
@@ -1233,7 +1462,7 @@ impl<'program> Classifier<'program> {
                 expression.ty != Type::Never
             }
             ExprKind::MakeView { value, .. } => {
-                if !self.visit_expr(function, value, &format!("{path}.value")) {
+                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
                 }
                 self.expression_item(UnsupportedFeature::View, function, expression, path);
@@ -1243,6 +1472,7 @@ impl<'program> Classifier<'program> {
                 self.expression_item(UnsupportedFeature::View, function, expression, path);
                 self.projected_place(
                     function,
+                    key,
                     Some(expression),
                     owner,
                     expression.span,
@@ -1251,14 +1481,14 @@ impl<'program> Classifier<'program> {
                 true
             }
             ExprKind::Await { task, .. } => {
-                if !self.visit_expr(function, task, &format!("{path}.task")) {
+                if !self.visit_expr(function, key, task, &format!("{path}.task")) {
                     return false;
                 }
                 self.expression_item(UnsupportedFeature::Suspension, function, expression, path);
                 expression.ty != Type::Never
             }
             ExprKind::Sleep { milliseconds } => {
-                if !self.visit_expr(function, milliseconds, &format!("{path}.milliseconds")) {
+                if !self.visit_expr(function, key, milliseconds, &format!("{path}.milliseconds")) {
                     return false;
                 }
                 self.expression_item(
@@ -1270,7 +1500,7 @@ impl<'program> Classifier<'program> {
                 expression.ty != Type::Never
             }
             ExprKind::TaskJoin { arguments, .. } => {
-                if !self.visit_exprs(function, arguments, &format!("{path}.arguments")) {
+                if !self.visit_exprs(function, key, arguments, &format!("{path}.arguments")) {
                     return false;
                 }
                 self.expression_item(
@@ -1283,7 +1513,17 @@ impl<'program> Classifier<'program> {
             }
         };
         let continues = continues && expression.ty != Type::Never;
-        if continues && !self.supported_expression_type(&expression.ty) {
+        let supported_expression = self
+            .instantiated_type(
+                function,
+                key,
+                Some(expression),
+                &expression.ty,
+                expression.span,
+                &format!("{path}.ty"),
+            )
+            .is_some_and(|ty| self.supported_expression_type(&ty));
+        if continues && !supported_expression {
             self.expression_item(
                 UnsupportedFeature::ExpressionType,
                 function,
@@ -1297,11 +1537,12 @@ impl<'program> Classifier<'program> {
     fn visit_exprs(
         &mut self,
         function: &mir::Function,
+        key: &InstanceKey,
         expressions: &[mir::Expr],
         path: &str,
     ) -> bool {
         for (index, expression) in expressions.iter().enumerate() {
-            if !self.visit_expr(function, expression, &format!("{path}[{index}]")) {
+            if !self.visit_expr(function, key, expression, &format!("{path}[{index}]")) {
                 return false;
             }
         }
@@ -1322,6 +1563,7 @@ struct InstanceEffectSummary {
     calls: Box<[InstanceKey]>,
 }
 
+#[cfg(test)]
 impl InstanceEffectSummary {
     fn monomorphic(source: FunctionId, summary: EffectSummary) -> Self {
         Self {
@@ -1377,10 +1619,18 @@ impl InstanceLookup {
     }
 }
 
-fn summarize_effects(function: &mir::Function) -> EffectSummary {
+fn summarize_effects(
+    function: &mir::Function,
+    key: &InstanceKey,
+    calls: &[InstanceKey],
+) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
     scan_effect_block(&function.body, &mut summary);
-    summary
+    InstanceEffectSummary {
+        key: key.clone(),
+        local_fault: summary.local_fault,
+        calls: calls.to_vec().into_boxed_slice(),
+    }
 }
 
 fn scan_effect_block(block: &mir::Block, summary: &mut EffectSummary) -> bool {
@@ -2032,6 +2282,7 @@ enum ProductConstruction {
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
     source: &'function mir::Function,
+    key: &'plan InstanceKey,
     builder: FunctionBuilder<'builder>,
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
@@ -2045,6 +2296,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn new(
         program: &'plan mir::Program,
         source: &'function mir::Function,
+        key: &'plan InstanceKey,
         builder: FunctionBuilder<'builder>,
         instances: &'plan InstanceLookup,
         effects: &'plan [Effects],
@@ -2067,6 +2319,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Self {
             program,
             source,
+            key,
             builder,
             instances,
             effects,
@@ -2101,12 +2354,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     }
 
     fn type_id(&self, ty: &Type) -> Result<ValueTypeId, LoweringError> {
-        self.builder.representations().type_id(ty).ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::InconsistentPlan,
-                format!("classified direct type {ty:?} has no LCIR type"),
-            )
-        })
+        let instantiated = InstanceSubstitution::new(self.key)
+            .instantiate_type(ty)
+            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        self.builder
+            .representations()
+            .type_id(&instantiated)
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("classified direct type {instantiated:?} has no LCIR type"),
+                )
+            })
     }
 
     fn local_type(&self, local: LocalId) -> Result<ValueTypeId, LoweringError> {
@@ -2643,7 +2902,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, operand)? else {
                     return Ok(EvalFlow::Terminated);
                 };
-                match (operator, &operand.ty) {
+                let operand_ty = InstanceSubstitution::new(self.key)
+                    .instantiate_type(&operand.ty)
+                    .map_err(|error| {
+                        instantiation_defect(self.source.id, Some(operand.id), error)
+                    })?;
+                match (operator, &operand_ty) {
                     (UnaryOp::Not, Type::Bool) => {
                         let ty = self.type_id(&Type::Bool)?;
                         self.one_instruction(flow, InstructionKind::BoolNot { value }, ty, origin)
@@ -2878,7 +3142,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.expression_origin(expression);
-        if *operand_type == Type::Int
+        let operand_type = InstanceSubstitution::new(self.key)
+            .instantiate_type(operand_type)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
+        if operand_type == Type::Int
             && matches!(
                 operator,
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
@@ -2898,7 +3165,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             };
             return self.lower_checked_binary(flow, op, left, right, origin);
         }
-        if *operand_type == Type::Float
+        if operand_type == Type::Float
             && matches!(
                 operator,
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
@@ -2926,7 +3193,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
 
         let ty = self.type_id(&Type::Bool)?;
-        let kind = match operand_type {
+        let kind = match &operand_type {
             Type::Unit => {
                 let value = operator == BinaryOp::Equal;
                 return self.constant(flow, Constant::Bool(value), &Type::Bool, origin);
@@ -3459,9 +3726,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
-        if !type_arguments.is_empty() || !witnesses.is_empty() {
-            return Err(self.unsupported_reached("generic or witnessed call"));
-        }
         let callee = match target {
             CallTarget::Direct(callee) | CallTarget::Inherent(callee) => *callee,
             _ => return Err(self.unsupported_reached("non-direct call")),
@@ -3528,7 +3792,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        let key = InstanceKey::monomorphic(callee);
+        let key = InstanceSubstitution::new(self.key)
+            .call_key(callee, type_arguments, witnesses)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
         let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
