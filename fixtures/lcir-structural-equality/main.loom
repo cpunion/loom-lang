@@ -1,0 +1,90 @@
+module lcir_structural_equality
+
+record Pair {
+    label Text
+    count Int
+}
+
+record Boxed[T] {
+    value T
+}
+
+type Positive = Int where self > 0
+
+enum Selection {
+    Empty
+    PairValue(Pair)
+    BoxValue(Boxed[Int])
+}
+
+fn preserve_pair(value Pair, expected Pair) Pair
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
+fn preserve_pairs(value List[Pair], expected List[Pair]) List[Pair]
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
+fn preserve_selection(value Selection, expected Selection) Selection
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
+fn stress_lists() Bool {
+    var left = List[Text]()
+    var right = List[Text]()
+    for index in 0..2048 {
+        discard index
+        left.add("x".concat("y"))
+        right.add("xy")
+    }
+    left == right
+}
+
+fn verify() Unit {
+    let first = Pair { label = "lo".concat("om"), count = 7 }
+    let same_first = Pair { label = "l".concat("oom"), count = 7 }
+    let second = Pair { label = "pair", count = 8 }
+    let same_second = Pair { label = "pa".concat("ir"), count = 8 }
+    let changed = Pair { label = "loom", count = 9 }
+    let checked_pair = preserve_pair(first, same_first)
+    let refined = Positive(7)
+    let same_refined = Positive(7)
+    let boxed = Boxed { value = first }
+    let same_boxed = Boxed { value = same_first }
+    let tuple = (first, boxed, true)
+    let same_tuple = (same_first, same_boxed, true)
+    let pairs = [first, second]
+    let same_pairs = [same_first, same_second]
+    let short_pairs = [same_first]
+    let checked_pairs = preserve_pairs(pairs, same_pairs)
+    let nested = [[1, 2], [3, 4]]
+    let same_nested = [[1, 2], [3, 4]]
+    let pair_selection = Selection.PairValue(first)
+    let same_pair_selection = Selection.PairValue(same_first)
+    let box_selection = Selection.BoxValue(Boxed { value = 7 })
+    let checked_selection = preserve_selection(pair_selection, same_pair_selection)
+    let pressure = "typed".concat(" equality")
+    if first == same_first && first != changed && checked_pair == first && refined == same_refined && boxed == same_boxed && tuple == same_tuple && pairs == same_pairs && pairs != short_pairs && checked_pairs == pairs && nested == same_nested && pair_selection == same_pair_selection && pair_selection != box_selection && checked_selection == pair_selection && pressure == "typed equality" && stress_lists() {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn structuralEquality() Unit {
+    verify()
+}

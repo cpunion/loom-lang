@@ -862,6 +862,76 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn structural_equality_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-structural-equality/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check structural-equality source through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("structural-equality.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build structural-equality source through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read structural-equality object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_runtime_text_concat_typed_v1",
+        b"loom_gc_typed_root_push_v1",
+        b"loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "structural-equality object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_gc_root_push_v1",
+        b"loom_gc_root_pop_v1",
+        b"loom_executor_",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "structural-equality object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test structural-equality source through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_structural_equality.structuralEquality"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run structural-equality source through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn static_concepts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(include_str!(
         "../../../fixtures/lcir-static-concepts/main.loom"

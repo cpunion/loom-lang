@@ -139,6 +139,14 @@ The implementation consumes the existing `typed-repeated-v1` allocator and
 typed shadow stack, so native runtime ABI component 14, `runtime-v8`, and
 `gc-v9` do not change.
 
+Structural equality adds no LCIR opcode or runtime entry point. Products,
+refined values, sums, and finite List-backed graphs expand into the existing
+typed comparisons, product extraction, sum switches, List length/get, proved
+successor, branches, and block parameters. Artifact identity already includes
+that complete generated CFG. The LCIR dump remains 17, artifact schema 18,
+native-object domain v14, object-cache domain v19, and native runtime ABI
+component 14.
+
 Concrete static-concept resolution adds no physical ABI. The compiler-private
 domains advance because the planner now normalizes associated projections,
 closes witness-method edges, and rejects open type or proof arguments before a

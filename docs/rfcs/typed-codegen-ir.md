@@ -155,6 +155,14 @@ carriers remain whole-artifact fallback. Concrete closed managed Lists are
 direct repeated allocations. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
+Concrete structural equality is generated from this same representation plan.
+Products compare exact fields, transparent values compare their declared base,
+and sums dispatch both tags before observing a matching active payload. Lists
+compare length and then canonical `Option[T]` reads in a nonallocating proved
+loop. Ordinary expressions and contracts share the lowering. Recursive nominal
+equality that re-enters through a List remains atomic fallback until comparison
+instances can be recursive without cloning an unbounded CFG.
+
 Transparent representation reuse is not an arbitrary layout cast. The plan
 records the exact base type, `RefineProven` requires that base and a distinct
 transparent result, and `Unrefine` returns only that base. Likewise,

@@ -1926,6 +1926,86 @@ fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
     }
 }
 
+#[test]
+fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_lcir() {
+    let source = include_str!("../../../fixtures/lcir-structural-equality/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for expected in [
+        "product.extract",
+        "sum.switch",
+        "unrefine",
+        "list.length",
+        "list.get",
+        "int.successor_below",
+        "text.compare.equal",
+        "bool.not",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-structural-equality",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-structural-equality");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for forbidden in [
+        "%loom.Value",
+        "@loom.fn.",
+        "loom_gc_root_push_v1",
+        "loom_gc_root_pop_v1",
+        "loom_executor_",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert!(
+        native.ir.contains("loom_gc_typed_root_push_v1"),
+        "{}",
+        native.ir
+    );
+    assert!(
+        native.ir.contains("loom_gc_typed_root_pop_v1"),
+        "{}",
+        native.ir
+    );
+    assert_no_indirect_calls(&native.ir);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create structural-equality target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "structural-equality.obj"
+        } else {
+            "structural-equality.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit structural equality for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+    }
+}
+
 fn static_concepts_test_artifact() -> CheckedArtifact {
     let source = include_str!("../../../fixtures/lcir-static-concepts/main.loom");
     let program = compile_source(source);
