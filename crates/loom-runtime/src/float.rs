@@ -2,6 +2,8 @@
 
 use std::ffi::{c_char, c_int};
 
+use loom_runtime_abi::{PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE};
+
 use crate::scheduler::ValueSlot;
 
 const CANONICAL_NAN: u64 = 0x7ff8_0000_0000_0000;
@@ -71,15 +73,15 @@ pub(crate) fn canonical_text(value: f64) -> String {
 #[unsafe(export_name = "loom_runtime_parse_float")]
 pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *mut f64) -> c_int {
     let Ok(length) = usize::try_from(length) else {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     };
     if data.is_null() || output.is_null() || length > isize::MAX as usize {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     }
     // SAFETY: the compiler passes a live Text payload and its checked length.
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return 1;
+        return PARSE_STATUS_INVALID_SYNTAX;
     };
     let value = match text {
         "NaN" => f64::from_bits(CANONICAL_NAN),
@@ -87,18 +89,18 @@ pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *
         "-Infinity" => f64::NEG_INFINITY,
         _ if has_float_syntax(text) => {
             let Ok(value) = text.parse::<f64>() else {
-                return 1;
+                return PARSE_STATUS_INVALID_SYNTAX;
             };
             if value.is_infinite() {
-                return 2;
+                return PARSE_STATUS_OUT_OF_RANGE;
             }
             value
         }
-        _ => return 1,
+        _ => return PARSE_STATUS_INVALID_SYNTAX,
     };
     // SAFETY: output was checked non-null and is an LLVM stack slot for f64.
     unsafe { output.write(value) };
-    0
+    PARSE_STATUS_OK
 }
 
 /// Formats a binary64 value into one managed Text object.
@@ -118,7 +120,31 @@ pub unsafe extern "C" fn format_float(value: f64, output: *mut ValueSlot) -> c_i
 
 #[cfg(test)]
 mod tests {
+    use loom_runtime_abi::{
+        PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+    };
+
     use super::{canonical_text, has_float_syntax};
+
+    fn parse(text: &str, output: &mut f64) -> i32 {
+        // SAFETY: the test supplies a live UTF-8 slice and writable scalar cell.
+        unsafe {
+            super::parse_float(
+                text.as_ptr().cast(),
+                u64::try_from(text.len()).expect("test input length"),
+                output,
+            )
+        }
+    }
+
+    #[test]
+    fn scalar_boundary_uses_the_shared_closed_status_contract() {
+        let mut output = 1.0;
+        assert_eq!(parse("-0.0", &mut output), PARSE_STATUS_OK);
+        assert_eq!(output.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(parse("1", &mut output), PARSE_STATUS_INVALID_SYNTAX);
+        assert_eq!(parse("1e999", &mut output), PARSE_STATUS_OUT_OF_RANGE);
+    }
 
     #[test]
     fn text_boundary_matches_language_contract() {

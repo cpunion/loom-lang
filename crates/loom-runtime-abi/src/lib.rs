@@ -63,6 +63,14 @@ pub const TEXT_GET_TYPED_SYMBOL: &str = "loom_runtime_text_get_typed_v1";
 pub const TEXT_GET_TYPED_INVALID: i32 = -1;
 pub const TEXT_GET_TYPED_MISSING: i32 = 0;
 pub const TEXT_GET_TYPED_FOUND: i32 = 1;
+/// Existing scalar parse boundaries shared by both native backends. These
+/// symbols predate the typed LCIR route; naming them here prevents either
+/// emitter from inventing an ABI spelling while keeping runtime ABI v14.
+pub const PARSE_INT_SYMBOL: &str = "loom_runtime_parse_int";
+pub const PARSE_FLOAT_SYMBOL: &str = "loom_runtime_parse_float";
+pub const PARSE_STATUS_OK: i32 = 0;
+pub const PARSE_STATUS_INVALID_SYNTAX: i32 = 1;
+pub const PARSE_STATUS_OUT_OF_RANGE: i32 = 2;
 /// Direct File/Socket cleanup taking `(runtime, kind, inout handle)`.
 ///
 /// This compiler-private boundary never constructs a universal `Value`,
@@ -438,9 +446,10 @@ mod tests {
         LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
         LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
         LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, LoomWitnessDescriptor,
-        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, RUNTIME_ABI_VERSION,
-        SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TEXT_CONTAINS_SYMBOL,
-        TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
+        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+        PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+        RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
+        TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
         TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
@@ -474,6 +483,11 @@ mod tests {
         assert_eq!(TEXT_GET_TYPED_INVALID, -1);
         assert_eq!(TEXT_GET_TYPED_MISSING, 0);
         assert_eq!(TEXT_GET_TYPED_FOUND, 1);
+        assert_eq!(PARSE_INT_SYMBOL, "loom_runtime_parse_int");
+        assert_eq!(PARSE_FLOAT_SYMBOL, "loom_runtime_parse_float");
+        assert_eq!(PARSE_STATUS_OK, 0);
+        assert_eq!(PARSE_STATUS_INVALID_SYNTAX, 1);
+        assert_eq!(PARSE_STATUS_OUT_OF_RANGE, 2);
         assert_eq!(
             TYPED_RESOURCE_CLOSE_SYMBOL,
             "loom_runtime_resource_close_typed_v1"

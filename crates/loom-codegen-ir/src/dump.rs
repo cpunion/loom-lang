@@ -217,6 +217,26 @@ fn write_instruction(
             "text.compare.{} %{left}, %{right}",
             bool_predicate_name(*predicate)
         ),
+        InstructionKind::ParseInt {
+            text,
+            ok_variant,
+            error_variant,
+            invalid_syntax_variant,
+            out_of_range_variant,
+        } => write!(
+            output,
+            "parse.int %{text}, ok {ok_variant}, error {error_variant}, invalid_syntax {invalid_syntax_variant}, out_of_range {out_of_range_variant}"
+        ),
+        InstructionKind::ParseFloat {
+            text,
+            ok_variant,
+            error_variant,
+            invalid_syntax_variant,
+            out_of_range_variant,
+        } => write!(
+            output,
+            "parse.float %{text}, ok {ok_variant}, error {error_variant}, invalid_syntax {invalid_syntax_variant}, out_of_range {out_of_range_variant}"
+        ),
         InstructionKind::ProductConstruct { fields } => {
             write!(output, "product.construct (")?;
             write_arguments(output, fields)?;
@@ -464,6 +484,21 @@ fn write_terminator(
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)
         }
+        TerminatorKind::RuntimeGuard {
+            condition,
+            code,
+            success,
+            fault,
+        } => {
+            write!(
+                output,
+                "runtime_guard %{condition}, code {}, success ",
+                fault_code_name(*code)
+            )?;
+            write_target(output, success)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 0)
+        }
         TerminatorKind::Fault { metadata } => {
             write!(output, "fault ")?;
             write_fault_metadata(output, metadata)
@@ -671,6 +706,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerOverflow => "IntegerOverflow",
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
+        crate::FaultCode::InvalidDuration => "InvalidDuration",
         crate::FaultCode::ResourceClose => "ResourceCloseFault",
     }
 }

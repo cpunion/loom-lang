@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
+    INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -3799,8 +3800,8 @@ impl<'program> Interpreter<'program> {
                 if *value < 0 {
                     return Err(self
                         .runtime_fault(
-                            "InvalidDuration",
-                            "Duration milliseconds cannot be negative",
+                            INVALID_DURATION_FAULT_CODE,
+                            INVALID_DURATION_FAULT_MESSAGE,
                             span,
                         )
                         .into());

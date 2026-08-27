@@ -731,7 +731,8 @@ impl ArtifactValidator<'_> {
                             1,
                         );
                     }
-                    TerminatorKind::Assert { success, fault, .. } => {
+                    TerminatorKind::Assert { success, fault, .. }
+                    | TerminatorKind::RuntimeGuard { success, fault, .. } => {
                         mark_text_target(
                             function,
                             text,

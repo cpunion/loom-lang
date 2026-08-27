@@ -501,6 +501,29 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
+    /// Parses one canonical Text value as a signed `Int` and constructs the
+    /// exact closed `Result[Int, ParseIntError]` selected by the checked
+    /// source program. Runtime status 0 selects `ok_variant`; statuses 1 and
+    /// 2 select the nested `invalid_syntax_variant` and
+    /// `out_of_range_variant` through `error_variant`.
+    ParseInt {
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_syntax_variant: u32,
+        out_of_range_variant: u32,
+    },
+    /// Parses one canonical Text value as a binary64 `Float` and constructs
+    /// the exact closed `Result[Float, ParseFloatError]` selected by the
+    /// checked source program. The status and variant contract matches
+    /// [`InstructionKind::ParseInt`].
+    ParseFloat {
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_syntax_variant: u32,
+        out_of_range_variant: u32,
+    },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
     ProductConstruct {
@@ -636,7 +659,9 @@ impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
-            Self::TextLength { text } => vec![*text],
+            Self::TextLength { text }
+            | Self::ParseInt { text, .. }
+            | Self::ParseFloat { text, .. } => vec![*text],
             Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::ListConstruct { elements } => elements.to_vec(),
             Self::ListLength { list } => vec![*list],
@@ -769,6 +794,7 @@ pub enum FaultCode {
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
+    InvalidDuration,
     ResourceClose,
 }
 
@@ -1045,6 +1071,16 @@ pub enum TerminatorKind {
         success: BlockTarget,
         fault: UnwindTarget,
     },
+    /// Continues through `success` when true or activates one canonical
+    /// source runtime fault and enters `fault` when false. Unlike a terminal
+    /// [`TerminatorKind::Fault`], the explicit unwind edge preserves lexical
+    /// cleanup and primary-fault precedence.
+    RuntimeGuard {
+        condition: ValueId,
+        code: FaultCode,
+        success: BlockTarget,
+        fault: UnwindTarget,
+    },
     /// Originates and reports a source fault at an inactive terminal boundary.
     Fault {
         metadata: FaultMetadata,
@@ -1057,6 +1093,10 @@ pub enum TerminatorKind {
 }
 
 impl TerminatorKind {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the closed terminator operand table is intentionally exhaustive in one place"
+    )]
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Jump(target) => target.arguments.to_vec(),
@@ -1143,6 +1183,12 @@ impl TerminatorKind {
                 success,
                 fault,
                 ..
+            }
+            | Self::RuntimeGuard {
+                condition,
+                success,
+                fault,
+                ..
             } => {
                 let mut operands =
                     Vec::with_capacity(1 + success.arguments.len() + fault.arguments.len());
@@ -1182,7 +1228,7 @@ impl TerminatorKind {
             Self::Invoke { normal, unwind, .. } => {
                 vec![preserve(normal.block), activate(unwind.block)]
             }
-            Self::Assert { success, fault, .. } => {
+            Self::Assert { success, fault, .. } | Self::RuntimeGuard { success, fault, .. } => {
                 vec![preserve(success.block), activate(fault.block)]
             }
             Self::Return(_) | Self::Fault { .. } | Self::ResumeFault => Vec::new(),

@@ -1,7 +1,8 @@
 use loom_codegen_ir::{
     BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, ContractFaultMetadata, Effects,
-    FaultMetadata, InstructionKind, Origin, Program, ProgramBuilder, ResultTarget, Signature,
-    TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode, dump_program,
+    FaultCode, FaultMetadata, InstructionKind, Origin, Program, ProgramBuilder, ResultTarget,
+    Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode,
+    dump_program,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type};
 
@@ -540,6 +541,61 @@ fn active_cleanup_keeps_the_primary_fault_across_a_secondary_checked_operation()
     program
         .finish_checked()
         .expect("fallible active cleanup preserves the primary fault state");
+}
+
+#[test]
+fn runtime_guard_rejects_a_forged_non_boolean_condition() {
+    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let int_ty = program.type_id(&Type::Int).expect("Int type");
+    let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
+    let function_id = program
+        .declare_function(
+            origin(109),
+            "runtime_guard.forged_condition",
+            Signature::new(vec![int_ty], unit_ty),
+            Effects::MAY_FAULT,
+        )
+        .expect("declare");
+    {
+        let mut function = program.function(function_id).expect("builder");
+        let entry = function.create_block().expect("entry");
+        let success = function.create_block().expect("success");
+        let fault = function.create_block().expect("fault");
+        function.set_entry(entry).expect("set entry");
+        let forged = function
+            .append_block_parameter(entry, int_ty)
+            .expect("forged condition");
+        function
+            .terminate(
+                entry,
+                terminator(
+                    109,
+                    TerminatorKind::RuntimeGuard {
+                        condition: forged,
+                        code: FaultCode::InvalidDuration,
+                        success: BlockTarget::new(success, Vec::new()),
+                        fault: UnwindTarget::new(fault, Vec::new()),
+                    },
+                ),
+            )
+            .expect("runtime guard");
+        let unit = function
+            .append_instruction(
+                success,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                origin(109),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(success, terminator(109, TerminatorKind::Return(unit)))
+            .expect("return");
+        function
+            .terminate(fault, terminator(109, TerminatorKind::ResumeFault))
+            .expect("resume fault");
+    }
+
+    assert_has_code(program.finish(), ValidationCode::TypeMismatch);
 }
 
 #[test]
