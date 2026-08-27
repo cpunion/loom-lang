@@ -23,6 +23,10 @@ async fn fastManagedWinner() Text {
     "fast".concat(" winner")
 }
 
+async fn completedUnit() Unit {
+    Unit
+}
+
 async fn exerciseSettled() Unit {
     let firstFailure, completed, secondFailure = Task.settled(
     faultedText("first"),
@@ -120,6 +124,21 @@ async fn exerciseSettled() Unit {
 }
 
 async fn exerciseRace() Unit {
+    // Unit has no payload storage. This keeps the zero-sized Task result on
+    // the same exact outcome ABI instead of giving it a special source path.
+    let unitWinner = Task.race(completedUnit()).await
+    match unitWinner {
+        Completed(value) => value
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+
     let completedWinner = Task.race(
     slowManagedLoser(73),
     fastManagedWinner()
