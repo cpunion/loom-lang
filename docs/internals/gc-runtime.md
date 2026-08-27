@@ -200,9 +200,12 @@ List or TextMap allocation use a runtime but construct no executor. A
 collecting List site roots and reloads its old backing and managed element. A
 collecting TextMap insertion similarly roots and reloads its old backing, Text
 key, and exact managed leaves of its value before copying into fresh functional
-storage. Repeated pointer offsets precisely cover every used or zeroed capacity
-cell. Text inside transparent/refined carriers and other dynamic producers
-remain outside the current typed LCIR slice.
+storage. Functional removal consumes the search key before its allocation
+boundary, roots and reloads exactly the source backing, and copies the surviving
+typed entries into new storage; missing and last-entry removals do not allocate.
+Repeated pointer offsets precisely cover every used or zeroed capacity cell.
+Text inside transparent/refined carriers and other dynamic producers remain
+outside the current typed LCIR slice.
 
 ## Source semantics
 

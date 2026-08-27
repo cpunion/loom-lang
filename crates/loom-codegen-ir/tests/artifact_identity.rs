@@ -560,7 +560,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
         ARTIFACT_IDENTITY_SCHEMA, 24,
-        "typed coroutine plans and closed dynamic catalogs are artifact identity inputs"
+        "typed TextMap operations and their exact equality CFG are artifact identity inputs"
     );
 }
 

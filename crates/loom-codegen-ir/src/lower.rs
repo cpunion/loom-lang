@@ -1117,7 +1117,7 @@ const fn is_scalar_type(ty: &Type) -> bool {
 }
 
 /// Returns the extra direct types needed to expand equality for one concrete
-/// value into a bounded LCIR CFG. Lists and TextMaps use finite loops with
+/// value into a bounded LCIR CFG. Lists and `TextMap` values use finite loops with
 /// canonical `Option[element]` or `Option[(Text, V)]` reads. Re-entering a
 /// nominal equality through either container is rejected here because
 /// recursively cloning that element CFG would not be a finite lowering plan.

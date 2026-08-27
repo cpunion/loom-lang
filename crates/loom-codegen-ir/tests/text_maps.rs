@@ -14,6 +14,10 @@ fn option(value: Type) -> Type {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one checked graph keeps every exact public and compiler-private TextMap result shape together"
+)]
 fn closed_text_map_instructions_have_exact_value_and_option_shapes() {
     let origin = Origin::synthetic(FunctionId(0));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
@@ -144,6 +148,10 @@ fn closed_text_map_instructions_have_exact_value_and_option_shapes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one forged graph proves all TextMap operand and result mismatches are rejected together"
+)]
 fn malformed_text_map_key_value_and_option_are_rejected_together() {
     let origin = Origin::synthetic(FunctionId(1));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));

@@ -142,20 +142,22 @@ never reads inactive carrier bytes. Inequality negates the complete equality
 result rather than changing component semantics. The same expansion is used
 for ordinary expressions and checked `requires`/`ensures` expressions.
 
-A concrete `List[T]` first compares lengths, then walks equal-length inputs by
-an Int index. Each iteration uses existing nonallocating `ListGet` operations
-and compares their canonical `Option[T]` results structurally. The loop
-backedge uses `IntSuccessorBelow` with the exact `index < length` true-edge
-proof, so it adds neither a checked-overflow fault nor a runtime helper. Reads
-create no alias-visible mutation and cross no collection safepoint; List value
+A concrete `List[T]` or `TextMap[V]` first compares lengths, then walks
+equal-length inputs by an Int index. List iterations use nonallocating `ListGet`
+operations and compare canonical `Option[T]` results. TextMap iterations read
+canonical sorted entries through the compiler-private nonallocating indexed
+operation and compare exact `Option[(Text, V)]` results. The loop backedge uses
+`IntSuccessorBelow` with the exact `index < length` true-edge proof, so it adds
+neither a checked-overflow fault nor a runtime helper. Reads create no
+alias-visible mutation and cross no collection safepoint; List and TextMap value
 semantics and typed GC roots are unchanged.
 
 Planning bounds the expanded equality CFG to 4,096 structural units and
-registers every implicit `Option[T]` before LCIR construction. Re-entering one
-nominal type through a List remains whole-artifact unsupported: inlining that
-coinductive semantic equality would make an unbounded CFG. A future reusable
-recursive comparison-instance plan can close that case without changing the
-source equality rule.
+registers every implicit `Option[T]` or `Option[(Text, V)]` before LCIR
+construction. Re-entering one nominal type through a List or TextMap remains
+whole-artifact unsupported: inlining that coinductive semantic equality would
+make an unbounded CFG. A future reusable recursive comparison-instance plan can
+close that case without changing the source equality rule.
 
 The representation-only recursive `Json` slice therefore supports
 construction, exhaustive matching, List/TextMap storage, copying, and precise
@@ -952,8 +954,9 @@ and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, typed resource-close edges, transient
-protected-receiver updates, and the checked value type of every block parameter
-and instruction result. Representation semantic
+protected-receiver updates, typed TextMap containment/removal/indexed-entry
+operations, and the checked value type of every block parameter and instruction
+result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
 compiler-private and has no compatibility or serialization guarantee.

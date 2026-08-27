@@ -29,6 +29,10 @@ fn verify() Result[Unit, Problem] {
     let missing_removed = ordered.remove("missing")
     let existing_removed = ordered.remove("z")
     let last_removed = first.remove("z")
+    let middle_source = TextMap[Int]().insert("z", 3).insert("m", 2).insert("a", 1)
+    let middle_removed = middle_source.remove("m")
+    let units = TextMap[Unit]().insert("z", Unit).insert("a", Unit)
+    let same_units = TextMap[Unit]().insert("a", Unit).insert("z", Unit)
 
     let text = TextMap[Text]().insert("name", join("Lo", "om"))
     let pair = Pair { label = join("Pa", "ir"), count = 7 }
@@ -78,6 +82,11 @@ fn verify() Result[Unit, Problem] {
     && existing_removed.contains("z") == false
     && last_removed.length() == 0
     && last_removed == empty
+    && middle_removed.length() == 2
+    && middle_removed.contains("a")
+    && middle_removed.contains("m") == false
+    && middle_removed.contains("z")
+    && units == same_units
     && alias.contains("z")
     && match alias.get("z") { Some(value) => value == 9, None => false }
     && match ordered.get("a") { Some(value) => value == 1, None => false }
