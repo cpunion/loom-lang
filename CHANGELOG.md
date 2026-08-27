@@ -69,6 +69,16 @@ artifact, or runtime compatibility.
   evidence, and Linux/MSVC object emission. Existing LCIR, artifact, object,
   cache, and runtime ABI versions are unchanged because equality expands into
   already-versioned typed instructions and control flow.
+- Typed LCIR now erases a reachable `dyn C` view directly to its concrete value
+  when the closed-world concept-and-associated-binding witness set proves one
+  closed nongeneric conformance. Dynamic requirements become direct typed
+  calls, mutable interface parameters preserve normal and fault-path writeback,
+  and dead conformances or unused method slots never reach LLVM. Competing or
+  open witness sets remain structured whole-artifact fallback; no runtime tag,
+  witness pointer, conformance registry, universal value, or indirect call was
+  added. The `lcir-dyn-unique` fixture and Core02 main route provide real CLI,
+  host, legacy-differential, and Linux/MSVC object evidence. Existing LCIR,
+  artifact, object, cache, and runtime ABI versions are unchanged.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
   representations. Generic field projection, contract evaluation, calls,

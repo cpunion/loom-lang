@@ -97,6 +97,15 @@ budgets. This rejection occurs during planning, before any partial LCIR is
 allocated. A generic function that is not reached cannot consume those budgets
 or change direct-versus-legacy route selection.
 
+For a concrete `dyn C` view, LCIR additionally groups the reachable witnesses
+by the exact concept and associated-type bindings. If that set contains one
+closed nongeneric conformance, the instance traversal resolves every dynamic
+requirement through that witness and records the resulting ordinary direct
+method edge. The view itself uses the concrete value representation, so LLVM
+receives no dispatch table, indirect call, type tag, or witness pointer. A
+missing, open, or competing witness set is a structured unsupported site; the
+compiler never guesses a target or consults all declared conformances.
+
 ## Why unused conformances stay dead
 
 Declaring `impl C for A` is not by itself a native edge. Code must reach a proof
@@ -120,6 +129,11 @@ The emitter declares and defines only the reachable function set and only live
 method slots for each witness. The selected development and release pass
 pipelines both finish with `globaldce`, which removes backend-introduced
 wrappers, globals, and helpers that LLVM proves unused.
+
+Unique-witness LCIR erasure removes the dispatch representation before LLVM.
+Only requirement slots actually called in the reachable graph become direct
+method instances; other methods on the selected conformance and every method
+on an unconstructed conformance are absent before backend DCE runs.
 
 The native-object fingerprint contains the reachability result and the bodies
 of reachable functions, not every private dead body. Consequently, an edit to
