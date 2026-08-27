@@ -38,6 +38,11 @@ pub const GC_MAX_OBJECT_POINTERS: u64 = 4_096;
 pub const GC_MAX_OBJECT_BYTES: u64 = 1 << 30;
 pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
 
+/// Zeroed typed allocator taking `(descriptor, allocation_size, output)`.
+///
+/// `output` must name writable pointer-sized storage whose address remains
+/// stable for the complete call, including any collection triggered by the
+/// allocator. The output cell must not reside in either moving heap.
 pub const TYPED_GC_ALLOC_SYMBOL: &str = "loom_gc_typed_alloc_v1";
 pub const TYPED_GC_ROOT_PUSH_SYMBOL: &str = "loom_gc_typed_root_push_v1";
 pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
@@ -152,10 +157,13 @@ pub struct LoomGcTypedRootDescriptor {
 /// Intrusive shadow-stack header for typed direct managed pointers.
 ///
 /// Each entry in `slots` points to writable pointer-sized storage containing
-/// either null, a runtime-managed typed allocation base, or an immortal/static
-/// pointer. The runtime rewrites managed entries after a moving collection.
-/// The pointer array is immutable while linked; `previous` and `flags` are
-/// runtime-owned fields.
+/// only null, the exact base of a runtime-managed typed allocation, or a
+/// compiler-proven process-lifetime static/immortal pointer. A legacy moving
+/// allocation, an interior pointer, and any other unregistered finite-lifetime
+/// pointer are invalid. Every slot cell address must remain stable from push
+/// through pop and must not itself reside in either moving heap. The runtime
+/// rewrites managed entries after a moving collection. The pointer array is
+/// immutable while linked; `previous` and `flags` are runtime-owned fields.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LoomGcTypedRootFrame {
@@ -172,8 +180,11 @@ pub struct LoomGcTypedRootFrame {
 /// `fixed_size` is the required pointer-bearing prefix. An allocation may be
 /// larger to hold pointer-free trailing storage. `pointer_offsets` is a
 /// strictly increasing array of `pointer_count` byte offsets from the object
-/// base to aligned pointer-sized managed-reference cells. Descriptor identity
-/// is compiler/runtime metadata and is not a source-visible type tag.
+/// base to aligned pointer-sized managed-reference cells. Each such cell obeys
+/// the same null/exact-typed-base/static-immortal target restriction as a typed
+/// root. In particular, typed metadata cannot hide a legacy moving reference
+/// or an interior reference. Descriptor identity is compiler/runtime metadata
+/// and is not a source-visible type tag.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LoomGcObjectDescriptor {

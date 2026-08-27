@@ -44,17 +44,25 @@ use temporary precise root scopes when they hold partially constructed values.
 
 Typed synchronous frames use the same state/bitmap model on a separate chain.
 Each live entry points to writable pointer-sized storage containing a direct
-managed reference. It is never interpreted as a universal `ValueSlot`.
-Null entries and pointers that do not equal a typed managed allocation base are
-left unchanged; this permits compiler-emitted immortal objects without adding
-a runtime tag or registration table.
+managed reference. It is never interpreted as a universal `ValueSlot`. A cell
+may contain only null, the exact base of a typed managed allocation, or a
+compiler-proven process-lifetime static/immortal pointer. Legacy moving object
+pointers, interior pointers, and other unregistered finite-lifetime pointers
+are forbidden. A legal static pointer is left unchanged without adding a
+runtime tag or registration table.
+
+The slot cells, slot-pointer array, descriptor, and frame have stable addresses
+for the entire linked interval. In particular, slot cells cannot live inside
+either moving heap. Generated code may update cell contents and the published
+state, but collection must never invalidate the storage that the frame names.
 
 Both descriptor forms are validated before a collection can increment its
 counter, trace, sweep, or move any allocation. One descriptor is limited to
 65,536 slots, 65,536 states, and 1,048,576 bitmap words in total across all
 states. Each independent chain is limited to 65,536 linked frames. The limits
 are shared ABI constants so compiler rejection and hostile-runtime-input
-validation agree.
+validation agree. The legacy LLVM emitter validates this pure root-map shape
+before allocating a bitmap or emitting a descriptor.
 
 Async values live across suspension are stored in Task slots. Coroutine
 descriptors provide the exact live bitmap for each state. Task results remain
@@ -72,6 +80,8 @@ object alignment, and a strictly increasing list of exact pointer-cell byte
 offsets. An allocation may append pointer-free trailing bytes. The allocator
 copies the validated offsets into its private side table, zero-initializes the
 complete allocation, and does not retain caller descriptor or offset pointers.
+Every non-null fixed pointer cell follows the same exact-typed-base or
+static/immortal restriction as a typed root.
 
 The version-one symbols are:
 
@@ -87,11 +97,13 @@ advertised alignment. Invalid metadata, ABI mismatch, and resource exhaustion
 have distinct status codes; ordinary out-of-memory remains an uncatchable
 process-level fault.
 
-`output` is set to null before validation or an allocation safepoint. After the
-runtime owns the allocation and copied trace metadata, it publishes the zeroed
-base address to `output`. A runtime helper may stage source data, allocate into
-a private out-cell, initialize without another safepoint, and publish its final
-language result last.
+`output` is set to null before validation or an allocation safepoint. Its cell
+address must remain stable throughout the complete call and any triggered
+collection, and the cell cannot reside in either moving heap. After the runtime
+owns the allocation and copied trace metadata, it publishes the zeroed base
+address to `output`. A runtime helper may stage source data, allocate into a
+stable private out-cell, initialize without another safepoint, and publish its
+final language result last.
 
 ## Moving collection
 
@@ -140,7 +152,8 @@ bounded pin protocol; ordinary Loom values do not become immovable.
 
 Runtime unit tests cover activation, attachment, both root descriptor forms,
 shared resource bounds, copied typed layout metadata, advertised alignment,
-forced collection, typed parent/child and aliased roots, legacy/typed
+forced collection, pointer-free trailing-byte preservation, typed
+parent/child graphs, cycles, aliased and state-selective roots, legacy/typed
 coexistence, relocation, nested managed values, witness mark/sweep, and
 partial-construction helpers. The synchronous typed tests also prove that the
 heap path constructs no executor. LLVM integration tests exercise

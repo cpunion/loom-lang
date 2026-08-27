@@ -995,7 +995,9 @@ unsafe fn validate_object_descriptor(
 ///
 /// The runtime copies all validated pointer offsets before any collection and
 /// never retains either caller metadata pointer. `allocation_size` may exceed
-/// the fixed pointer-bearing prefix only for pointer-free trailing bytes.
+/// the fixed pointer-bearing prefix only for pointer-free trailing bytes. The
+/// caller-owned output cell must have a stable non-heap address for this whole
+/// call because descriptor validation can be followed by a collection.
 pub(crate) unsafe fn allocate_typed_object(
     descriptor: *const LoomGcObjectDescriptor,
     allocation_size: u64,
@@ -2883,6 +2885,7 @@ mod tests {
     #[test]
     fn typed_graph_moves_rewrites_aliases_and_reclaims_without_an_executor() {
         static IMMORTAL_WORD: u64 = 0xdecaf_bad5eed;
+        const TRAILING_BYTES: &[u8] = b"trailing-typed-bytes";
 
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
@@ -2902,13 +2905,18 @@ mod tests {
             assert!((*runtime).attached_executor_pointer().is_null());
             assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
 
-            let original_child =
-                typed_allocate(&raw const leaf_descriptor, size_of::<TestTypedLeaf>())
-                    .cast::<TestTypedLeaf>();
+            let child_allocation_size = size_of::<TestTypedLeaf>() + TRAILING_BYTES.len();
+            let original_child = typed_allocate(&raw const leaf_descriptor, child_allocation_size)
+                .cast::<TestTypedLeaf>();
             assert_eq!((*original_child).marker, 0);
             assert_eq!((*original_child).checksum, 0);
             (*original_child).marker = 41;
             (*original_child).checksum = 43;
+            ptr::copy_nonoverlapping(
+                TRAILING_BYTES.as_ptr(),
+                original_child.cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                TRAILING_BYTES.len(),
+            );
             frame.roots[0] = original_child.cast();
 
             // Exercise the allocation safepoint: the child is direct-pointer
@@ -2918,6 +2926,13 @@ mod tests {
                 .cast::<TestTypedParent>();
             (*runtime).heap.collect_before_every_allocation = false;
             assert_ne!(frame.roots[0], original_child.cast());
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    frame.roots[0].cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                    TRAILING_BYTES.len(),
+                ),
+                TRAILING_BYTES,
+            );
             assert!((*parent).child.is_null());
             assert_eq!((*parent).marker, 0);
             (*parent).child = frame.roots[0];
@@ -2959,6 +2974,13 @@ mod tests {
             let moved_child = (*moved_parent).child.cast::<TestTypedLeaf>();
             assert_eq!((*moved_child).marker, 41);
             assert_eq!((*moved_child).checksum, 43);
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    moved_child.cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                    TRAILING_BYTES.len(),
+                ),
+                TRAILING_BYTES,
+            );
             assert_eq!((*runtime).heap.typed_object_count(), 2);
             assert_eq!((*runtime).heap.reclaimed, 1);
             assert!((*runtime).attached_executor_pointer().is_null());
@@ -2969,6 +2991,86 @@ mod tests {
             assert_eq!(safepoint_v1(), GC_OK);
             assert_eq!((*runtime).heap.typed_object_count(), 0);
             assert_eq!(frame.roots[2], immortal);
+
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_cycles_are_traced_and_rewritten() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestTypedRootFrame::<1>::all_live();
+        let pointer_offsets = [0_u64];
+        let descriptor = LoomGcObjectDescriptor {
+            abi_version: TYPED_GC_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<TestTypedParent>() as u64,
+            object_align: align_of::<TestTypedParent>() as u64,
+            pointer_count: 1,
+            pointer_offsets: pointer_offsets.as_ptr(),
+        };
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+            let first = typed_allocate(&raw const descriptor, size_of::<TestTypedParent>())
+                .cast::<TestTypedParent>();
+            frame.roots[0] = first.cast();
+            let second = typed_allocate(&raw const descriptor, size_of::<TestTypedParent>())
+                .cast::<TestTypedParent>();
+            (*first).child = second.cast();
+            (*first).marker = 11;
+            (*second).child = first.cast();
+            (*second).marker = 13;
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            let moved_first = frame.roots[0].cast::<TestTypedParent>();
+            let moved_second = (*moved_first).child.cast::<TestTypedParent>();
+            assert_ne!(moved_first, first);
+            assert_ne!(moved_second, second);
+            assert_eq!((*moved_first).marker, 11);
+            assert_eq!((*moved_second).marker, 13);
+            assert_eq!((*moved_second).child, moved_first.cast());
+            assert_eq!((*runtime).heap.typed_object_count(), 2);
+
+            frame.roots[0] = ptr::null_mut();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_root_state_selects_only_live_cells() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestTypedRootFrame::<2>::new(2, &[0b01, 0b10]);
+        let descriptor = typed_leaf_descriptor();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+            let first = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            let initially_dead = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            frame.roots[0] = first;
+            frame.roots[1] = initially_dead;
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
+            assert_ne!(frame.roots[0], first);
+            assert_eq!(frame.roots[1], initially_dead);
+
+            let second = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            frame.roots[1] = second;
+            frame.header.state = 1;
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
+            assert_ne!(frame.roots[1], second);
 
             assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
             assert_eq!(deactivate_runtime_v1(runtime), GC_OK);

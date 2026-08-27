@@ -162,7 +162,10 @@ through a versioned shadow-stack descriptor and per-state bitmaps. A separate
 typed shadow-stack descriptor uses the same state/bitmap shape but its entries
 point to direct pointer cells; the collector never guesses which slot
 representation is present. Coroutine descriptors continue to publish live
-universal Task-frame slots and captured witnesses.
+universal Task-frame slots and captured witnesses. A typed root cell has a
+stable address for its complete linked interval, may not reside in either
+moving heap, and contains only null, an exact typed allocation base, or a
+compiler-proven process-lifetime static/immortal pointer.
 
 Typed managed objects do not carry a universal tag. A
 `LoomGcObjectDescriptor` defines the required fixed prefix, exact allocation
@@ -171,7 +174,10 @@ cell in that prefix. Pointer-free trailing bytes may extend the allocation.
 The runtime validates and copies this metadata into a side table before an
 allocation can become visible. At a moving collection it follows only those
 cells and rewrites them together with typed root cells. Null and unregistered
-static or immortal pointers remain unchanged.
+static or immortal pointers remain unchanged. Legacy moving pointers, interior
+pointers, and unregistered finite-lifetime pointers are not legal typed cell
+contents. The typed allocator's output cell likewise has a stable non-heap
+address throughout its call and any collection that call triggers.
 
 The first runtime slice deliberately implements only fixed pointer offsets. A
 future repeated-element container shape must version and bound its descriptor
