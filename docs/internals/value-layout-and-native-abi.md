@@ -105,13 +105,41 @@ construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
 Generic records, managed values other than Text leaves in products, protected projections,
-runtime-checked construction, concepts, contracts, cleanup, and async
-operations still select the complete universal route. Typed LCIR does not
-change the legacy runtime ABI or make either object ABI public.
+runtime-checked construction, concepts, contract or cleanup shapes outside the
+direct slices, and unsupported async shapes still select the complete universal
+route. Typed LCIR does not change the legacy runtime ABI or make either object
+ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
 representation and migration design.
+
+## Typed Tasks and coroutine frames
+
+On the currently pinned 64-bit typed-task ABI, the direct representation of
+every admitted `Task[T]` is one opaque scheduler-owned pointer (`TaskHandle`).
+The exact `T` remains part of the LCIR semantic type and determines result
+storage and take operations, but it adds no payload words, source-visible tag,
+or managed-heap reference to the handle. Task handles are stable for their
+scheduler lifetime and are not moving-GC roots.
+
+A typed coroutine frame is target-laid out from its checked plan. It contains
+state, parameters, one ordered child-handle row and exact live-value row per
+`AwaitTasks` suspension, and the exact completed result. Each plan row records
+the output type of every awaited child before the forwarded live types. The
+descriptor lists managed-leaf offsets only for values live in each state and
+for the completed result; opaque child handles are scheduler bookkeeping, not
+GC pointer cells.
+
+An immediately awaited fixed tuple or fixed-argument `Task.all` uses that
+multi-child suspension row directly. A first-class stored `Task.all` uses a
+separate exact composite frame containing state, ordered child handles, and the
+target-laid-out heterogeneous result tuple. The `TaskJoinAll` result is still a
+single opaque handle; identical tuple shapes may share the immutable descriptor
+and callback. A one-child fixed join retains a one-field tuple result rather
+than collapsing its type. No universal `ValueSlot` or runtime-described join
+result participates in either path. Dynamically sized joins and
+`Task.settled`/`Task.any`/`Task.race` remain complete fallback.
 
 ## `Text`
 
@@ -227,8 +255,10 @@ tracing. Synchronous native frames publish pointers to live universal slots
 through a versioned shadow-stack descriptor and per-state bitmaps. A separate
 typed shadow-stack descriptor uses the same state/bitmap shape but its entries
 point to direct pointer cells; the collector never guesses which slot
-representation is present. Coroutine descriptors continue to publish live
-universal Task-frame slots and captured witnesses. A typed root cell has a
+representation is present. Legacy coroutine descriptors continue to publish
+live universal Task-frame slots and captured witnesses. Typed coroutine and
+stored-join descriptors instead publish exact target byte offsets and state
+bitmaps for their statically known managed leaves. A typed root cell has a
 stable address for its complete linked interval, may not reside in either
 moving heap, and contains only null, an exact typed allocation base, or a
 compiler-proven process-lifetime static/immortal pointer.
@@ -272,6 +302,17 @@ returns the established opaque typed Task handle. Its `Task[Unit]` frame has no
 managed roots and its result has zero size, so it adds no source-value layout.
 The helper advances the native runtime component to 16 with `typed-timer-v1`
 and `runtime-v10`; typed-task v1 and wait v1 remain unchanged.
+
+The additive
+`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`
+helper atomically transfers a nonempty ordered set of published typed children
+from the active structured parent into one initialized unpublished composite,
+then publishes that composite. It validates all pointers and ownership edges
+and finishes fallible reservations before the first topology mutation; an error
+therefore preserves the original ownership and ready-queue state. This advances
+the native runtime component to 17 with `typed-task-adopt-v1` and
+`runtime-v11`; `typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain
+unchanged.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof

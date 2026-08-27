@@ -28,7 +28,9 @@ workspace does not silently fall back to another LLVM major version.
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
 primitive values, literal or concat-produced `Text`, structural tuples, closed
 records, established transparent refined values, concrete managed Lists, and
-compiler-private concrete `TextMap[V]` values.
+compiler-private concrete `TextMap[V]` values. Its checked coroutine slice also
+covers ordered multi-child awaits and nonempty fixed-arity heterogeneous
+`Task.all` values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -368,6 +370,41 @@ matching, and exact moving-GC roots are direct. Json equality, parsing, and
 formatting are separate coverage boundaries and still select whole-artifact
 fallback when reachable.
 
+## Direct typed Tasks and fixed `Task.all`
+
+On the currently pinned 64-bit typed-task ABI, each `AwaitTasks` terminator
+carries one or more ordered canonical Task handles. Its checked coroutine-plan
+row records the exact output type for every child, followed by the exact live
+values forwarded to the continuation. LLVM stores all child handles and live
+values in the target-laid-out suspension row, prepares one structured `all`
+join, and adds each child in source order. On completion it takes each result
+using that child's exact size/alignment, reloads the live row, and enters the
+continuation with the child results first. A normal one-child await is this same
+path with an arity of one.
+
+An immediately awaited fixed tuple or fixed-argument `Task.all` lowers directly
+to multi-child `AwaitTasks`, then constructs the heterogeneous result tuple in
+the continuation. A stored fixed `Task.all` uses the `TaskJoinAll` instruction
+and produces an exact `Task[(T0, ..., Tn)]`; one child still produces a
+one-field tuple. The emitter generates a target-laid-out composite frame and an
+immutable typed-task descriptor for each distinct static result shape, reusing
+the descriptor and callback across matching sites. The callback takes the
+ordered child values into the exact tuple and publishes only its statically
+known managed leaves.
+
+The composite is initialized while unpublished. Generated code then passes a
+temporary contiguous child-pointer array to
+`loom_typed_task_publish_adopting_v1`. That call validates and reserves the
+complete ownership transfer before atomically replacing the active parent's
+selected child edges with the published composite. A nonzero status leaves the
+topology unchanged; generated code aborts the unpublished frame and traps rather
+than entering a partially adopted graph. Neither direct nor stored fixed joins
+call the universal join constructor or universal join-result helpers.
+
+This direct slice is deliberately static and nonempty. A list-sized `Task.all`
+and every `Task.settled`, `Task.any`, or `Task.race` remain reachable
+`Unsupported` input and select the complete legacy object.
+
 ## Direct lexical cleanup
 
 LCIR contains the already expanded control flow for `defer`, `scoped`, and
@@ -448,9 +485,10 @@ is correct.
 
 ## Object identity and linking
 
-Object identities are route-separated:
+The canonical textual dump is `lcir 26`, and the checked artifact identity uses
+schema 27. Object identities are route-separated:
 
-- `loom-lcir-native-object-v22` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v23` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -462,7 +500,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v27` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v28` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -472,8 +510,9 @@ Text semantics, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
-typed Task creation, fallible timer construction, suspension edges, and exact
-frame-root rows, plus
+typed Task creation, fallible timer construction, ordered multi-child
+suspension edges, exact stored `Task.all` composites, and exact frame-root rows,
+plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -514,6 +553,13 @@ so the runtime receives an absolute deadline. It does not route through
 `loom_task_from_wait_source` or a universal value. This advances the native
 component to 16 with `typed-timer-v1` and `runtime-v10`; typed-task v1, wait v1,
 `text-v3`, and `gc-v9` remain unchanged.
+The additive
+`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`
+boundary validates one complete ordered typed-child transfer, performs all
+fallible reservations, then publishes the composite and rewrites ownership in
+one allocation-free commit. It advances the native component to 17 with
+`typed-task-adopt-v1` and `runtime-v11`; `typed-task-v1`, `typed-timer-v1`,
+`wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives
