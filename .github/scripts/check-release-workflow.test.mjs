@@ -28,18 +28,26 @@ test("requires every named PowerShell bootstrap argument", () => {
   );
 });
 
-test("rejects duplicated download policy and unsplatted native arguments", () => {
+test("rejects duplicated downloads, legacy rebuilds, and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
     ci: [
       "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
       "https://github.com/llvm/llvm-project/releases/download/example",
+      "https://gitlab.gnome.org/GNOME/libxml2/-/archive/example",
     ].join("\n"),
     release:
       "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
-    bootstrap: "& curl.exe --output archive url\n& cmake.exe -S source -B build",
+    bootstrap: [
+      "& curl.exe --output archive url",
+      "& tar.exe -xf archive",
+      "$libxmlVersion = 'legacy'",
+      "& cmake.exe -S source -B build",
+    ].join("\n"),
     argumentTest: "",
   });
   assert.ok(errors.some((error) => error.includes("duplicates the pinned LLVM download")));
+  assert.ok(errors.some((error) => error.includes("retired static libxml2 rebuild")));
   assert.ok(errors.some((error) => error.includes("@downloadArguments")));
-  assert.ok(errors.some((error) => error.includes("@libxmlOptions")));
+  assert.ok(errors.some((error) => error.includes("@unpackArguments")));
+  assert.ok(errors.some((error) => error.includes("official LLVM-C DLL/import library")));
 });
