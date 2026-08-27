@@ -438,15 +438,9 @@ pub fn link_object_with_runtime_bundle(
         )
     })?;
     if !result.status.success() {
-        let detail = String::from_utf8_lossy(&result.stderr);
-        let detail = detail.trim();
         return Err(CodegenError::new(
             "NativeLinkFailed",
-            if detail.is_empty() {
-                "selected linker failed".to_owned()
-            } else {
-                detail.to_owned()
-            },
+            failed_command_detail(&result.stdout, &result.stderr, "selected linker failed"),
         ));
     }
     verify_runtime_snapshot(&runtime_snapshot, bundle.archive_sha256())?;
@@ -657,6 +651,19 @@ fn command_error(
     match error {
         BoundedCommandError::Io(error) => CodegenError::new(io_code, format!("{program}: {error}")),
         BoundedCommandError::OutputLimit => CodegenError::new(limit_code, limit_message),
+    }
+}
+
+fn failed_command_detail(stdout: &[u8], stderr: &[u8], fallback: &str) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stdout = stdout.trim();
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => fallback.to_owned(),
+        (false, true) => stdout.to_owned(),
+        (true, false) => stderr.to_owned(),
+        (false, false) => format!("{stdout}\n{stderr}"),
     }
 }
 
@@ -1187,6 +1194,20 @@ fn valid_digest(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_linker_detail_preserves_diagnostics_from_both_streams() {
+        assert_eq!(
+            failed_command_detail(
+                b"LINK : fatal error LNK1104: cannot open file 'example.lib'\r\n",
+                b"clang: error: linker command failed\n",
+                "fallback",
+            ),
+            "LINK : fatal error LNK1104: cannot open file 'example.lib'\n\
+             clang: error: linker command failed"
+        );
+        assert_eq!(failed_command_detail(b"", b"", "fallback"), "fallback");
+    }
 
     #[test]
     fn staged_msvc_pdb_is_published_to_the_final_companion_path() {
