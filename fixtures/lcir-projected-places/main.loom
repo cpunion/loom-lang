@@ -17,6 +17,11 @@ impl Cell {
         self.value = next
         self.value
     }
+
+    method setAndKeep[T](mut self, next Int, value T) T {
+        self.value = next
+        value
+    }
 }
 
 fn nestedSibling() Holder {
@@ -28,6 +33,7 @@ fn nestedSibling() Holder {
         enabled = true,
     }
     discard holder.pair.left.set(holder.pair.right.set(12))
+    discard holder.pair.right.setAndKeep(12, true)
     holder
 }
 
