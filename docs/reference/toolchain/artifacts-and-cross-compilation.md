@@ -35,10 +35,11 @@ the compiler version needed to reproduce important artifacts.
 
 With no `--target-triple`, LLVM creates a host target machine. Linux and macOS
 use the actual host CPU and feature set. Windows uses the x86-64 generic CPU
-baseline and no extra features: this avoids LLVM 19's unsafe static-MSVC host
-feature probe, matches the portable runtime archive, and gives compiler caches
-a deterministic identity. The emitted PIC object is linked only through a
-validated runtime bundle. The compiler resolves that bundle in this order:
+baseline and no extra features, matching the portable runtime archive and
+giving compiler caches a deterministic identity without an
+environment-dependent host-feature query. The emitted PIC object is linked
+only through a validated runtime bundle. The compiler resolves that bundle in
+this order:
 
 1. `--runtime-bundle DIR`;
 2. `LOOM_RUNTIME_BUNDLE`;
@@ -115,6 +116,13 @@ Packing does not compile a runtime and does not turn a host archive into a
 cross-target archive. Build `loom-runtime` for the intended target with the
 generic CPU policy before packing it. Object emission, `check`, and the
 interpreter never discover or load a native runtime bundle.
+
+On Windows x86-64 MSVC, `runtime pack` uses the compiler target and canonical
+LLVM 19 data layout embedded at compiler build time. Packaging therefore does
+not initialize a target machine merely to recover immutable host identity.
+Linux and macOS continue to derive that identity from their native target
+machine. Cross-target object emission always validates the requested LLVM
+target independently.
 
 ## Release artifacts
 
