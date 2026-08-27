@@ -322,12 +322,15 @@ initialize it without a safepoint, and publish the result last. OOM is an
 uncatchable process-level fault; every other nonzero status fails closed. LLVM
 publishes exact typed-root states before concat and transitively collecting
 calls. A direct Text value has one stable cell; a live unboxed product has one
-cell per deterministic Text-leaf projection. Definitions and phis publish the
-leaves, aggregate uses are reconstructed from post-safepoint reloads, and every
-nonempty frame is popped on all source exits. Root-map ABI-limit excess is
-`ProgramTooLarge`, not fallback. No universal root chain or executor
-participates in this path. Product leaf rooting reuses typed-shadow-stack v1 and
-did not change runtime ABI component 11 or `runtime-v5`.
+cell per deterministic Text-leaf projection. A closed sum catalogs candidate
+cells for every variant, conjoins nested tag predicates, publishes only the
+active variant, and clears all inactive candidates. Definitions and phis
+publish the leaves, aggregate uses are reconstructed progressively from
+post-safepoint reloads, and every nonempty frame is popped on all source exits.
+Root-map ABI-limit excess is `ProgramTooLarge`, not fallback. No universal root
+chain or executor participates in this path. Product and sum leaf rooting reuse
+typed-shadow-stack v1; sum support itself does not advance runtime component 13
+or `runtime-v7`.
 
 Typed File and Socket cleanup calls
 `loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)` directly.

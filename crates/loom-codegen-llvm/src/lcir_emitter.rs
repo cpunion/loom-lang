@@ -26,8 +26,8 @@ use inkwell::types::{
     AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, IntType, StructType,
 };
 use inkwell::values::{
-    AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PhiValue,
-    PointerValue, UnnamedAddress,
+    ArrayValue, AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
+    PhiValue, PointerValue, UnnamedAddress,
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
@@ -35,9 +35,10 @@ use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
-    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootSlot, ManagedSafepoint, Origin,
-    Repr, ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
-    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
+    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootProjection, ManagedRootSlot,
+    ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr,
+    Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId,
+    ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_runtime_abi::{
@@ -2019,16 +2020,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         slots: &[ManagedRootSlot],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         for (index, slot) in slots.iter().enumerate() {
-            let projection = slot
-                .projection()
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(".");
+            let projection = Self::managed_projection_name(slot.projection());
             let name = if projection.is_empty() {
                 format!("managed.root.v{}", slot.value().raw())
             } else {
-                format!("managed.root.v{}.p{projection}", slot.value().raw())
+                format!("managed.root.v{}.{projection}", slot.value().raw())
             };
             let cell = self
                 .backend
@@ -2272,15 +2268,30 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("managed-root range for {value} contains {}", slot.value()),
                 ));
             }
-            let leaf = self.project_value(raw, slot.projection())?;
-            let BasicValueEnum::PointerValue(pointer) = leaf else {
-                return Err(CodegenError::new(
-                    "LlvmAbiDefect",
-                    format!(
-                        "managed-root projection {:?} of {value} is not a pointer",
-                        slot.projection()
-                    ),
-                ));
+            let ty = self
+                .source
+                .value(value)
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("managed-root value {value} disappeared"),
+                    )
+                })?
+                .ty();
+            let (pointer, active) = self.project_managed_root(raw, ty, slot.projection())?;
+            let pointer = if let Some(active) = active {
+                self.backend
+                    .builder
+                    .build_select(
+                        active,
+                        pointer,
+                        self.backend.ptr_type.const_null(),
+                        "managed.root.active.pointer",
+                    )
+                    .map_err(builder_error)?
+                    .into_pointer_value()
+            } else {
+                pointer
             };
             let cell = self
                 .root_cells
@@ -2298,35 +2309,221 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn project_value(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "typed product and sum projection keep tag guards and physical decoding in one auditable traversal"
+    )]
+    fn project_managed_root(
         &self,
         mut value: BasicValueEnum<'ctx>,
-        projection: &[u32],
-    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        for field in projection {
-            let BasicValueEnum::StructValue(aggregate) = value else {
-                return Err(CodegenError::new(
-                    "LlvmAbiDefect",
-                    format!("managed-root projection {projection:?} crosses a non-product"),
-                ));
-            };
-            value = self
-                .backend
-                .builder
-                .build_extract_value(aggregate, *field, "managed.root.extract")
-                .map_err(builder_error)?;
+        mut ty: ValueTypeId,
+        projection: &[ManagedRootProjection],
+    ) -> Result<(PointerValue<'ctx>, Option<IntValue<'ctx>>), CodegenError> {
+        let representations = self.backend.artifact.representations();
+        let mut active = None;
+        for step in projection {
+            let value_type = representations.value_type(ty).ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}"))
+            })?;
+            match step {
+                ManagedRootProjection::ProductField(field) => {
+                    let Repr::Product(product) = representations
+                        .repr(value_type.repr())
+                        .copied()
+                        .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("missing representation for LCIR type {ty}"),
+                        )
+                    })?
+                    else {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!(
+                                "managed-root projection {projection:?} uses a product step on {ty}"
+                            ),
+                        ));
+                    };
+                    let product = representations.product(product).ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("missing product representation for {ty}"),
+                        )
+                    })?;
+                    ty = product
+                        .fields()
+                        .get(usize::try_from(*field).map_err(|_| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "managed product field is too wide",
+                            )
+                        })?)
+                        .copied()
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!("managed product projection field {field} is out of range"),
+                            )
+                        })?;
+                    value = self
+                        .backend
+                        .builder
+                        .build_extract_value(
+                            value.into_struct_value(),
+                            *field,
+                            "managed.root.product.extract",
+                        )
+                        .map_err(builder_error)?;
+                }
+                ManagedRootProjection::SumVariantField { variant, field } => {
+                    let sum_ty = ty;
+                    let sum = self.backend.sum_repr(ty)?;
+                    let variant_index = usize::try_from(*variant).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "managed sum variant is too wide")
+                    })?;
+                    ty = sum
+                        .variants()
+                        .get(variant_index)
+                        .and_then(|payload| {
+                            usize::try_from(*field)
+                                .ok()
+                                .and_then(|field| payload.fields().get(field))
+                        })
+                        .copied()
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!(
+                                    "managed sum projection variant {variant} field {field} is out of range"
+                                ),
+                            )
+                        })?;
+                    let layout = self.backend.sum_layout(sum_ty)?;
+                    let payload_type =
+                        layout.payloads.get(variant_index).copied().ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!("managed sum projection variant {variant} disappeared"),
+                            )
+                        })?;
+                    let payload = match layout.tag {
+                        SumTagRepr::Tagless => {
+                            if *variant != 0 {
+                                return Err(CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "tagless managed sum projection names a nonzero variant",
+                                ));
+                            }
+                            value.into_struct_value()
+                        }
+                        SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                            let aggregate = value.into_struct_value();
+                            let tag = self
+                                .backend
+                                .builder
+                                .build_extract_value(aggregate, 0, "managed.root.sum.tag")
+                                .map_err(builder_error)?
+                                .into_int_value();
+                            let variant_active = self
+                                .backend
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::EQ,
+                                    tag,
+                                    tag.get_type().const_int(u64::from(*variant), false),
+                                    "managed.root.sum.variant.active",
+                                )
+                                .map_err(builder_error)?;
+                            let combined = if let Some(parent_active) = active {
+                                self.backend
+                                    .builder
+                                    .build_and(
+                                        parent_active,
+                                        variant_active,
+                                        "managed.root.sum.path.active",
+                                    )
+                                    .map_err(builder_error)?
+                            } else {
+                                variant_active
+                            };
+                            active = Some(combined);
+                            let carrier_type = layout.carrier.ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "managed sum projection has no payload carrier",
+                                )
+                            })?;
+                            let carrier = self
+                                .backend
+                                .builder
+                                .build_extract_value(aggregate, 1, "managed.root.sum.carrier")
+                                .map_err(builder_error)?;
+                            // Never decode arbitrary carrier bits for an inactive or
+                            // malformed tag. Inactive candidates unpack an all-zero
+                            // carrier and are published as null below.
+                            let safe_carrier = self
+                                .backend
+                                .builder
+                                .build_select(
+                                    combined,
+                                    carrier,
+                                    carrier_type.const_zero().into(),
+                                    "managed.root.sum.safe.carrier",
+                                )
+                                .map_err(builder_error)?;
+                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?
+                        }
+                    };
+                    value = self
+                        .backend
+                        .builder
+                        .build_extract_value(payload, *field, "managed.root.sum.field")
+                        .map_err(builder_error)?;
+                }
+            }
         }
-        Ok(value)
+        let value_type = representations
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
+        if !matches!(
+            representations.repr(value_type.repr()),
+            Some(Repr::ManagedPointer)
+        ) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("managed-root projection {projection:?} does not end at a managed pointer"),
+            ));
+        }
+        let BasicValueEnum::PointerValue(pointer) = value else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("managed-root projection {projection:?} is not an LLVM pointer"),
+            ));
+        };
+        Ok((pointer, active))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "recursive aggregate reconstruction keeps active-variant selection beside each typed projection case"
+    )]
     fn rebuild_projected_value(
         &self,
         aggregate: BasicValueEnum<'ctx>,
-        projection: &[u32],
+        ty: ValueTypeId,
+        projection: &[ManagedRootProjection],
         replacement: PointerValue<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let representations = self.backend.artifact.representations();
+        let value_type = representations
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
         if projection.is_empty() {
-            if !matches!(aggregate, BasicValueEnum::PointerValue(_)) {
+            if !matches!(
+                representations.repr(value_type.repr()),
+                Some(Repr::ManagedPointer)
+            ) || !matches!(aggregate, BasicValueEnum::PointerValue(_))
+            {
                 return Err(CodegenError::new(
                     "LlvmAbiDefect",
                     "empty managed-root projection targets a non-pointer",
@@ -2334,39 +2531,217 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             return Ok(replacement.into());
         }
-        let mut parents = Vec::with_capacity(projection.len());
-        let mut current = aggregate;
-        for field in projection {
-            let BasicValueEnum::StructValue(parent) = current else {
-                return Err(CodegenError::new(
-                    "LlvmAbiDefect",
-                    format!("managed-root projection {projection:?} crosses a non-product"),
-                ));
-            };
-            current = self
-                .backend
-                .builder
-                .build_extract_value(parent, *field, "managed.root.rebuild.extract")
-                .map_err(builder_error)?;
-            parents.push((parent, *field));
+        let (step, remaining) = projection.split_first().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "managed-root projection disappeared")
+        })?;
+        match step {
+            ManagedRootProjection::ProductField(field) => {
+                let Repr::Product(product) = representations
+                    .repr(value_type.repr())
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("missing representation for LCIR type {ty}"),
+                        )
+                    })?
+                else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!(
+                            "managed-root projection {projection:?} uses a product step on {ty}"
+                        ),
+                    ));
+                };
+                let child_ty = representations
+                    .product(product)
+                    .and_then(|product| {
+                        usize::try_from(*field)
+                            .ok()
+                            .and_then(|field| product.fields().get(field))
+                    })
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("managed product projection field {field} is out of range"),
+                        )
+                    })?;
+                let parent = aggregate.into_struct_value();
+                let child = self
+                    .backend
+                    .builder
+                    .build_extract_value(parent, *field, "managed.root.rebuild.product.extract")
+                    .map_err(builder_error)?;
+                let rebuilt =
+                    self.rebuild_projected_value(child, child_ty, remaining, replacement)?;
+                Ok(self
+                    .backend
+                    .builder
+                    .build_insert_value(parent, rebuilt, *field, "managed.root.rebuild.product")
+                    .map_err(builder_error)?
+                    .into_struct_value()
+                    .into())
+            }
+            ManagedRootProjection::SumVariantField { variant, field } => {
+                let sum = self.backend.sum_repr(ty)?;
+                let variant_index = usize::try_from(*variant).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "managed sum variant is too wide")
+                })?;
+                let child_ty = sum
+                    .variants()
+                    .get(variant_index)
+                    .and_then(|payload| {
+                        usize::try_from(*field)
+                            .ok()
+                            .and_then(|field| payload.fields().get(field))
+                    })
+                    .copied()
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!(
+                                "managed sum projection variant {variant} field {field} is out of range"
+                            ),
+                        )
+                    })?;
+                let layout = self.backend.sum_layout(ty)?;
+                let payload_type =
+                    layout.payloads.get(variant_index).copied().ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("managed sum projection variant {variant} disappeared"),
+                        )
+                    })?;
+                match layout.tag {
+                    SumTagRepr::Tagless => {
+                        if *variant != 0 {
+                            return Err(CodegenError::new(
+                                "LlvmAbiDefect",
+                                "tagless managed sum projection names a nonzero variant",
+                            ));
+                        }
+                        let payload = aggregate.into_struct_value();
+                        let child = self
+                            .backend
+                            .builder
+                            .build_extract_value(payload, *field, "managed.root.rebuild.sum.field")
+                            .map_err(builder_error)?;
+                        let rebuilt =
+                            self.rebuild_projected_value(child, child_ty, remaining, replacement)?;
+                        Ok(self
+                            .backend
+                            .builder
+                            .build_insert_value(
+                                payload,
+                                rebuilt,
+                                *field,
+                                "managed.root.rebuild.tagless",
+                            )
+                            .map_err(builder_error)?
+                            .into_struct_value()
+                            .into())
+                    }
+                    SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                        let physical = aggregate.into_struct_value();
+                        let tag = self
+                            .backend
+                            .builder
+                            .build_extract_value(physical, 0, "managed.root.rebuild.sum.tag")
+                            .map_err(builder_error)?
+                            .into_int_value();
+                        let active = self
+                            .backend
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                tag,
+                                tag.get_type().const_int(u64::from(*variant), false),
+                                "managed.root.rebuild.sum.active",
+                            )
+                            .map_err(builder_error)?;
+                        let carrier_type = layout.carrier.ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "managed sum projection has no payload carrier",
+                            )
+                        })?;
+                        let carrier = self
+                            .backend
+                            .builder
+                            .build_extract_value(physical, 1, "managed.root.rebuild.sum.carrier")
+                            .map_err(builder_error)?;
+                        let safe_carrier = self
+                            .backend
+                            .builder
+                            .build_select(
+                                active,
+                                carrier,
+                                carrier_type.const_zero().into(),
+                                "managed.root.rebuild.sum.safe.carrier",
+                            )
+                            .map_err(builder_error)?;
+                        let payload =
+                            self.unpack_sum_carrier(safe_carrier, carrier_type, payload_type)?;
+                        let child = self
+                            .backend
+                            .builder
+                            .build_extract_value(payload, *field, "managed.root.rebuild.sum.field")
+                            .map_err(builder_error)?;
+                        let child =
+                            self.rebuild_projected_value(child, child_ty, remaining, replacement)?;
+                        let payload = self
+                            .backend
+                            .builder
+                            .build_insert_value(
+                                payload,
+                                child,
+                                *field,
+                                "managed.root.rebuild.sum.payload",
+                            )
+                            .map_err(builder_error)?
+                            .into_struct_value();
+                        let carrier = self.pack_sum_carrier(payload, payload_type, carrier_type)?;
+                        let rebuilt = self
+                            .backend
+                            .builder
+                            .build_insert_value(physical, carrier, 1, "managed.root.rebuild.sum")
+                            .map_err(builder_error)?
+                            .into_struct_value();
+                        self.backend
+                            .builder
+                            .build_select(
+                                active,
+                                rebuilt,
+                                physical,
+                                "managed.root.rebuild.active.sum",
+                            )
+                            .map_err(builder_error)
+                    }
+                }
+            }
         }
-        if !matches!(current, BasicValueEnum::PointerValue(_)) {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                format!("managed-root projection {projection:?} is not a pointer leaf"),
-            ));
-        }
-        let mut rebuilt: BasicValueEnum<'ctx> = replacement.into();
-        for (parent, field) in parents.into_iter().rev() {
-            rebuilt = self
-                .backend
-                .builder
-                .build_insert_value(parent, rebuilt, field, "managed.root.rebuild")
-                .map_err(builder_error)?
-                .into_struct_value()
-                .into();
-        }
-        Ok(rebuilt)
+    }
+
+    fn managed_projection_name(projection: &[ManagedRootProjection]) -> String {
+        let mut previous_product = false;
+        projection
+            .iter()
+            .map(|step| {
+                let name = match step {
+                    ManagedRootProjection::ProductField(field) if previous_product => {
+                        field.to_string()
+                    }
+                    ManagedRootProjection::ProductField(field) => format!("p{field}"),
+                    ManagedRootProjection::SumVariantField { variant, field } => {
+                        format!("s{variant}f{field}")
+                    }
+                };
+                previous_product = matches!(step, ManagedRootProjection::ProductField(_));
+                name
+            })
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     fn direct_root_cell(&self, value: ValueId) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
@@ -3069,41 +3444,17 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(carrier_type.const_zero().into());
         }
-        let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
-        let bits = self.pack_value_bits(
-            wide_type.const_zero(),
-            wide_type,
-            payload.into(),
-            payload_type.into(),
-            0,
-        )?;
+        self.ensure_sum_carrier_byte_order()?;
         let byte_array_type = carrier_type
             .get_field_type_at_index(1)
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum carrier has no byte array"))?
             .into_array_type();
-        let mut byte_array = byte_array_type.const_zero();
-        for index in 0..bytes {
-            let shift = wide_type.const_int(Self::sum_carrier_shift(u64::from(index))?, false);
-            let shifted = if index == 0 {
-                bits
-            } else {
-                self.backend
-                    .builder
-                    .build_right_shift(bits, shift, false, "sum.pack.byte.shift")
-                    .map_err(builder_error)?
-            };
-            let byte = self
-                .backend
-                .builder
-                .build_int_truncate(shifted, self.backend.context.i8_type(), "sum.pack.byte")
-                .map_err(builder_error)?;
-            byte_array = self
-                .backend
-                .builder
-                .build_insert_value(byte_array, byte, index, "sum.pack.carrier.byte")
-                .map_err(builder_error)?
-                .into_array_value();
-        }
+        let byte_array = self.pack_value_bytes(
+            byte_array_type.const_zero(),
+            payload.into(),
+            payload_type.into(),
+            0,
+        )?;
         Ok(self
             .backend
             .builder
@@ -3122,75 +3473,26 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if Self::carrier_byte_len(carrier_type)? == 0 {
             return Ok(payload_type.const_zero());
         }
-        let (bytes, wide_type) = self.carrier_bits_type(carrier_type)?;
+        self.ensure_sum_carrier_byte_order()?;
         let byte_array = self
             .backend
             .builder
             .build_extract_value(carrier.into_struct_value(), 1, "sum.unpack.carrier.bytes")
             .map_err(builder_error)?
             .into_array_value();
-        let mut bits = wide_type.const_zero();
-        for index in 0..bytes {
-            let byte = self
-                .backend
-                .builder
-                .build_extract_value(byte_array, index, "sum.unpack.carrier.byte")
-                .map_err(builder_error)?
-                .into_int_value();
-            let extended = self
-                .backend
-                .builder
-                .build_int_z_extend(byte, wide_type, "sum.unpack.byte.extend")
-                .map_err(builder_error)?;
-            let shifted = if index == 0 {
-                extended
-            } else {
-                self.backend
-                    .builder
-                    .build_left_shift(
-                        extended,
-                        wide_type.const_int(Self::sum_carrier_shift(u64::from(index))?, false),
-                        "sum.unpack.byte.shift",
-                    )
-                    .map_err(builder_error)?
-            };
-            bits = self
-                .backend
-                .builder
-                .build_or(bits, shifted, "sum.unpack.byte.merge")
-                .map_err(builder_error)?;
-        }
         Ok(self
-            .unpack_value_bits(bits, wide_type, payload_type.into(), 0)?
+            .unpack_value_bytes(byte_array, payload_type.into(), 0)?
             .into_struct_value())
     }
 
-    fn carrier_bits_type(
-        &self,
-        carrier_type: StructType<'ctx>,
-    ) -> Result<(u32, IntType<'ctx>), CodegenError> {
+    fn ensure_sum_carrier_byte_order(&self) -> Result<(), CodegenError> {
         if self.backend.target_data.get_byte_ordering() != ByteOrdering::LittleEndian {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 "direct LCIR sum carriers currently require a little-endian target",
             ));
         }
-        let bytes = Self::carrier_byte_len(carrier_type)?;
-        let width = bytes
-            .checked_mul(8)
-            .and_then(NonZeroU32::new)
-            .ok_or_else(|| {
-                CodegenError::new(
-                    "LlvmAbiDefect",
-                    "sum carrier has no addressable payload bits",
-                )
-            })?;
-        let wide_type = self
-            .backend
-            .context
-            .custom_width_int_type(width)
-            .map_err(|message| CodegenError::new("ProgramTooLarge", message))?;
-        Ok((bytes, wide_type))
+        Ok(())
     }
 
     fn carrier_byte_len(carrier_type: StructType<'ctx>) -> Result<u32, CodegenError> {
@@ -3207,51 +3509,94 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         })
     }
 
+    fn sum_carrier_byte_index(
+        bytes: ArrayValue<'ctx>,
+        byte_offset: u64,
+    ) -> Result<u32, CodegenError> {
+        let index = u32::try_from(byte_offset).map_err(|_| {
+            CodegenError::new("ProgramTooLarge", "sum carrier byte offset is too large")
+        })?;
+        if index >= bytes.get_type().len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "sum payload exceeds its physical carrier",
+            ));
+        }
+        Ok(index)
+    }
+
     #[expect(
         clippy::too_many_lines,
-        reason = "all recursively supported LLVM aggregate kinds remain visible in one bounded carrier packing routine"
+        reason = "all recursively supported LLVM aggregate kinds remain visible in one bounded byte packing routine"
     )]
-    fn pack_value_bits(
+    fn pack_value_bytes(
         &self,
-        accumulator: IntValue<'ctx>,
-        wide_type: IntType<'ctx>,
+        bytes: ArrayValue<'ctx>,
         value: BasicValueEnum<'ctx>,
         ty: BasicTypeEnum<'ctx>,
         byte_offset: u64,
-    ) -> Result<IntValue<'ctx>, CodegenError> {
+    ) -> Result<ArrayValue<'ctx>, CodegenError> {
         match ty {
             BasicTypeEnum::IntType(ty) => {
                 let value = value.into_int_value();
-                let value = match ty.get_bit_width().cmp(&wide_type.get_bit_width()) {
-                    std::cmp::Ordering::Less => self
+                let bit_width = ty.get_bit_width();
+                let scalar_bytes = bit_width.div_ceil(8);
+                let mut packed = bytes;
+                for scalar_index in 0..scalar_bytes {
+                    let shifted = if scalar_index == 0 {
+                        value
+                    } else {
+                        self.backend
+                            .builder
+                            .build_right_shift(
+                                value,
+                                ty.const_int(
+                                    Self::sum_carrier_shift(u64::from(scalar_index))?,
+                                    false,
+                                ),
+                                false,
+                                "sum.pack.byte.shift",
+                            )
+                            .map_err(builder_error)?
+                    };
+                    let byte = match bit_width.cmp(&8) {
+                        std::cmp::Ordering::Less => self
+                            .backend
+                            .builder
+                            .build_int_z_extend(
+                                shifted,
+                                self.backend.context.i8_type(),
+                                "sum.pack.byte.extend",
+                            )
+                            .map_err(builder_error)?,
+                        std::cmp::Ordering::Equal => shifted,
+                        std::cmp::Ordering::Greater => self
+                            .backend
+                            .builder
+                            .build_int_truncate(
+                                shifted,
+                                self.backend.context.i8_type(),
+                                "sum.pack.byte",
+                            )
+                            .map_err(builder_error)?,
+                    };
+                    let destination = byte_offset
+                        .checked_add(u64::from(scalar_index))
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "sum carrier byte offset overflowed",
+                            )
+                        })?;
+                    let destination = Self::sum_carrier_byte_index(packed, destination)?;
+                    packed = self
                         .backend
                         .builder
-                        .build_int_z_extend(value, wide_type, "sum.pack.extend")
-                        .map_err(builder_error)?,
-                    std::cmp::Ordering::Equal => value,
-                    std::cmp::Ordering::Greater => {
-                        return Err(CodegenError::new(
-                            "LlvmAbiDefect",
-                            "sum payload scalar is wider than its carrier",
-                        ));
-                    }
-                };
-                let shifted = if byte_offset == 0 {
-                    value
-                } else {
-                    self.backend
-                        .builder
-                        .build_left_shift(
-                            value,
-                            wide_type.const_int(Self::sum_carrier_shift(byte_offset)?, false),
-                            "sum.pack.shift",
-                        )
+                        .build_insert_value(packed, byte, destination, "sum.pack.carrier.byte")
                         .map_err(builder_error)?
-                };
-                self.backend
-                    .builder
-                    .build_or(accumulator, shifted, "sum.pack.merge")
-                    .map_err(builder_error)
+                        .into_array_value();
+                }
+                Ok(packed)
             }
             BasicTypeEnum::FloatType(ty) => {
                 let width =
@@ -3269,12 +3614,13 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .backend
                     .builder
                     .build_bit_cast(value.into_float_value(), int_type, "sum.pack.float")
-                    .map_err(builder_error)?;
-                self.pack_value_bits(accumulator, wide_type, bits, int_type.into(), byte_offset)
+                    .map_err(builder_error)?
+                    .into_int_value();
+                self.pack_value_bytes(bytes, bits.into(), int_type.into(), byte_offset)
             }
             BasicTypeEnum::StructType(ty) => {
                 let value = value.into_struct_value();
-                let mut packed = accumulator;
+                let mut packed = bytes;
                 for (index, field_type) in ty.get_field_types().into_iter().enumerate() {
                     let index = u32::try_from(index).map_err(|_| {
                         CodegenError::new("ProgramTooLarge", "too many nested sum fields")
@@ -3292,7 +3638,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .ok_or_else(|| {
                             CodegenError::new("LlvmAbiDefect", "missing nested sum field offset")
                         })?;
-                    packed = self.pack_value_bits(packed, wide_type, field, field_type, offset)?;
+                    packed = self.pack_value_bytes(packed, field, field_type, offset)?;
                 }
                 Ok(packed)
             }
@@ -3300,7 +3646,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let value = value.into_array_value();
                 let element_type = ty.get_element_type();
                 let stride = self.backend.target_data.get_abi_size(&element_type);
-                let mut packed = accumulator;
+                let mut packed = bytes;
                 for index in 0..ty.len() {
                     let element = self
                         .backend
@@ -3313,48 +3659,99 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .ok_or_else(|| {
                             CodegenError::new("ProgramTooLarge", "sum array offset overflowed")
                         })?;
-                    packed =
-                        self.pack_value_bits(packed, wide_type, element, element_type, offset)?;
+                    packed = self.pack_value_bytes(packed, element, element_type, offset)?;
                 }
                 Ok(packed)
             }
-            BasicTypeEnum::PointerType(_)
-            | BasicTypeEnum::VectorType(_)
-            | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "unsupported physical value in a direct LCIR sum carrier",
-            )),
+            BasicTypeEnum::PointerType(ty) => {
+                let int_type = self.sum_pointer_int_type(ty)?;
+                let bits = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(value.into_pointer_value(), int_type, "sum.pack.pointer")
+                    .map_err(builder_error)?;
+                self.pack_value_bytes(bytes, bits.into(), int_type.into(), byte_offset)
+            }
+            BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+                Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "unsupported physical value in a direct LCIR sum carrier",
+                ))
+            }
         }
     }
 
-    fn unpack_value_bits(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "all recursively supported LLVM aggregate kinds remain visible in one bounded byte unpacking routine"
+    )]
+    fn unpack_value_bytes(
         &self,
-        bits: IntValue<'ctx>,
-        wide_type: IntType<'ctx>,
+        bytes: ArrayValue<'ctx>,
         ty: BasicTypeEnum<'ctx>,
         byte_offset: u64,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match ty {
             BasicTypeEnum::IntType(ty) => {
-                let shifted = if byte_offset == 0 {
-                    bits
+                let bit_width = ty.get_bit_width();
+                let scalar_bytes = bit_width.div_ceil(8);
+                let storage_type = if bit_width < 8 {
+                    self.backend.context.i8_type()
                 } else {
-                    self.backend
-                        .builder
-                        .build_right_shift(
-                            bits,
-                            wide_type.const_int(Self::sum_carrier_shift(byte_offset)?, false),
-                            false,
-                            "sum.unpack.shift",
-                        )
-                        .map_err(builder_error)?
+                    ty
                 };
-                Ok(if ty.get_bit_width() == wide_type.get_bit_width() {
-                    shifted.into()
+                let mut value = storage_type.const_zero();
+                for scalar_index in 0..scalar_bytes {
+                    let source = byte_offset
+                        .checked_add(u64::from(scalar_index))
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "ProgramTooLarge",
+                                "sum carrier byte offset overflowed",
+                            )
+                        })?;
+                    let source = Self::sum_carrier_byte_index(bytes, source)?;
+                    let byte = self
+                        .backend
+                        .builder
+                        .build_extract_value(bytes, source, "sum.unpack.carrier.byte")
+                        .map_err(builder_error)?
+                        .into_int_value();
+                    let byte = if storage_type.get_bit_width() == 8 {
+                        byte
+                    } else {
+                        self.backend
+                            .builder
+                            .build_int_z_extend(byte, storage_type, "sum.unpack.byte.extend")
+                            .map_err(builder_error)?
+                    };
+                    let shifted = if scalar_index == 0 {
+                        byte
+                    } else {
+                        self.backend
+                            .builder
+                            .build_left_shift(
+                                byte,
+                                storage_type.const_int(
+                                    Self::sum_carrier_shift(u64::from(scalar_index))?,
+                                    false,
+                                ),
+                                "sum.unpack.byte.shift",
+                            )
+                            .map_err(builder_error)?
+                    };
+                    value = self
+                        .backend
+                        .builder
+                        .build_or(value, shifted, "sum.unpack.byte.merge")
+                        .map_err(builder_error)?;
+                }
+                Ok(if storage_type == ty {
+                    value.into()
                 } else {
                     self.backend
                         .builder
-                        .build_int_truncate(shifted, ty, "sum.unpack.int")
+                        .build_int_truncate(value, ty, "sum.unpack.int")
                         .map(Into::into)
                         .map_err(builder_error)?
                 })
@@ -3372,7 +3769,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     })?)
                     .map_err(|message| CodegenError::new("ProgramTooLarge", message))?;
                 let value = self
-                    .unpack_value_bits(bits, wide_type, int_type.into(), byte_offset)?
+                    .unpack_value_bytes(bytes, int_type.into(), byte_offset)?
                     .into_int_value();
                 self.backend
                     .builder
@@ -3393,7 +3790,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .ok_or_else(|| {
                             CodegenError::new("LlvmAbiDefect", "missing nested sum field offset")
                         })?;
-                    let field = self.unpack_value_bits(bits, wide_type, field_type, offset)?;
+                    let field = self.unpack_value_bytes(bytes, field_type, offset)?;
                     value = self
                         .backend
                         .builder
@@ -3414,7 +3811,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         .ok_or_else(|| {
                             CodegenError::new("ProgramTooLarge", "sum array offset overflowed")
                         })?;
-                    let element = self.unpack_value_bits(bits, wide_type, element_type, offset)?;
+                    let element = self.unpack_value_bytes(bytes, element_type, offset)?;
                     value = self
                         .backend
                         .builder
@@ -3424,13 +3821,53 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 }
                 Ok(value.into())
             }
-            BasicTypeEnum::PointerType(_)
-            | BasicTypeEnum::VectorType(_)
-            | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "unsupported physical value in a direct LCIR sum carrier",
-            )),
+            BasicTypeEnum::PointerType(ty) => {
+                let int_type = self.sum_pointer_int_type(ty)?;
+                let bits = self
+                    .unpack_value_bytes(bytes, int_type.into(), byte_offset)?
+                    .into_int_value();
+                self.backend
+                    .builder
+                    .build_int_to_ptr(bits, ty, "sum.unpack.pointer")
+                    .map(Into::into)
+                    .map_err(builder_error)
+            }
+            BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+                Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "unsupported physical value in a direct LCIR sum carrier",
+                ))
+            }
         }
+    }
+
+    fn sum_pointer_int_type(
+        &self,
+        pointer: inkwell::types::PointerType<'ctx>,
+    ) -> Result<IntType<'ctx>, CodegenError> {
+        let llvm_bits = self.backend.target_data.get_bit_size(&pointer);
+        let llvm_bytes = self.backend.target_data.get_abi_size(&pointer);
+        let llvm_alignment = u64::from(self.backend.target_data.get_abi_alignment(&pointer));
+        let lcir_bits = u64::from(
+            self.backend
+                .artifact
+                .representations()
+                .target()
+                .pointer_bits(),
+        );
+        if llvm_bits != lcir_bits
+            || llvm_bits != 64
+            || llvm_bytes != 8
+            || llvm_alignment != TEXT_OBJECT_ALIGNMENT
+        {
+            return Err(CodegenError::new(
+                "LcirTextAbiMismatch",
+                format!(
+                    "managed LCIR sum pointers require an exact 64-bit, 8-byte, {TEXT_OBJECT_ALIGNMENT}-aligned target layout; got LLVM bits/bytes/alignment {llvm_bits}/{llvm_bytes}/{llvm_alignment} and LCIR bits {lcir_bits}"
+                ),
+            ));
+        }
+        Ok(self.backend.context.i64_type())
     }
 
     fn emit_constant(&self, constant: Constant) -> Result<BasicValueEnum<'ctx>, CodegenError> {
@@ -3695,8 +4132,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
         };
 
-        for ((case, edge), payload_type) in cases.iter().zip(edges).zip(&layout.payloads) {
+        for (case, edge) in cases.iter().zip(edges) {
             self.backend.builder.position_at_end(edge);
+            let payload_type = layout
+                .payloads
+                .get(usize::try_from(case.variant).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
+                })?)
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("sum type {ty} has no case variant {}", case.variant),
+                    )
+                })?;
             let payload = match layout.tag {
                 SumTagRepr::Tagless => value.into_struct_value(),
                 SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
@@ -3709,7 +4158,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                                 )
                             })?,
                             carrier_type,
-                            *payload_type,
+                            payload_type,
                         )?
                     } else {
                         payload_type.const_zero()
@@ -4526,18 +4975,24 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     self.backend.ptr_type,
                     cell,
                     &format!(
-                        "managed.root.reload.v{}.p{}",
+                        "managed.root.reload.v{}.{}",
                         id.raw(),
-                        slot.projection()
-                            .iter()
-                            .map(u32::to_string)
-                            .collect::<Vec<_>>()
-                            .join(".")
+                        Self::managed_projection_name(slot.projection())
                     ),
                 )
                 .map_err(builder_error)?
                 .into_pointer_value();
-            value = self.rebuild_projected_value(value, slot.projection(), pointer)?;
+            let ty = self
+                .source
+                .value(id)
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", format!("LCIR value {id} disappeared"))
+                })?
+                .ty();
+            // Deliberately feed each replacement into the aggregate rebuilt by
+            // the preceding slot. This prevents a later sibling or alias from
+            // restoring a stale pre-collection pointer.
+            value = self.rebuild_projected_value(value, ty, slot.projection(), pointer)?;
         }
         Ok(value)
     }

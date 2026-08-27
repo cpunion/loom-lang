@@ -337,6 +337,55 @@ pub fn main() Unit {
 }
 
 #[test]
+fn text_sum_without_a_literal_still_obeys_the_64_bit_pointer_boundary() {
+    let mir = compile(
+        r"module lcir_text_sum_32
+
+enum MaybeText {
+    Missing
+    Present(Text)
+}
+
+fn spin() MaybeText { spin() }
+
+pub fn main() Unit {
+    discard spin()
+    Unit
+}
+",
+    );
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let outcome = lower_typed_artifact(
+        &mir,
+        &request,
+        TargetLayout::new(32).expect("32-bit test target"),
+    )
+    .expect("classify a 32-bit Text-sum artifact");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a Text-bearing sum must fail closed before managed registration on 32-bit")
+    };
+    assert!(
+        report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::SignatureType | UnsupportedFeature::ExpressionType
+        )),
+        "{report:?}"
+    );
+
+    assert!(matches!(
+        lower_typed_artifact(
+            &mir,
+            &request,
+            TargetLayout::new(64).expect("64-bit test target"),
+        )
+        .expect("classify a 64-bit Text-sum artifact"),
+        LoweringOutcome::Complete(_)
+    ));
+}
+
+#[test]
 fn derived_text_operations_still_select_one_atomic_fallback() {
     let outcome = lower_run(
         r#"module lcir_text_fallback
@@ -2894,9 +2943,8 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
 }
 
 #[test]
-fn managed_and_recursive_sums_select_whole_artifact_fallback() {
-    for source in [
-        r#"module managed_sum
+fn managed_sums_lower_directly_while_unsupported_sum_graphs_fall_back_atomically() {
+    let managed = r#"module managed_sum
 
 record Label { value Text }
 
@@ -2906,7 +2954,13 @@ pub fn main() Unit {
     discard Message.Textual(Label { value = "managed" })
     Unit
 }
-"#,
+"#;
+    assert!(
+        matches!(lower_run(managed), LoweringOutcome::Complete(_)),
+        "a closed sum with exact managed leaves must lower as one LCIR artifact"
+    );
+
+    for source in [
         r"module recursive_sum
 
 enum Chain {

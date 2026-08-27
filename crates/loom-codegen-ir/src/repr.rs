@@ -586,10 +586,14 @@ impl RepresentationPlan {
                     })
             })
             .collect::<Option<Vec<_>>>()?;
+        // Closed sums may contain exact managed leaves, including through
+        // nested products and sums. Immortal-only Text remains excluded: sum
+        // construction, tag flow, and payload projection do not carry its
+        // separate provenance proof.
         if variants.iter().any(|variant| {
             variant.fields.iter().any(|field| {
                 self.text_pointer_kinds(*field)
-                    .is_none_or(|(immortal, managed)| immortal || managed)
+                    .is_none_or(|(immortal, _)| immortal)
             })
         }) {
             return None;
@@ -750,23 +754,25 @@ mod tests {
                     == "product fields must reference inhabited direct values; Text leaves require ManagedPointer"
         }));
 
-        let mut managed_sum = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
-        let text = managed_sum.add_managed_text_type().expect("managed Text");
-        managed_sum
+        let mut immortal_sum = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = immortal_sum
+            .add_immortal_text_type()
+            .expect("immortal Text");
+        immortal_sum
             .add_sum_type(
                 Type::Nominal(TypeId(5_000), Vec::new()),
                 &[Box::from([Type::Int])],
             )
             .expect("pointer-free sum");
-        let mut managed_sum = managed_sum.finish();
-        managed_sum.representations.sums[0].variants[0].fields[0] = text;
-        let errors = validate_program(&managed_sum)
-            .expect_err("a managed Text pointer cannot be forged into a sum");
+        let mut immortal_sum = immortal_sum.finish();
+        immortal_sum.representations.sums[0].variants[0].fields[0] = text;
+        let errors = validate_program(&immortal_sum)
+            .expect_err("an immortal-only Text pointer cannot be forged into a sum");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path() == "representations.sum[0].variant[0].field[0]"
                 && error.message()
-                    == "sum payloads must reference inhabited pointer-free direct value types"
+                    == "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer"
         }));
 
         let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));

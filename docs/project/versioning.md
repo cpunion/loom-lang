@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `13` |
-| LCIR artifact identity | schema `14` |
-| LCIR native-object domain | `loom-lcir-native-object-v10` |
+| LCIR textual dump | version `14` |
+| LCIR artifact identity | schema `15` |
+| LCIR native-object domain | `loom-lcir-native-object-v11` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v15` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v16` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `13` |
 | Coroutine/Task ABI component | `2` |
@@ -88,6 +88,13 @@ use existing typed calls and add no runtime ABI. Canonical File/Socket disposal
 adds `typed-resource-v1` and advances the native runtime component to 12 with
 `runtime-v6`. The close helper receives one exact handle cell; it neither
 constructs a universal value nor drives an executor.
+
+Managed Text leaves in closed unboxed sums advance the LCIR dump to 14,
+artifact schema to 15, native-object domain to v11, and object-cache domain to
+v16. The typed root plan catalogs deterministic variant candidates and guards
+publication and reconstruction with exact runtime tags. It reuses the existing
+typed-shadow-stack v1 wire, so runtime ABI component 13, `runtime-v7`, and
+`gc-v9` remain unchanged.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity. Current typed source lowering

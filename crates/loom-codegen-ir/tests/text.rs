@@ -1,10 +1,10 @@
 use loom_codegen_ir::{
     ArtifactRootRequest, ArtifactValidationCode, BlockTarget, BoolPredicate, Constant, Effects,
-    InstructionKind, ManagedSafepoint, Origin, ProgramBuilder, Repr, Signature,
-    TEXT_LITERAL_MAX_BYTES, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    InstructionKind, ManagedRootProjection, ManagedSafepoint, Origin, ProgramBuilder, Repr,
+    Signature, TEXT_LITERAL_MAX_BYTES, TargetLayout, Terminator, TerminatorKind, ValidationCode,
     ValueDefinition, dump_program, plan_managed_roots,
 };
-use loom_mir::{FunctionId as MirFunctionId, Type};
+use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
 fn origin(function: u32) -> Origin {
     Origin::synthetic(MirFunctionId(function))
@@ -530,8 +530,17 @@ fn nested_managed_products_expand_only_live_ssa_values_to_stable_leaf_slots() {
     let plan = plan_managed_roots(artifact.program(), root).expect("root plan");
     assert_eq!(plan.slots().len(), 2);
     assert!(plan.slots().iter().all(|slot| slot.value() == selected));
-    assert_eq!(plan.slots()[0].projection(), [0, 0]);
-    assert_eq!(plan.slots()[1].projection(), [1]);
+    assert_eq!(
+        plan.slots()[0].projection(),
+        [
+            ManagedRootProjection::ProductField(0),
+            ManagedRootProjection::ProductField(0),
+        ]
+    );
+    assert_eq!(
+        plan.slots()[1].projection(),
+        [ManagedRootProjection::ProductField(1)]
+    );
     for excluded in [alias, dead, unused, stable_pod, concat_result] {
         assert!(!plan.slots().iter().any(|slot| slot.value() == excluded));
     }
@@ -549,6 +558,246 @@ fn nested_managed_products_expand_only_live_ssa_values_to_stable_leaf_slots() {
         plan.state(ManagedSafepoint::Instruction(instruction)),
         Some(1)
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one manual graph makes candidate variant order, tagless nesting, dead definitions, and safepoint-result liveness directly reviewable"
+)]
+fn managed_sums_catalog_every_variant_candidate_but_only_for_live_values() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let text = builder
+        .add_managed_text_type()
+        .expect("register managed Text");
+    let tagless_semantic = Type::Nominal(TypeId(120), Vec::new());
+    let tagless = builder
+        .add_sum_type(tagless_semantic.clone(), &[Box::from([Type::Text])])
+        .expect("tagless managed sum");
+    let option_semantic = Type::Nominal(TypeId(121), Vec::new());
+    let option = builder
+        .add_sum_type(
+            option_semantic.clone(),
+            &[Box::new([]), Box::from([Type::Text])],
+        )
+        .expect("optional managed sum");
+    let nested = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(122), Vec::new()),
+            &[
+                Box::from([tagless_semantic]),
+                Box::from([option_semantic]),
+                Box::from([Type::Text, Type::Text]),
+            ],
+        )
+        .expect("nested managed sum");
+    let plain = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(123), Vec::new()),
+            &[Box::from([Type::Int]), Box::new([])],
+        )
+        .expect("pointer-free sum");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let consume = builder
+        .declare_function(
+            origin(11),
+            "consume.sums",
+            Signature::new([tagless, nested, plain], unit),
+            Effects::NONE,
+        )
+        .expect("consume declaration");
+    let root = builder
+        .declare_function(
+            origin(12),
+            "managed.sums",
+            Signature::new([], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("root declaration");
+    {
+        let mut function = builder.function(consume).expect("consume builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        for ty in [tagless, nested, plain] {
+            function
+                .append_block_parameter(entry, ty)
+                .expect("consume parameter");
+        }
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin(11),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin(11)),
+            )
+            .expect("return");
+    }
+    let (tagless_value, nested_value, plain_value, concat_result) = {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let kept = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "kept".into(),
+                },
+                &[text],
+                origin(12),
+            )
+            .expect("managed literal")[0];
+        let tagless_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::SumConstruct {
+                    variant: 0,
+                    payload: Box::from([kept]),
+                },
+                &[tagless],
+                origin(12),
+            )
+            .expect("tagless value")[0];
+        let option_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::SumConstruct {
+                    variant: 1,
+                    payload: Box::from([kept]),
+                },
+                &[option],
+                origin(12),
+            )
+            .expect("option value")[0];
+        let nested_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::SumConstruct {
+                    variant: 1,
+                    payload: Box::from([option_value]),
+                },
+                &[nested],
+                origin(12),
+            )
+            .expect("nested value")[0];
+        let number = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(1)),
+                &[integer],
+                origin(12),
+            )
+            .expect("integer")[0];
+        let plain_value = function
+            .append_instruction(
+                entry,
+                InstructionKind::SumConstruct {
+                    variant: 0,
+                    payload: Box::from([number]),
+                },
+                &[plain],
+                origin(12),
+            )
+            .expect("plain sum")[0];
+        let concat_result = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextConcat {
+                    left: kept,
+                    right: kept,
+                },
+                &[text],
+                origin(12),
+            )
+            .expect("safepoint result")[0];
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::DirectCall {
+                    callee: consume,
+                    arguments: Box::from([tagless_value, nested_value, plain_value]),
+                },
+                &[unit],
+                origin(12),
+            )
+            .expect("post-safepoint use")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin(12)),
+            )
+            .expect("return");
+        (tagless_value, nested_value, plain_value, concat_result)
+    };
+    let program = builder.finish_checked().expect("checked managed-sum graph");
+    let root_plan = plan_managed_roots(&program, root).expect("managed-sum root plan");
+    let expected = [
+        (
+            tagless_value,
+            vec![ManagedRootProjection::SumVariantField {
+                variant: 0,
+                field: 0,
+            }],
+        ),
+        (
+            nested_value,
+            vec![
+                ManagedRootProjection::SumVariantField {
+                    variant: 0,
+                    field: 0,
+                },
+                ManagedRootProjection::SumVariantField {
+                    variant: 0,
+                    field: 0,
+                },
+            ],
+        ),
+        (
+            nested_value,
+            vec![
+                ManagedRootProjection::SumVariantField {
+                    variant: 1,
+                    field: 0,
+                },
+                ManagedRootProjection::SumVariantField {
+                    variant: 1,
+                    field: 0,
+                },
+            ],
+        ),
+        (
+            nested_value,
+            vec![ManagedRootProjection::SumVariantField {
+                variant: 2,
+                field: 0,
+            }],
+        ),
+        (
+            nested_value,
+            vec![ManagedRootProjection::SumVariantField {
+                variant: 2,
+                field: 1,
+            }],
+        ),
+    ];
+    assert_eq!(root_plan.slots().len(), expected.len());
+    for (slot, (value, projection)) in root_plan.slots().iter().zip(expected) {
+        assert_eq!(slot.value(), value);
+        assert_eq!(slot.projection(), projection);
+    }
+    assert!(
+        !root_plan
+            .slots()
+            .iter()
+            .any(|slot| { slot.value() == plain_value || slot.value() == concat_result })
+    );
+    assert_eq!(root_plan.bitmaps(), [0, 0b1_1111]);
 }
 
 #[test]
