@@ -91,8 +91,10 @@ differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 The controlled runner prepares every native object through the production
 router, requires Core 0.1 and the complete C3 repository to select LCIR for
-both main and test artifacts, and records reviewed named legacy allowances for
-the remaining dynamic-concept, async, and standard-library coverage gaps.
+both main and test artifacts, and requires the Core 0.2 main artifact to select
+LCIR. Its Core 0.2 test allowance is limited to first-class dynamic values in
+product, sum, and List storage; the remaining allowances cover async and
+standard-library gaps.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow
