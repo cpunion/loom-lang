@@ -3,6 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use loom_mir::{self as mir, Type, WitnessId};
 
 use crate::ReachableSourceGraph;
+use crate::aggregate_plan::{
+    closed_enum_variants, concrete_any_record_fields, concrete_refined_base,
+};
 
 /// One closed-world dynamic interface proven to have exactly one reachable
 /// concrete conformance in this artifact.
@@ -47,11 +50,11 @@ impl DynConceptPlan {
             .filter_map(|function| program.function(*function))
         {
             for parameter in &function.params {
-                collect_views(&parameter.ty, &mut views);
+                collect_views(program, &parameter.ty, &mut views);
             }
-            collect_views(&function.return_ty, &mut views);
+            collect_views(program, &function.return_ty, &mut views);
             for expression in function.exprs_preorder() {
-                collect_views(&expression.ty, &mut views);
+                collect_views(program, &expression.ty, &mut views);
             }
         }
 
@@ -95,32 +98,97 @@ impl DynConceptPlan {
         self.choices.get(view)
     }
 
-    /// Returns the exact LCIR semantic type after closed-world erasure. A
-    /// non-view is unchanged; an unproved view has no representation.
-    pub(crate) fn physical_type<'ty>(&'ty self, ty: &'ty Type) -> Option<&'ty Type> {
-        match ty {
-            Type::View { .. } => self.choice(ty).map(DevirtualizedView::concrete),
-            _ => Some(ty),
-        }
+    /// Returns the exact LCIR semantic type after closed-world erasure,
+    /// recursively replacing views in aggregate and managed-container shapes.
+    /// An unproved view anywhere in the finite type tree has no representation.
+    pub(crate) fn physical_type(&self, ty: &Type) -> Option<Type> {
+        let mut remaining = crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
+        self.physical_type_bounded(ty, &mut remaining)
+    }
+
+    fn physical_type_bounded(&self, ty: &Type, remaining: &mut usize) -> Option<Type> {
+        *remaining = remaining.checked_sub(1)?;
+        Some(match ty {
+            Type::View { .. } => {
+                let concrete = self.choice(ty)?.concrete();
+                self.physical_type_bounded(concrete, remaining)?
+            }
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.physical_type_bounded(element, remaining))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            Type::List(element) => {
+                Type::List(Box::new(self.physical_type_bounded(element, remaining)?))
+            }
+            Type::Nominal(id, arguments) => Type::Nominal(
+                *id,
+                arguments
+                    .iter()
+                    .map(|argument| self.physical_type_bounded(argument, remaining))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            Type::Task(output) => {
+                Type::Task(Box::new(self.physical_type_bounded(output, remaining)?))
+            }
+            Type::TaskOutcome(output) => {
+                Type::TaskOutcome(Box::new(self.physical_type_bounded(output, remaining)?))
+            }
+            Type::Never => Type::Never,
+            Type::Unit => Type::Unit,
+            Type::Bool => Type::Bool,
+            Type::Int => Type::Int,
+            Type::Float => Type::Float,
+            Type::Text => Type::Text,
+            Type::Parameter(index) => Type::Parameter(*index),
+            Type::AssociatedProjection {
+                witness,
+                associated,
+            } => Type::AssociatedProjection {
+                witness: *witness,
+                associated: associated.clone(),
+            },
+            Type::Error => Type::Error,
+        })
     }
 }
 
-fn collect_views(root: &Type, output: &mut BTreeSet<Type>) {
-    let mut pending = vec![root];
+fn collect_views(program: &mir::Program, root: &Type, output: &mut BTreeSet<Type>) {
+    let mut pending = vec![root.clone()];
+    let mut expanded = BTreeSet::new();
     let mut visited = 0_usize;
     while let Some(ty) = pending.pop() {
         visited = visited.saturating_add(1);
         if visited > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
             return;
         }
-        match ty {
+        match &ty {
             Type::View { bindings, .. } => {
                 output.insert(ty.clone());
-                pending.extend(bindings.values());
+                pending.extend(bindings.values().cloned());
             }
-            Type::Tuple(elements) | Type::Nominal(_, elements) => pending.extend(elements),
+            Type::Tuple(elements) => pending.extend(elements.iter().cloned()),
+            Type::Nominal(_, arguments) => {
+                pending.extend(arguments.iter().cloned());
+                if !expanded.insert(ty.clone()) {
+                    continue;
+                }
+                if let Some(fields) = concrete_any_record_fields(program, &ty) {
+                    pending.extend(fields.into_vec());
+                } else if let Some(variants) = closed_enum_variants(program, &ty) {
+                    pending.extend(
+                        variants
+                            .into_vec()
+                            .into_iter()
+                            .flat_map(|variant| variant.into_vec()),
+                    );
+                } else if let Some(base) = concrete_refined_base(program, &ty) {
+                    pending.push(base);
+                }
+            }
             Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
-                pending.push(element);
+                pending.push((**element).clone());
             }
             Type::Never
             | Type::Unit
@@ -154,4 +222,170 @@ fn is_closed_type(root: &Type) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use loom_core::Span;
+    use loom_mir::{
+        Block, CallPlan, ConceptId, Constant, Expr, ExprKind, FieldDef, Function, FunctionId,
+        LocalDecl, LocalId, Program, TypeDef, TypeDefKind, TypeId, Witness, WitnessId,
+    };
+
+    use super::*;
+    use crate::aggregate_plan::AggregatePlanner;
+    use crate::{ProgramBuilder, TargetLayout};
+
+    fn root_function(parameter: Type) -> Function {
+        let span = Span::default();
+        Function {
+            id: FunctionId(0),
+            name: "schema_root".into(),
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![LocalDecl {
+                id: LocalId(0),
+                name: "value".into(),
+                ty: parameter,
+                mutable: false,
+                span,
+            }],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::Constant(Constant::Unit),
+                    Type::Unit,
+                    span,
+                ))),
+                span,
+            },
+            call_plan: CallPlan::default(),
+        }
+    }
+
+    fn unique_schema_program(container_fields: Vec<FieldDef>) -> (Program, Type, Type, Type) {
+        let span = Span::default();
+        let concrete = Type::Nominal(TypeId(0), Vec::new());
+        let container = Type::Nominal(TypeId(1), Vec::new());
+        let view = Type::View {
+            mutable: false,
+            concept: ConceptId(0),
+            bindings: BTreeMap::new(),
+        };
+        let program = Program {
+            types: vec![
+                TypeDef {
+                    id: TypeId(0),
+                    name: "Concrete".into(),
+                    span,
+                    type_parameters: 0,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "value".into(),
+                            ty: Type::Int,
+                            span,
+                        }],
+                        invariant: None,
+                    },
+                },
+                TypeDef {
+                    id: TypeId(1),
+                    name: "Container".into(),
+                    span,
+                    type_parameters: 0,
+                    kind: TypeDefKind::Record {
+                        fields: container_fields,
+                        invariant: None,
+                    },
+                },
+            ],
+            functions: vec![root_function(container.clone())],
+            witnesses: vec![Witness {
+                id: WitnessId(0),
+                concept: ConceptId(0),
+                concrete: concrete.clone(),
+                methods: BTreeMap::new(),
+                associated: BTreeMap::new(),
+                type_parameters: 0,
+                prerequisites: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        (program, concrete, container, view)
+    }
+
+    #[test]
+    fn reachable_nominal_schema_discovers_and_physicalizes_stored_views() {
+        let span = Span::default();
+        let stored_view = Type::View {
+            mutable: false,
+            concept: ConceptId(0),
+            bindings: BTreeMap::new(),
+        };
+        let (program, concrete, container, view) = unique_schema_program(vec![FieldDef {
+            name: "item".into(),
+            ty: stored_view,
+            span,
+        }]);
+        let graph = ReachableSourceGraph {
+            functions: BTreeSet::from([FunctionId(0)]),
+            witnesses: BTreeSet::from([WitnessId(0)]),
+            ..ReachableSourceGraph::default()
+        };
+        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        assert_eq!(plan.physical_type(&view), Some(concrete.clone()));
+        assert_eq!(
+            plan.physical_type(&Type::List(Box::new(view.clone()))),
+            Some(Type::List(Box::new(concrete.clone())))
+        );
+
+        let mut aggregates = AggregatePlanner::new(&program, &plan, true);
+        assert!(aggregates.supports_value_type(&concrete));
+        assert!(aggregates.supports_value_type(&container));
+        assert!(aggregates.supports_value_type(&Type::List(Box::new(view.clone()))));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        assert!(aggregates.finish().register(&mut builder).is_ok());
+        assert!(builder.type_id(&concrete).is_some());
+        assert!(builder.type_id(&container).is_some());
+        assert!(
+            builder
+                .type_id(&Type::List(Box::new(concrete.clone())))
+                .is_some()
+        );
+        assert!(builder.type_id(&view).is_none());
+        assert!(builder.type_id(&Type::List(Box::new(view))).is_none());
+    }
+
+    #[test]
+    fn physicalized_view_field_does_not_hide_a_by_value_cycle() {
+        let span = Span::default();
+        let view = Type::View {
+            mutable: false,
+            concept: ConceptId(0),
+            bindings: BTreeMap::new(),
+        };
+        let (mut program, _, container, _) = unique_schema_program(vec![FieldDef {
+            name: "next".into(),
+            ty: view,
+            span,
+        }]);
+        program.witnesses[0].concrete = container.clone();
+        let graph = ReachableSourceGraph {
+            functions: BTreeSet::from([FunctionId(0)]),
+            witnesses: BTreeSet::from([WitnessId(0)]),
+            ..ReachableSourceGraph::default()
+        };
+        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        let mut aggregates = AggregatePlanner::new(&program, &plan, true);
+        assert!(!aggregates.supports_value_type(&container));
+    }
 }

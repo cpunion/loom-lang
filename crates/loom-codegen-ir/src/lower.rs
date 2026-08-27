@@ -714,7 +714,7 @@ fn required_type(
             format!("classified dynamic type {ty:?} has no unique concrete representation"),
         )
     })?;
-    builder.type_id(physical).ok_or_else(|| {
+    builder.type_id(&physical).ok_or_else(|| {
         LoweringError::defect(
             LoweringDefectCode::InconsistentPlan,
             format!("classified direct type {physical:?} has no LCIR representation"),
@@ -1144,7 +1144,7 @@ struct Classifier<'program, 'plan> {
     dyn_concepts: &'plan DynConceptPlan,
     target: TargetLayout,
     items: Vec<UnsupportedItem>,
-    aggregates: AggregatePlanner<'program>,
+    aggregates: AggregatePlanner<'program, 'plan>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
     places: PlaceBudget,
     text_literals: TextLiteralBudget,
@@ -1195,7 +1195,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             dyn_concepts,
             target,
             items: Vec::new(),
-            aggregates: AggregatePlanner::new(program, target.pointer_bits() == 64),
+            aggregates: AggregatePlanner::new(program, dyn_concepts, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
             places: PlaceBudget::default(),
             text_literals: TextLiteralBudget::default(),
@@ -1208,14 +1208,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         let Some(ty) = self.dyn_concepts.physical_type(ty) else {
             return false;
         };
-        if ty == &Type::Text {
+        if ty == Type::Text {
             if self.target.pointer_bits() != 64 {
                 return false;
             }
             self.immortal_text = true;
             return true;
         }
-        self.aggregates.supports_value_type(ty)
+        self.aggregates.supports_value_type(&ty)
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
@@ -2528,17 +2528,19 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                         .as_ref()
                                         .and_then(|ty| self.dyn_concepts.physical_type(ty));
                                     index == 0
-                                        && mutable_receiver.as_ref() == physical_place
+                                        && mutable_receiver.as_ref() == physical_place.as_ref()
                                         && place_type.as_ref().is_some_and(|ty| {
-                                            let physical =
-                                                self.dyn_concepts.physical_type(ty).unwrap_or(ty);
-                                            self.supported_record_type(physical)
+                                            let physical = self
+                                                .dyn_concepts
+                                                .physical_type(ty)
+                                                .unwrap_or_else(|| ty.clone());
+                                            self.supported_record_type(&physical)
                                                 || (is_invariant_record_type(
                                                     self.program,
-                                                    physical,
+                                                    &physical,
                                                 ) && self
                                                     .aggregates
-                                                    .supports_value_type(physical))
+                                                    .supports_value_type(&physical))
                                         })
                                 };
                             if !allowed {
@@ -3970,7 +3972,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         })?;
         self.builder
             .representations()
-            .type_id(physical)
+            .type_id(&physical)
             .ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,

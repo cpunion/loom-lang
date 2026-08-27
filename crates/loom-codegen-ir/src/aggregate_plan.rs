@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use loom_mir::{self as mir, Type, TypeId};
 
+use crate::dyn_plan::DynConceptPlan;
 use crate::{BuildError, ProgramBuilder, ValueTypeId};
 
 pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
@@ -361,7 +362,22 @@ impl AggregateShape {
     }
 }
 
-fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<AggregateShape> {
+fn physical_types(
+    dyn_concepts: &DynConceptPlan,
+    types: impl IntoIterator<Item = Type>,
+) -> Option<Box<[Type]>> {
+    types
+        .into_iter()
+        .map(|ty| dyn_concepts.physical_type(&ty))
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn direct_aggregate_shape(
+    program: &mir::Program,
+    dyn_concepts: &DynConceptPlan,
+    ty: &Type,
+) -> Option<AggregateShape> {
     concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
@@ -369,19 +385,27 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
             let definition = program.type_def(*id)?;
             match &definition.kind {
                 mir::TypeDefKind::Enum { .. } => {
-                    closed_enum_variants(program, ty).map(AggregateShape::Sum)
+                    let variants = closed_enum_variants(program, ty)?
+                        .into_vec()
+                        .into_iter()
+                        .map(|variant| physical_types(dyn_concepts, variant.into_vec()))
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(AggregateShape::Sum(variants.into_boxed_slice()))
                 }
                 mir::TypeDefKind::Record { invariant, .. } => {
-                    let fields = concrete_any_record_fields(program, ty)?;
+                    let fields = physical_types(
+                        dyn_concepts,
+                        concrete_any_record_fields(program, ty)?.into_vec(),
+                    )?;
                     Some(if invariant.is_some() {
                         AggregateShape::InvariantProduct(fields)
                     } else {
                         AggregateShape::Product(fields)
                     })
                 }
-                mir::TypeDefKind::Refined { .. } => {
-                    concrete_refined_base(program, ty).map(AggregateShape::Transparent)
-                }
+                mir::TypeDefKind::Refined { .. } => concrete_refined_base(program, ty)
+                    .and_then(|base| dyn_concepts.physical_type(&base))
+                    .map(AggregateShape::Transparent),
             }
         }
         Type::List(element) => Some(AggregateShape::ManagedList((**element).clone())),
@@ -507,8 +531,9 @@ fn push_schema_types<'a>(
 /// Classifies concrete immutable products and closed sums without constructing
 /// LCIR. Every root is checked against the same expanded depth/node budgets as
 /// independent validation, including mixed product/sum cycles.
-pub(crate) struct AggregatePlanner<'program> {
+pub(crate) struct AggregatePlanner<'program, 'plan> {
     program: &'program mir::Program,
+    dyn_concepts: &'plan DynConceptPlan,
     supports_managed_text: bool,
     planned: BTreeMap<Type, AggregateShape>,
     rejected_roots: BTreeSet<Type>,
@@ -517,10 +542,15 @@ pub(crate) struct AggregatePlanner<'program> {
     uses_text_aggregate_leaf: bool,
 }
 
-impl<'program> AggregatePlanner<'program> {
-    pub(crate) fn new(program: &'program mir::Program, supports_managed_text: bool) -> Self {
+impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
+    pub(crate) fn new(
+        program: &'program mir::Program,
+        dyn_concepts: &'plan DynConceptPlan,
+        supports_managed_text: bool,
+    ) -> Self {
         Self {
             program,
+            dyn_concepts,
             supports_managed_text,
             planned: BTreeMap::new(),
             rejected_roots: BTreeSet::new(),
@@ -555,6 +585,10 @@ impl<'program> AggregatePlanner<'program> {
         reason = "the bounded worklist keeps List cycle breaking and every direct aggregate eligibility rule in one auditable traversal"
     )]
     pub(crate) fn supports_value_type(&mut self, ty: &Type) -> bool {
+        let Some(ty) = self.dyn_concepts.physical_type(ty) else {
+            return false;
+        };
+        let ty = &ty;
         if is_direct_scalar(ty) {
             return true;
         }
@@ -624,7 +658,9 @@ impl<'program> AggregatePlanner<'program> {
                     supported = false;
                     break;
                 }
-                let Some(shape) = direct_aggregate_shape(self.program, &semantic) else {
+                let Some(shape) =
+                    direct_aggregate_shape(self.program, self.dyn_concepts, &semantic)
+                else {
                     supported = false;
                     break;
                 };
@@ -868,7 +904,8 @@ mod tests {
             }],
             ..Program::default()
         };
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(planner.supports_value_type(&node_type));
         assert!(planner.supports_value_type(&list_type));
         assert!(
@@ -883,7 +920,7 @@ mod tests {
         assert!(builder.type_id(&node_type).is_some());
         assert!(builder.type_id(&list_type).is_some());
 
-        let mut unsupported_target = AggregatePlanner::new(&program, false);
+        let mut unsupported_target = AggregatePlanner::new(&program, &dyn_concepts, false);
         assert!(!unsupported_target.supports_value_type(&list_type));
     }
 
@@ -920,7 +957,8 @@ mod tests {
         };
         let root = Type::Nominal(spiral, vec![Type::Int]);
 
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(
             !planner.supports_value_type(&Type::Tuple(vec![root.clone(), Type::Int])),
             "a tuple root must reject a nested non-regular nominal before substitution growth"
@@ -941,7 +979,8 @@ mod tests {
             std::iter::repeat_n(Type::Int, DIRECT_AGGREGATE_MAX_TYPE_NODES).collect::<Vec<_>>(),
         );
         let program = Program::default();
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(!planner.supports_value_type(&oversized));
     }
 
@@ -969,7 +1008,8 @@ mod tests {
         let root = Type::Nominal(wide, Vec::new());
 
         assert!(closed_enum_variants(&program, &root).is_none());
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(!planner.supports_value_type(&root));
         assert!(!planner.supports_value_type(&root));
     }
@@ -1005,7 +1045,8 @@ mod tests {
         let inner = Type::Nominal(option, vec![Type::Int]);
         let outer = Type::Nominal(option, vec![inner]);
 
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(planner.supports_value_type(&outer));
         let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
         planner
@@ -1121,7 +1162,8 @@ mod tests {
         );
         assert!(concrete_record_fields(&program, &map_int).is_none());
 
-        let mut planner = AggregatePlanner::new(&program, true);
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
         assert!(planner.supports_value_type(&boxed_int));
         assert!(planner.supports_value_type(&guarded_text));
         assert!(planner.supports_value_type(&refined_int));

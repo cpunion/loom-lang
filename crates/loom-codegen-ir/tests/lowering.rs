@@ -1091,6 +1091,32 @@ pub fn main() Unit {
 }
 
 #[test]
+fn missing_dynamic_concept_witness_selects_one_atomic_fallback() {
+    let LoweringOutcome::Unsupported(report) = lower_run(
+        r"module dynamic_missing_witness
+
+dyn concept Truth { method truth(self) Bool }
+
+fn missing() dyn Truth { missing() }
+
+pub fn main() Unit {
+    discard missing().truth()
+    Unit
+}
+",
+    ) else {
+        panic!("a missing dynamic witness must not acquire a guessed representation")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn test_roots_share_one_reachable_generic_instance() {
     let mir = compile(
         r"module generic_tests
@@ -3137,21 +3163,7 @@ pub fn main() Unit {
         matches!(lower_run(list_sum), LoweringOutcome::Complete(_)),
         "a closed sum containing a concrete List must lower as one LCIR artifact"
     );
-
-    for source in [
-        r"module recursive_sum
-
-enum Chain {
-    End
-    Next(Chain)
-}
-
-pub fn main() Unit {
-    discard Chain.End
-    Unit
-}
-",
-        r"module dynamic_sum
+    let dynamic_sum = r"module dynamic_sum
 
 dyn concept Numbered {
     method number(self) Int
@@ -3169,6 +3181,24 @@ fn erase(value Number) dyn Numbered { value }
 
 pub fn main() Unit {
     discard Packet.Item(erase(Number { value = 1 }))
+    Unit
+}
+";
+    let LoweringOutcome::Complete(dynamic_sum) = lower_run(dynamic_sum) else {
+        panic!("a closed sum with one exact dynamic witness must lower directly")
+    };
+    assert!(!dump_program(dynamic_sum.program()).contains("View["));
+
+    for source in [
+        r"module recursive_sum
+
+enum Chain {
+    End
+    Next(Chain)
+}
+
+pub fn main() Unit {
+    discard Chain.End
     Unit
 }
 ",
