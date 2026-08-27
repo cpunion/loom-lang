@@ -5435,6 +5435,19 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     .expect("prepare automatic typed-async route");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
+    let unsupported = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed async for 32-bit target");
+    assert!(
+        matches!(unsupported, LoweringOutcome::Unsupported(_)),
+        "Task handles must fail closed outside the pinned 64-bit runtime ABI: {unsupported:?}"
+    );
+
     let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {

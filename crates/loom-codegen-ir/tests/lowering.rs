@@ -63,10 +63,7 @@ fn complete_dump(source: &str) -> String {
     dump_program(artifact.program())
 }
 
-#[test]
-fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
-    let outcome = lower_run(
-        r"module lcir_typed_async
+const TYPED_ASYNC_SOURCE: &str = r"module lcir_typed_async
 
 async fn echo(value Bool) Bool {
     value
@@ -80,8 +77,11 @@ pub async fn main() Unit {
         Unit
     }
 }
-",
-    );
+";
+
+#[test]
+fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
+    let outcome = lower_run(TYPED_ASYNC_SOURCE);
     let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("direct scalar async fixture must lower through typed LCIR")
     };
@@ -122,6 +122,23 @@ pub async fn main() Unit {
             .value_type(task)
             .and_then(|task| artifact.representations().repr(task.repr())),
         Some(&loom_codegen_ir::Repr::TaskHandle)
+    );
+}
+
+#[test]
+fn typed_task_handles_fail_closed_on_a_32_bit_target() {
+    let mir = compile(TYPED_ASYNC_SOURCE);
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed async on 32-bit target");
+    assert!(
+        matches!(outcome, LoweringOutcome::Unsupported(_)),
+        "Task handles require the pinned 64-bit runtime ABI: {outcome:?}"
     );
 }
 

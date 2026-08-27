@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `19` |
-| LCIR artifact identity | schema `20` |
-| LCIR native-object domain | `loom-lcir-native-object-v16` |
+| LCIR textual dump | version `20` |
+| LCIR artifact identity | schema `21` |
+| LCIR native-object domain | `loom-lcir-native-object-v17` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v21` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v22` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `15` |
@@ -76,6 +76,15 @@ assertions. `FormatFloat` adds
 `loom_runtime_format_float_typed_v1(value, out_cell)`, advancing the native
 runtime ABI component to 15 with `format-float-v1` and `runtime-v9`. The Text
 layout remains `text-v3`, and collection remains `gc-v9`.
+
+Typed TextMap and the first checked stackless-coroutine slice advance the LCIR
+dump to 20, artifact schema to 21, native-object domain to v17, and LLVM
+object-cache domain to v22. The dump now records Task handles,
+`task.create`/`task.await`, and every coroutine output/resume/live-row type, so
+target-laid-out frame and root-map changes invalidate cached objects. TextMap
+reuses `typed-repeated-v1`; typed coroutines reuse typed-task v1 and the
+existing scheduler/join ABI. Native runtime component 15, `runtime-v9`,
+`text-v3`, and `gc-v9` remain unchanged.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC
