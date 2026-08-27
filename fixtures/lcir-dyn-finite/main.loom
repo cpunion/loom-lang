@@ -1,0 +1,79 @@
+module lcir_dyn_finite
+
+dyn concept Metric {
+    method read(self) Int
+    method cold(self) Int
+}
+
+record Counter {
+    value Int
+}
+
+record Offset {
+    value Int
+}
+
+impl Metric for Counter {
+    method read(self) Int { self.value }
+    method cold(self) Int { 7001 }
+}
+
+impl Metric for Offset {
+    method read(self) Int { self.value + 100 }
+    method cold(self) Int { 7002 }
+}
+
+record Holder {
+    item dyn Metric
+}
+
+fn measure(metric Metric) Int {
+    metric.read()
+}
+
+fn eraseCounter(value Counter) dyn Metric {
+    value
+}
+
+fn eraseOffset(value Offset) dyn Metric {
+    value
+}
+
+fn verify() Unit {
+    let first = Counter { value = 41 }
+    let second = Offset { value = 1 }
+    let firstValue = measure(first)
+    let secondValue = measure(second)
+    assert firstValue == 41
+    assert secondValue == 101
+
+    let held = Holder { item = first }
+    let heldValue = held.item.read()
+    assert heldValue == 41
+
+    let values = [
+        eraseCounter(first),
+        eraseOffset(second),
+    ]
+    let length = values.length()
+    assert length == 2
+    match values.get(0) {
+        Some(value) => {
+            let read = value.read()
+            assert read == 41
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn finiteDynamicWitnesses() {
+    verify()
+}

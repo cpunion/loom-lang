@@ -486,7 +486,13 @@ pub fn lower_typed_artifact(
                     format!("instance closure omitted call edges for {key}"),
                 )
             })?;
-            Ok(summarize_effects(mir.as_program(), function, key, calls))
+            Ok(summarize_effects(
+                mir.as_program(),
+                function,
+                key,
+                calls,
+                &dyn_concepts,
+            ))
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
     for root in &root_keys {
@@ -2818,7 +2824,23 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     CallTarget::Direct(_)
                     | CallTarget::Inherent(_)
                     | CallTarget::StaticConcept { .. } => None,
-                    CallTarget::Dynamic { .. } if callee_key.is_some() => None,
+                    CallTarget::Dynamic { .. }
+                        if callee_key.is_some()
+                            || arguments.first().is_some_and(|argument| {
+                                self.call_argument_type(
+                                    function,
+                                    key,
+                                    argument,
+                                    expression,
+                                    &format!("{path}.arguments[0].ty"),
+                                )
+                                .is_some_and(|receiver| {
+                                    self.dyn_concepts.finite(&receiver).is_some()
+                                })
+                            }) =>
+                    {
+                        None
+                    }
                     CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicWitnessSet),
                     CallTarget::Builtin(
                         mir::Builtin::TextLength
@@ -2891,11 +2913,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 let choice = view
                     .as_ref()
                     .and_then(|view| self.dyn_concepts.choice(view));
-                let valid = choice.is_some_and(|choice| {
+                let unique_valid = choice.is_some_and(|choice| {
                     concrete.as_ref() == Some(choice.concrete())
                         && witness == &mir::WitnessRef::Concrete(choice.witness())
                         && matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
                 });
+                let finite_valid = view
+                    .as_ref()
+                    .and_then(|view| self.dyn_concepts.finite(view))
+                    .and_then(|finite| match witness {
+                        mir::WitnessRef::Concrete(witness) => finite.candidate(*witness),
+                        mir::WitnessRef::Parameter(_) | mir::WitnessRef::Apply { .. } => None,
+                    })
+                    .is_some_and(|(_, candidate)| {
+                        concrete.as_ref() == Some(candidate.concrete())
+                            && matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
+                    });
                 if let Some(writeback) = writeback {
                     let writeback_ty = self.projected_place(
                         function,
@@ -2909,9 +2942,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         self.expression_item(UnsupportedFeature::View, function, expression, path);
                     }
                 }
-                if !valid {
+                if !unique_valid && !finite_valid {
                     self.expression_item(
-                        if choice.is_some() {
+                        if choice.is_some()
+                            || view
+                                .as_ref()
+                                .is_some_and(|view| self.dyn_concepts.finite(view).is_some())
+                        {
                             UnsupportedFeature::View
                         } else {
                             UnsupportedFeature::DynamicWitnessSet
@@ -2949,7 +2986,16 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             .zip(self.dyn_concepts.choice(result))
                     })
                     .is_some_and(|(owner, result)| owner == result);
-                if !owner.projection.is_empty() || !same_choice {
+                let same_finite = owner_ty
+                    .as_ref()
+                    .zip(result_ty.as_ref())
+                    .and_then(|(owner, result)| {
+                        self.dyn_concepts
+                            .finite(owner)
+                            .zip(self.dyn_concepts.finite(result))
+                    })
+                    .is_some_and(|(owner, result)| owner == result);
+                if !owner.projection.is_empty() || (!same_choice && !same_finite) {
                     self.expression_item(UnsupportedFeature::View, function, expression, path);
                 }
                 true
@@ -3123,12 +3169,23 @@ fn summarize_effects(
     function: &mir::Function,
     key: &InstanceKey,
     calls: &[InstanceKey],
+    dyn_concepts: &DynConceptPlan,
 ) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
     if function.is_async {
         summary.include(Effects::NEEDS_EXECUTOR);
     }
     scan_effect_block(program, &function.body, &mut summary);
+    let substitution = InstanceSubstitution::new(program, key);
+    if function.exprs_preorder().any(|expression| {
+        matches!(expression.kind, ExprKind::MakeView { .. })
+            && substitution
+                .instantiate_type(&expression.ty)
+                .ok()
+                .is_some_and(|ty| dyn_concepts.finite(&ty).is_some())
+    }) {
+        summary.include(Effects::MAY_COLLECT);
+    }
     // Preconditions execute at each concrete caller boundary. They make the
     // caller's operation fallible, never the assumed callee body by itself.
     if calls.iter().any(|callee| {
@@ -6681,23 +6738,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .map_err(|error| {
                         instantiation_defect(self.source.id, Some(expression.id), error)
                     })?;
-                let choice = self
-                    .dyn_concepts
-                    .choice(&instantiated)
-                    .ok_or_else(|| self.unsupported_reached("non-unique dynamic witness set"))?;
-                if witness != &mir::WitnessRef::Concrete(choice.witness()) {
-                    return Err(self.unsupported_reached("dynamic witness choice mismatch"));
-                }
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
                     return Ok(EvalFlow::Terminated);
                 };
-                if self.builder.value_type(value) != Some(self.type_id(&expression.ty)?) {
+                if let Some(choice) = self.dyn_concepts.choice(&instantiated) {
+                    if witness != &mir::WitnessRef::Concrete(choice.witness()) {
+                        return Err(self.unsupported_reached("dynamic witness choice mismatch"));
+                    }
+                    if self.builder.value_type(value) != Some(self.type_id(&expression.ty)?) {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "devirtualized view value does not use its selected concrete type",
+                        ));
+                    }
+                    return Ok(EvalFlow::Continue { flow, value });
+                }
+                let finite = self
+                    .dyn_concepts
+                    .finite(&instantiated)
+                    .ok_or_else(|| self.unsupported_reached("open dynamic witness set"))?;
+                let mir::WitnessRef::Concrete(witness) = witness else {
+                    return Err(self.unsupported_reached("non-concrete dynamic witness"));
+                };
+                let (variant, candidate) = finite
+                    .candidate(*witness)
+                    .ok_or_else(|| self.unsupported_reached("dynamic witness choice mismatch"))?;
+                if self.builder.value_type(value) != Some(self.type_id(candidate.concrete())?) {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
-                        "devirtualized view value does not use its selected concrete type",
+                        "managed dynamic payload does not use its selected concrete type",
                     ));
                 }
-                Ok(EvalFlow::Continue { flow, value })
+                self.one_instruction(
+                    flow,
+                    InstructionKind::DynConstruct { variant, value },
+                    self.type_id(&expression.ty)?,
+                    self.expression_origin(expression),
+                )
             }
             ExprKind::ReborrowView { owner, .. } => {
                 let plan = self.place_plan(owner, PlaceUse::Read)?;
@@ -9094,6 +9171,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
+        if let CallTarget::Dynamic { requirement } = target
+            && let Some(receiver) = arguments.first()
+        {
+            let receiver_ty = self.dynamic_receiver_type(receiver, expression)?;
+            if self.dyn_concepts.finite(&receiver_ty).is_some() {
+                return self.lower_finite_dynamic_call(
+                    flow,
+                    *requirement,
+                    arguments,
+                    expression,
+                    &receiver_ty,
+                );
+            }
+        }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
         let substitution = InstanceSubstitution::new(self.program, self.key);
         let key = match target {
@@ -9379,6 +9470,162 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )?;
         Ok(EvalFlow::Continue {
             flow: normal_flow,
+            value: result,
+        })
+    }
+
+    fn lower_finite_dynamic_call(
+        &mut self,
+        mut flow: Flow,
+        requirement: mir::RequirementId,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+        receiver_ty: &Type,
+    ) -> Result<EvalFlow, LoweringError> {
+        let candidates = self
+            .dyn_concepts
+            .finite(receiver_ty)
+            .ok_or_else(|| self.unsupported_reached("open dynamic witness set"))?
+            .candidates()
+            .to_vec();
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let CallArgument::Value(argument) = argument else {
+                return Err(self.unsupported_reached("finite dynamic inout dispatch"));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, argument)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            values.push(value);
+        }
+        let receiver = values
+            .first()
+            .copied()
+            .ok_or_else(|| self.unsupported_reached("dynamic call without receiver"))?;
+        let result_type = self.type_id(&expression.ty)?;
+        let join = self.create_block()?;
+        let result = self
+            .builder
+            .append_block_parameter(join, result_type)
+            .map_err(LoweringError::from)?;
+        let origin = self.expression_origin(expression);
+        let mut cases = Vec::with_capacity(candidates.len());
+        let mut plans = Vec::with_capacity(candidates.len());
+        let substitution = InstanceSubstitution::new(self.program, self.key);
+        for (variant, candidate) in candidates.iter().enumerate() {
+            let variant = u32::try_from(variant).map_err(|_| LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: "dynamic candidate set exceeds u32".to_owned(),
+            })?;
+            let key = substitution
+                .static_call_key(
+                    requirement,
+                    &mir::WitnessRef::Concrete(candidate.witness()),
+                    candidate.concrete(),
+                    &[],
+                    &[],
+                )
+                .map_err(|error| {
+                    instantiation_defect(self.source.id, Some(expression.id), error)
+                })?;
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite dynamic method disappeared",
+                )
+            })?;
+            if callee_source.receiver == Some(mir::Receiver::Mutable)
+                || !callee_source.call_plan.requires.is_empty()
+            {
+                return Err(
+                    self.unsupported_reached("mutable or preconditioned finite dynamic dispatch")
+                );
+            }
+            let instance = self.instances.get(&key).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "finite dynamic method {} has no LCIR instance",
+                        key.source().0
+                    ),
+                )
+            })?;
+            let block = self.create_block()?;
+            let payload = self
+                .builder
+                .append_block_parameter(block, self.type_id(candidate.concrete())?)
+                .map_err(LoweringError::from)?;
+            cases.push(crate::SumCase::new(variant, block, []));
+            plans.push((block, payload, instance));
+        }
+        self.terminate(
+            flow.block,
+            TerminatorKind::DynSwitch {
+                scrutinee: receiver,
+                cases: cases.into_boxed_slice(),
+            },
+            origin,
+        )?;
+        for (block, payload, instance) in plans {
+            let mut branch_arguments = Vec::with_capacity(values.len());
+            branch_arguments.push(payload);
+            branch_arguments.extend(values.iter().copied().skip(1));
+            let effect = effect_for(self.effects, instance)?;
+            if effect.contains(Effects::MAY_FAULT) {
+                let normal = self.create_block()?;
+                let value = self
+                    .builder
+                    .append_block_parameter(normal, result_type)
+                    .map_err(LoweringError::from)?;
+                let unwind = self.fault_target(Flow {
+                    block,
+                    env: flow.env,
+                })?;
+                self.terminate(
+                    block,
+                    TerminatorKind::Invoke {
+                        callee: instance,
+                        arguments: branch_arguments.into_boxed_slice(),
+                        normal: ResultTarget::new(normal, []),
+                        unwind,
+                    },
+                    origin,
+                )?;
+                self.terminate(
+                    normal,
+                    TerminatorKind::Jump(BlockTarget::new(join, [value])),
+                    origin,
+                )?;
+            } else {
+                let value = self
+                    .builder
+                    .append_instruction(
+                        block,
+                        InstructionKind::DirectCall {
+                            callee: instance,
+                            arguments: branch_arguments.into_boxed_slice(),
+                        },
+                        &[result_type],
+                        origin,
+                    )
+                    .map_err(LoweringError::from)?[0];
+                self.terminate(
+                    block,
+                    TerminatorKind::Jump(BlockTarget::new(join, [value])),
+                    origin,
+                )?;
+            }
+        }
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: join,
+                env: flow.env,
+            },
             value: result,
         })
     }

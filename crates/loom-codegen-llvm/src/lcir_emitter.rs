@@ -56,6 +56,7 @@ use loom_runtime_abi::{
     TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
     TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
     TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
     TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
     TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
@@ -195,6 +196,7 @@ struct DebugState<'ctx> {
     text_type: DIType<'ctx>,
     list_type: DIType<'ctx>,
     task_type: DIType<'ctx>,
+    dynamic_type: DIType<'ctx>,
     status_type: DIType<'ctx>,
     fault_context_pointer_type: DIType<'ctx>,
     fallible_unit_type: DIType<'ctx>,
@@ -370,6 +372,31 @@ impl<'ctx> DebugState<'ctx> {
                 AddressSpace::default(),
             )
             .as_type();
+        let dynamic_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "DynamicObject",
+                file,
+                0,
+                0,
+                8,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.DynamicObject",
+            )
+            .as_type();
+        let dynamic_type = builder
+            .create_pointer_type(
+                "Dynamic",
+                dynamic_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
         let status_type = builder
             .create_basic_type("LoomStatus", 32, 0x05, DIFlags::ARTIFICIAL)
             .map_err(|error| debug_info_error(&error))?
@@ -451,6 +478,7 @@ impl<'ctx> DebugState<'ctx> {
             text_type,
             list_type,
             task_type,
+            dynamic_type,
             status_type,
             fault_context_pointer_type,
             fallible_unit_type,
@@ -529,6 +557,7 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::ManagedPointer) => match value_type.semantic() {
                 Type::Text => Ok(self.text_type),
                 Type::List(_) => Ok(self.list_type),
+                Type::View { .. } => Ok(self.dynamic_type),
                 semantic => Err(CodegenError::new(
                     "LlvmDebugInfoFailed",
                     format!("managed LCIR type {semantic:?} has no debug representation"),
@@ -752,6 +781,7 @@ impl<'ctx> DebugState<'ctx> {
                 let (name, debug_type) = match value_type.semantic() {
                     Type::Text => ("Text", self.text_type),
                     Type::List(_) => ("List", self.list_type),
+                    Type::View { .. } => ("Dynamic", self.dynamic_type),
                     semantic => {
                         return Err(CodegenError::new(
                             "LlvmDebugInfoFailed",
@@ -1281,6 +1311,15 @@ struct CoroutineLayout<'ctx> {
     suspensions: Vec<CoroutineSuspensionLayout>,
     result_field: u32,
     descriptor: PointerValue<'ctx>,
+}
+
+#[derive(Clone)]
+struct DynamicCandidateLayout<'ctx> {
+    object: StructType<'ctx>,
+    payload: BasicTypeEnum<'ctx>,
+    size: u64,
+    align: u64,
+    pointer_offsets: Vec<u64>,
 }
 
 struct Backend<'ctx, 'artifact> {
@@ -2741,6 +2780,178 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(descriptor.as_pointer_value())
     }
 
+    fn dynamic_candidate_type(
+        &self,
+        view: ValueTypeId,
+        variant: u32,
+    ) -> Result<ValueTypeId, CodegenError> {
+        self.artifact
+            .representations()
+            .dynamic(view)
+            .and_then(|dynamic| {
+                usize::try_from(variant)
+                    .ok()
+                    .and_then(|index| dynamic.candidates().get(index))
+            })
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("dynamic View {view} has no candidate {variant}"),
+                )
+            })
+    }
+
+    fn dynamic_candidate_layout(
+        &self,
+        view: ValueTypeId,
+        variant: u32,
+    ) -> Result<DynamicCandidateLayout<'ctx>, CodegenError> {
+        let candidate = self.dynamic_candidate_type(view, variant)?;
+        let payload = self.llvm_type(candidate)?;
+        let object = self
+            .context
+            .struct_type(&[self.context.i32_type().into(), payload], false);
+        let size = self.target_data.get_abi_size(&object);
+        let align = u64::from(self.target_data.get_abi_alignment(&object));
+        if size == 0
+            || size > GC_MAX_OBJECT_BYTES
+            || align == 0
+            || !align.is_power_of_two()
+            || align > GC_MAX_OBJECT_ALIGNMENT
+        {
+            return Err(CodegenError::new(
+                "LcirDynamicDescriptorUnsupported",
+                format!(
+                    "dynamic View {view} candidate {variant} has unsupported object size/alignment {size}/{align}"
+                ),
+            ));
+        }
+        let payload_base = self
+            .target_data
+            .offset_of_element(&object, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "dynamic payload offset is missing")
+            })?;
+        let mut pointer_offsets = self
+            .managed_element_offsets(candidate)?
+            .into_iter()
+            .map(|offset| {
+                payload_base.checked_add(offset).ok_or_else(|| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "dynamic payload pointer offset overflowed",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        pointer_offsets.sort_unstable();
+        pointer_offsets.dedup();
+        let pointer_size = self.target_data.get_abi_size(&self.ptr_type);
+        let pointer_align = u64::from(self.target_data.get_abi_alignment(&self.ptr_type));
+        for offset in &pointer_offsets {
+            if !offset.is_multiple_of(pointer_align)
+                || offset
+                    .checked_add(pointer_size)
+                    .is_none_or(|end| end > size)
+            {
+                return Err(CodegenError::new(
+                    "LcirDynamicDescriptorUnsupported",
+                    format!(
+                        "dynamic View {view} candidate {variant} has invalid managed offset {offset}"
+                    ),
+                ));
+            }
+        }
+        Ok(DynamicCandidateLayout {
+            object,
+            payload,
+            size,
+            align,
+            pointer_offsets,
+        })
+    }
+
+    fn dynamic_descriptor(
+        &self,
+        view: ValueTypeId,
+        variant: u32,
+        layout: &DynamicCandidateLayout<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let descriptor_name = format!("loom.lcir.dyn.descriptor.{}.{}", view.raw(), variant);
+        if let Some(existing) = self.module.get_global(&descriptor_name) {
+            return Ok(existing.as_pointer_value());
+        }
+        let offsets_pointer = if layout.pointer_offsets.is_empty() {
+            self.ptr_type.const_null()
+        } else {
+            let values = layout
+                .pointer_offsets
+                .iter()
+                .map(|offset| self.context.i64_type().const_int(*offset, false))
+                .collect::<Vec<_>>();
+            let count = u32::try_from(values.len()).map_err(|_| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "too many dynamic payload pointer offsets",
+                )
+            })?;
+            let offsets = self.module.add_global(
+                self.context.i64_type().array_type(count),
+                None,
+                &format!("loom.lcir.dyn.pointer_offsets.{}.{}", view.raw(), variant),
+            );
+            offsets.set_initializer(&self.context.i64_type().const_array(&values));
+            offsets.set_constant(true);
+            offsets.set_linkage(Linkage::Private);
+            offsets.set_unnamed_address(UnnamedAddress::Global);
+            offsets.as_pointer_value()
+        };
+        let descriptor_type = self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.ptr_type.into(),
+            ],
+            false,
+        );
+        let pointer_count = u64::try_from(layout.pointer_offsets.len()).map_err(|_| {
+            CodegenError::new(
+                "ProgramTooLarge",
+                "too many dynamic payload pointer offsets",
+            )
+        })?;
+        let descriptor = self
+            .module
+            .add_global(descriptor_type, None, &descriptor_name);
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_GC_ABI_VERSION), false)
+                    .into(),
+                self.context.i32_type().const_zero().into(),
+                self.context.i64_type().const_int(layout.size, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(layout.align, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(pointer_count, false)
+                    .into(),
+                offsets_pointer.into(),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(descriptor.as_pointer_value())
+    }
+
     fn signature_writeback_types(source: &Function) -> Result<Vec<ValueTypeId>, CodegenError> {
         source
             .signature()
@@ -3053,6 +3264,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 );
                 self.module
                     .add_function(TYPED_GC_REPEATED_ALLOC_SYMBOL, function_type, None)
+            })
+    }
+
+    fn typed_alloc(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_GC_ALLOC_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_GC_ALLOC_SYMBOL, function_type, None)
             })
     }
 
@@ -5623,12 +5851,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .ty();
                 one(self.emit_sum_construct(ty, *variant, payload)?)
             }
-            InstructionKind::DynConstruct { .. } => {
-                return Err(CodegenError::new(
-                    "LcirDynamicEmissionPending",
-                    "managed dynamic construction reached the LLVM skeleton before its emitter",
-                ));
-            }
+            InstructionKind::DynConstruct { variant, value } => one(self
+                .emit_dyn_construct(instruction, *variant, *value)?
+                .into()),
             InstructionKind::ListConstruct { elements } => {
                 one(self.emit_list_construct(instruction, elements)?.into())
             }
@@ -7944,10 +8169,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             TerminatorKind::SumSwitch { scrutinee, cases } => {
                 self.emit_sum_switch(*scrutinee, cases)
             }
-            TerminatorKind::DynSwitch { .. } => Err(CodegenError::new(
-                "LcirDynamicEmissionPending",
-                "managed dynamic switch reached the LLVM skeleton before its emitter",
-            )),
+            TerminatorKind::DynSwitch { scrutinee, cases } => {
+                self.emit_dyn_switch(*scrutinee, cases)
+            }
             TerminatorKind::Return(value) => {
                 self.emit_return(self.value(*value)?, terminator.writebacks())
             }
@@ -8056,6 +8280,165 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
         }
+    }
+
+    fn emit_dyn_construct(
+        &self,
+        instruction: &Instruction,
+        variant: u32,
+        value: ValueId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "dynamic construction has no result")
+        })?;
+        let view = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "dynamic result disappeared"))?
+            .ty();
+        let layout = self.backend.dynamic_candidate_layout(view, variant)?;
+        let descriptor = self.backend.dynamic_descriptor(view, variant, &layout)?;
+        let output = if let Some(cell) = self.direct_root_cell(result)? {
+            cell
+        } else {
+            self.backend
+                .builder
+                .build_alloca(self.backend.ptr_type, "dyn.construct.output")
+                .map_err(builder_error)?
+        };
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_alloc(),
+            &[
+                descriptor.into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(layout.size, false)
+                    .into(),
+                output.into(),
+            ],
+            "dyn.construct.status",
+        )?;
+        self.backend.require_zero_status(status, "dyn.construct")?;
+        let object = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "dyn.construct.object")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let tag_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(layout.object, object, 0, "dyn.construct.tag.pointer")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(
+                tag_pointer,
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(variant), false),
+            )
+            .map_err(builder_error)?;
+        if self.backend.target_data.get_abi_size(&layout.payload) != 0 {
+            let payload_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(layout.object, object, 1, "dyn.construct.payload.pointer")
+                .map_err(builder_error)?;
+            let payload = self.value(value)?;
+            self.backend
+                .builder
+                .build_store(payload_pointer, payload)
+                .map_err(builder_error)?;
+        }
+        Ok(object)
+    }
+
+    fn emit_dyn_switch(
+        &self,
+        scrutinee: ValueId,
+        cases: &[loom_codegen_ir::SumCase],
+    ) -> Result<(), CodegenError> {
+        let view = self
+            .source
+            .value(scrutinee)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "dynamic scrutinee disappeared"))?
+            .ty();
+        let object = self.value(scrutinee)?.into_pointer_value();
+        let tag = self
+            .backend
+            .builder
+            .build_load(self.backend.context.i32_type(), object, "dyn.switch.tag")
+            .map_err(builder_error)?
+            .into_int_value();
+        let edges = cases
+            .iter()
+            .map(|case| {
+                self.backend
+                    .context
+                    .append_basic_block(self.function, &format!("dyn.case.{}", case.variant))
+            })
+            .collect::<Vec<_>>();
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "dyn.switch.invalid");
+        let llvm_cases = cases
+            .iter()
+            .zip(&edges)
+            .map(|(case, edge)| {
+                (
+                    self.backend
+                        .context
+                        .i32_type()
+                        .const_int(u64::from(case.variant), false),
+                    *edge,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.backend
+            .builder
+            .build_switch(tag, invalid, &llvm_cases)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(invalid);
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+
+        for (case, edge) in cases.iter().zip(edges) {
+            self.backend.builder.position_at_end(edge);
+            let layout = self.backend.dynamic_candidate_layout(view, case.variant)?;
+            let candidate = self.backend.dynamic_candidate_type(view, case.variant)?;
+            let payload = if self.backend.target_data.get_abi_size(&layout.payload) == 0 {
+                self.backend.zero(candidate)?
+            } else {
+                let pointer = self
+                    .backend
+                    .builder
+                    .build_struct_gep(layout.object, object, 1, "dyn.switch.payload.pointer")
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_load(layout.payload, pointer, "dyn.switch.payload")
+                    .map_err(builder_error)?
+            };
+            let predecessor = self.current_block()?;
+            self.add_implicit_incoming(case.block, &[payload], &case.arguments, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(case.block)?)
+                .map_err(builder_error)?;
+        }
+        Ok(())
     }
 
     #[expect(
