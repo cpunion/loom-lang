@@ -312,30 +312,44 @@ only behind an independently validated uniqueness certificate. Length and
 without a universal `Value`, witness/executor pointer, tag registry, or stable
 address assumption.
 
-## Canonical recursive Json storage
+## Collision-free closed-sum storage
 
-The canonical `Json` enum is the one admitted recursive sum: its recursive
-edges pass through the existing direct `List[Json]` and `TextMap[Json]`
-pointers. It remains an unboxed tagged LCIR value. The target-layout planner
-uses a separated carrier on supported 64-bit targets, producing 24 bytes with
-the tag at byte 0, Bool/Float storage at byte 8, and the Text/List/TextMap
-pointer cell at byte 16. Construction starts from a zero carrier, then writes
-only the active payload. Match control flow reads a payload only after its tag
-case has been selected.
+Every payload-bearing tagged sum receives one deterministic target-layout
+plan. LLVM target data supplies each variant payload's ABI size/alignment and
+the recursive managed-offset walk supplies its pointer cells. Pointer-width
+ranges are classified as pointer bytes; every other payload byte, including
+padding, is non-pointer. The planner visits pointer-free variants first in
+source order, followed by pointer-bearing variants in source order, and gives
+each the lowest ABI-aligned offset where pointer and non-pointer classes do not
+cross. Same-class bytes may overlap. Construction starts from a zero carrier,
+then writes only the active payload; match control flow reads payload bytes only
+after selecting their tag case.
 
-That separation is required for precise repeated tracing: arbitrary Float
-bits never occupy a descriptor-advertised pointer cell. The ordinary repeated
-layout planner consequently derives `List[Json]` stride 24 with pointer offset
-16 and `{ Text, Json }` map-entry stride 32 with pointer offsets 0 and 24.
-There is no Json-specific heap header, universal envelope, runtime tag
-registry, tracing callback, or executor. Targets that cannot prove this
-direct-pointer layout fail closed; the current compiler does not admit it on
-32-bit targets.
+One backend-owned cache and in-progress set cover sum layouts and recursive
+managed-offset walks for the complete emission. A shared 65,536-step graph
+budget prevents nested sums from restarting work or expanding exponentially.
+Carrier bytes are limited to 16 MiB and the placement search to 64 Mi byte
+steps, with checked arithmetic at every extent and alignment calculation.
+Cycles, invalid pointer cells, and exhausted bounds fail closed before LLVM can
+emit a descriptor. The independent LCIR validator continues to validate
+semantic sum identities; it does not reproduce target-specific physical
+bytes.
 
-This slice emits construction, copying, List/TextMap operations, exhaustive
-matching, and exact moving-GC roots. Json equality, parsing, and formatting are
-separate coverage boundaries and still select whole-artifact fallback when
-reachable.
+This general rule keeps the canonical recursive `Json` at 24 bytes on
+supported 64-bit targets, with Bool/Float bytes at physical offset 8 and its
+managed cell at offset 16. `List[Json]` derives stride 24/pointer offset 16 and
+its TextMap entry derives stride 32/pointer offsets 0 and 24. A separate
+`Choice(Number(Int), Label(Text), Pair)` receives the same compact safe shape.
+An `Outer(Json, (Int, Int, Int))` value is 40 bytes with the nested managed
+cell at offset 32. Pack/unpack, active managed-root rebuild, and List/TextMap
+descriptor construction all consume this exact plan. There is no
+Json-specific condition, universal envelope, runtime tag registry, tracing
+callback, or executor. Unsupported 32-bit managed layouts fail closed.
+
+Canonical Json construction, copying, List/TextMap operations, exhaustive
+matching, and exact moving-GC roots are direct. Json equality, parsing, and
+formatting are separate coverage boundaries and still select whole-artifact
+fallback when reachable.
 
 ## Direct lexical cleanup
 
@@ -438,11 +452,12 @@ The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, nongeneric proof-replay guards,
 source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
-monomorphized managed Lists, compiler-private concrete TextMaps, the canonical
-recursive Json carrier, List uniqueness certificates, lexical cleanup, and
-checked coroutine plans with typed Task creation, suspension edges, and exact
-frame-root rows, plus artifact-closed finite dynamic catalogs with
-candidate-specific precise boxes and direct tag-switch dispatch.
+monomorphized managed Lists, compiler-private concrete TextMaps, the generic
+collision-free closed-sum carrier, the canonical recursive Json graph, List
+uniqueness certificates, lexical cleanup, and checked coroutine plans with
+typed Task creation, suspension edges, and exact frame-root rows, plus
+artifact-closed finite dynamic catalogs with candidate-specific precise boxes
+and direct tag-switch dispatch.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

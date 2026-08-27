@@ -1,0 +1,130 @@
+module lcir_sum_layout_collisions
+
+enum Problem { WrongValue }
+
+record Pair {
+    number Int
+    label Text
+}
+
+enum Choice {
+    Number(Int)
+    Label(Text)
+    Pair(Pair)
+}
+
+enum Outer {
+    J(Json)
+    Scalars((Int, Int, Int))
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn choiceNumber(value Choice) Int {
+    match value {
+        Number(number) => number
+        _ => -1
+    }
+}
+
+fn choiceLabel(value Choice) Text {
+    match value {
+        Label(label) => label
+        Pair(pair) => pair.label
+        _ => "missing"
+    }
+}
+
+fn outerText(value Outer) Text {
+    match value {
+        J(Json.Object(fields)) => match fields.get("label") {
+            Some(Json.Text(text)) => text
+            _ => "missing"
+        }
+        _ => "missing"
+    }
+}
+
+fn outerScalarTotal(value Outer) Int {
+    match value {
+        Scalars(values) => {
+            let first, second, third = values
+            first + second + third
+        }
+        _ => -1
+    }
+}
+
+fn verify() Result[Unit, Problem] {
+    let label = join("la", "bel")
+    let choices = [
+        Choice.Number(1),
+        Choice.Label(label),
+        Choice.Pair(Pair { number = 7, label = label }),
+    ]
+    let choiceFields = TextMap[Choice]().insert("number", Choice.Number(2)).insert("label", Choice.Label(label)).insert("pair", Choice.Pair(Pair { number = 8, label = label }))
+
+    let json = Json.Object(TextMap[Json]().insert("label", Json.Text(label)))
+    let outers = [Outer.Scalars((1, 2, 3)), Outer.J(json)]
+    let outerFields = TextMap[Outer]().insert("scalars", Outer.Scalars((4, 5, 6))).insert("json", Outer.J(json))
+
+    var pressure = "seed"
+    for index in 0..4096 {
+        pressure = join("mo", "ved")
+        Unit
+    }
+
+    let valid = (
+        match choices.get(0) {
+            Some(value) => choiceNumber(value) == 1,
+            None => false,
+        }
+        && match choices.get(1) {
+            Some(value) => choiceLabel(value) == "label",
+            None => false,
+        }
+        && match choices.get(2) {
+            Some(value) => choiceLabel(value) == "label",
+            None => false,
+        }
+        && match choiceFields.get("number") {
+            Some(value) => choiceNumber(value) == 2,
+            None => false,
+        }
+        && match choiceFields.get("pair") {
+            Some(value) => choiceLabel(value) == "label",
+            None => false,
+        }
+        && match outers.get(0) {
+            Some(value) => outerScalarTotal(value) == 6,
+            None => false,
+        }
+        && match outers.get(1) {
+            Some(value) => outerText(value) == "label",
+            None => false,
+        }
+        && match outerFields.get("scalars") {
+            Some(value) => outerScalarTotal(value) == 15,
+            None => false,
+        }
+        && match outerFields.get("json") {
+            Some(value) => outerText(value) == "label",
+            None => false,
+        }
+        && pressure == "moved"
+    )
+
+    if valid { Ok(Unit) } else { Err(Problem.WrongValue) }
+}
+
+pub fn main() Unit {
+    match verify() {
+        Ok(_) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn sumLayoutCollisions() Result[Unit, Problem] { verify() }

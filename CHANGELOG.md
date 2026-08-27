@@ -63,18 +63,22 @@ artifact, or runtime compatibility.
   identity to schema 21, native-object domain to v17, and LLVM object-cache
   domain to v22. The existing typed-task v1 and native runtime ABI are
   unchanged.
-- Typed LCIR now admits the canonical recursive `Json` sum through
-  `List[Json]` and `TextMap[Json]` cycle breakers for direct construction,
-  copying, matching, and moving-GC storage. Its 64-bit LLVM carrier separates
-  scalar bytes from the one managed payload cell, so `List[Json]` and
-  `TextMap[Json]` descriptors never interpret Bool/Float bits as pointers.
-  The `lcir-typed-json` fixture closes forced-relocation
-  interpreter/legacy/typed differential execution, real
-  `check/build/test/run`, Linux/MSVC object emission, and 32-bit fail-closed
-  classification. This representation-only slice reuses the existing typed
-  repeated allocator and shadow stack; it adds no universal value, executor,
-  registry, runtime symbol, or version change. Json equality, parsing, and
-  formatting remain separate typed-LCIR slices.
+- Tagged LCIR sums now use one general target-data-derived carrier plan that
+  prevents managed-pointer bytes from aliasing scalar or padding bytes across
+  variants. The bounded deterministic planner places pointer-free variants
+  first, then chooses the lowest aligned offset for each pointer-bearing
+  payload; bytes of the same class may overlap to retain compact layouts. This
+  closes exact moving-GC tracing for arbitrary admitted closed sums in Lists
+  and TextMaps, including scalar/Text/product choices and sums nesting the
+  canonical recursive `Json`. Json remains 24 bytes on supported 64-bit
+  targets rather than growing to a fully disjoint carrier. The
+  `lcir-sum-layout-collisions` and `lcir-typed-json` fixtures cover forced
+  relocation, interpreter/legacy/typed differential execution, Linux/MSVC
+  object emission, 32-bit fail-closed classification, and real
+  `check/build/test/run`. The implementation reuses the existing repeated
+  allocator and shadow stack; it adds no universal value, executor, registry,
+  or runtime symbol. Json equality, parsing, and formatting remain separate
+  typed-LCIR slices.
 - Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
   `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;

@@ -56,12 +56,20 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
 | `fixtures/lcir-typed-textmap` | compiler-private direct `TextMap[V]` storage for scalar/Text/product/sum/List/nested-map values, immutable aliases and replacement, exact `Option[V]` lookup, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-async` | checked stackless coroutine frames for infallible scalar/product/Text async functions, typed Task handles and one-child await joins, exact suspension root maps, forced parent-Text relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
+| `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, the general collision-free closed-sum byte-class carrier, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands; equality, parse, and format remain follow-up slices |
+| `fixtures/lcir-sum-layout-collisions` | unrelated and nested closed sums with scalar, product, Text, List, TextMap, and recursive Json payloads; one target-data-derived carrier plan drives pack/unpack, exact repeated descriptors, and forced moving-GC relocation across interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed emission, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, separated scalar/managed carrier storage, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands; equality, parse, and format remain follow-up slices |
 | `fixtures/lcir-scalar-builtins` | exact parse-result sums, finite checks, managed Float formatting, direct Duration values, typed roots, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-lexical-cleanup` | direct typed assertions and source contracts, checked-root and assumed-body boundaries, mutable invariant writeback, lexical `defer`, static-concept `scoped` disposal, exact LIFO/fault behavior, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-static-concepts` | concrete static method selection, conditional proof forwarding, associated-type normalization, direct host execution, and MSVC COFF emission without runtime witness or universal-value surfaces |
 | `fixtures/lcir-dyn-unique` | closed-world unique-witness `dyn` erasure, direct calls, aggregate/List storage, dead conformance and method-slot elimination, real check/build/test/run, host execution, and Linux/MSVC object emission without runtime witness data |
 | `fixtures/standard-library` | differential interpreter/native checks for structured values, text, maps, JSON, typed file/socket I/O, logging, GC, and async behavior |
+
+Every admitted payload-bearing closed sum now uses the same bounded
+target-data-derived byte-class carrier plan. Pack/unpack, active managed roots,
+and List/TextMap repeated descriptors share that plan; recursive Json's compact
+24-byte 64-bit representation is a consequence rather than a source-type
+special case.
 
 The workspace also has focused parser, semantic, MIR-validator, interpreter,
 runtime, codegen, CLI, package, registry, cache, formatter, LSP, and hostile

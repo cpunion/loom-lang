@@ -178,15 +178,18 @@ The implementation consumes the existing `typed-repeated-v1` allocator and
 typed shadow stack, so native runtime ABI component 14, `runtime-v8`, and
 `gc-v9` do not change.
 
-Canonical recursive Json representation adds no opcode or runtime entry
-point. The checked representation graph already identifies the exact recursive
-sum, `List[Json]`, and `TextMap[Json]`; the LLVM target-data plan gives that sum
-a separated scalar and managed carrier cell so repeated descriptors remain
-precise. Existing `typed-repeated-v1`, typed shadow-stack, Text, and GC wires
-are reused. The current LCIR dump, artifact schema, native-object domain,
-object-cache domain, and native runtime ABI component therefore do not change
-for this representation-only slice. Json equality and typed parse/format are
-separate versioning decisions.
+Collision-free closed-sum carrier planning adds no opcode or runtime entry
+point. The checked representation graph already identifies each exact sum;
+the LLVM target-data plan now assigns variant offsets by pointer/non-pointer
+byte class so repeated descriptors remain precise. The backend build
+fingerprint includes this planner implementation and invalidates cached native
+objects produced by the old overlapping layout. Existing `typed-repeated-v1`,
+typed shadow-stack, Text, and GC wires are reused, so the current LCIR dump,
+artifact schema, native-object domain, object-cache domain, and native runtime
+ABI component do not change for this emitter-only correction. Canonical Json
+is admitted through its List/TextMap cycle breakers and remains 24 bytes on
+supported 64-bit targets. Json equality and typed parse/format are separate
+versioning decisions.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

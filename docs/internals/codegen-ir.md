@@ -589,18 +589,27 @@ The callback already forwards child fault/cancel terminal states without
 turning them into source `Result` values, but source programs cannot reach
 those paths until the corresponding checked control-flow slice exists.
 
-The LLVM layout planner recognizes the canonical recursive `Json` storage
-shape structurally. On supported 64-bit targets its tagged sum is 24 bytes:
-the tag is at byte 0, scalar payload storage begins at byte 8, and the sole
-managed payload cell is at byte 16. Constructors zero the complete carrier
-before inserting the selected payload, so the managed cell is null for
-`Null`, `Bool`, and `Number`; matching still uses the tag to decide which
-payload is semantically active. Scalar bits can never be traced as a pointer.
-The same target-data plan derives a `List[Json]` element stride of 24 with the
-single element pointer offset 16, and a `TextMap[Json]` entry stride of 32 with
-pointer offsets 0 for its Text key and 24 for the Json managed cell. The
-emitter rejects targets that cannot prove these direct-pointer layouts; the
-current 32-bit route fails closed before LCIR emission.
+The LLVM layout planner applies one collision-free rule to every payload-bearing
+tagged sum. Target data supplies each payload's size, alignment, and recursive
+managed-pointer offsets. Those pointer-width byte ranges form its pointer
+class; every remaining payload byte, including padding, is non-pointer. In
+stable source order the bounded planner places pointer-free variants first,
+then selects the lowest aligned offset at which pointer and non-pointer classes
+never overlap. Bytes of the same class may overlap, so compact ordinary enum
+layouts are retained. Constructors zero the complete carrier before inserting
+the active payload. Pack/unpack, active managed-root publication and rebuild,
+and List/TextMap repeated descriptors all consume the same offset plan.
+
+Carrier storage is limited to 16 MiB and placement to 64 Mi bounded byte
+steps; checked overflow or budget exhaustion is an emission-time
+`ProgramTooLarge` failure. Independent LCIR validation remains responsible for
+semantic sum shape and does not guess target byte offsets. As one consequence,
+canonical `Json` remains 24 bytes on supported 64-bit targets: tag byte 0,
+scalar payload byte 8, and managed payload cell byte 16. `List[Json]` therefore
+has stride 24 and pointer offset 16, while `TextMap[Json]` entries have stride
+32 and pointer offsets 0 and 24. The same rule covers unrelated and nested
+closed sums; there is no Json-specific layout branch. Unsupported 32-bit
+managed layouts fail closed before LLVM emission.
 
 ## Typed projected places
 
