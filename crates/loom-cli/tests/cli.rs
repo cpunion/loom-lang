@@ -2195,16 +2195,16 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
 
 #[cfg(unix)]
 #[test]
-fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
+fn debug_routes_text_selection_through_typed_lcir_codegen() {
     let project = TestProject::new(
-        "module debug_legacy\n\npub fn main() Unit {\n    discard \"value\".get(0)\n    Unit\n}\n",
+        "module debug_text_get\n\npub fn main() Unit {\n    discard \"value\".get(0)\n    Unit\n}\n",
     );
     project.write(
         "debug-wrapper",
         "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 93\n\"$executable\" \"$@\"\n",
     );
     project.make_executable("debug-wrapper");
-    let debug_copy = project.0.join("legacy-debug-program-copy");
+    let debug_copy = project.0.join("text-get-debug-program-copy");
     let output = loomc()
         .env("LOOM_DEBUG_COPY", &debug_copy)
         .args(["debug", "--debugger"])
@@ -2212,7 +2212,7 @@ fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
         .arg(&project.0)
         .args(["--"])
         .output()
-        .expect("launch debugger wrapper for reachable derived Text");
+        .expect("launch debugger wrapper for typed Text selection");
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -2225,9 +2225,13 @@ fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let debug_image = fs::read(debug_copy).expect("debug wrapper copied legacy executable");
-    assert!(contains_bytes(&debug_image, b"loom.fn."));
-    assert!(!contains_bytes(&debug_image, b"loom.lcir.fn"));
+    let debug_image = fs::read(debug_copy).expect("debug wrapper copied typed executable");
+    assert!(!contains_bytes(&debug_image, b"loom.fn."));
+    assert!(contains_bytes(&debug_image, b"loom.lcir.fn"));
+    assert!(contains_bytes(
+        &debug_image,
+        b"loom_runtime_text_get_typed_v1"
+    ));
     assert!(contains_bytes(&debug_image, b"main.loom"));
 }
 

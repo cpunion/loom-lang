@@ -229,10 +229,19 @@ after the header and bytes are complete. Resource exhaustion aborts as the
 language's uncatchable OOM fault; every other nonzero status reaches a
 fail-closed trap rather than a source unwind edge.
 
+`TextGet` calls `loom_runtime_text_get_typed_v1(text, scalar_index, out_cell)`.
+The helper stages the selected Unicode scalar before its possible allocation,
+so collection cannot stale its source pointer. Status zero constructs `None`
+without allocation, status one constructs `Some(Text)`, and every other status
+traps as a compiler/runtime ABI defect. The result is the ordinary checked
+unboxed sum carrier; only its active managed leaf is published to the typed
+shadow stack.
+
 The emitter derives exact backwards liveness for managed SSA values. A direct
-Text value contributes one pointer-sized cell; a live tuple/record contributes
-one stable cell for each deterministic managed-leaf projection. Definitions
-and block parameters extract and publish every such leaf. Per-site typed-root
+Text value contributes one pointer-sized cell; a live product/sum contributes
+stable candidate cells for deterministic managed-leaf projections, guarded by
+active sum tags. Definitions and block parameters extract and publish every
+such leaf. Per-site typed-root
 bitmap state is published immediately before a collecting call, and aggregate
 uses are reconstructed from post-safepoint leaf reloads. Results are excluded
 at their own safepoint. Successor arguments are rooted only when the paired
@@ -242,10 +251,10 @@ resumed-fault return pops a frame that was pushed. Root-map ABI-limit overflow
 is an emission-time `ProgramTooLarge` error and cannot select legacy fallback.
 
 The harness creates only a synchronous runtime when the root's exact effects
-require one. Managed concat introduces no universal root chain, executor,
-scheduler, suspension, or catchable fault channel. `Text.get`, other dynamic
-Text producers, Text inside a sum or transparent/refined carrier, and managed
-lists remain atomic whole-artifact fallback.
+require one. Managed concat/get introduces no universal root chain, executor,
+scheduler, suspension, or catchable fault channel. Other dynamic Text
+producers, Text inside a transparent/refined carrier, and managed lists remain
+atomic whole-artifact fallback.
 
 ## Direct lexical cleanup
 
@@ -323,7 +332,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v11` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v12` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -335,7 +344,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v16` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v17` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,

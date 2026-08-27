@@ -34,16 +34,17 @@ use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
-    FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
-    IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootProjection, ManagedRootSlot,
-    ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr,
-    Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId,
-    ValueTypeId, plan_managed_roots,
+    FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
+    InstructionKind, IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootProjection,
+    ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
+    SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
+    ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, TEXT_CONCAT_TYPED_SYMBOL,
-    TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
+    TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
+    TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
     TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
     TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
@@ -1712,6 +1713,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_text_get_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TEXT_GET_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TEXT_GET_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn runtime_resource_close_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_RESOURCE_CLOSE_SYMBOL)
@@ -1774,6 +1792,71 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.builder.position_at_end(success);
         Ok(())
     }
+
+    fn require_text_get_status(
+        &self,
+        status: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmBuilderFailed",
+                    "Text.get status guard has no active function",
+                )
+            })?;
+        let success = self
+            .context
+            .append_basic_block(function, "text.get.status.ok");
+        let failure = self
+            .context
+            .append_basic_block(function, "text.get.status.failed");
+        let missing = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_int(
+                    u64::try_from(TEXT_GET_TYPED_MISSING)
+                        .expect("Text.get missing status is non-negative"),
+                    false,
+                ),
+                "text.get.missing",
+            )
+            .map_err(builder_error)?;
+        let found = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_int(
+                    u64::try_from(TEXT_GET_TYPED_FOUND)
+                        .expect("Text.get found status is non-negative"),
+                    false,
+                ),
+                "text.get.found",
+            )
+            .map_err(builder_error)?;
+        let valid = self
+            .builder
+            .build_or(missing, found, "text.get.status.valid")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], "text.get.status.trap")
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(success);
+        Ok(found)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1797,6 +1880,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_frame: Option<PointerValue<'ctx>>,
     root_state: Option<PointerValue<'ctx>>,
     resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
+    text_output_cells: Vec<Option<PointerValue<'ctx>>>,
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -1863,6 +1947,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_frame: None,
             root_state: None,
             resource_close_cells: vec![None; source.blocks().len()],
+            text_output_cells: vec![None; source.instructions().len()],
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
@@ -2012,6 +2097,52 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             self.resource_close_cells[block.id().index()] = Some(cell);
         }
         Ok(())
+    }
+
+    fn prepare_text_output_cells(&mut self) -> Result<(), CodegenError> {
+        let entry = self.source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", self.source.id()),
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(self.blocks[entry.index()]);
+        for instruction in self.source.instructions() {
+            if !matches!(
+                instruction.kind(),
+                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+            ) {
+                continue;
+            }
+            let cell = self
+                .backend
+                .builder
+                .build_alloca(
+                    self.backend.ptr_type,
+                    &format!("text.output.i{}", instruction.id().raw()),
+                )
+                .map_err(builder_error)?;
+            self.text_output_cells[instruction.id().index()] = Some(cell);
+        }
+        Ok(())
+    }
+
+    fn text_output_cell(
+        &self,
+        instruction: InstructionId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.text_output_cells
+            .get(instruction.index())
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("collecting Text instruction {instruction} has no output cell"),
+                )
+            })
     }
 
     fn prepare_root_cells(
@@ -2812,6 +2943,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     fn compile(mut self) -> Result<(), CodegenError> {
         self.prepare_resource_close_cells()?;
+        self.prepare_text_output_cells()?;
         self.prepare_root_frame()?;
         for index in 0..self.emission_order.len() {
             let block_id = self.emission_order[index];
@@ -2983,10 +3115,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let output = if let Some(cell) = self.direct_root_cell(result)? {
                     cell
                 } else {
-                    self.backend
-                        .builder
-                        .build_alloca(self.backend.ptr_type, "text.concat.output")
-                        .map_err(builder_error)?
+                    self.text_output_cell(instruction.id())?
                 };
                 self.backend
                     .builder
@@ -3003,6 +3132,51 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .backend
                     .builder
                     .build_load(self.backend.ptr_type, output, "text.concat.result")
+                    .map_err(builder_error)?)
+            }
+            InstructionKind::TextGet {
+                text,
+                index,
+                missing_variant,
+                found_variant,
+            } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Text selection has no result")
+                })?;
+                let ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", format!("missing result {result}"))
+                    })?
+                    .ty();
+                let text = self.value(*text)?.into_pointer_value();
+                let index = self.int(*index)?;
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output = self.text_output_cell(instruction.id())?;
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_text_get_typed(),
+                    &[text.into(), index.into(), output.into()],
+                    "text.get.status",
+                )?;
+                let found = self.backend.require_text_get_status(status)?;
+                let selected = self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "text.get.selected")
+                    .map_err(builder_error)?;
+                let missing_value = self.emit_sum_construct_values(ty, *missing_variant, &[])?;
+                let found_value =
+                    self.emit_sum_construct_values(ty, *found_variant, &[selected])?;
+                one(self
+                    .backend
+                    .builder
+                    .build_select(found, found_value, missing_value, "text.get.option")
                     .map_err(builder_error)?)
             }
             InstructionKind::TextLength { text } => one(self
@@ -3368,6 +3542,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         variant: u32,
         payload: &[ValueId],
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let payload = payload
+            .iter()
+            .copied()
+            .map(|value| self.value(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.emit_sum_construct_values(ty, variant, &payload)
+    }
+
+    fn emit_sum_construct_values(
+        &self,
+        ty: ValueTypeId,
+        variant: u32,
+        payload: &[BasicValueEnum<'ctx>],
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let layout = self.backend.sum_layout(ty)?;
         let variant_index = usize::try_from(variant).map_err(|_| {
             CodegenError::new("LlvmAbiDefect", format!("invalid sum variant {variant}"))
@@ -3395,7 +3583,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             payload_value = self
                 .backend
                 .builder
-                .build_insert_value(payload_value, self.value(value)?, index, "sum.payload")
+                .build_insert_value(payload_value, value, index, "sum.payload")
                 .map_err(builder_error)?
                 .into_struct_value();
         }

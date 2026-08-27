@@ -295,6 +295,128 @@ fn managed_concat_has_exact_live_after_roots_and_ignores_dead_edge_arguments() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one manual graph keeps Text.get result shape, live-after roots, and dump identity reviewable together"
+)]
+fn managed_text_get_has_a_checked_option_shape_and_exact_live_after_roots() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let text = builder
+        .add_managed_text_type()
+        .expect("register managed Text");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let option = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(124), vec![Type::Text]),
+            &[Box::new([]), Box::from([Type::Text])],
+        )
+        .expect("Option[Text]");
+    let root = builder
+        .declare_function(
+            origin(13),
+            "managed.text.get",
+            Signature::new([], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("root declaration");
+    let (source, live, selected) = {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let source = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "a界".into()
+                },
+                &[text],
+                origin(13),
+            )
+            .expect("source")[0];
+        let live = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "live".into(),
+                },
+                &[text],
+                origin(13),
+            )
+            .expect("live")[0];
+        let index = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(1)),
+                &[integer],
+                origin(13),
+            )
+            .expect("index")[0];
+        let selected = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextGet {
+                    text: source,
+                    index,
+                    missing_variant: 0,
+                    found_variant: 1,
+                },
+                &[option],
+                origin(13),
+            )
+            .expect("Text.get")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLength { text: live },
+                &[integer],
+                origin(13),
+            )
+            .expect("post-safepoint use");
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin(13),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin(13)),
+            )
+            .expect("return");
+        (source, live, selected)
+    };
+    let program = builder.finish_checked().expect("checked Text.get LCIR");
+    let plan = plan_managed_roots(&program, root).expect("Text.get root plan");
+    assert_eq!(plan.slots().len(), 1);
+    assert_eq!(plan.slots()[0].value(), live);
+    assert!(plan.slots()[0].projection().is_empty());
+    assert!(!plan.slots().iter().any(|slot| slot.value() == source));
+    assert!(!plan.slots().iter().any(|slot| slot.value() == selected));
+    let ValueDefinition::InstructionResult { instruction, .. } = program
+        .as_program()
+        .function(root)
+        .and_then(|function| function.value(selected))
+        .expect("Text.get result")
+        .definition()
+    else {
+        panic!("Text.get result must have an instruction definition")
+    };
+    assert_eq!(
+        plan.state(ManagedSafepoint::Instruction(instruction)),
+        Some(1)
+    );
+    let dump = dump_program(&program);
+    assert!(
+        dump.contains("text.get") && dump.contains("missing 0, found 1"),
+        "{dump}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one manual CFG keeps nested projections, aliases, phis, dead edge arguments, and pointer-free values auditable together"
 )]
 fn nested_managed_products_expand_only_live_ssa_values_to_stable_leaf_slots() {
@@ -878,6 +1000,132 @@ fn independent_validation_requires_a_canonical_text_pointer_representation() {
             error.code() == ValidationCode::TypeMismatch && error.message() == message
         }));
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one hostile graph exercises independent Text.get operand, variant, and semantic-result checks together"
+)]
+fn independent_validation_rejects_forged_text_get_operands_variants_and_result() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let text = builder
+        .add_managed_text_type()
+        .expect("register managed Text");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let reversed = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(125), vec![Type::Text]),
+            &[Box::from([Type::Text]), Box::new([])],
+        )
+        .expect("reversed Option-shaped sum");
+    let wrong_semantic = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(126), vec![Type::Int]),
+            &[Box::new([]), Box::from([Type::Text])],
+        )
+        .expect("non-Option Text sum");
+    let root = builder
+        .declare_function(
+            origin(14),
+            "forged.text.get",
+            Signature::new([], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("root declaration");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let source = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextLiteral {
+                    utf8: "value".into(),
+                },
+                &[text],
+                origin(14),
+            )
+            .expect("source")[0];
+        let wrong_index = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Bool(true)),
+                &[boolean],
+                origin(14),
+            )
+            .expect("wrong index")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextGet {
+                    text: source,
+                    index: wrong_index,
+                    missing_variant: 0,
+                    found_variant: 0,
+                },
+                &[reversed],
+                origin(14),
+            )
+            .expect("forged variant mapping");
+        let index = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(0)),
+                &[integer],
+                origin(14),
+            )
+            .expect("index")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextGet {
+                    text: source,
+                    index,
+                    missing_variant: 0,
+                    found_variant: 1,
+                },
+                &[wrong_semantic],
+                origin(14),
+            )
+            .expect("forged result semantic");
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin(14),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin(14)),
+            )
+            .expect("return");
+    }
+    let errors = builder
+        .finish_checked()
+        .expect_err("forged Text.get instructions must fail validation");
+    for message in [
+        "Text selection requires distinct missing and found variants",
+        "Text selection missing variant must exist and carry no payload",
+        "Text selection result must be a nominal Option[Text]",
+    ] {
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.message() == message),
+            "missing `{message}` in {errors:?}"
+        );
+    }
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch
+            && error.path().split('.').next_back() == Some("index")
+    }));
 }
 
 #[test]

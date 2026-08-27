@@ -997,6 +997,151 @@ test fn concatMovesAndAliases() Result[Unit, Problem] {{
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one differential gate keeps Unicode scalar selection, missing indices, relocation, sum construction, and cross-target objects together"
+)]
+fn managed_text_get_returns_option_and_preserves_live_aliases_across_collection() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = format!(
+        r#"module lcir_managed_text_get
+
+enum Problem {{ WrongText }}
+
+fn join(left Text, right Text) Text {{ left.concat(right) }}
+
+fn select(text Text, index Int) Option[Text] {{ text.get(index) }}
+
+fn equals(input Option[Text], expected Text) Bool {{
+    match input {{
+        Some(value) => value == expected
+        None => false
+    }}
+}}
+
+fn missing(input Option[Text]) Bool {{
+    match input {{
+        Some(_) => false
+        None => true
+    }}
+}}
+
+test fn selectsUnicodeScalars() Result[Unit, Problem] {{
+    let pressure = "{pressure}".concat("{pressure}")
+    discard pressure.length()
+    let kept = join("a界", "🙂z")
+    let alias = kept
+    let selected = select(kept, 1)
+    let emoji = select(kept, 2)
+    let negative = select(kept, -1)
+    let pastEnd = select(kept, 4)
+    if equals(selected, "界") && equals(emoji, "🙂") && missing(negative) && missing(pastEnd) && alias == "a界🙂z" {{
+        Ok(Unit)
+    }} else {{
+        Err(Problem.WrongText)
+    }}
+}}
+
+pub fn main() Unit {{
+    discard "a界🙂z".get(1)
+    Unit
+}}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    assert!(
+        dump.contains("text.get") && dump.contains("sum s"),
+        "{dump}"
+    );
+    let selection_function = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("select"))
+        .expect("selection function instance");
+    assert!(selection_function.effects().contains(Effects::MAY_COLLECT));
+    assert!(
+        selection_function
+            .effects()
+            .contains(Effects::NEEDS_RUNTIME)
+    );
+    assert!(!selection_function.effects().contains(Effects::MAY_FAULT));
+    assert!(
+        !selection_function
+            .effects()
+            .contains(Effects::NEEDS_EXECUTOR)
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR))
+    );
+
+    let native = emit_and_run_lcir(&artifact, "source-managed-text-get");
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-managed-text-get");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        "loom_runtime_text_get_typed_v1",
+        "text.get.status.valid",
+        "text.get.status.failed",
+        "text.get.option",
+        "managed.root.reload",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "Text.get IR omitted `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom_gc_root_push_v1",
+        "loom_executor_",
+        "landingpad",
+        "personality ptr",
+    ] {
+        assert!(!native.ir.contains(forbidden), "{}", native.ir);
+    }
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create Text.get target directory");
+        let object = directory.path().join("text-get.o");
+        let ir_path = directory.path().join("text-get.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit Text.get object for {target}: {error}"));
+        assert!(object.is_file(), "missing Text.get object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read Text.get target IR");
+        assert!(ir.contains("loom_runtime_text_get_typed_v1"), "{ir}");
+        assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one adversarial gate keeps nested-product relocation, alias, phi, call, pointer-free, and cross-target evidence together"
 )]
 fn managed_product_leaves_relocate_exactly_across_collecting_calls() {

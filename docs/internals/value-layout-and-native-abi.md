@@ -121,7 +121,7 @@ text is moved by the GC.
 
 Typed LCIR uses one opaque pointer with that object shape. In a literal-only
 artifact, `ImmortalText` points at compiler-emitted immutable globals with
-process lifetime. If concat or a Text-bearing tuple/record is reachable,
+process lifetime. If concat/get or a Text-bearing product/sum is reachable,
 representation planning selects `ManagedPointer` for every Text in the
 artifact, including literals. Dynamic
 results are typed moving-GC leaves; literals remain legal static values in the
@@ -132,20 +132,23 @@ Length reads the scalar-count field. Containment and content equality use the
 existing allocation-free containment helper, with equality also requiring
 equal UTF-8 byte lengths. Source equality never compares object pointers. The
 allocation-free Text operations themselves need no universal `ValueSlot` or
-executor. `concat` is an infallible LCIR safepoint with `MAY_COLLECT`, which
+executor. `concat` and `get` are infallible LCIR safepoints with `MAY_COLLECT`, which
 implies a synchronous runtime but no executor or source fault edge. Its
 specialized helper stages both inputs before collection, allocates a typed leaf
 with no pointer fields, initializes it without a safepoint, and publishes it
-last. OOM is an uncatchable process fault; malformed ABI status fails closed.
+last. The get helper stages one selected Unicode scalar before its possible
+allocation and maps missing indices to a nonallocating `None`. OOM is an
+uncatchable process fault; malformed ABI status fails closed.
 
 Every direct managed SSA value live after a collecting operation receives a
-stable pointer cell in a typed shadow frame. A live unboxed product expands to
-one stable cell per deterministic managed Text leaf; definitions and phis
-publish those projections, and later aggregate uses are rebuilt from possibly
-moved leaf reloads. Per-site bitmaps are exact and results are excluded at their
-defining safepoint. Functions with no live-across managed leaf emit no frame.
-`get`, other dynamic producers, Text inside enums or transparent/refined
-carriers, and managed lists remain complete legacy fallback.
+stable pointer cell in a typed shadow frame. A live unboxed product/sum expands
+to deterministic candidate cells for its managed Text leaves; active tags
+guard sum publication, definitions and phis publish the projections, and later
+aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
+are exact and results are excluded at their defining safepoint. Functions with
+no live-across managed leaf emit no frame. Other dynamic producers, Text inside
+transparent/refined carriers, and managed lists remain complete legacy
+fallback.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving

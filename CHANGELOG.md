@@ -49,6 +49,14 @@ artifact, or runtime compatibility.
   allowances for fixtures whose missing typed coverage is explicit. This is an
   evidence-schema change only; LCIR artifacts, object domains, caches, and the
   native runtime ABI are unchanged.
+- Typed LCIR now lowers `Text.get(Int)` directly to a collecting scalar-
+  selection instruction returning the canonical managed `Option[Text]` sum.
+  Missing or negative indices do not allocate; successful Unicode-scalar
+  selection uses the typed runtime boundary, exact live-after roots, and a
+  fail-closed status guard without a universal value or executor. This
+  advances the LCIR dump to 15, artifact identity to schema 16, native-object
+  domain to v12, and CLI object cache to v17; native runtime ABI component 14,
+  `text-v3`, `runtime-v8`, and `gc-v9` are unchanged.
 - Checked MIR now carries source-module provenance and a versioned
   compiler-known identity for the canonical `standard.resource.MustScope`
   marker. Artifact and cache validation independently require that qualified

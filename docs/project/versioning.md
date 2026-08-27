@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `14` |
-| LCIR artifact identity | schema `15` |
-| LCIR native-object domain | `loom-lcir-native-object-v11` |
+| LCIR textual dump | version `15` |
+| LCIR artifact identity | schema `16` |
+| LCIR native-object domain | `loom-lcir-native-object-v12` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v16` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v17` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `14` |
@@ -102,6 +102,16 @@ v16. The typed root plan catalogs deterministic variant candidates and guards
 publication and reconstruction with exact runtime tags. It reuses the existing
 typed-shadow-stack v1 wire, so runtime ABI component 13, `runtime-v7`, and
 `gc-v9` remain unchanged.
+
+Typed `Text.get` first adds the direct
+`loom_runtime_text_get_typed_v1(text, scalar_index, out_cell)` boundary and
+advances native runtime ABI component 14, Text identity to `text-v3`, and
+runtime identity to `runtime-v8`; GC remains `gc-v9`. Its typed LCIR consumer
+then advances the LCIR dump to 15, artifact schema to 16, native-object domain
+to v12, and object-cache domain to v17. The instruction returns a canonical
+managed `Option[Text]`, treats missing indices as nonallocating, publishes
+exact live-after roots before a found-value allocation, and traps on invalid
+runtime status without introducing another ABI change.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity. Current typed source lowering

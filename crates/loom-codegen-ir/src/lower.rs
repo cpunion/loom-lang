@@ -1620,9 +1620,13 @@ impl<'program> Classifier<'program> {
                     CallTarget::Builtin(
                         mir::Builtin::TextLength
                         | mir::Builtin::TextContains
+                        | mir::Builtin::TextGet
                         | mir::Builtin::TextConcat,
                     ) => {
-                        if matches!(target, CallTarget::Builtin(mir::Builtin::TextConcat)) {
+                        if matches!(
+                            target,
+                            CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+                        ) {
                             self.managed_text = true;
                         }
                         None
@@ -1941,7 +1945,10 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
             }
             if let CallTarget::Direct(callee) | CallTarget::Inherent(callee) = target {
                 summary.calls.insert(*callee);
-            } else if matches!(target, CallTarget::Builtin(mir::Builtin::TextConcat)) {
+            } else if matches!(
+                target,
+                CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+            ) {
                 summary.include(Effects::MAY_COLLECT);
             }
             expression.ty != Type::Never
@@ -5021,6 +5028,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::TextConcat, [left, right]) => InstructionKind::TextConcat {
                 left: *left,
                 right: *right,
+            },
+            (mir::Builtin::TextGet, [text, index]) => InstructionKind::TextGet {
+                text: *text,
+                index: *index,
+                missing_variant: 0,
+                found_variant: 1,
             },
             (mir::Builtin::TextContains, [text, needle]) => InstructionKind::TextContains {
                 text: *text,
