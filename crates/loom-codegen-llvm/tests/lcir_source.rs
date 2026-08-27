@@ -4227,7 +4227,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn runtime_refinement_checks_still_select_atomic_fallback() {
+fn runtime_refinement_checks_return_typed_constraint_results() {
     let source = r"module lcir_source_dynamic_refined
 
 type Money = Float where self >= 0.0
@@ -4237,29 +4237,40 @@ fn checked(raw Float) Result[Money, ConstraintError] {
 }
 
 pub fn main() Unit {
-    discard checked(-1.0)
+    let accepted = match checked(1.0) {
+        Ok(value) => value == 1.0
+        Err(_) => false
+    }
+    let rejected = match checked(-1.0) {
+        Err(_) => true
+        Ok(_) => false
+    }
+    assert accepted
+    assert rejected
     Unit
 }
 ";
     let program = compile_source(source);
-    let outcome = lower_typed_artifact(
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
-        host_layout(),
-    )
-    .expect("classify runtime refinement");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("runtime refinement must not enter the proven-only LCIR slice")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| { item.feature() == loom_codegen_ir::UnsupportedFeature::RefinedValue }),
-        "{report:?}"
     );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("ConstraintViolation"), "{dump}");
+    assert!(dump.contains("sum.construct variant 0"), "{dump}");
+    assert!(dump.contains("sum.construct variant 1"), "{dump}");
+
+    let lcir = emit_and_run_lcir(&artifact, "runtime-refinement");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-runtime-refinement");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_no_legacy_surface(&lcir.ir);
+    assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
 
 #[test]
