@@ -4959,6 +4959,12 @@ struct CoroutineEmission<'ctx> {
     frame: PointerValue<'ctx>,
 }
 
+struct AwaitExitTargets {
+    normal: ResultTarget,
+    fault: UnwindTarget,
+    cancel: BlockTarget,
+}
+
 struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     backend: &'backend Backend<'ctx, 'artifact>,
     source: &'artifact Function,
@@ -5277,11 +5283,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         })?;
         let layout = coroutine.layout.clone();
         let dispatch = coroutine.dispatch;
-        let cancel_dispatch = coroutine.cancel_dispatch;
-        let cancel_start = coroutine.cancel_start;
         let invalid_state = coroutine.invalid_state;
         let resume_blocks = coroutine.resume_blocks.clone();
-        let cancel_blocks = coroutine.cancel_blocks.clone();
         let frame = coroutine.frame;
         self.backend.builder.position_at_end(dispatch);
         let state_pointer = self
@@ -5354,11 +5357,28 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_unconditional_branch(self.blocks[entry.index()])
             .map_err(builder_error)?;
 
-        self.backend.builder.position_at_end(cancel_dispatch);
+        self.prepare_coroutine_cancel_dispatch()
+    }
+
+    fn prepare_coroutine_cancel_dispatch(&self) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "coroutine cancellation dispatch has no frame plan",
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(coroutine.cancel_dispatch);
         let cancel_state_pointer = self
             .backend
             .builder
-            .build_struct_gep(layout.frame, frame, 0, "coroutine.cancel.state.pointer")
+            .build_struct_gep(
+                coroutine.layout.frame,
+                coroutine.frame,
+                0,
+                "coroutine.cancel.state.pointer",
+            )
             .map_err(builder_error)?;
         let cancel_state = self
             .backend
@@ -5370,9 +5390,17 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             )
             .map_err(builder_error)?
             .into_int_value();
-        let mut cancel_cases = Vec::with_capacity(1 + layout.suspensions.len());
-        cancel_cases.push((self.backend.context.i64_type().const_zero(), cancel_start));
-        for (suspension, block) in layout.suspensions.iter().zip(&cancel_blocks) {
+        let mut cancel_cases = Vec::with_capacity(1 + coroutine.layout.suspensions.len());
+        cancel_cases.push((
+            self.backend.context.i64_type().const_zero(),
+            coroutine.cancel_start,
+        ));
+        for (suspension, block) in coroutine
+            .layout
+            .suspensions
+            .iter()
+            .zip(&coroutine.cancel_blocks)
+        {
             cancel_cases.push((
                 self.backend
                     .context
@@ -5383,7 +5411,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         }
         self.backend
             .builder
-            .build_switch(cancel_state, invalid_state, &cancel_cases)
+            .build_switch(cancel_state, coroutine.invalid_state, &cancel_cases)
             .map_err(builder_error)?;
         Ok(())
     }
@@ -6484,7 +6512,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .zip(&coroutine.resume_blocks)
             .zip(&coroutine.cancel_blocks)
         {
-            let (_tasks, normal, fault, cancel) = self.await_for_state(plan_row.state())?;
+            let targets = self.await_for_state(plan_row.state())?;
             if layout_row.state != plan_row.state()
                 || layout_row.child_fields.len() != plan_row.awaited().len()
                 || layout_row.live_fields.len() != plan_row.live().len()
@@ -6498,13 +6526,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 ));
             }
             self.backend.builder.position_at_end(*resume);
-            self.emit_coroutine_resume_state(plan_row, layout_row, &normal, &fault, &cancel)?;
+            self.emit_coroutine_resume_state(
+                plan_row,
+                layout_row,
+                &targets.normal,
+                &targets.fault,
+                &targets.cancel,
+            )?;
 
             self.backend.builder.position_at_end(*cancel_resume);
             self.emit_coroutine_live_branch(
                 plan_row,
                 layout_row,
-                cancel.block,
+                targets.cancel.block,
                 "coroutine.cancel.live",
             )?;
         }
@@ -6753,23 +6787,22 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn await_for_state(
-        &self,
-        state: u32,
-    ) -> Result<(Box<[ValueId]>, ResultTarget, UnwindTarget, BlockTarget), CodegenError> {
+    fn await_for_state(&self, state: u32) -> Result<AwaitExitTargets, CodegenError> {
         self.source
             .blocks()
             .iter()
             .find_map(|block| match block.terminator().map(Terminator::kind) {
                 Some(TerminatorKind::AwaitTasks {
                     state: candidate,
-                    tasks,
+                    tasks: _,
                     normal,
                     fault,
                     cancel,
-                }) if *candidate == state => {
-                    Some((tasks.clone(), normal.clone(), fault.clone(), cancel.clone()))
-                }
+                }) if *candidate == state => Some(AwaitExitTargets {
+                    normal: normal.clone(),
+                    fault: fault.clone(),
+                    cancel: cancel.clone(),
+                }),
                 _ => None,
             })
             .ok_or_else(|| {
