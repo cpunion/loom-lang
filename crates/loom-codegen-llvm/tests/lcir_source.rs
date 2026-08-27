@@ -425,6 +425,25 @@ fn source_function<'program>(
         .unwrap_or_else(|| panic!("source function ending in `{suffix}`"))
 }
 
+fn emitted_lcir_function<'ir>(ir: &'ir str, artifact: &CheckedArtifact, suffix: &str) -> &'ir str {
+    let function = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(suffix))
+        .unwrap_or_else(|| panic!("LCIR function ending in `{suffix}`"));
+    let symbol = format!("@loom.lcir.fn.{}(", function.id().raw());
+    let symbol_at = ir
+        .find(&symbol)
+        .unwrap_or_else(|| panic!("emitted LCIR function `{symbol}`"));
+    let start = ir[..symbol_at]
+        .rfind("\ndefine ")
+        .map_or(0, |offset| offset + 1);
+    let end = ir[symbol_at..]
+        .find("\n}")
+        .map_or(ir.len(), |offset| symbol_at + offset + 2);
+    &ir[start..end]
+}
+
 fn checked_float_pattern_fixture() -> CheckedProgram {
     let source = r"module lcir_float_patterns
 
@@ -866,6 +885,239 @@ test fn concatMovesAndAliases() Result[Unit, Problem] {{
             "{ir}"
         );
         assert!(ir.contains("loom_runtime_text_concat_typed_v1"), "{ir}");
+        assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adversarial gate keeps nested-product relocation, alias, phi, call, pointer-free, and cross-target evidence together"
+)]
+fn managed_product_leaves_relocate_exactly_across_collecting_calls() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = format!(
+        r#"module lcir_managed_products
+
+enum Problem {{ WrongText }}
+
+record Pair {{
+    left Text
+    right Text
+}}
+
+record Bundle {{
+    pair Pair
+    tail (Text, Int)
+    enabled Bool
+}}
+
+impl Bundle {{
+    method refresh(mut self) Unit {{
+        let pressure = collectPressure()
+        discard pressure.length()
+        self.pair.left = self.pair.left.concat("")
+        Unit
+    }}
+}}
+
+fn join(left Text, right Text) Text {{ left.concat(right) }}
+
+fn collectPressure() Text {{ "{pressure}".concat("{pressure}") }}
+
+fn pointerFree(input (Int, Bool)) Int {{
+    let number, enabled = input
+    if enabled {{ number + 1 }} else {{ number }}
+}}
+
+fn retainParameter(input Bundle) Bundle {{
+    let pressure = collectPressure()
+    discard pressure.length()
+    input
+}}
+
+fn retainDefinition(kept Text) Bundle {{
+    let built = Bundle {{
+        pair = Pair {{ left = kept, right = kept }},
+        tail = (kept, 41),
+        enabled = true,
+    }}
+    let pressure = collectPressure()
+    discard pressure.length()
+    built
+}}
+
+fn retain(input Bundle, takeInput Bool) Bundle {{
+    let fallback = Bundle {{
+        pair = Pair {{ left = "Fallback", right = "Fallback" }},
+        tail = ("Fallback", 0),
+        enabled = false,
+    }}
+    let selected = if takeInput {{ input }} else {{ fallback }}
+    let pressure = collectPressure()
+    discard pressure.length()
+    selected
+}}
+
+fn retainInout(input Bundle) Bundle {{
+    var retained = input
+    retained.refresh()
+    retained
+}}
+
+fn verify() Result[Unit, Problem] {{
+    let kept = join("K", "eep")
+    let input = retainDefinition(kept)
+    let throughParameter = retainParameter(input)
+    let retained = retainInout(retain(throughParameter, true))
+    let tailText, number = retained.tail
+    if retained.pair.left == "Keep" && retained.pair.right == "Keep" && tailText == "Keep" && retained.enabled && pointerFree((number, true)) == 42 {{
+        Ok(Unit)
+    }} else {{
+        Err(Problem.WrongText)
+    }}
+}}
+
+pub fn main() Unit {{
+    discard verify()
+    Unit
+}}
+
+test fn managedProducts() Result[Unit, Problem] {{ verify() }}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(tests_artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("product"), "{dump}");
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+
+    let native = emit_and_run_lcir(&tests_artifact, "source-managed-products");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout).contains("managedProducts"),
+        "{:?}",
+        native.output
+    );
+    let retain = emitted_lcir_function(&native.ir, &tests_artifact, "retain");
+    for required in [
+        "managed.root.v",
+        ".p0.0",
+        ".p0.1",
+        ".p1.0",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(retain.contains(required), "missing `{required}`:\n{retain}");
+    }
+    assert_eq!(
+        retain
+            .matches("call i32 @loom_gc_typed_root_push_v1")
+            .count(),
+        retain
+            .matches("call i32 @loom_gc_typed_root_pop_v1")
+            .count(),
+        "typed product root frame must balance:\n{retain}"
+    );
+    assert!(
+        native.ir.contains("loom_runtime_text_concat_typed_v1"),
+        "{}",
+        native.ir
+    );
+    let retain_parameter = emitted_lcir_function(&native.ir, &tests_artifact, "retainParameter");
+    for required in [
+        ".p0.0",
+        ".p0.1",
+        ".p1.0",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            retain_parameter.contains(required),
+            "entry product parameter omitted `{required}`:\n{retain_parameter}"
+        );
+    }
+    let retain_definition = emitted_lcir_function(&native.ir, &tests_artifact, "retainDefinition");
+    for required in [
+        ".p0.0",
+        ".p0.1",
+        ".p1.0",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            retain_definition.contains(required),
+            "defined product omitted `{required}`:\n{retain_definition}"
+        );
+    }
+    let refresh = emitted_lcir_function(&native.ir, &tests_artifact, "refresh");
+    for required in [
+        ".p0.0",
+        ".p0.1",
+        ".p1.0",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            refresh.contains(required),
+            "inout product omitted `{required}`:\n{refresh}"
+        );
+    }
+    assert!(dump.contains("inout=[0]"), "{dump}");
+    let pointer_free = emitted_lcir_function(&native.ir, &tests_artifact, "pointerFree");
+    for forbidden in [
+        "managed.root",
+        "loom_gc_",
+        "loom_runtime_",
+        "loom_executor_",
+        "%loom.Value",
+    ] {
+        assert!(
+            !pointer_free.contains(forbidden),
+            "pointer-free product exposed `{forbidden}`:\n{pointer_free}"
+        );
+    }
+    for forbidden in ["loom_gc_root_push_v1", "loom_executor_", "%loom.Value"] {
+        assert!(!native.ir.contains(forbidden), "{}", native.ir);
+    }
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create managed-product target directory");
+        let object = directory.path().join("managed-products.o");
+        let ir_path = directory.path().join("managed-products.ll");
+        emit_lcir_native_object(
+            &tests_artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed-product object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read managed-product target IR");
+        assert!(ir.contains("managed.root.rebuild"), "{ir}");
         assert!(ir.contains("loom_gc_typed_root_push_v1"), "{ir}");
         assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
         assert!(!ir.contains("loom_executor_"), "{ir}");

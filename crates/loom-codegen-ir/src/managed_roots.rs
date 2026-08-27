@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
     BlockId, CheckedProgram, Effects, Function, InstanceId, InstructionId, InstructionKind, Repr,
-    TerminatorKind, ValueId,
+    RepresentationPlan, TerminatorKind, ValueId, ValueTypeId,
 };
 
 /// A moving-GC safepoint in one checked LCIR function.
@@ -12,15 +12,39 @@ pub enum ManagedSafepoint {
     Terminator(BlockId),
 }
 
+/// One exact managed leaf of an LCIR SSA value.
+///
+/// `projection` is empty for a direct managed pointer. Product projections are
+/// zero-based field indices from the outer value to one managed pointer leaf.
+/// Slots sort first by dense `ValueId` and then lexicographically by projection,
+/// which makes root metadata independent from hash or traversal order.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ManagedRootSlot {
+    value: ValueId,
+    projection: Box<[u32]>,
+}
+
+impl ManagedRootSlot {
+    #[must_use]
+    pub const fn value(&self) -> ValueId {
+        self.value
+    }
+
+    #[must_use]
+    pub const fn projection(&self) -> &[u32] {
+        &self.projection
+    }
+}
+
 /// Exact direct-pointer shadow-frame plan derived from checked SSA.
 ///
-/// Slot order is ascending dense `ValueId`. Bitmap row zero is always empty;
-/// every remaining row is a deduplicated live-after set for one collecting
-/// operation. The operation result is not defined at its safepoint and is
-/// therefore excluded from that row.
+/// Bitmap row zero is always empty; every remaining row is a deduplicated
+/// live-after set of managed leaf slots for one collecting operation. The
+/// operation result is not defined at its safepoint and is therefore excluded
+/// from that row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedRootPlan {
-    slots: Box<[ValueId]>,
+    slots: Box<[ManagedRootSlot]>,
     bitmap_words: usize,
     bitmaps: Box<[u64]>,
     states: BTreeMap<ManagedSafepoint, u64>,
@@ -28,7 +52,7 @@ pub struct ManagedRootPlan {
 
 impl ManagedRootPlan {
     #[must_use]
-    pub const fn slots(&self) -> &[ValueId] {
+    pub const fn slots(&self) -> &[ManagedRootSlot] {
         &self.slots
     }
 
@@ -78,24 +102,85 @@ fn plan_managed_roots_with_work(
 ) -> Option<(ManagedRootPlan, usize)> {
     let program = program.as_program();
     let function = program.function(function)?;
-    let managed = managed_value_mask(program, function);
+    let projections = managed_value_projections(program.representations(), function)?;
+    let managed = (0..function.values().len())
+        .map(|index| {
+            projections
+                .for_value_index(index)
+                .is_some_and(|projections| !projections.is_empty())
+        })
+        .collect::<Vec<_>>();
     let (live_out, block_evaluations) = analyze_live_out(function, &managed)?;
     let sites = collect_safepoint_values(program, function, &managed, &live_out)?;
-    build_root_plan(sites, block_evaluations)
+    build_root_plan(sites, &projections, block_evaluations)
 }
 
-fn managed_value_mask(program: &crate::Program, function: &Function) -> Vec<bool> {
-    function
+struct ManagedProjectionCatalog {
+    value_types: Box<[ValueTypeId]>,
+    by_type: BTreeMap<ValueTypeId, Box<[Box<[u32]>]>>,
+}
+
+impl ManagedProjectionCatalog {
+    fn for_value_index(&self, index: usize) -> Option<&[Box<[u32]>]> {
+        self.value_types
+            .get(index)
+            .and_then(|ty| self.by_type.get(ty))
+            .map(AsRef::as_ref)
+    }
+}
+
+fn managed_value_projections(
+    representations: &RepresentationPlan,
+    function: &Function,
+) -> Option<ManagedProjectionCatalog> {
+    let value_types = function
         .values()
         .iter()
-        .map(|value| {
-            program
-                .representations()
-                .value_type(value.ty())
-                .and_then(|ty| program.representations().repr(ty.repr()))
-                == Some(&Repr::ManagedPointer)
-        })
-        .collect()
+        .map(crate::Value::ty)
+        .collect::<Box<[_]>>();
+    let by_type = value_types
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|ty| managed_leaf_projections(representations, ty).map(|paths| (ty, paths)))
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    Some(ManagedProjectionCatalog {
+        value_types,
+        by_type,
+    })
+}
+
+fn managed_leaf_projections(
+    representations: &RepresentationPlan,
+    root: ValueTypeId,
+) -> Option<Box<[Box<[u32]>]>> {
+    let mut projections = Vec::new();
+    let mut pending = vec![(root, Vec::new())];
+    while let Some((value, path)) = pending.pop() {
+        let value = representations.value_type(value)?;
+        match representations.repr(value.repr())? {
+            Repr::ManagedPointer => projections.push(path.into_boxed_slice()),
+            Repr::Product(product) => {
+                for (index, field) in representations
+                    .product(*product)?
+                    .fields()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .rev()
+                {
+                    let index = u32::try_from(index).ok()?;
+                    let mut field_path = path.clone();
+                    field_path.push(index);
+                    pending.push((field, field_path));
+                }
+            }
+            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText | Repr::Sum(_) => {
+            }
+        }
+    }
+    Some(projections.into_boxed_slice())
 }
 
 fn analyze_live_out(
@@ -210,12 +295,23 @@ fn collect_safepoint_values(
 
 fn build_root_plan(
     site_values: BTreeMap<ManagedSafepoint, BTreeSet<ValueId>>,
+    projections: &ManagedProjectionCatalog,
     block_evaluations: usize,
 ) -> Option<(ManagedRootPlan, usize)> {
     let slots = site_values
         .values()
         .flat_map(BTreeSet::iter)
-        .copied()
+        .flat_map(|value| {
+            projections
+                .for_value_index(value.index())
+                .into_iter()
+                .flat_map(|paths| {
+                    paths.iter().cloned().map(|projection| ManagedRootSlot {
+                        value: *value,
+                        projection,
+                    })
+                })
+        })
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -233,9 +329,9 @@ fn build_root_plan(
     let bitmap_words = slots.len().div_ceil(u64::BITS as usize);
     let slot_indices = slots
         .iter()
-        .copied()
+        .cloned()
         .enumerate()
-        .map(|(index, value)| (value, index))
+        .map(|(index, slot)| (slot, index))
         .collect::<BTreeMap<_, _>>();
     let empty = vec![0_u64; bitmap_words];
     let mut rows = vec![empty.clone()];
@@ -244,8 +340,14 @@ fn build_root_plan(
     for (site, values) in site_values {
         let mut row = vec![0_u64; bitmap_words];
         for value in values {
-            let slot = slot_indices[&value];
-            row[slot / u64::BITS as usize] |= 1_u64 << (slot % u64::BITS as usize);
+            for projection in projections.for_value_index(value.index())? {
+                let key = ManagedRootSlot {
+                    value,
+                    projection: projection.clone(),
+                };
+                let slot = slot_indices[&key];
+                row[slot / u64::BITS as usize] |= 1_u64 << (slot % u64::BITS as usize);
+            }
         }
         let state = if let Some(state) = row_indices.get(&row) {
             *state
@@ -541,7 +643,9 @@ mod tests {
         let (plan, evaluations) =
             plan_managed_roots_with_work(&program, root).expect("managed-root plan");
 
-        assert_eq!(plan.slots(), [live]);
+        assert_eq!(plan.slots().len(), 1);
+        assert_eq!(plan.slots()[0].value(), live);
+        assert!(plan.slots()[0].projection().is_empty());
         assert!(
             evaluations <= block_count + 4,
             "predecessor worklist reevaluated {evaluations} blocks for {block_count} CFG blocks"

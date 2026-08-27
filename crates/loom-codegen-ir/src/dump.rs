@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 11")?;
+    writeln!(output, "lcir 12")?;
     writeln!(
         output,
         "target pointer_bits={}",

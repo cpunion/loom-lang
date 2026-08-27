@@ -56,11 +56,14 @@ internally.
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
 as `I1`, `Int` as `I64`, `Float` as `F64`, and `Text` as one opaque pointer on
-64-bit targets. Text uses `ImmortalText` for a literal-only artifact and
-`ManagedPointer` for the entire artifact when concat is reachable. Each supported structural tuple
-or closed record as an immutable `Product` of canonical element or field value
-types. Tuples and records may contain one another as long as the representation
-graph is acyclic. An explicit registration table chooses the canonical value
+64-bit targets. Text uses `ImmortalText` for a literal-only, product-free
+artifact and `ManagedPointer` for the entire artifact when concat or a
+Text-bearing product is reachable. Each supported structural tuple or closed
+record is an immutable `Product` of canonical element or field value types.
+Tuples and records may contain one another and managed Text leaves as long as
+the representation graph is acyclic. The product itself remains an unboxed
+aggregate; `ManagedPointer` describes only the canonical Text leaf
+representation. An explicit registration table chooses the canonical value
 representation for a semantic type; other representation alternatives do not
 compete merely because they have the same semantic type.
 
@@ -100,7 +103,7 @@ and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
-Generic records, managed values nested in aggregates, protected projections,
+Generic records, managed values other than Text leaves in products, protected projections,
 runtime-checked construction, concepts, contracts, cleanup, and async
 operations still select the complete universal route. Typed LCIR does not
 change the legacy runtime ABI or make either object ABI public.
@@ -118,8 +121,9 @@ text is moved by the GC.
 
 Typed LCIR uses one opaque pointer with that object shape. In a literal-only
 artifact, `ImmortalText` points at compiler-emitted immutable globals with
-process lifetime. If concat is reachable, representation planning selects
-`ManagedPointer` for every Text in the artifact, including literals. Dynamic
+process lifetime. If concat or a Text-bearing tuple/record is reachable,
+representation planning selects `ManagedPointer` for every Text in the
+artifact, including literals. Dynamic
 results are typed moving-GC leaves; literals remain legal static values in the
 same pointer ABI. The callable graph never mixes those two LCIR
 representations.
@@ -134,12 +138,14 @@ specialized helper stages both inputs before collection, allocates a typed leaf
 with no pointer fields, initializes it without a safepoint, and publishes it
 last. OOM is an uncatchable process fault; malformed ABI status fails closed.
 
-Every managed SSA value live after a collecting operation receives a stable
-pointer cell in a typed shadow frame. Per-site bitmaps are exact, results are
-excluded at their defining safepoint, and later uses reload the possibly moved
-pointer. Functions with no live-across managed value emit no frame. `get`,
-other dynamic producers, and any aggregate containing Text remain complete
-legacy fallback.
+Every direct managed SSA value live after a collecting operation receives a
+stable pointer cell in a typed shadow frame. A live unboxed product expands to
+one stable cell per deterministic managed Text leaf; definitions and phis
+publish those projections, and later aggregate uses are rebuilt from possibly
+moved leaf reloads. Per-site bitmaps are exact and results are excluded at their
+defining safepoint. Functions with no live-across managed leaf emit no frame.
+`get`, other dynamic producers, Text inside enums or transparent/refined
+carriers, and managed lists remain complete legacy fallback.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving

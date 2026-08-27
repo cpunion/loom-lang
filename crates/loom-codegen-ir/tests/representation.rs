@@ -2,7 +2,7 @@ use loom_codegen_ir::{
     BuildErrorCode, Effects, Origin, ProgramBuilder, Repr, RepresentationPlan, ScalarRepr,
     Signature, TargetLayout,
 };
-use loom_mir::{FunctionId, Type};
+use loom_mir::{FunctionId, Type, TypeId};
 
 #[test]
 fn direct_representation_catalog_is_canonical() {
@@ -65,7 +65,7 @@ fn target_pointer_width_is_validated_at_the_boundary() {
 }
 
 #[test]
-fn immortal_text_is_explicit_64_bit_only_and_not_an_aggregate_leaf() {
+fn immortal_text_is_explicit_64_bit_only_and_not_a_product_leaf() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     assert_eq!(builder.type_id(&Type::Text), None);
     let text = builder
@@ -90,7 +90,7 @@ fn immortal_text_is_explicit_64_bit_only_and_not_an_aggregate_leaf() {
     assert_eq!(
         builder
             .add_tuple_type(&[Type::Text])
-            .expect_err("managed Text cannot enter a direct aggregate yet")
+            .expect_err("immortal-only Text cannot enter a direct product")
             .code(),
         BuildErrorCode::InvalidProductType
     );
@@ -102,6 +102,47 @@ fn immortal_text_is_explicit_64_bit_only_and_not_an_aggregate_leaf() {
             .expect_err("the native Text object ABI is 64-bit only")
             .code(),
         BuildErrorCode::InvalidTextType
+    );
+}
+
+#[test]
+fn managed_text_enters_nested_products_but_not_sums_or_transparent_carriers() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    builder
+        .add_managed_text_type()
+        .expect("register managed-capable Text");
+    let inner = Type::Tuple(vec![Type::Text, Type::Int]);
+    builder
+        .add_tuple_type(&[Type::Text, Type::Int])
+        .expect("managed Text tuple");
+    let record = Type::Nominal(TypeId(90), Vec::new());
+    let outer = builder
+        .add_pod_record_type(record.clone(), std::slice::from_ref(&inner))
+        .expect("nested managed product");
+    assert!(matches!(
+        builder
+            .representations()
+            .value_type(outer)
+            .and_then(|ty| builder.representations().repr(ty.repr())),
+        Some(Repr::Product(_))
+    ));
+
+    assert_eq!(
+        builder
+            .add_sum_type(
+                Type::Nominal(TypeId(91), Vec::new()),
+                &[Box::from([record.clone()])],
+            )
+            .expect_err("sum payloads remain pointer-free")
+            .code(),
+        BuildErrorCode::InvalidSumType
+    );
+    assert_eq!(
+        builder
+            .add_transparent_type(Type::Nominal(TypeId(92), Vec::new()), &record)
+            .expect_err("transparent managed-product carriers remain unsupported")
+            .code(),
+        BuildErrorCode::InvalidValueType
     );
 }
 

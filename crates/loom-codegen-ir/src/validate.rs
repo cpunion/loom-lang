@@ -10,6 +10,35 @@ use crate::{
     Terminator, TerminatorKind, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
+fn representation_contains_text_pointer(
+    representations: &RepresentationPlan,
+    root: ValueTypeId,
+) -> Option<bool> {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(value) = pending.pop() {
+        if !visited.insert(value) {
+            continue;
+        }
+        let value = representations.value_type(value)?;
+        match representations.repr(value.repr())? {
+            Repr::ImmortalText | Repr::ManagedPointer => return Some(true),
+            Repr::Product(product) => {
+                pending.extend(representations.product(*product)?.fields().iter().copied());
+            }
+            Repr::Sum(sum) => pending.extend(
+                representations
+                    .sum(*sum)?
+                    .variants()
+                    .iter()
+                    .flat_map(|variant| variant.fields().iter().copied()),
+            ),
+            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
+        }
+    }
+    Some(false)
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
     RepresentationPlan,
@@ -523,6 +552,15 @@ impl<'a> Validator<'a> {
                     "every representation alternative for a semantic type must inherit its canonical construction protection and transparent base relation",
                 );
             }
+            if let ValueTypeKind::Transparent { base } = value_type.kind()
+                && representation_contains_text_pointer(&representations, base) != Some(false)
+            {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.type[{index}].kind.transparent_base"),
+                    "transparent values must retain a pointer-free base representation",
+                );
+            }
             match representations.repr(value_type.repr()).copied() {
                 Some(Repr::Product(product)) => {
                     match value_type.semantic() {
@@ -628,14 +666,24 @@ impl<'a> Validator<'a> {
                     | Repr::Sum(_) => None,
                 })
         };
-        let supported_field = |field: ValueTypeId| {
+        let supported_product_field = |field: ValueTypeId| {
             representations.value_type(field).is_some_and(|value_type| {
                 value_type.semantic() != &Type::Never
                     && matches!(
                         representations.repr(value_type.repr()),
-                        Some(Repr::Zst | Repr::Scalar(_) | Repr::Product(_) | Repr::Sum(_))
+                        Some(
+                            Repr::Zst
+                                | Repr::Scalar(_)
+                                | Repr::ManagedPointer
+                                | Repr::Product(_)
+                                | Repr::Sum(_)
+                        )
                     )
             })
+        };
+        let supported_sum_field = |field: ValueTypeId| {
+            supported_product_field(field)
+                && representation_contains_text_pointer(&representations, field) == Some(false)
         };
         for (index, product) in representations.products().iter().enumerate() {
             let product_id = ProductReprId::from_index(self.program.brand, index);
@@ -655,11 +703,11 @@ impl<'a> Validator<'a> {
             }
             aggregate_costs[index] = 1_usize.saturating_add(product.fields().len());
             for (field_index, field) in product.fields().iter().copied().enumerate() {
-                if !supported_field(field) {
+                if !supported_product_field(field) {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
-                        "POD product fields must reference inhabited direct value types",
+                        "product fields must reference inhabited direct values; Text leaves require ManagedPointer",
                     );
                 }
                 if let Some(nested) = aggregate_index(field) {
@@ -708,13 +756,13 @@ impl<'a> Validator<'a> {
                 .saturating_add(payload_fields);
             for (variant_index, variant) in sum.variants().iter().enumerate() {
                 for (field_index, field) in variant.fields().iter().copied().enumerate() {
-                    if !supported_field(field) {
+                    if !supported_sum_field(field) {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!(
                                 "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
                             ),
-                            "sum payloads must reference inhabited direct value types",
+                            "sum payloads must reference inhabited pointer-free direct value types",
                         );
                     }
                     if let Some(nested) = aggregate_index(field) {

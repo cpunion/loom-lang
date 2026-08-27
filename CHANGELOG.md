@@ -104,16 +104,22 @@ artifact, or runtime compatibility.
   surface is added. Open instance keys are rejected independently by the
   builder and validator. This advances the LCIR dump to 10, artifact identity
   to schema 11, LCIR native-object domain to v7, and CLI object cache to v12.
-- Dynamic `Text.concat` now compiles through typed LCIR. One artifact-wide
-  direct pointer representation covers its literals and moving results; the
+- Dynamic `Text.concat` and Text-bearing tuples/records now compile through
+  typed LCIR. One artifact-wide direct pointer representation covers literals
+  and moving results whenever concat or a Text-bearing product is reachable; the
   runtime stages both complete UTF-8 inputs before collection, initializes a
   pointer-free typed leaf, and publishes it last. Exact live-after SSA root
-  maps use the typed shadow stack, reload relocated aliases, omit dead edge
-  arguments and empty frames, and construct no universal value or executor.
+  maps expand an unboxed tuple/record to deterministic managed-leaf cells in
+  the typed shadow stack, rebuild aggregate uses from relocated aliases, omit
+  dead edge arguments and empty frames, and construct no universal value or
+  executor. Products remain exact SSA structs rather than heap objects.
   OOM remains an uncatchable process fault and invalid helper status fails
-  closed. `Text.get` and Text nested in aggregates still select atomic
-  fallback. This advances the LCIR dump to 11, artifact identity to schema 12,
-  native-object domain to v8, and CLI object cache to v13.
+  closed. `Text.get`, Text inside enums or transparent/refined carriers, and
+  managed lists remain atomic fallback. This advances the LCIR dump to 12,
+  artifact identity to schema 13, native-object domain to v9, and CLI object
+  cache to v14. Product leaf rooting reuses typed-shadow-stack v1 and does not
+  change the current native runtime ABI component 11 or its `runtime-v5`
+  identity.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

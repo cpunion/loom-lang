@@ -8,6 +8,10 @@ pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
     matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
 }
 
+const fn is_direct_product_leaf(ty: &Type) -> bool {
+    is_direct_scalar(ty) || matches!(ty, Type::Text)
+}
+
 /// Upper bound for every semantic-type tree copied into the direct aggregate
 /// plan. This is deliberately independent from the representation-node budget:
 /// a generic schema can have few payload fields while substituting a very large
@@ -460,21 +464,29 @@ fn push_schema_types<'a>(
 /// independent validation, including mixed product/sum cycles.
 pub(crate) struct AggregatePlanner<'program> {
     program: &'program mir::Program,
+    supports_managed_text: bool,
     planned: BTreeMap<Type, AggregateShape>,
     rejected_roots: BTreeSet<Type>,
     acyclic_nominals: BTreeSet<TypeId>,
     rejected_nominals: BTreeSet<TypeId>,
+    uses_text_product_leaf: bool,
 }
 
 impl<'program> AggregatePlanner<'program> {
-    pub(crate) fn new(program: &'program mir::Program) -> Self {
+    pub(crate) fn new(program: &'program mir::Program, supports_managed_text: bool) -> Self {
         Self {
             program,
+            supports_managed_text,
             planned: BTreeMap::new(),
             rejected_roots: BTreeSet::new(),
             acyclic_nominals: BTreeSet::new(),
             rejected_nominals: BTreeSet::new(),
+            uses_text_product_leaf: false,
         }
+    }
+
+    pub(crate) const fn uses_text_product_leaf(&self) -> bool {
+        self.uses_text_product_leaf
     }
 
     fn supports_nominal_schema(&mut self, id: TypeId) -> bool {
@@ -512,12 +524,13 @@ impl<'program> AggregatePlanner<'program> {
 
         // Exit frames keep cycle detection path-local. Repeated children are
         // expanded because validator budgets count occurrences, not identities.
-        let mut pending = vec![(ty.clone(), 1_usize, false)];
+        let mut pending = vec![(ty.clone(), 1_usize, false, true)];
         let mut visiting = BTreeSet::new();
         let mut discovered = BTreeMap::new();
         let mut structural_nodes = 0_usize;
+        let mut uses_text_product_leaf = false;
         let mut supported = true;
-        while let Some((semantic, depth, exiting)) = pending.pop() {
+        while let Some((semantic, depth, exiting, text_product_path)) = pending.pop() {
             if exiting {
                 visiting.remove(&semantic);
                 continue;
@@ -550,23 +563,44 @@ impl<'program> AggregatePlanner<'program> {
                 break;
             }
             structural_nodes = next_structural_nodes;
-            let children = shape
-                .dependencies()
-                .filter(|field| !is_direct_scalar(field))
-                .cloned()
-                .collect::<Vec<_>>();
+            let child_text_product_path = text_product_path
+                && matches!(
+                    shape,
+                    AggregateShape::Product(_) | AggregateShape::InvariantProduct(_)
+                );
+            let mut children = Vec::new();
+            for field in shape.dependencies() {
+                if is_direct_scalar(field) {
+                    continue;
+                }
+                if field == &Type::Text {
+                    if !child_text_product_path || !self.supports_managed_text {
+                        supported = false;
+                        break;
+                    }
+                    uses_text_product_leaf = true;
+                    continue;
+                }
+                children.push(field.clone());
+            }
+            if !supported {
+                break;
+            }
             discovered.entry(semantic.clone()).or_insert(shape);
-            pending.push((semantic, depth, true));
-            pending.extend(
-                children
-                    .into_iter()
-                    .rev()
-                    .map(|child| (child, depth.saturating_add(1), false)),
-            );
+            pending.push((semantic, depth, true, text_product_path));
+            pending.extend(children.into_iter().rev().map(|child| {
+                (
+                    child,
+                    depth.saturating_add(1),
+                    false,
+                    child_text_product_path,
+                )
+            }));
         }
 
         if supported {
             self.planned.extend(discovered);
+            self.uses_text_product_leaf |= uses_text_product_leaf;
         } else {
             self.rejected_roots.insert(ty.clone());
         }
@@ -609,7 +643,7 @@ impl AggregatePlan {
             }
             if shape
                 .dependencies()
-                .any(|field| !is_direct_scalar(field) && !self.entries.contains_key(field))
+                .any(|field| !is_direct_product_leaf(field) && !self.entries.contains_key(field))
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "direct type {semantic:?} depends on an unplanned value type"
@@ -732,7 +766,7 @@ mod tests {
         };
         let root = Type::Nominal(spiral, vec![Type::Int]);
 
-        let mut planner = AggregatePlanner::new(&program);
+        let mut planner = AggregatePlanner::new(&program, true);
         assert!(
             !planner.supports_value_type(&Type::Tuple(vec![root.clone(), Type::Int])),
             "a tuple root must reject a nested non-regular nominal before substitution growth"
@@ -753,7 +787,7 @@ mod tests {
             std::iter::repeat_n(Type::Int, DIRECT_AGGREGATE_MAX_TYPE_NODES).collect::<Vec<_>>(),
         );
         let program = Program::default();
-        let mut planner = AggregatePlanner::new(&program);
+        let mut planner = AggregatePlanner::new(&program, true);
         assert!(!planner.supports_value_type(&oversized));
     }
 
@@ -781,7 +815,7 @@ mod tests {
         let root = Type::Nominal(wide, Vec::new());
 
         assert!(closed_enum_variants(&program, &root).is_none());
-        let mut planner = AggregatePlanner::new(&program);
+        let mut planner = AggregatePlanner::new(&program, true);
         assert!(!planner.supports_value_type(&root));
         assert!(!planner.supports_value_type(&root));
     }
@@ -817,7 +851,7 @@ mod tests {
         let inner = Type::Nominal(option, vec![Type::Int]);
         let outer = Type::Nominal(option, vec![inner]);
 
-        let mut planner = AggregatePlanner::new(&program);
+        let mut planner = AggregatePlanner::new(&program, true);
         assert!(planner.supports_value_type(&outer));
         let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
         planner

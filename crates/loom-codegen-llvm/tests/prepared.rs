@@ -101,7 +101,28 @@ pub fn main() Unit {
         EmitOptions::run("main"),
         NativeRoutePolicy::Automatic,
     )
-    .expect("prepare tuple with an unsupported managed element");
+    .expect("prepare tuple with a direct managed Text leaf");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let managed_sum = compile_source(
+        r#"module prepared_managed_sum
+
+record Label { value Text }
+
+enum Message { Textual(Label) }
+
+pub fn main() Unit {
+    discard Message.Textual(Label { value = "legacy" })
+    Unit
+}
+"#,
+    );
+    let prepared = prepare_native_object(
+        &managed_sum,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare sum whose payload transitively contains managed Text");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
 
     let dead_text = compile_source(

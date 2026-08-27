@@ -135,6 +135,61 @@ pub fn main() Unit {
 }
 
 #[test]
+fn text_product_without_a_literal_still_obeys_the_64_bit_pointer_boundary() {
+    let mir = compile(
+        r"module lcir_text_product_32
+
+fn spin() (Text, Int) { spin() }
+
+pub fn main() Unit {
+    discard spin()
+    Unit
+}
+",
+    );
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let outcome = lower_typed_artifact(
+        &mir,
+        &request,
+        TargetLayout::new(32).expect("32-bit test target"),
+    )
+    .expect("classify a 32-bit Text-product artifact");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a Text-bearing product must not reach managed registration on a 32-bit target")
+    };
+    assert!(
+        report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::SignatureType | UnsupportedFeature::ExpressionType
+        )),
+        "{report:?}"
+    );
+
+    let outcome = lower_typed_artifact(
+        &mir,
+        &request,
+        TargetLayout::new(64).expect("64-bit test target"),
+    )
+    .expect("classify a 64-bit Text-product artifact");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("the same Text-bearing product must remain direct on a 64-bit target")
+    };
+    let text = artifact
+        .representations()
+        .type_id(&loom_mir::Type::Text)
+        .expect("Text type");
+    assert_eq!(
+        artifact
+            .representations()
+            .value_type(text)
+            .and_then(|ty| artifact.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+}
+
+#[test]
 fn derived_text_operations_still_select_one_atomic_fallback() {
     let outcome = lower_run(
         r#"module lcir_text_fallback
@@ -206,9 +261,9 @@ pub fn main() Unit {
 }
 
 #[test]
-fn managed_text_inside_aggregates_remains_atomic_fallback() {
+fn text_product_selects_managed_provenance_without_inventing_runtime_effects() {
     let outcome = lower_run(
-        r#"module lcir_text_aggregate_fallback
+        r#"module lcir_text_product
 
 record Named { value Text }
 
@@ -218,18 +273,29 @@ pub fn main() Unit {
 }
 "#,
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("managed aggregate roots require the future typed GC-root ABI")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("Text-bearing records must lower as direct managed products")
     };
-    assert!(
-        report.items().iter().any(|item| {
-            matches!(
-                item.feature(),
-                UnsupportedFeature::ExpressionType | UnsupportedFeature::NominalValue
-            )
-        }),
-        "{report:?}"
+    let text = artifact
+        .representations()
+        .type_id(&loom_mir::Type::Text)
+        .expect("Text type");
+    assert_eq!(
+        artifact
+            .representations()
+            .value_type(text)
+            .and_then(|ty| artifact.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
     );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| function.effects().is_empty())
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("product p0(t5)"), "{dump}");
 }
 
 #[test]
@@ -2704,10 +2770,12 @@ fn managed_and_recursive_sums_select_whole_artifact_fallback() {
     for source in [
         r#"module managed_sum
 
-enum Message { Textual(Text) }
+record Label { value Text }
+
+enum Message { Textual(Label) }
 
 pub fn main() Unit {
-    discard Message.Textual("managed")
+    discard Message.Textual(Label { value = "managed" })
     Unit
 }
 "#,
@@ -2942,7 +3010,7 @@ fn over_budget_match_plans_select_atomic_fallback() {
 }
 
 #[test]
-fn managed_tuple_elements_and_over_budget_tuples_select_atomic_fallback() {
+fn managed_tuple_elements_lower_directly_and_over_budget_tuples_fallback() {
     let managed = lower_run(
         r#"module managed_tuple
 
@@ -2956,15 +3024,30 @@ pub fn main() Unit {
 }
 "#,
     );
-    let LoweringOutcome::Unsupported(managed) = managed else {
-        panic!("a tuple containing Text must select whole-artifact fallback")
+    let LoweringOutcome::Complete(managed) = managed else {
+        panic!("a tuple containing Text must use the direct managed-product route")
     };
-    assert!(managed.items().iter().any(|item| matches!(
-        item.feature(),
-        UnsupportedFeature::SignatureType
-            | UnsupportedFeature::ExpressionType
-            | UnsupportedFeature::TextConstant
-    )));
+    let text = managed
+        .representations()
+        .type_id(&loom_mir::Type::Text)
+        .expect("Text type");
+    assert_eq!(
+        managed
+            .representations()
+            .value_type(text)
+            .and_then(|ty| managed.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    assert!(
+        managed
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .any(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::ProductConstruct { .. }
+            ))
+    );
 
     let fields = std::iter::repeat_n("Int", 256)
         .collect::<Vec<_>>()
@@ -2984,33 +3067,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn unsupported_record_boundaries_select_one_atomic_fallback() {
-    let managed = lower_run(
-        r#"module managed_record
-
-record Message { text Text }
-
-pub fn main() Unit {
-    let message = Message { text = "managed" }
-    discard message.text
-    Unit
-}
-"#,
-    );
-    let LoweringOutcome::Unsupported(managed) = managed else {
-        panic!("managed record must select fallback")
-    };
-    assert!(
-        managed.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::SignatureType
-                | UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::NominalValue
-                | UnsupportedFeature::TextConstant
-        )),
-        "{managed:?}"
-    );
-
+fn runtime_invariant_record_construction_selects_one_atomic_fallback() {
     let invariant = lower_run(
         r"module invariant_record
 

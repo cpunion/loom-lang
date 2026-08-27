@@ -29,8 +29,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed values other than direct Text concat results,
-nested managed values,
+native specializations. Managed values other than direct Text values and
+Text-bearing products,
 unsupported or recursive enums,
 runtime-checked constraints, concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
@@ -109,9 +109,9 @@ vocabulary is:
 - one opaque `ImmortalText` pointer for a 64-bit closed artifact in which every
   text value is transitively produced by a compiler-emitted process-lifetime
   literal;
-- one opaque `ManagedPointer` for every Text in an artifact where concat is
-  reachable; literals remain static objects and concat results are typed
-  moving-GC leaves in the same direct pointer ABI;
+- one opaque `ManagedPointer` for every Text in an artifact where concat or a
+  Text-bearing product is reachable; literals remain static objects and concat
+  results are typed moving-GC leaves in the same direct pointer ABI;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -124,11 +124,12 @@ vocabulary is:
   direct values. One variant is tagless, an all-empty multi-variant sum is tag
   only, and every other sum has a minimal tag plus an exact aligned carrier.
 
-Products and sums are immutable register aggregates. Tuples, records, sums,
-established refinements, and protected invariant products may contain one
-another when the resulting by-value graph is acyclic. Neither Text pointer
-representation is admitted inside those aggregates in the current slice. Each representation plan
-has an explicit canonical
+Products and sums are immutable register aggregates. Tuples and records may
+contain one another and managed Text leaves when the resulting by-value graph is
+acyclic. `ManagedPointer` is the artifact-wide Text provenance mode; a product
+containing such a leaf remains an unboxed exact aggregate. Sums and
+transparent/refined carriers remain pointer-free in this slice. Each
+representation plan has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. General managed,
 dynamic-witness, erased, and coroutine representations are added only with
@@ -138,15 +139,16 @@ universal tag.
 
 The direct text slice supports allocation-free length, containment, and
 content equality or inequality; equality is never pointer equality. It also
-supports concat through a specialized typed helper. Any concat selects
-`ManagedPointer` for every Text in the complete artifact and adds
-`MAY_COLLECT`. Exact backwards SSA liveness supplies typed pointer cells and a
-deduplicated bitmap state for every collecting site. Values are live after the
-call, so its not-yet-defined result is excluded; explicit edge arguments map
-only to live explicit destination parameters. Empty plans emit no frame.
-`get`, other dynamic producers, and aggregate-contained text remain
-whole-artifact fallback. Literal planning is bounded to 1 MiB of UTF-8 for one
-literal and 16 MiB across one LCIR artifact.
+supports concat through a specialized typed helper. Any concat or Text-bearing
+product selects `ManagedPointer` for every Text in the complete artifact;
+concat additionally adds `MAY_COLLECT`. Exact backwards SSA liveness expands a
+live product to deterministic projected leaf cells and a deduplicated bitmap
+state for every collecting site. Values are live after the call, so its
+not-yet-defined result is excluded; explicit edge arguments map only to live
+explicit destination parameters. Empty plans emit no frame. `get`, other
+dynamic producers, Text inside sums or transparent/refined carriers, and
+managed lists remain whole-artifact fallback. Literal planning is bounded to
+1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
 records the exact base type, `RefineProven` requires that base and a distinct
@@ -302,9 +304,13 @@ allocate a 32-byte, 8-aligned, pointer-free typed prefix with trailing bytes,
 initialize it without a safepoint, and publish the result last. OOM is an
 uncatchable process-level fault; every other nonzero status fails closed. LLVM
 publishes exact typed-root states before concat and transitively collecting
-calls, reloads candidate cells after safepoints, and pops every nonempty frame
-on all source exits. Root-map ABI-limit excess is `ProgramTooLarge`, not
-fallback. No universal root chain or executor participates in this path.
+calls. A direct Text value has one stable cell; a live unboxed product has one
+cell per deterministic Text-leaf projection. Definitions and phis publish the
+leaves, aggregate uses are reconstructed from post-safepoint reloads, and every
+nonempty frame is popped on all source exits. Root-map ABI-limit excess is
+`ProgramTooLarge`, not fallback. No universal root chain or executor
+participates in this path. Product leaf rooting reuses typed-shadow-stack v1 and
+does not change the current runtime ABI component 11 or `runtime-v5`.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
