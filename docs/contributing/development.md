@@ -77,6 +77,13 @@ recover the compiler's immutable host identity. The x86-64 MSVC target triple
 and LLVM 19 data layout are embedded as compiler-build invariants, with a
 cross-target regression test checking the layout against the pinned LLVM.
 
+The Windows native gate executes target-machine construction and the first
+LCIR object emission as separate single-test processes before the workspace
+suite. `LOOM_LLVM_TRACE_STAGES=1` prints only compiler-owned LLVM boundary
+names, never source text, paths, environment values, or host details. This
+keeps access violations inside a statically linked LLVM library attributable
+to one target, module, optimization, or object-writer boundary.
+
 ## First build
 
 ```sh

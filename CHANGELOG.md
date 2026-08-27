@@ -38,6 +38,9 @@ artifact, or runtime compatibility.
   point. Explicit targets select only their architecture initializer when the
   linked LLVM distribution is partial, so unrelated packaged backends cannot
   affect host object emission.
+- The Windows native gate now isolates target-machine construction from first
+  object emission and emits bounded, non-sensitive LLVM stage markers, so a
+  process-level LLVM failure identifies its exact compiler boundary.
 - Native `build`, `run`, `test`, and `debug` no longer obtain a runtime archive
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.

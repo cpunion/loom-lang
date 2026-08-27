@@ -21,7 +21,7 @@ use crate::codegen::{
 use crate::emitter::Emitter;
 use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
-use crate::{CodegenError, NativeTargetIdentity};
+use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
 
 const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v8";
 
@@ -197,9 +197,13 @@ pub fn prepare_native_object(
     options: EmitOptions,
     policy: NativeRoutePolicy,
 ) -> Result<PreparedNativeObject<'_>, NativePreparationError> {
+    trace_llvm_stage("prepare.target.begin");
     let target = create_llvm_target_machine(options.target_triple.as_deref(), options.optimization)
         .map_err(|error| NativePreparationError::target(&error))?;
+    trace_llvm_stage("prepare.target.end");
+    trace_llvm_stage("prepare.identity.begin");
     let target_identity = target.identity();
+    trace_llvm_stage("prepare.identity.end");
     let route = match policy {
         NativeRoutePolicy::Automatic => {
             let llvm_pointer_bits = target
@@ -223,11 +227,16 @@ pub fn prepare_native_object(
                 )
             })?;
             let request = source_request(&options);
+            trace_llvm_stage("prepare.lcir-lowering.begin");
             match lower_typed_artifact(mir, &request, layout)
                 .map_err(NativePreparationError::lowering)?
             {
-                LoweringOutcome::Complete(artifact) => PreparedRoute::Lcir(artifact),
+                LoweringOutcome::Complete(artifact) => {
+                    trace_llvm_stage("prepare.lcir-lowering.complete");
+                    PreparedRoute::Lcir(artifact)
+                }
                 LoweringOutcome::Unsupported(_) => {
+                    trace_llvm_stage("prepare.lcir-lowering.unsupported");
                     target
                         .validate_legacy_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
@@ -283,7 +292,8 @@ pub const fn prepared_native_target_identity<'prepared>(
 pub fn prepared_native_object_fingerprint(
     prepared: &PreparedNativeObject<'_>,
 ) -> Result<String, CodegenError> {
-    match &prepared.route {
+    trace_llvm_stage("prepare.fingerprint.begin");
+    let fingerprint = match &prepared.route {
         PreparedRoute::Lcir(artifact) => lcir_object_fingerprint(prepared, artifact),
         PreparedRoute::Legacy {
             mir,
@@ -296,7 +306,9 @@ pub fn prepared_native_object_fingerprint(
             reachable,
             &prepared.target,
         ),
-    }
+    }?;
+    trace_llvm_stage("prepare.fingerprint.end");
+    Ok(fingerprint)
 }
 
 /// Emits the route selected during preparation using the same target machine.
@@ -309,7 +321,8 @@ pub fn emit_prepared_native_object(
     prepared: &PreparedNativeObject<'_>,
     output: &Path,
 ) -> Result<NativeObjectArtifact, CodegenError> {
-    match &prepared.route {
+    trace_llvm_stage("prepare.emission.begin");
+    let artifact = match &prepared.route {
         PreparedRoute::Lcir(artifact) => LcirEmitter::emit_object_with_target(
             artifact,
             output,
@@ -328,7 +341,9 @@ pub fn emit_prepared_native_object(
             &prepared.options,
             &prepared.target,
         ),
-    }
+    }?;
+    trace_llvm_stage("prepare.emission.end");
+    Ok(artifact)
 }
 
 fn source_request(options: &EmitOptions) -> SourceArtifactRequest {

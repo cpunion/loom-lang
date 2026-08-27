@@ -196,6 +196,20 @@ jobs:
             --output "$runtime_bundle"
           export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
+          set +e
+          LOOM_LLVM_TRACE_STAGES=1 cargo test --locked -p loom-codegen-llvm --lib \
+            target::tests::windows_native_target_machine_constructs_and_reads_layout -- \
+            --exact --nocapture --test-threads=1
+          target_machine_status=$?
+          LOOM_LLVM_TRACE_STAGES=1 cargo test --locked -p loom-cli --lib \
+            tests::ir_side_artifacts_bypass_the_object_cache_and_are_still_written -- \
+            --exact --nocapture --test-threads=1
+          object_emission_status=$?
+          set -e
+          if [ "$target_machine_status" -ne 0 ] || [ "$object_emission_status" -ne 0 ]; then
+            echo "Windows LLVM stage gate failed: target=$target_machine_status object=$object_emission_status" >&2
+            exit 1
+          fi
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
       - name: Standard library differential gate
