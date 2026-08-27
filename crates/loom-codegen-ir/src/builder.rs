@@ -17,6 +17,7 @@ pub enum BuildErrorCode {
     DuplicateInstance,
     InstanceSourceMismatch,
     InstanceKeyStructureBudget,
+    OpenInstanceKey,
     InvalidFunction,
     InvalidBlock,
     InvalidValueType,
@@ -317,14 +318,20 @@ impl ProgramBuilder {
                 ),
             ));
         }
-        if key.validate_structure().is_err() {
-            return Err(BuildError::new(
-                BuildErrorCode::InstanceKeyStructureBudget,
-                format!(
-                    "LCIR instance key exceeds the {0}-node structural budget",
-                    crate::INSTANCE_KEY_STRUCTURE_BUDGET
+        if let Err(error) = key.validate_structure() {
+            return Err(match error {
+                crate::instance::InstanceKeyStructureError::BudgetExceeded => BuildError::new(
+                    BuildErrorCode::InstanceKeyStructureBudget,
+                    format!(
+                        "LCIR instance key exceeds the {0}-node structural budget",
+                        crate::INSTANCE_KEY_STRUCTURE_BUDGET
+                    ),
                 ),
-            ));
+                crate::instance::InstanceKeyStructureError::OpenArgument => BuildError::new(
+                    BuildErrorCode::OpenInstanceKey,
+                    "LCIR instance keys require fully substituted type and witness arguments",
+                ),
+            });
         }
         if let Some(existing) = self.instances.find(&key) {
             return Err(BuildError::new(

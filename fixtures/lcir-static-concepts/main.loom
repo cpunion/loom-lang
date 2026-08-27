@@ -1,0 +1,58 @@
+module lcir_static_concepts
+
+concept Truth {
+    method truth(self) Bool
+}
+
+record Atom { value Bool }
+
+impl Truth for Atom {
+    method truth(self) Bool { self.value }
+}
+
+enum Wrapped[T] { Item(T) }
+
+impl[T: Truth] Truth for Wrapped[T] {
+    method truth(self) Bool {
+        match self {
+            Item(value) => value.truth()
+        }
+    }
+}
+
+fn evaluate[T: Truth](value T) Bool { value.truth() }
+
+concept Source {
+    associated type Item
+    method first(self) Self.Item
+}
+
+record Number { value Int }
+
+impl Source for Number {
+    associated type Item = Int
+    method first(self) Int { self.value }
+}
+
+fn read[T: Source](source T) T.Item { source.first() }
+
+enum Problem { Failed }
+
+fn verify() Result[Unit, Problem] {
+    let truthful = evaluate(Wrapped.Item(Atom { value = true }))
+    let number = read(Number { value = 42 })
+    if truthful && number == 42 {
+        Ok(Unit)
+    } else {
+        Err(Problem.Failed)
+    }
+}
+
+pub fn main() Unit {
+    match verify() {
+        Ok(_) => Unit
+        Err(_) => Unit
+    }
+}
+
+test fn staticConcepts() Result[Unit, Problem] { verify() }

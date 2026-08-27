@@ -594,6 +594,162 @@ pub fn main() Unit {
 }
 
 #[test]
+fn static_concept_calls_normalize_associated_types_and_conditional_proofs() {
+    let source = r"module static_concepts
+
+concept Truth {
+    method truth(self) Bool
+}
+
+record Atom { value Bool }
+
+impl Truth for Atom {
+    method truth(self) Bool { self.value }
+}
+
+enum Wrapped[T] { Item(T) }
+
+impl[T: Truth] Truth for Wrapped[T] {
+    method truth(self) Bool {
+        match self {
+            Item(value) => value.truth()
+        }
+    }
+}
+
+fn evaluate[T: Truth](value T) Bool { value.truth() }
+
+concept Source {
+    associated type Item
+    method first(self) Self.Item
+}
+
+record Number { value Int }
+
+impl Source for Number {
+    associated type Item = Int
+    method first(self) Int { self.value }
+}
+
+fn read[T: Source](source T) T.Item { source.first() }
+
+enum Problem { Failed }
+
+fn verify() Result[Unit, Problem] {
+    let truthful = evaluate(Wrapped.Item(Atom { value = true }))
+    let number = read(Number { value = 42 })
+    if truthful && number == 42 {
+        Ok(Unit)
+    } else {
+        Err(Problem.Failed)
+    }
+}
+
+pub fn main() Unit {
+    match verify() {
+        Ok(_) => Unit
+        Err(_) => Unit
+    }
+}
+";
+    let first = lower_run(source);
+    let LoweringOutcome::Complete(artifact) = first else {
+        panic!("bounded concrete static dispatch must lower completely: {first:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("types=[Nominal#"), "{dump}");
+    assert!(dump.contains("witnesses=[Apply#"), "{dump}");
+    assert!(dump.contains("witnesses=[Concrete#"), "{dump}");
+    assert!(!dump.contains("Projection#"), "{dump}");
+    assert!(dump.matches("call i").count() >= 4, "{dump}");
+
+    let second = lower_run(source);
+    let LoweringOutcome::Complete(second) = second else {
+        panic!("the same static artifact must remain complete")
+    };
+    assert_eq!(artifact_identity(&artifact), artifact_identity(&second));
+}
+
+#[test]
+fn regular_static_dispatch_recursion_is_deduplicated_and_unused_witnesses_stay_dead() {
+    let outcome = lower_run(
+        r"module static_recursion
+
+concept Step { method step(self, remaining Int) Int }
+concept Unused { method unused(self) Int }
+
+record Counter { value Int }
+
+impl Step for Counter {
+    method step(self, remaining Int) Int {
+        if remaining == 0 {
+            self.value
+        } else {
+            self.step(remaining - 1)
+        }
+    }
+}
+
+impl Unused for Counter {
+    method unused(self) Int { 99 }
+}
+
+pub fn main() Unit {
+    discard Counter { value = 7 }.step(3)
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("regular static recursion must lower as one exact instance: {outcome:?}")
+    };
+    let step = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().rsplit('.').next() == Some("step"))
+        .expect("reachable witness method");
+    assert!(step.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::Invoke { callee, .. }) if *callee == step.id()
+    )));
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.name().ends_with(".unused")),
+        "an unselected witness method must remain dead"
+    );
+}
+
+#[test]
+fn dynamic_concept_calls_still_select_one_atomic_fallback() {
+    let LoweringOutcome::Unsupported(report) = lower_run(
+        r"module dynamic_stays_erased
+
+dyn concept Truth { method truth(self) Bool }
+record Atom { value Bool }
+impl Truth for Atom { method truth(self) Bool { self.value } }
+
+fn erased(value Truth) Bool { value.truth() }
+
+pub fn main() Unit {
+    discard erased(Atom { value = true })
+    Unit
+}
+",
+    ) else {
+        panic!("dynamic dispatch must not be guessed into a static target")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::DynamicDispatch),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn test_roots_share_one_reachable_generic_instance() {
     let mir = compile(
         r"module generic_tests

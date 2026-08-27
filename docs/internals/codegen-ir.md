@@ -225,6 +225,12 @@ the dump to `lcir 9`, the LCIR native-object domain to
 contract placeholders with canonical fault kind, category, bounded user code,
 message, contract span, and concrete blame span. It changes no runtime ABI
 symbol or physical value layout.
+Concrete static concept dispatch and associated-projection normalization then
+advance the artifact identity to schema 11, the dump to `lcir 10`, the LCIR
+native-object domain to `loom-lcir-native-object-v7`, and the CLI object-cache
+domain to `loom-llvm-object-cache-v12`. Static proof trees remain
+compiler-private instance identity and lower to direct calls; the runtime ABI
+does not change.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -239,7 +245,10 @@ LCIR are structured `LoweringError` values and never select fallback.
 The current lowering coverage is synchronous scalar, literal-proven `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
 signatures, including bounded direct generic calls whose concrete types use
-those representations. It covers constants, locals and assignment, tuple construction
+those representations. Concrete static concept calls use the selected witness
+method directly, including conditional proof applications and normalized
+associated bindings. Dynamic dispatch remains a whole-artifact fallback. It
+covers constants, locals and assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
@@ -359,7 +368,8 @@ refer to planned instances rather than rebuilding a bare
 `FunctionId -> InstanceId` map.
 
 The source lowerer starts from monomorphic exported run or test roots and
-computes a bounded closure of executable direct and inherent calls. Each
+computes a bounded closure of executable direct, inherent, and concrete static
+concept calls. Each
 reachable body is keyed by its source `FunctionId`, exact substituted type
 arguments, and the complete static witness-argument tree. Duplicate calls and
 different test roots reuse the same key. Exact self and mutual recursion reuse
@@ -371,25 +381,34 @@ route selection.
 Planning is iterative and deterministic. It admits at most 4,096 concrete
 instances and 16,384 reachable direct-call edges, while each key retains the
 shared 256-node combined type-and-witness budget. A call reserves its remaining
-edge budget and preflights the fully substituted key size before cloning the
-type or proof trees. An unresolved parameter, associated projection,
-nonregular recursive expansion, or exhausted planning budget selects one
-atomic unsupported result before an LCIR builder exists. Completed keys are
+edge budget and bounds the fully substituted key before publication. Static
+dispatch structurally unifies the selected witness head with its checked
+concrete dispatch type, then appends conformance type arguments, conditional
+prerequisites, method type arguments, and method proofs in the method
+function's declared order. A projection through a function witness parameter
+normalizes from that same proof to the witness's concrete associated binding.
+An unresolved parameter, unresolved proof, nonregular recursive expansion, or
+exhausted planning budget selects one atomic unsupported result before an LCIR
+builder exists. Completed keys are
 ordered by source function and canonical key identity, so discovery order,
 duplicate roots, and repeated compilation do not perturb the artifact.
 
 The resulting LCIR functions and LLVM calls use the instantiated direct
 signature. Compile-time witness arguments remain in `InstanceKey` and artifact
-identity but consume no runtime argument when their proof is otherwise erased.
-Static concept-method dispatch and associated-type projection remain outside
-this slice; they still select complete legacy lowering rather than introducing
-a universal value or witness ABI.
+identity but consume no runtime argument. Static concept-method dispatch is an
+ordinary direct call after closure, and associated projections do not survive
+in a completed key or physical representation. Dynamic dispatch still selects
+complete legacy lowering rather than introducing a universal value or witness
+ABI into this slice.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report
 `InstanceKeyStructureBudget` before admitting an oversized key, and the
 independent validator reports `LcirInstanceKeyStructureBudget` for malformed
-unchecked input. Structure validation, canonical key encoding, and text output
+unchecked input. Builders report `OpenInstanceKey`, and validation reports
+`LcirOpenInstanceKey`, if an unresolved type projection, type parameter, or
+witness parameter reaches an LCIR instance boundary. Structure validation,
+canonical key encoding, and text output
 use bounded iterative traversal instead of recursive descent. The validator
 also checks the plan's program brand, dense order, one-to-one length with the
 function table, key uniqueness, source-provenance agreement, and every callable
@@ -534,7 +553,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 9` text includes
+text even when the graphs are otherwise equivalent. The `lcir 10` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block and ordered effect set,
 typed runtime/contract fault identity, and the checked value type of every

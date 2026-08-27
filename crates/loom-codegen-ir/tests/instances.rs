@@ -59,7 +59,7 @@ fn type_and_witness_arguments_are_distinct_instance_identities() {
         vec![Type::Int],
         vec![InstanceWitnessArgument::apply(
             WitnessId(2),
-            vec![InstanceWitnessArgument::Parameter(0)],
+            vec![InstanceWitnessArgument::Concrete(WitnessId(3))],
         )],
     );
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
@@ -99,7 +99,7 @@ fn type_and_witness_arguments_are_distinct_instance_identities() {
         "{dump}"
     );
     assert!(
-        dump.contains("instance i2 = source=f7 types=[Int] witnesses=[Apply#2[Parameter#0]]"),
+        dump.contains("instance i2 = source=f7 types=[Int] witnesses=[Apply#2[Concrete#3]]"),
         "{dump}"
     );
 }
@@ -146,6 +146,21 @@ fn builder_rejects_duplicate_mismatched_and_oversized_instance_keys() {
         )
         .expect_err("oversized key must fail");
     assert_eq!(oversized.code(), BuildErrorCode::InstanceKeyStructureBudget);
+
+    let open = builder
+        .declare_instance(
+            InstanceKey::new(
+                FunctionId(6),
+                vec![Type::Parameter(0)],
+                vec![InstanceWitnessArgument::Parameter(0)],
+            ),
+            Origin::synthetic(FunctionId(6)),
+            "open",
+            Signature::new(Vec::new(), unit),
+            Effects::NONE,
+        )
+        .expect_err("open instance keys must fail before entering LCIR");
+    assert_eq!(open.code(), BuildErrorCode::OpenInstanceKey);
 }
 
 #[test]
