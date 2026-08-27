@@ -56,6 +56,25 @@ Validation covers:
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
 
+### Bounded recursive type analysis
+
+Validation never expands recursive generic definitions into an unbounded
+concrete type tree. Resource and Task containment are evaluated as a least
+fixed point over finite abstract argument states. Value equality is evaluated
+as the corresponding greatest fixed point. For example, the non-regular
+schema `Spiral[T] = Done(T) | Next(Spiral[(T, T)])` reaches the same abstract
+state for `Int` without materializing successively doubled tuple arguments.
+Argument transitions still matter: a recursive edge that replaces `T` with
+`File` retains the resource obligation and disables value equality.
+
+Each recursive analysis has a 4,096-node work budget and the common nesting
+limit. Pattern usefulness and exhaustiveness have an independent 4,096-step
+budget, and substitutions performed for nested patterns may materialize at
+most 4,096 type nodes. Exhausting a budget is conservative: validation never
+claims that an arm is unreachable or a match exhaustive from incomplete work.
+An explicit nested pattern whose substituted type exceeds the bound receives a
+stable `MirNestingLimit` diagnostic.
+
 ## Construction proof provenance
 
 Semantic analysis can mark a refined-type or invariant-bearing record

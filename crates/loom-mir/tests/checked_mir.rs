@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::Command;
+use std::time::Duration;
 
 use loom_core::Span;
 use loom_mir::{
@@ -13,6 +14,7 @@ use loom_mir::{
     decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
 };
+use wait_timeout::ChildExt as _;
 
 fn span() -> Span {
     Span::default()
@@ -6195,6 +6197,149 @@ fn phantom_type_arity_is_declared_and_checked() {
     }));
     program.functions[0].return_ty = Type::Nominal(TypeId(0), Vec::new());
     assert!(validation_errors(&program).contains(MirValidationCode::TypeMismatch));
+}
+
+const NON_REGULAR_VALIDATION_CHILD_ENV: &str = "LOOM_MIR_NON_REGULAR_VALIDATION_CHILD";
+
+fn non_regular_spiral_definition(spiral: TypeId) -> TypeDef {
+    TypeDef {
+        id: spiral,
+        name: "Spiral".to_owned(),
+        span: span(),
+        type_parameters: 1,
+        kind: TypeDefKind::Enum {
+            variants: vec![
+                VariantDef {
+                    id: VariantId(0),
+                    name: "Done".to_owned(),
+                    payload: vec![Type::Parameter(0)],
+                    span: span(),
+                },
+                VariantDef {
+                    id: VariantId(1),
+                    name: "Next".to_owned(),
+                    payload: vec![Type::Nominal(
+                        spiral,
+                        vec![Type::Tuple(vec![Type::Parameter(0), Type::Parameter(0)])],
+                    )],
+                    span: span(),
+                },
+            ],
+        },
+    }
+}
+
+fn non_regular_done(spiral: TypeId) -> Expr {
+    expr(
+        ExprKind::Variant {
+            ty: spiral,
+            type_arguments: vec![Type::Int],
+            variant: VariantId(0),
+            payload: vec![constant(Constant::Int(0), Type::Int)],
+        },
+        Type::Nominal(spiral, vec![Type::Int]),
+    )
+}
+
+#[test]
+fn non_regular_generic_validation_finishes_within_the_resource_gate() {
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "non_regular_generic_validation_child",
+            "--nocapture",
+        ])
+        .env(NON_REGULAR_VALIDATION_CHILD_ENV, "1")
+        .spawn()
+        .expect("spawn non-regular validation child");
+    let status = child
+        .wait_timeout(Duration::from_secs(15))
+        .expect("wait for non-regular validation child");
+    let Some(status) = status else {
+        child.kill().expect("kill timed-out validation child");
+        child.wait().expect("reap timed-out validation child");
+        panic!("non-regular generic MIR validation exceeded 15 seconds");
+    };
+    assert!(status.success(), "non-regular validation child failed");
+}
+
+#[test]
+fn non_regular_generic_validation_child() {
+    if std::env::var_os(NON_REGULAR_VALIDATION_CHILD_ENV).is_none() {
+        return;
+    }
+
+    let spiral = TypeId(0);
+    let definition = non_regular_spiral_definition(spiral);
+    let checked_main = function(
+        0,
+        Vec::new(),
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Evaluate(non_regular_done(spiral)),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(expr(
+                        ExprKind::Binary(
+                            BinaryOp::Equal,
+                            Box::new(non_regular_done(spiral)),
+                            Box::new(non_regular_done(spiral)),
+                        ),
+                        Type::Bool,
+                    )),
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+    );
+    let checked = Program {
+        types: vec![definition.clone()],
+        functions: vec![checked_main],
+        exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("non-regular obligation and equality analysis must remain bounded");
+    assert_eq!(checked.functions.len(), 1);
+
+    let incomplete_match = expr(
+        ExprKind::Match {
+            scrutinee: Box::new(non_regular_done(spiral)),
+            arms: vec![MatchArm {
+                pattern: Pattern::Variant {
+                    ty: spiral,
+                    variant: VariantId(0),
+                    payload: vec![Pattern::Wildcard],
+                },
+                bindings: Vec::new(),
+                value: constant(Constant::Unit, Type::Unit),
+            }],
+        },
+        Type::Unit,
+    );
+    let invalid = Program {
+        types: vec![definition],
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(incomplete_match)),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    let errors = validate_program(&invalid).expect_err("the match intentionally omits Next");
+    assert!(errors.contains(MirValidationCode::PatternShape));
 }
 
 const DEEP_WITNESS_CHILD_ENV: &str = "LOOM_MIR_DEEP_WITNESS_CHILD";
