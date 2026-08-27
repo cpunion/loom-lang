@@ -5,9 +5,9 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::AtomicU32;
 
-use loom_runtime_abi::LoomGcRootFrame;
+use loom_runtime_abi::{LoomGcRootFrame, LoomGcTypedRootFrame};
 
-use crate::gc::{LoomHeap, MIN_GC_THRESHOLD_BYTES};
+use crate::gc::LoomHeap;
 use crate::{GC_ROOT_STACK_NOT_EMPTY, WAIT_INVALID_ARGUMENT, WAIT_OK};
 
 /// Opaque owner of Loom's managed heap.
@@ -22,19 +22,20 @@ pub struct LoomRuntime {
     pub(crate) active_depth: AtomicU32,
     pub(crate) sync_root_top: *mut LoomGcRootFrame,
     pub(crate) sync_root_depth: u64,
+    pub(crate) typed_root_top: *mut LoomGcTypedRootFrame,
+    pub(crate) typed_root_depth: u64,
 }
 
 impl LoomRuntime {
     pub(crate) fn new() -> Self {
         Self {
-            heap: LoomHeap {
-                next_gc_threshold: MIN_GC_THRESHOLD_BYTES,
-                ..LoomHeap::default()
-            },
+            heap: LoomHeap::new(),
             attached_executor: ptr::null_mut(),
             active_depth: AtomicU32::new(0),
             sync_root_top: ptr::null_mut(),
             sync_root_depth: 0,
+            typed_root_top: ptr::null_mut(),
+            typed_root_depth: 0,
         }
     }
 
@@ -68,7 +69,10 @@ impl LoomRuntime {
     }
 
     pub(crate) fn has_sync_roots(&self) -> bool {
-        !self.sync_root_top.is_null() || self.sync_root_depth != 0
+        !self.sync_root_top.is_null()
+            || self.sync_root_depth != 0
+            || !self.typed_root_top.is_null()
+            || self.typed_root_depth != 0
     }
 }
 

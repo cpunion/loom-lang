@@ -4,20 +4,43 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 8;
+pub const RUNTIME_ABI_VERSION: u32 = 9;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
+pub const TYPED_GC_ABI_VERSION: u32 = 1;
+pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v2/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v3/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
 pub const GC_ABI_MISMATCH: i32 = 2;
 pub const GC_FRAME_ORDER: i32 = 3;
 pub const GC_ROOT_STACK_NOT_EMPTY: i32 = 4;
+pub const GC_DESCRIPTOR_INVALID: i32 = 5;
+pub const GC_RESOURCE_LIMIT: i32 = 6;
+
+/// Hard limits shared by the universal and typed synchronous root ABIs.
+///
+/// The compiler must reject a function whose root map exceeds these bounds.
+/// Runtime validation repeats the checks before linking an untrusted frame so
+/// collection work and descriptor reads remain bounded.
+pub const GC_MAX_ROOT_SLOTS: u64 = 65_536;
+pub const GC_MAX_ROOT_STATES: u64 = 65_536;
+pub const GC_MAX_ROOT_BITMAP_WORDS: u64 = 1_048_576;
+pub const GC_MAX_ROOT_DEPTH: u64 = 65_536;
+
+/// Hard limits for one typed managed allocation descriptor and allocation.
+pub const GC_MAX_OBJECT_POINTERS: u64 = 4_096;
+pub const GC_MAX_OBJECT_BYTES: u64 = 1 << 30;
+pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
+
+pub const TYPED_GC_ALLOC_SYMBOL: &str = "loom_gc_typed_alloc_v1";
+pub const TYPED_GC_ROOT_PUSH_SYMBOL: &str = "loom_gc_typed_root_push_v1";
+pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
 
 /// Runtime-owned state bit in [`LoomGcRootFrame::flags`].
 ///
@@ -107,6 +130,59 @@ pub struct LoomGcRootFrame {
     pub descriptor: *const LoomGcRootDescriptor,
     pub slots: *const *mut core::ffi::c_void,
     pub previous: *mut LoomGcRootFrame,
+}
+
+/// Description of precise direct-pointer roots in one typed native frame.
+///
+/// The bitmap shape and lifetime rules match [`LoomGcRootDescriptor`], but a
+/// typed root slot is a pointer to a pointer-sized managed-reference cell, not
+/// a universal `Value` envelope. This descriptor belongs to an independent
+/// shadow-stack chain so the collector never guesses a slot representation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcTypedRootDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub slot_count: u64,
+    pub state_count: u64,
+    pub live_bitmap_words: u64,
+    pub live_bitmaps: *const u64,
+}
+
+/// Intrusive shadow-stack header for typed direct managed pointers.
+///
+/// Each entry in `slots` points to writable pointer-sized storage containing
+/// either null, a runtime-managed typed allocation base, or an immortal/static
+/// pointer. The runtime rewrites managed entries after a moving collection.
+/// The pointer array is immutable while linked; `previous` and `flags` are
+/// runtime-owned fields.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcTypedRootFrame {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub state: u64,
+    pub descriptor: *const LoomGcTypedRootDescriptor,
+    pub slots: *const *mut core::ffi::c_void,
+    pub previous: *mut LoomGcTypedRootFrame,
+}
+
+/// Immutable precise trace metadata for one typed managed object shape.
+///
+/// `fixed_size` is the required pointer-bearing prefix. An allocation may be
+/// larger to hold pointer-free trailing storage. `pointer_offsets` is a
+/// strictly increasing array of `pointer_count` byte offsets from the object
+/// base to aligned pointer-sized managed-reference cells. Descriptor identity
+/// is compiler/runtime metadata and is not a source-visible type tag.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcObjectDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub fixed_size: u64,
+    pub object_align: u64,
+    pub pointer_count: u64,
+    pub pointer_offsets: *const u64,
 }
 
 pub const VALUE_TAG_UNIT: u64 = 0;
@@ -201,27 +277,52 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::{
-        COROUTINE_ABI_VERSION, LAYOUT_ABI_VERSION, LoomGcRootDescriptor, LoomGcRootFrame,
+        COROUTINE_ABI_VERSION, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
+        GC_MAX_OBJECT_POINTERS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS,
+        GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomGcObjectDescriptor,
+        LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
         LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
         TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-        WITNESS_ABI_VERSION,
+        TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
+        TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 8);
+        assert_eq!(RUNTIME_ABI_VERSION, 9);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
+        assert_eq!(TYPED_GC_ABI_VERSION, 1);
+        assert_eq!(TYPED_SHADOW_STACK_ABI_VERSION, 1);
+        assert_eq!(TYPED_GC_ALLOC_SYMBOL, "loom_gc_typed_alloc_v1");
+        assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
+        assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
         assert_eq!(WITNESS_ABI_VERSION, 1);
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v2/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v3/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
+    }
+
+    #[test]
+    fn typed_gc_statuses_symbols_and_limits_are_pinned() {
+        assert_eq!(GC_DESCRIPTOR_INVALID, 5);
+        assert_eq!(GC_RESOURCE_LIMIT, 6);
+        assert_eq!(GC_MAX_ROOT_SLOTS, 65_536);
+        assert_eq!(GC_MAX_ROOT_STATES, 65_536);
+        assert_eq!(GC_MAX_ROOT_BITMAP_WORDS, 1_048_576);
+        assert_eq!(GC_MAX_ROOT_DEPTH, 65_536);
+        assert_eq!(GC_MAX_OBJECT_POINTERS, 4_096);
+        assert_eq!(GC_MAX_OBJECT_BYTES, 1 << 30);
+        assert_eq!(GC_MAX_OBJECT_ALIGNMENT, 4_096);
+        assert_eq!(TYPED_GC_ALLOC_SYMBOL, "loom_gc_typed_alloc_v1");
+        assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
+        assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
     }
 
     #[test]
@@ -257,6 +358,33 @@ mod tests {
         assert_eq!(offset_of!(LoomGcRootFrame, descriptor), 16);
         assert_eq!(offset_of!(LoomGcRootFrame, slots), 24);
         assert_eq!(offset_of!(LoomGcRootFrame, previous), 32);
+
+        assert_eq!(size_of::<LoomGcTypedRootDescriptor>(), 40);
+        assert_eq!(align_of::<LoomGcTypedRootDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, slot_count), 8);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, state_count), 16);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, live_bitmap_words), 24,);
+        assert_eq!(offset_of!(LoomGcTypedRootDescriptor, live_bitmaps), 32);
+
+        assert_eq!(size_of::<LoomGcTypedRootFrame>(), 40);
+        assert_eq!(align_of::<LoomGcTypedRootFrame>(), 8);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, flags), 4);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, state), 8);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, descriptor), 16);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, slots), 24);
+        assert_eq!(offset_of!(LoomGcTypedRootFrame, previous), 32);
+
+        assert_eq!(size_of::<LoomGcObjectDescriptor>(), 40);
+        assert_eq!(align_of::<LoomGcObjectDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, fixed_size), 8);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, object_align), 16);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, pointer_count), 24);
+        assert_eq!(offset_of!(LoomGcObjectDescriptor, pointer_offsets), 32);
 
         assert_eq!(size_of::<LoomWitnessDescriptor>(), 24);
         assert_eq!(align_of::<LoomWitnessDescriptor>(), 8);

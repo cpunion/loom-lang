@@ -3184,6 +3184,7 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
         (heap.values.len() as u64)
             .saturating_add(heap.nodes.len() as u64)
             .saturating_add(heap.sequences.len() as u64)
+            .saturating_add(heap.typed_object_count() as u64)
             .saturating_add(heap.witnesses.len() as u64)
     }
 }
