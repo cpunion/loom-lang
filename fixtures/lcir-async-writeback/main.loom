@@ -6,6 +6,7 @@ dyn concept Advance {
 
 dyn concept Source {
     method next(mut self) Int
+    method label(self) Text
 }
 
 record Counter {
@@ -18,6 +19,11 @@ record Offset {
 
 record OwnedCounter {
     value Int
+    label Text
+}
+
+record ManagedLabel {
+    value Text
 }
 
 impl Counter {
@@ -25,9 +31,16 @@ impl Counter {
         self.value = self.value + amount
         self.value
     }
+}
 
-    method mutateThenFail(mut self) Unit {
-        self.value = 9
+impl ManagedLabel {
+    method append(mut self, suffix Text) Text {
+        self.value = self.value.concat(suffix)
+        self.value
+    }
+
+    method appendThenFail(mut self, suffix Text) Unit {
+        self.value = self.value.concat(suffix)
         discard 1 / 0
         Unit
     }
@@ -52,6 +65,10 @@ impl Source for OwnedCounter {
         self.value = self.value + 1
         self.value
     }
+
+    method label(self) Text {
+        self.label
+    }
 }
 
 fn eraseCounter(value Counter) dyn Advance {
@@ -62,14 +79,26 @@ fn eraseOffset(value Offset) dyn Advance {
     value
 }
 
-async fn takeOwnedSource(source Source) Int {
-    Task.sleep(0).await
-    source.next()
+async fn allocationPressure() Bool {
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
+}
+
+async fn takeOwnedSource(source Source) Text {
+    let survived = allocationPressure().await
+    assert survived
+    let next = source.next()
+    assert next == 1
+    source.label()
 }
 
 async fn makeOwnedSource() dyn Source {
     Task.sleep(0).await
-    OwnedCounter { value = 4 }
+    OwnedCounter { value = 4, label = "re".concat("turned") }
 }
 
 async fn verifyWriteback() Unit {
@@ -86,6 +115,14 @@ async fn verifyWriteback() Unit {
     assert after == 7
     assert afterStored == 7
 
+    var label = ManagedLabel { value = "managed" }
+    let appended = label.append(" frame")
+    assert appended == "managed frame"
+    let survived = allocationPressure().await
+    let storedLabel = label.value
+    assert survived
+    assert storedLabel == "managed frame"
+
     var first = eraseCounter(Counter { value = 10 })
     var second = eraseOffset(Offset { value = 20 })
     let firstValue = first.advance()
@@ -93,26 +130,54 @@ async fn verifyWriteback() Unit {
     assert firstValue == 11
     assert secondValue == 22
 
-    let original = OwnedCounter { value = 0 }
-    let observed = takeOwnedSource(original).await
-    assert observed == 1
+    let original = OwnedCounter { value = 0, label = "owned".concat(" source") }
+    let observedLabel = takeOwnedSource(original).await
+    assert observedLabel == "owned source"
     assert original.value == 0
+    assert original.label == "owned source"
 
     var returned = makeOwnedSource().await
     let returnedValue = returned.next()
+    let returnedLabel = returned.label()
     assert returnedValue == 5
+    assert returnedLabel == "returned"
     Unit
 }
 
 pub async fn faultWritebackMain() Unit {
-    var counter = Counter { value = 0 }
+    var label = ManagedLabel { value = "fault" }
     defer {
-        let cleaned = counter.value
-        assert cleaned == 9
+        let cleaned = label.value
+        assert cleaned == "fault writeback"
         Unit
     }
     Task.sleep(0).await
-    counter.mutateThenFail()
+    label.appendThenFail(" writeback")
+    Unit
+}
+
+async fn failsAfterSuspension() Unit {
+    Task.sleep(1).await
+    assert false
+    Unit
+}
+
+async fn waitsAfterWriteback() Unit {
+    var label = ManagedLabel { value = "ready" }
+    let appended = label.append(" cancellation")
+    assert appended == "ready cancellation"
+    defer {
+        let cleaned = label.value
+        assert cleaned == "ready cancellation"
+        Unit
+    }
+    Task.sleep(100).await
+}
+
+pub async fn cancellationAfterWritebackMain() Unit {
+    let waited, failed = Task.all(waitsAfterWriteback(), failsAfterSuspension()).await
+    discard waited
+    discard failed
     Unit
 }
 

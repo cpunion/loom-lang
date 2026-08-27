@@ -275,6 +275,10 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source gate keeps managed normal, fault, and cancellation writeback together"
+)]
 fn typed_async_callers_reuse_synchronous_functional_writeback() {
     let source = include_str!("../../../fixtures/lcir-async-writeback/main.loom");
     let program = compile_source(source);
@@ -288,14 +292,18 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
     );
     let dump = dump_program(artifact.program());
     assert!(dump.contains("writebacks("), "{dump}");
+    let verify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verifyWriteback"))
+        .expect("writeback-bearing coroutine");
     assert!(
-        artifact
-            .functions()
-            .iter()
-            .find(|function| function.name().ends_with("verifyWriteback"))
-            .and_then(|function| function.coroutine())
-            .is_some(),
+        verify.coroutine().is_some(),
         "the writeback caller must remain a checked coroutine"
+    );
+    assert!(
+        verify.effects().contains(Effects::MAY_COLLECT),
+        "managed receiver writeback must preserve moving-GC requirements"
     );
 
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-async-writeback-normal");
@@ -339,6 +347,42 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
     let legacy_fault = machine_fault(&legacy_faulted);
     assert_eq!(lcir_fault["code"].as_str(), Some(expected_code));
     assert_eq!(legacy_fault["fault"]["code"].as_str(), Some(expected_code));
+
+    let expected_cancellation = serde_json::to_value(
+        interpret_run(&program, "cancellationAfterWritebackMain")
+            .expect_err("the failing sibling must cancel the writeback-bearing child"),
+    )
+    .expect("serialize async writeback cancellation fault");
+    let cancellation_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "cancellationAfterWritebackMain".into(),
+        },
+    );
+    let cancellation_dump = dump_program(cancellation_artifact.program());
+    assert!(
+        cancellation_dump.contains("writebacks("),
+        "cancelled coroutine omitted receiver writeback:\n{cancellation_dump}"
+    );
+    let cancelled = emit_and_run_lcir_machine_fault(
+        &cancellation_artifact,
+        "lcir-async-writeback-cancellation",
+    );
+    let legacy_cancelled = emit_and_run_legacy_machine_fault(
+        &program,
+        "cancellationAfterWritebackMain",
+        "legacy-async-writeback-cancellation",
+    );
+    assert!(!cancelled.output.status.success(), "{:?}", cancelled.output);
+    assert!(!legacy_cancelled.status.success(), "{legacy_cancelled:?}");
+    assert_eq!(machine_fault(&cancelled.output), expected_cancellation);
+    assert_eq!(machine_fault(&legacy_cancelled), expected_cancellation);
+    assert!(
+        cancelled.ir.contains("coroutine.cancel.live")
+            && !diagnostic_text(&cancelled.output).contains("LOOM_RUNTIME_TYPED_"),
+        "managed writeback violated cancellation cleanup: {:?}",
+        cancelled.output
+    );
 
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create async writeback target output");
