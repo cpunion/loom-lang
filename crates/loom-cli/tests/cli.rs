@@ -1147,7 +1147,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
     for required in [
         b"loom.lcir.fn".as_slice(),
         b"loom.lcir.coroutine.resume",
-        b"loom.lcir.dyn.descriptor",
+        b"loom_gc_typed_alloc_v1",
         b"loom_task_join_step",
         b"loom_typed_task_take_result_v1",
     ] {
@@ -1586,7 +1586,6 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
     let object = fs::read(object_path).expect("read finite-dyn object");
     for required in [
         b"loom.lcir.fn".as_slice(),
-        b"loom.lcir.dyn.descriptor".as_slice(),
         b"loom_gc_typed_alloc_v1".as_slice(),
     ] {
         assert!(

@@ -683,8 +683,9 @@ input.
 instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. It carries the instruction's source span into a
 callee frame only when the checked coroutine plan requires dynamic precondition
-blame; this does not copy the callee's fault effects to `TaskCreate`. The hidden executor comes only from the active
-coroutine callback or the async root harness. `AwaitTasks` stores all ordered
+blame; this does not copy the callee's fault effects to `TaskCreate`. The hidden
+executor comes only from the active coroutine callback or the async root
+harness. `AwaitTasks` stores all ordered
 children and the row's live values, prepares one structured mode-specific join,
 publishes the frame/root state, and exposes explicit normal, child-fault, and
 cancellation edges: `normal` is a `ResultTarget`, `fault` is an `UnwindTarget`,
