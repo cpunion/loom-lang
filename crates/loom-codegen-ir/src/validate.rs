@@ -15,6 +15,7 @@ pub enum ValidationCode {
     RepresentationPlan,
     InstancePlan,
     InstanceKeyStructureBudget,
+    OpenInstanceKey,
     IndexMismatch,
     InvalidFunctionReference,
     InvalidBlockReference,
@@ -52,6 +53,7 @@ impl ValidationCode {
             Self::RepresentationPlan => "LcirRepresentationPlan",
             Self::InstancePlan => "LcirInstancePlan",
             Self::InstanceKeyStructureBudget => "LcirInstanceKeyStructureBudget",
+            Self::OpenInstanceKey => "LcirOpenInstanceKey",
             Self::IndexMismatch => "LcirIndexMismatch",
             Self::InvalidFunctionReference => "LcirInvalidFunctionReference",
             Self::InvalidBlockReference => "LcirInvalidBlockReference",
@@ -314,15 +316,21 @@ impl<'a> Validator<'a> {
                     ),
                 );
             }
-            if instance.key.validate_structure().is_err() {
-                self.error(
-                    ValidationCode::InstanceKeyStructureBudget,
-                    format!("instances[{index}].key"),
-                    format!(
-                        "instance key exceeds the {}-node structural budget",
-                        crate::INSTANCE_KEY_STRUCTURE_BUDGET
+            if let Err(error) = instance.key.validate_structure() {
+                let (code, message) = match error {
+                    crate::instance::InstanceKeyStructureError::BudgetExceeded => (
+                        ValidationCode::InstanceKeyStructureBudget,
+                        format!(
+                            "instance key exceeds the {}-node structural budget",
+                            crate::INSTANCE_KEY_STRUCTURE_BUDGET
+                        ),
                     ),
-                );
+                    crate::instance::InstanceKeyStructureError::OpenArgument => (
+                        ValidationCode::OpenInstanceKey,
+                        "instance key contains an unresolved type or witness parameter".to_owned(),
+                    ),
+                };
+                self.error(code, format!("instances[{index}].key"), message);
                 continue;
             }
             let identity = instance.key.canonical_identity();
@@ -3821,6 +3829,24 @@ mod tests {
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InstanceKeyStructureBudget
                 && error.path() == "instances[0].key"
+        }));
+    }
+
+    #[test]
+    fn instance_plan_validation_rejects_unresolved_compile_time_arguments() {
+        let mut program = declared_program(&[86]);
+        program.instances.entries[0].key = InstanceKey::new(
+            MirFunctionId(86),
+            vec![Type::AssociatedProjection {
+                witness: 0,
+                associated: "Item".into(),
+            }],
+            vec![InstanceWitnessArgument::Parameter(0)],
+        );
+
+        let errors = validate_program(&program).expect_err("open instance key must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::OpenInstanceKey && error.path() == "instances[0].key"
         }));
     }
 

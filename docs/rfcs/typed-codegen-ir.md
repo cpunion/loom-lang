@@ -79,8 +79,11 @@ arguments, and complete static witness arguments. It deduplicates identical
 instances across roots, permits exact regular recursion, and rejects
 nonregular recursion or finite planning-budget exhaustion before LCIR
 construction. Proof-only witness identity remains compile-time data; it does
-not force a runtime witness parameter. Static concept calls and associated
-projections remain a later whole-artifact slice.
+not force a runtime witness parameter. The implemented concrete static slice
+infers a selected conformance head from checked dispatch type, appends exact
+method type/proof arguments, normalizes associated projections, and closes the
+witness method as an ordinary direct edge. Dynamic calls remain a later
+whole-artifact slice.
 
 For a statically established source predicate, fresh checked MIR is also the
 process-local proof boundary. The public raw LCIR builder cannot mint

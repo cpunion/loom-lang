@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `9` |
-| LCIR artifact identity | schema `10` |
-| LCIR native-object domain | `loom-lcir-native-object-v6` |
+| LCIR textual dump | version `10` |
+| LCIR artifact identity | schema `11` |
+| LCIR native-object domain | `loom-lcir-native-object-v7` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v11` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v12` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `9` |
 | Coroutine/Task ABI component | `2` |
@@ -51,6 +51,11 @@ the existing contract diagnostic wire schema from that checked data. The four
 compiler-private LCIR/object-cache boundaries advance, while the native runtime
 ABI and source-language behavior remain unchanged; source contract and
 assertion lowering still selects atomic fallback.
+
+Concrete static-concept resolution adds no physical ABI. The compiler-private
+domains advance because the planner now normalizes associated projections,
+closes witness-method edges, and rejects open type or proof arguments before a
+checked LCIR program can be emitted.
 
 ## Toolchain releases
 

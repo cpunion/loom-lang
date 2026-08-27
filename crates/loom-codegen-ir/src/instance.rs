@@ -139,9 +139,10 @@ impl InstanceKey {
                     | Type::Int
                     | Type::Float
                     | Type::Text
-                    | Type::Parameter(_)
-                    | Type::AssociatedProjection { .. }
                     | Type::Error => {}
+                    Type::Parameter(_) | Type::AssociatedProjection { .. } => {
+                        return Err(InstanceKeyStructureError::OpenArgument);
+                    }
                 },
                 InstanceStructureNode::Witness(InstanceWitnessArgument::Apply {
                     arguments,
@@ -150,9 +151,10 @@ impl InstanceKey {
                     require_scheduled_budget(&mut scheduled, arguments.len())?;
                     work.extend(arguments.iter().rev().map(InstanceStructureNode::Witness));
                 }
-                InstanceStructureNode::Witness(
-                    InstanceWitnessArgument::Concrete(_) | InstanceWitnessArgument::Parameter(_),
-                ) => {}
+                InstanceStructureNode::Witness(InstanceWitnessArgument::Concrete(_)) => {}
+                InstanceStructureNode::Witness(InstanceWitnessArgument::Parameter(_)) => {
+                    return Err(InstanceKeyStructureError::OpenArgument);
+                }
             }
         }
         Ok(())
@@ -196,6 +198,7 @@ fn require_scheduled_budget(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InstanceKeyStructureError {
     BudgetExceeded,
+    OpenArgument,
 }
 
 impl fmt::Display for InstanceKey {

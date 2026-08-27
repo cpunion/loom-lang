@@ -813,6 +813,97 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
     assert_pure_surface(&msvc_ir);
 }
 
+fn static_concepts_test_artifact() -> CheckedArtifact {
+    let source = include_str!("../../../fixtures/lcir-static-concepts/main.loom");
+    let program = compile_source(source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].name, "lcir_static_concepts.staticConcepts",
+        "{interpreted:#?}"
+    );
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("witnesses=[Apply#"), "{dump}");
+    assert!(dump.contains("witnesses=[Concrete#"), "{dump}");
+    assert!(!dump.contains("Projection#"), "{dump}");
+    artifact
+}
+
+#[test]
+fn static_concepts_run_directly_on_host_without_runtime_witnesses() {
+    let artifact = static_concepts_test_artifact();
+    let native = emit_and_run_lcir(&artifact, "source-static-concepts");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout)
+            .contains("passed lcir_static_concepts.staticConcepts"),
+        "{:?}",
+        native.output
+    );
+    assert_no_legacy_surface(&native.ir);
+    assert_no_indirect_calls(&native.ir);
+    for forbidden in [
+        "loom_runtime_create_v1",
+        "loom_runtime_activate_v1",
+        "loom_gc_",
+        "loom_executor_",
+        "WitnessInstance",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+}
+
+#[test]
+fn static_concepts_emit_direct_msvc_object_without_runtime_witnesses() {
+    let artifact = static_concepts_test_artifact();
+    let directory = tempfile::tempdir().expect("create MSVC static-concept directory");
+    let object = directory.path().join("static-concepts.obj");
+    let ir_path = directory.path().join("static-concepts-msvc.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            target_triple: Some("x86_64-pc-windows-msvc".to_owned()),
+            optimization: OptimizationProfile::Release,
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit direct static-concept MSVC object");
+    let object_bytes = std::fs::read(&object).expect("read MSVC static-concept object");
+    assert_eq!(
+        object_bytes.get(..2),
+        Some([0x64, 0x86].as_slice()),
+        "x86_64 MSVC output must be a real AMD64 COFF object"
+    );
+    let ir = std::fs::read_to_string(ir_path).expect("read MSVC static-concept IR");
+    assert!(
+        ir.contains("target triple = \"x86_64-pc-windows-msvc\""),
+        "{ir}"
+    );
+    assert_no_legacy_surface(&ir);
+    assert_no_indirect_calls(&ir);
+    for forbidden in [
+        "loom_runtime_create_v1",
+        "loom_runtime_activate_v1",
+        "loom_gc_",
+        "loom_executor_",
+        "WitnessInstance",
+    ] {
+        assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
+    }
+}
+
 #[test]
 fn source_ranges_emit_proved_nsw_successors_without_fault_abi() {
     let source = r"module lcir_source_proved_ranges

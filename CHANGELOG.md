@@ -71,6 +71,14 @@ artifact, or runtime compatibility.
   to 9, artifact identity to schema 10, native-object domain to v6, and CLI
   object cache to v11. Source contracts and assertions still select atomic
   fallback until their control-flow and cleanup lowering is complete.
+- Bounded concrete static concept calls now resolve to ordinary direct LCIR
+  calls. Conformance head arguments, conditional prerequisite proofs, and
+  method proofs remain part of exact instance identity, while associated-type
+  projections normalize to their concrete binding before representation
+  planning. No runtime witness, indirect call, universal value, GC, or executor
+  surface is added. Open instance keys are rejected independently by the
+  builder and validator. This advances the LCIR dump to 10, artifact identity
+  to schema 11, LCIR native-object domain to v7, and CLI object cache to v12.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

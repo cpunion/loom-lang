@@ -241,7 +241,6 @@ pub enum UnsupportedFeature {
     NominalValue,
     RefinedValue,
     SerializedProofRecheck,
-    StaticDispatch,
     DynamicDispatch,
     BuiltinCall,
     GenericCall,
@@ -276,7 +275,6 @@ impl UnsupportedFeature {
             Self::NominalValue => "NominalValue",
             Self::RefinedValue => "RefinedValue",
             Self::SerializedProofRecheck => "SerializedProofRecheck",
-            Self::StaticDispatch => "StaticDispatch",
             Self::DynamicDispatch => "DynamicDispatch",
             Self::BuiltinCall => "BuiltinCall",
             Self::GenericCall => "GenericCall",
@@ -492,7 +490,7 @@ pub fn lower_typed_artifact(
                 format!("reachable function #{} disappeared", function_id.0),
             )
         })?;
-        let substitution = InstanceSubstitution::new(&planned.key);
+        let substitution = InstanceSubstitution::new(mir.as_program(), &planned.key);
         let params = function
             .params
             .iter()
@@ -625,6 +623,13 @@ fn instance_closure_error(error: InstanceClosureError) -> LoweringError {
         } => format!(
             "instance of function #{} has {actual_types}/{actual_witnesses} type/witness argument(s), expected {expected_types}/{expected_witnesses}",
             function.0
+        ),
+        InstanceClosureError::InvalidCheckedInstantiation {
+            function,
+            expression,
+        } => format!(
+            "checked MIR function #{} expression #{} has inconsistent concrete type or witness metadata",
+            function.0, expression.0
         ),
     };
     LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
@@ -870,7 +875,7 @@ impl<'program> Classifier<'program> {
         span: Span,
         path: &str,
     ) -> Option<Type> {
-        let Ok(ty) = InstanceSubstitution::new(key).instantiate_type(ty) else {
+        let Ok(ty) = InstanceSubstitution::new(self.program, key).instantiate_type(ty) else {
             self.item(
                 UnsupportedFeature::UnresolvedGenericInstantiation,
                 function.id,
@@ -948,7 +953,7 @@ impl<'program> Classifier<'program> {
             let path = format!("{base}.params[{index}]");
             let supported_inout_receiver = index == 0
                 && function.receiver == Some(mir::Receiver::Mutable)
-                && InstanceSubstitution::new(key)
+                && InstanceSubstitution::new(self.program, key)
                     .instantiate_type(&parameter.ty)
                     .is_ok_and(|ty| self.supported_record_type(&ty));
             if parameter.mutable && !supported_inout_receiver {
@@ -1369,7 +1374,7 @@ impl<'program> Classifier<'program> {
                     &format!("{path}.ty"),
                 );
                 let instantiated_arguments =
-                    InstanceSubstitution::new(key).instantiate_types(type_arguments);
+                    InstanceSubstitution::new(self.program, key).instantiate_types(type_arguments);
                 let direct_product = instantiated_arguments
                     .is_ok_and(|arguments| arguments.is_empty())
                     && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
@@ -1422,7 +1427,7 @@ impl<'program> Classifier<'program> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let semantic = InstanceSubstitution::new(key)
+                let semantic = InstanceSubstitution::new(self.program, key)
                     .instantiate_types(type_arguments)
                     .ok()
                     .map(|arguments| Type::Nominal(*ty, arguments));
@@ -1550,26 +1555,37 @@ impl<'program> Classifier<'program> {
             } => {
                 let callee_key = match target {
                     CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
-                        InstanceSubstitution::new(key)
+                        InstanceSubstitution::new(self.program, key)
                             .call_key(*callee, type_arguments, witnesses)
                             .ok()
                     }
-                    _ => None,
+                    CallTarget::StaticConcept {
+                        requirement,
+                        witness,
+                        dispatch_type,
+                    } => InstanceSubstitution::new(self.program, key)
+                        .static_call_key(
+                            *requirement,
+                            witness,
+                            dispatch_type,
+                            type_arguments,
+                            witnesses,
+                        )
+                        .ok(),
+                    CallTarget::Dynamic { .. } | CallTarget::Builtin(_) => None,
                 };
-                let mutable_receiver = match (target, callee_key.as_ref()) {
-                    (CallTarget::Inherent(callee), Some(callee_key)) => self
-                        .program
-                        .function(*callee)
+                let mutable_receiver = callee_key.as_ref().and_then(|callee_key| {
+                    self.program
+                        .function(callee_key.source())
                         .filter(|callee| callee.receiver == Some(mir::Receiver::Mutable))
                         .and_then(|callee| {
                             callee.params.first().and_then(|parameter| {
-                                InstanceSubstitution::new(callee_key)
+                                InstanceSubstitution::new(self.program, callee_key)
                                     .instantiate_type(&parameter.ty)
                                     .ok()
                             })
-                        }),
-                    _ => None,
-                };
+                        })
+                });
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -1608,8 +1624,9 @@ impl<'program> Classifier<'program> {
                     }
                 }
                 let target_feature = match target {
-                    CallTarget::Direct(_) | CallTarget::Inherent(_) => None,
-                    CallTarget::StaticConcept { .. } => Some(UnsupportedFeature::StaticDispatch),
+                    CallTarget::Direct(_)
+                    | CallTarget::Inherent(_)
+                    | CallTarget::StaticConcept { .. } => None,
                     CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicDispatch),
                     CallTarget::Builtin(mir::Builtin::TextLength | mir::Builtin::TextContains) => {
                         None
@@ -2532,7 +2549,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     }
 
     fn type_id(&self, ty: &Type) -> Result<ValueTypeId, LoweringError> {
-        let instantiated = InstanceSubstitution::new(self.key)
+        let instantiated = InstanceSubstitution::new(self.program, self.key)
             .instantiate_type(ty)
             .map_err(|error| instantiation_defect(self.source.id, None, error))?;
         self.builder
@@ -3159,7 +3176,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, operand)? else {
                     return Ok(EvalFlow::Terminated);
                 };
-                let operand_ty = InstanceSubstitution::new(self.key)
+                let operand_ty = InstanceSubstitution::new(self.program, self.key)
                     .instantiate_type(&operand.ty)
                     .map_err(|error| {
                         instantiation_defect(self.source.id, Some(operand.id), error)
@@ -3780,7 +3797,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.expression_origin(expression);
-        let operand_type = InstanceSubstitution::new(self.key)
+        let operand_type = InstanceSubstitution::new(self.program, self.key)
             .instantiate_type(operand_type)
             .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
         if operand_type == Type::Int
@@ -4376,10 +4393,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return self.lower_text_builtin(flow, *builtin, arguments, expression);
         }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
-        let callee = match target {
-            CallTarget::Direct(callee) | CallTarget::Inherent(callee) => *callee,
+        let substitution = InstanceSubstitution::new(self.program, self.key);
+        let key = match target {
+            CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
+                substitution.call_key(*callee, type_arguments, witnesses)
+            }
+            CallTarget::StaticConcept {
+                requirement,
+                witness,
+                dispatch_type,
+            } => substitution.static_call_key(
+                *requirement,
+                witness,
+                dispatch_type,
+                type_arguments,
+                witnesses,
+            ),
             _ => return Err(self.unsupported_reached("non-direct call")),
-        };
+        }
+        .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
+        let callee = key.source();
         let callee_source = self.program.function(callee).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
@@ -4443,9 +4476,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        let key = InstanceSubstitution::new(self.key)
-            .call_key(callee, type_arguments, witnesses)
-            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
         let instance = self.instances.get(&key).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,

@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_fault_metadata() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 10);
+fn identity_schema_is_pinned_after_typed_fault_metadata_and_static_witness_resolution() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 11);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,8 +559,8 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 10,
-        "typed LCIR fault metadata advances the identity schema"
+        ARTIFACT_IDENTITY_SCHEMA, 11,
+        "closed static witness resolution advances the identity schema after typed fault metadata"
     );
 }
 
