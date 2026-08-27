@@ -1,0 +1,46 @@
+module lcir_typed_async
+
+record Envelope {
+    text Text
+    flag Bool
+}
+
+fn impossible() {
+    impossible()
+}
+
+async fn echo(value Bool) Bool {
+    value
+}
+
+async fn echoText(value Text) Text {
+    value
+}
+
+async fn echoEnvelope(value Envelope) Envelope {
+    value
+}
+
+pub async fn main() {
+    let marker = "typed ".concat("root")
+    let observed = echo(true).await
+    let echoed = echoText(marker).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
+    if envelope.flag && envelope.text == "typed root" {
+        Unit
+    } else {
+        impossible()
+    }
+}
+
+test async fn awaitsScalar() {
+    let marker = "typed ".concat("root")
+    let observed = echo(true).await
+    let echoed = echoText(marker).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
+    if envelope.flag && envelope.text == "typed root" {
+        Unit
+    } else {
+        impossible()
+    }
+}

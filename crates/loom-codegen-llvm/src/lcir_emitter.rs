@@ -3239,6 +3239,40 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.task_status_function("loom_task_join_step")
     }
 
+    fn executor_create_for_runtime(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_create_for_runtime_v1")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "loom_executor_create_for_runtime_v1",
+                    self.ptr_type.fn_type(&[self.ptr_type.into()], false),
+                    None,
+                )
+            })
+    }
+
+    fn executor_destroy(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_executor_destroy")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "loom_executor_destroy",
+                    self.context
+                        .void_type()
+                        .fn_type(&[self.ptr_type.into()], false),
+                    None,
+                )
+            })
+    }
+
+    fn executor_run(&self) -> FunctionValue<'ctx> {
+        self.executor_task_status_function("loom_executor_run")
+    }
+
+    fn task_report_fault(&self) -> FunctionValue<'ctx> {
+        self.task_status_function("loom_task_report_fault")
+    }
+
     fn typed_root_push(&self) -> FunctionValue<'ctx> {
         self.runtime_status_function(TYPED_GC_ROOT_PUSH_SYMBOL)
     }
@@ -3248,6 +3282,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
     }
 
     fn require_zero_status(&self, status: IntValue<'ctx>, name: &str) -> Result<(), CodegenError> {
+        self.require_exact_status(status, 0, name)
+    }
+
+    fn require_exact_status(
+        &self,
+        status: IntValue<'ctx>,
+        expected: u32,
+        name: &str,
+    ) -> Result<(), CodegenError> {
         let function = self
             .builder
             .get_insert_block()
@@ -3266,7 +3309,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.context.i32_type().const_zero(),
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(expected), false),
                 &format!("{name}.status.ok"),
             )
             .map_err(builder_error)?;
@@ -3930,7 +3975,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         })?;
         self.backend
             .builder
-            .position_at_end(self.blocks[entry.index()]);
+            .position_at_end(self.allocation_block(entry)?);
         for instruction in self.source.instructions() {
             let scalar_type: BasicTypeEnum<'ctx> = match instruction.kind() {
                 InstructionKind::ParseInt { .. } => self.backend.context.i64_type().into(),
@@ -4775,6 +4820,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.prepare_text_output_cells()?;
         self.prepare_parse_output_cells()?;
         self.prepare_root_frame()?;
+        self.finish_coroutine_prologue()?;
+        self.emit_coroutine_resume_blocks()?;
         for index in 0..self.emission_order.len() {
             let block_id = self.emission_order[index];
             let block = self.source.block(block_id).ok_or_else(|| {
@@ -4806,7 +4853,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             self.set_debug_location(terminator.origin())?;
             self.emit_terminator(block.id(), terminator)?;
         }
-        if let Some(debug) = &self.backend.debug {
+        if self.coroutine.is_none()
+            && let Some(debug) = &self.backend.debug
+        {
             let entry = self.source.entry().ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
@@ -4825,7 +4874,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn set_debug_location(&self, origin: Origin) -> Result<(), CodegenError> {
-        if let Some(debug) = &self.backend.debug {
+        if self.coroutine.is_none()
+            && let Some(debug) = &self.backend.debug
+        {
             debug.set_location(
                 self.backend.context,
                 &self.backend.builder,
@@ -4833,6 +4884,273 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 origin,
             )?;
         }
+        Ok(())
+    }
+
+    fn finish_coroutine_prologue(&self) -> Result<(), CodegenError> {
+        let Some(coroutine) = &self.coroutine else {
+            return Ok(());
+        };
+        if self.root_frame.is_none() {
+            self.backend.builder.position_at_end(coroutine.prologue);
+        }
+        self.backend
+            .builder
+            .build_unconditional_branch(coroutine.dispatch)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn emit_coroutine_resume_blocks(&self) -> Result<(), CodegenError> {
+        let Some(coroutine) = &self.coroutine else {
+            return Ok(());
+        };
+        let plan = self.source.coroutine().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "coroutine callback has no checked plan")
+        })?;
+        if plan.suspensions().len() != coroutine.layout.suspensions.len()
+            || plan.suspensions().len() != coroutine.resume_blocks.len()
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "coroutine plan, frame layout, and resume dispatch disagree",
+            ));
+        }
+
+        for ((plan_row, layout_row), resume) in plan
+            .suspensions()
+            .iter()
+            .zip(&coroutine.layout.suspensions)
+            .zip(&coroutine.resume_blocks)
+        {
+            let (_task, normal) = self.await_for_state(plan_row.state())?;
+            if layout_row.state != plan_row.state()
+                || layout_row.live_fields.len() != plan_row.live().len()
+            {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!(
+                        "coroutine state {} disagrees with its frame layout",
+                        plan_row.state()
+                    ),
+                ));
+            }
+            self.backend.builder.position_at_end(*resume);
+            let step = call_int(
+                &self.backend.builder,
+                self.backend.task_join_step(),
+                &[coroutine.task.into()],
+                "task.await.step",
+            )?;
+            let completed = self
+                .backend
+                .context
+                .append_basic_block(self.function, "task.await.completed");
+            let faulted = self
+                .backend
+                .context
+                .append_basic_block(self.function, "task.await.faulted");
+            let cancelled = self
+                .backend
+                .context
+                .append_basic_block(self.function, "task.await.cancelled");
+            let invalid = self
+                .backend
+                .context
+                .append_basic_block(self.function, "task.await.invalid_step");
+            self.backend
+                .builder
+                .build_switch(
+                    step,
+                    invalid,
+                    &[
+                        (
+                            self.backend
+                                .context
+                                .i32_type()
+                                .const_int(TASK_COMPLETED as u64, false),
+                            completed,
+                        ),
+                        (
+                            self.backend
+                                .context
+                                .i32_type()
+                                .const_int(TASK_FAULTED as u64, false),
+                            faulted,
+                        ),
+                        (
+                            self.backend
+                                .context
+                                .i32_type()
+                                .const_int(TASK_CANCELLED as u64, false),
+                            cancelled,
+                        ),
+                    ],
+                )
+                .map_err(builder_error)?;
+
+            self.backend.builder.position_at_end(faulted);
+            self.emit_coroutine_step_return(TASK_FAULTED)?;
+            self.backend.builder.position_at_end(cancelled);
+            self.emit_coroutine_step_return(TASK_CANCELLED)?;
+            self.backend.builder.position_at_end(invalid);
+            self.emit_coroutine_step_return(TASK_FAULTED)?;
+
+            self.backend.builder.position_at_end(completed);
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    layout_row.child_field,
+                    "task.await.child.pointer",
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .backend
+                .builder
+                .build_load(self.backend.ptr_type, child_pointer, "task.await.child")
+                .map_err(builder_error)?
+                .into_pointer_value();
+            let output = self.take_typed_task_result(child, normal.block)?;
+            let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
+            values.push(output);
+            for ((ty, field), index) in plan_row
+                .live()
+                .iter()
+                .copied()
+                .zip(layout_row.live_fields.iter().copied())
+                .zip(0_u32..)
+            {
+                let pointer = self
+                    .backend
+                    .builder
+                    .build_struct_gep(
+                        coroutine.layout.frame,
+                        coroutine.frame,
+                        field,
+                        &format!("task.await.live.{index}.pointer"),
+                    )
+                    .map_err(builder_error)?;
+                values.push(
+                    self.backend
+                        .builder
+                        .build_load(
+                            self.backend.llvm_type(ty)?,
+                            pointer,
+                            &format!("task.await.live.{index}"),
+                        )
+                        .map_err(builder_error)?,
+                );
+            }
+            let predecessor = self.current_block()?;
+            self.add_basic_incoming(normal.block, &values, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(normal.block)?)
+                .map_err(builder_error)?;
+        }
+
+        self.backend
+            .builder
+            .position_at_end(coroutine.invalid_state);
+        self.emit_coroutine_step_return(TASK_FAULTED)
+    }
+
+    fn await_for_state(&self, state: u32) -> Result<(ValueId, ResultTarget), CodegenError> {
+        self.source
+            .blocks()
+            .iter()
+            .find_map(|block| match block.terminator().map(Terminator::kind) {
+                Some(TerminatorKind::AwaitTask {
+                    state: candidate,
+                    task,
+                    normal,
+                }) if *candidate == state => Some((*task, normal.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("coroutine resume state {state} has no await terminator"),
+                )
+            })
+    }
+
+    fn take_typed_task_result(
+        &self,
+        child: PointerValue<'ctx>,
+        destination: BlockId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let output = self
+            .source
+            .block(destination)
+            .and_then(|block| block.params().first())
+            .and_then(|value| self.source.value(*value))
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("await destination {destination} has no result parameter"),
+                )
+            })?
+            .ty();
+        let physical = self.backend.llvm_type(output)?;
+        let size = self.backend.target_data.get_abi_size(&physical);
+        let alignment = u64::from(self.backend.target_data.get_abi_alignment(&physical));
+        let storage = (size != 0)
+            .then(|| {
+                self.backend
+                    .builder
+                    .build_alloca(physical, "task.await.result")
+                    .map_err(builder_error)
+            })
+            .transpose()?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_take_result(),
+            &[
+                child.into(),
+                storage
+                    .unwrap_or_else(|| self.backend.ptr_type.const_null())
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(size, false)
+                    .into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(alignment, false)
+                    .into(),
+            ],
+            "task.await.take",
+        )?;
+        self.backend
+            .require_zero_status(status, "task.await.take")?;
+        if let Some(storage) = storage {
+            self.backend
+                .builder
+                .build_load(physical, storage, "task.await.result.value")
+                .map_err(builder_error)
+        } else {
+            self.backend.zero(output)
+        }
+    }
+
+    fn emit_coroutine_step_return(&self, step: i32) -> Result<(), CodegenError> {
+        self.pop_root_frame()?;
+        self.backend
+            .builder
+            .build_return(Some(
+                &self
+                    .backend
+                    .context
+                    .i32_type()
+                    .const_int(step as u64, false),
+            ))
+            .map_err(builder_error)?;
         Ok(())
     }
 
@@ -4936,11 +5254,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::TextLiteral { utf8 } => {
                 one(self.backend.emit_text_literal(utf8)?.into())
             }
-            InstructionKind::TaskCreate { .. } => {
-                return Err(CodegenError::new(
-                    "UnsupportedLcirCoroutineEmission",
-                    "typed coroutine task construction is not emitted by this checkpoint",
-                ));
+            InstructionKind::TaskCreate {
+                coroutine,
+                arguments,
+            } => {
+                let active = self.coroutine.as_ref().ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "task construction has no active coroutine executor",
+                    )
+                })?;
+                let mut arguments = self.call_arguments(arguments, false)?;
+                arguments.push(active.executor.into());
+                one(call_pointer(
+                    &self.backend.builder,
+                    self.backend.function(*coroutine)?,
+                    &arguments,
+                    "task.create.child",
+                )?
+                .into())
             }
             InstructionKind::TextConcat { left, right } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
@@ -7572,10 +7904,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             TerminatorKind::Return(value) => {
                 self.emit_return(self.value(*value)?, terminator.writebacks())
             }
-            TerminatorKind::AwaitTask { .. } => Err(CodegenError::new(
-                "UnsupportedLcirCoroutineEmission",
-                "typed coroutine suspension is not emitted by this checkpoint",
-            )),
+            TerminatorKind::AwaitTask {
+                state,
+                task,
+                normal,
+            } => self.emit_await_task(*state, *task, normal),
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal,
@@ -7676,6 +8009,147 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
         }
+    }
+
+    fn emit_await_task(
+        &self,
+        state: u32,
+        task: ValueId,
+        normal: &ResultTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "await terminator has no coroutine frame")
+        })?;
+        let suspension = coroutine
+            .layout
+            .suspensions
+            .iter()
+            .find(|suspension| suspension.state == state)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("await state {state} has no physical frame row"),
+                )
+            })?;
+        if suspension.live_fields.len() != normal.arguments.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("await state {state} disagrees with its live frame row"),
+            ));
+        }
+
+        let child = self.value(task)?.into_pointer_value();
+        let child_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                coroutine.layout.frame,
+                coroutine.frame,
+                suspension.child_field,
+                "task.await.child.pointer",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(child_pointer, child)
+            .map_err(builder_error)?;
+        for ((argument, field), index) in normal
+            .arguments
+            .iter()
+            .copied()
+            .zip(suspension.live_fields.iter().copied())
+            .zip(0_u32..)
+        {
+            let pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    &format!("task.await.live.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(pointer, self.value(argument)?)
+                .map_err(builder_error)?;
+        }
+
+        let prepared = call_int(
+            &self.backend.builder,
+            self.backend.task_prepare_join(),
+            &[
+                coroutine.executor.into(),
+                coroutine.task.into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(TASK_JOIN_ALL), false)
+                    .into(),
+            ],
+            "task.await.prepare",
+        )?;
+        self.backend
+            .require_zero_status(prepared, "task.await.prepare")?;
+        let added = call_int(
+            &self.backend.builder,
+            self.backend.task_add_join_child(),
+            &[
+                coroutine.executor.into(),
+                coroutine.task.into(),
+                child.into(),
+            ],
+            "task.await.add_child",
+        )?;
+        self.backend
+            .require_zero_status(added, "task.await.add_child")?;
+
+        let state_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                coroutine.layout.frame,
+                coroutine.frame,
+                0,
+                "task.await.state.pointer",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(
+                state_pointer,
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(u64::from(state), false),
+            )
+            .map_err(builder_error)?;
+        let rooted = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_set_root_state(),
+            &[
+                coroutine.task.into(),
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(u64::from(state), false)
+                    .into(),
+            ],
+            "task.await.root_state",
+        )?;
+        self.backend
+            .require_zero_status(rooted, "task.await.root_state")?;
+        let suspended = call_int(
+            &self.backend.builder,
+            self.backend.task_suspend_join(),
+            &[coroutine.executor.into(), coroutine.task.into()],
+            "task.await.suspend",
+        )?;
+        self.backend
+            .require_exact_status(suspended, 1, "task.await.suspend")?;
+        self.emit_coroutine_step_return(TASK_PENDING)
     }
 
     #[expect(
@@ -8322,6 +8796,37 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         value: BasicValueEnum<'ctx>,
         writebacks: &[ValueId],
     ) -> Result<(), CodegenError> {
+        if let Some(coroutine) = &self.coroutine {
+            if !writebacks.is_empty() {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "typed coroutine return cannot carry inout writebacks",
+                ));
+            }
+            let result = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    coroutine.layout.result_field,
+                    "task.result.pointer",
+                )
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(result, value)
+                .map_err(builder_error)?;
+            let published = call_int(
+                &self.backend.builder,
+                self.backend.typed_task_publish_result(),
+                &[coroutine.task.into()],
+                "task.result.publish",
+            )?;
+            self.backend
+                .require_zero_status(published, "task.result.publish")?;
+            return self.emit_coroutine_step_return(TASK_COMPLETED);
+        }
         let mut values = Vec::with_capacity(1 + writebacks.len());
         values.push(value);
         for writeback in writebacks {
@@ -8354,6 +8859,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn emit_fault_return(&self, writebacks: &[ValueId]) -> Result<(), CodegenError> {
+        if self.coroutine.is_some() {
+            if !writebacks.is_empty() {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "typed coroutine fault cannot carry inout writebacks",
+                ));
+            }
+            return self.emit_coroutine_step_return(TASK_FAULTED);
+        }
         let zero = self.backend.zero(self.source.signature().result())?;
         let mut values = Vec::with_capacity(1 + writebacks.len());
         values.push(zero);
@@ -8669,7 +9183,8 @@ impl<'ctx> Backend<'ctx, '_> {
             let source = self.artifact.function(root).ok_or_else(|| {
                 CodegenError::new("InvalidFunctionReference", "LCIR run root is missing")
             })?;
-            if source.effects().contains(Effects::NEEDS_RUNTIME)
+            if source.coroutine().is_some()
+                || source.effects().contains(Effects::NEEDS_RUNTIME)
                 || source.effects().contains(Effects::MAY_FAULT)
             {
                 self.emit_runtime_run(main, root)
@@ -8755,7 +9270,9 @@ impl<'ctx> Backend<'ctx, '_> {
         let source = self.artifact.function(root).ok_or_else(|| {
             CodegenError::new("InvalidFunctionReference", "LCIR run root is missing")
         })?;
-        let status = if source.effects().contains(Effects::MAY_FAULT) {
+        let status = if source.coroutine().is_some() {
+            self.call_typed_async_root(runtime, root, "run")?.0
+        } else if source.effects().contains(Effects::MAY_FAULT) {
             let fault_context = self.initialize_fault_context(runtime)?;
             self.call_fallible_root(root, fault_context, "run")?.0
         } else {
@@ -8792,6 +9309,176 @@ impl<'ctx> Backend<'ctx, '_> {
         Ok(())
     }
 
+    fn call_typed_async_root(
+        &self,
+        runtime: PointerValue<'ctx>,
+        root: InstanceId,
+        name: &str,
+    ) -> Result<(IntValue<'ctx>, BasicValueEnum<'ctx>), CodegenError> {
+        let source = self.artifact.function(root).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("LCIR async root {root} is missing"),
+            )
+        })?;
+        if source.coroutine().is_none() || !source.signature().params().is_empty() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed async root must be a zero-argument checked coroutine",
+            ));
+        }
+        let result_type = source.signature().result();
+        let physical = self.llvm_type(result_type)?;
+        let result_size = self.target_data.get_abi_size(&physical);
+        let result_align = u64::from(self.target_data.get_abi_alignment(&physical));
+        let executor = call_pointer(
+            &self.builder,
+            self.executor_create_for_runtime(),
+            &[runtime.into()],
+            &format!("{name}.executor.create"),
+        )?;
+        self.require_nonnull(executor, &format!("{name}.executor.create"))?;
+        let task = call_pointer(
+            &self.builder,
+            self.function(root)?,
+            &[executor.into()],
+            &format!("{name}.task.create"),
+        )?;
+        self.require_nonnull(task, &format!("{name}.task.create"))?;
+        let storage = (result_size != 0)
+            .then(|| {
+                self.builder
+                    .build_alloca(physical, &format!("{name}.task.result"))
+                    .map_err(builder_error)
+            })
+            .transpose()?;
+        let status = call_int(
+            &self.builder,
+            self.executor_run(),
+            &[executor.into(), task.into()],
+            &format!("{name}.task.run"),
+        )?;
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "async root has no function"))?;
+        let completed = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.completed"));
+        let incomplete = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.incomplete"));
+        let merge = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.merge"));
+        let succeeded = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context
+                    .i32_type()
+                    .const_int(TASK_COMPLETED as u64, false),
+                &format!("{name}.task.succeeded"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(succeeded, completed, incomplete)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(completed);
+        let taken = call_int(
+            &self.builder,
+            self.typed_task_take_result(),
+            &[
+                task.into(),
+                storage.unwrap_or_else(|| self.ptr_type.const_null()).into(),
+                self.context.i64_type().const_int(result_size, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(result_align, false)
+                    .into(),
+            ],
+            &format!("{name}.task.take"),
+        )?;
+        self.require_zero_status(taken, &format!("{name}.task.take"))?;
+        let returned = if let Some(storage) = storage {
+            self.builder
+                .build_load(physical, storage, &format!("{name}.task.returned"))
+                .map_err(builder_error)?
+        } else {
+            self.zero(result_type)?
+        };
+        let completed_tail = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "async take has no block"))?;
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(incomplete);
+        let report = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.report_fault"));
+        let skip_report = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.skip_fault"));
+        let failed = self
+            .context
+            .append_basic_block(function, &format!("{name}.task.failed"));
+        let faulted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context
+                    .i32_type()
+                    .const_int(TASK_FAULTED as u64, false),
+                &format!("{name}.task.faulted"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(faulted, report, skip_report)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(report);
+        self.builder
+            .build_call(
+                self.task_report_fault(),
+                &[task.into()],
+                &format!("{name}.task.fault.report"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(skip_report);
+        self.builder
+            .build_unconditional_branch(failed)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failed);
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(merge);
+        let value = self
+            .builder
+            .build_phi(physical, &format!("{name}.task.value"))
+            .map_err(builder_error)?;
+        let zero = self.zero(result_type)?;
+        value.add_incoming(&[(&returned, completed_tail), (&zero, failed)]);
+        self.builder
+            .build_call(
+                self.executor_destroy(),
+                &[executor.into()],
+                &format!("{name}.executor.destroy"),
+            )
+            .map_err(builder_error)?;
+        Ok((status, value.as_basic_value()))
+    }
+
     fn emit_tests(&self, main: FunctionValue<'ctx>) -> Result<(), CodegenError> {
         let failed = self
             .builder
@@ -8819,7 +9506,8 @@ impl<'ctx> Backend<'ctx, '_> {
                     format!("LCIR test root {root} is missing"),
                 )
             })?;
-            if source.effects().contains(Effects::NEEDS_RUNTIME)
+            if source.coroutine().is_some()
+                || source.effects().contains(Effects::NEEDS_RUNTIME)
                 || source.effects().contains(Effects::MAY_FAULT)
             {
                 self.emit_runtime_test(main, *root, source.name(), *outcome, failed)?;
@@ -8914,7 +9602,9 @@ impl<'ctx> Backend<'ctx, '_> {
                 format!("LCIR test root {root} is missing"),
             )
         })?;
-        let (status, returned) = if source.effects().contains(Effects::MAY_FAULT) {
+        let (status, returned) = if source.coroutine().is_some() {
+            self.call_typed_async_root(runtime, root, "test")?
+        } else if source.effects().contains(Effects::MAY_FAULT) {
             let fault_context = self.initialize_fault_context(runtime)?;
             self.call_fallible_root(root, fault_context, "test")?
         } else {
