@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 8")?;
+    writeln!(output, "lcir 9")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -402,20 +402,21 @@ fn write_terminator(
         }
         TerminatorKind::Assert {
             condition,
-            code,
+            metadata,
             success,
             fault,
         } => {
-            write!(
-                output,
-                "assert %{condition}, {}, success ",
-                fault_code_name(*code)
-            )?;
+            write!(output, "assert %{condition}, ")?;
+            write_contract_fault(output, metadata)?;
+            write!(output, ", success ")?;
             write_target(output, success)?;
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)
         }
-        TerminatorKind::Fault { code } => write!(output, "fault {}", fault_code_name(*code)),
+        TerminatorKind::Fault { metadata } => {
+            write!(output, "fault ")?;
+            write_fault_metadata(output, metadata)
+        }
         TerminatorKind::ResumeFault => write!(output, "resume_fault"),
     }?;
     if !terminator.writebacks().is_empty() {
@@ -617,7 +618,45 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerOverflow => "IntegerOverflow",
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
-        crate::FaultCode::AssertionFailed => "AssertionFailed",
-        crate::FaultCode::ContractFailed => "ContractFailed",
     }
+}
+
+fn write_fault_metadata(output: &mut impl Write, metadata: &crate::FaultMetadata) -> fmt::Result {
+    match metadata {
+        crate::FaultMetadata::Runtime(code) => {
+            write!(output, "runtime {}", fault_code_name(*code))
+        }
+        crate::FaultMetadata::Contract(metadata) => write_contract_fault(output, metadata),
+    }
+}
+
+fn write_contract_fault(
+    output: &mut impl Write,
+    metadata: &crate::ContractFaultMetadata,
+) -> fmt::Result {
+    write!(
+        output,
+        "contract {} category={} user_code=",
+        metadata.kind().fault_code(),
+        metadata.kind().category()
+    )?;
+    if let Some(user_code) = metadata.user_code() {
+        write_quoted_string(output, user_code)?;
+    } else {
+        output.write_str("none")?;
+    }
+    output.write_str(" message=")?;
+    write_quoted_string(output, metadata.message())?;
+    output.write_str(" contract_span=")?;
+    write_span(output, metadata.contract_span())?;
+    output.write_str(" blame_span=")?;
+    write_span(output, metadata.blame_span())
+}
+
+fn write_span(output: &mut impl Write, span: loom_core::Span) -> fmt::Result {
+    write!(
+        output,
+        "file{}:{}..{}",
+        span.file.0, span.range.start, span.range.end
+    )
 }

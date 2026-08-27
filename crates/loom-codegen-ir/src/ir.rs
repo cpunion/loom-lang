@@ -691,8 +691,149 @@ pub enum FaultCode {
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
-    AssertionFailed,
-    ContractFailed,
+}
+
+/// Per-field UTF-8 byte budget for compiler-private contract-fault text.
+///
+/// Independent validation applies the limit to both the optional user code
+/// and the canonical diagnostic message before dumps or native backends may
+/// encode either value.
+pub const CONTRACT_FAULT_TEXT_MAX_BYTES: usize = 4 * 1024;
+
+/// Stable source-level contract-fault category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractFaultKind {
+    Precondition,
+    Postcondition,
+    Invariant,
+    Assertion,
+}
+
+impl ContractFaultKind {
+    #[must_use]
+    pub const fn fault_code(self) -> &'static str {
+        match self {
+            Self::Precondition => "PreconditionFault",
+            Self::Postcondition => "PostconditionFault",
+            Self::Invariant => "InvariantFault",
+            Self::Assertion => "AssertionFault",
+        }
+    }
+
+    #[must_use]
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::Precondition => "precondition",
+            Self::Postcondition => "postcondition",
+            Self::Invariant => "invariant",
+            Self::Assertion => "assertion",
+        }
+    }
+}
+
+/// Complete diagnostic identity for one source contract-fault origin.
+///
+/// LCIR stores concrete spans. A precondition check therefore carries the
+/// exact closed-world call-site span as `blame_span`; all other kinds use their
+/// contract or assertion span. Independent validation checks those canonical
+/// relationships and the current language-defined message schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractFaultMetadata {
+    kind: ContractFaultKind,
+    user_code: Option<String>,
+    message: String,
+    contract_span: Span,
+    blame_span: Span,
+}
+
+impl ContractFaultMetadata {
+    /// Creates unchecked metadata for the raw LCIR builder. The independent
+    /// validator rejects an inconsistent kind, user code, message, or span.
+    #[must_use]
+    pub fn new(
+        kind: ContractFaultKind,
+        user_code: Option<String>,
+        message: impl Into<String>,
+        contract_span: Span,
+        blame_span: Span,
+    ) -> Self {
+        Self {
+            kind,
+            user_code,
+            message: message.into(),
+            contract_span,
+            blame_span,
+        }
+    }
+
+    /// Constructs the canonical payload for a named source contract.
+    #[must_use]
+    pub fn contract(
+        kind: ContractFaultKind,
+        user_code: impl Into<String>,
+        contract_span: Span,
+        blame_span: Span,
+    ) -> Self {
+        let user_code = user_code.into();
+        let message = format!("contract `{user_code}` was not satisfied");
+        Self::new(kind, Some(user_code), message, contract_span, blame_span)
+    }
+
+    /// Constructs the canonical payload for a source `assert` statement.
+    #[must_use]
+    pub fn assertion(span: Span) -> Self {
+        Self::new(
+            ContractFaultKind::Assertion,
+            None,
+            "assertion was not satisfied",
+            span,
+            span,
+        )
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> ContractFaultKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn user_code(&self) -> Option<&str> {
+        self.user_code.as_deref()
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    pub const fn contract_span(&self) -> Span {
+        self.contract_span
+    }
+
+    #[must_use]
+    pub const fn blame_span(&self) -> Span {
+        self.blame_span
+    }
+}
+
+/// Complete typed identity for an explicitly originated fault.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FaultMetadata {
+    Runtime(FaultCode),
+    Contract(ContractFaultMetadata),
+}
+
+impl FaultMetadata {
+    #[must_use]
+    pub const fn runtime(code: FaultCode) -> Self {
+        Self::Runtime(code)
+    }
+
+    #[must_use]
+    pub const fn contract(metadata: ContractFaultMetadata) -> Self {
+        Self::Contract(metadata)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -801,17 +942,17 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         unwind: UnwindTarget,
     },
-    /// Continues through `success` when true or activates `code` and enters
-    /// `fault` when false.
+    /// Continues through `success` when true or activates the checked contract
+    /// fault metadata and enters `fault` when false.
     Assert {
         condition: ValueId,
-        code: FaultCode,
+        metadata: ContractFaultMetadata,
         success: BlockTarget,
         fault: UnwindTarget,
     },
     /// Originates and reports a source fault at an inactive terminal boundary.
     Fault {
-        code: FaultCode,
+        metadata: FaultMetadata,
     },
     /// Propagates the already active source fault without reporting it again.
     /// This is not a local `MAY_FAULT` source: the checked operation, assertion,

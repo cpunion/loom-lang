@@ -1,7 +1,8 @@
 use loom_codegen_ir::{
-    BlockTarget, BuildErrorCode, Constant, Effects, FaultCode, FloatPredicate, InstructionKind,
-    Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
-    dump_program, write_program_with_options,
+    BlockTarget, BuildErrorCode, Constant, ContractFaultKind, ContractFaultMetadata, Effects,
+    FaultMetadata, FloatPredicate, InstructionKind, Origin, ProgramBuilder, Signature,
+    TargetLayout, Terminator, TerminatorKind, ValidationCode, dump_program,
+    write_program_with_options,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type};
 
@@ -11,6 +12,10 @@ fn origin(function: u32) -> Origin {
 
 fn terminator(function: u32, kind: TerminatorKind) -> Terminator {
     Terminator::new(kind, origin(function))
+}
+
+fn assertion_fault(function: u32) -> FaultMetadata {
+    FaultMetadata::contract(ContractFaultMetadata::assertion(origin(function).span))
 }
 
 #[test]
@@ -88,7 +93,7 @@ fn branch_merge_is_a_typed_block_parameter_and_dump_is_deterministic() {
     assert_eq!(first_dump, second_dump);
     assert_eq!(
         first_dump,
-        r#"lcir 8
+        r#"lcir 9
 target pointer_bits=64
 
 repr r0 = uninhabited
@@ -557,7 +562,12 @@ fn fault_effect_is_explicit_and_has_a_stable_dump() {
                 terminator(
                     34,
                     TerminatorKind::Fault {
-                        code: FaultCode::ContractFailed,
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::contract(
+                            ContractFaultKind::Postcondition,
+                            "balance.nonnegative",
+                            origin(34).span,
+                            origin(34).span,
+                        )),
                     },
                 ),
             )
@@ -566,7 +576,9 @@ fn fault_effect_is_explicit_and_has_a_stable_dump() {
     let checked = program.finish_checked().expect("valid faulting function");
     let dump = dump_program(&checked);
     assert!(dump.contains("effects=may_fault"));
-    assert!(dump.contains("fault ContractFailed"));
+    assert!(dump.contains(
+        "fault contract PostconditionFault category=postcondition user_code=\"balance.nonnegative\" message=\"contract `balance.nonnegative` was not satisfied\""
+    ));
 
     assert_has_code(
         fault_without_effect_program(),
@@ -1049,7 +1061,7 @@ fn fault_without_effect_program() -> loom_codegen_ir::Program {
                 terminator(
                     35,
                     TerminatorKind::Fault {
-                        code: FaultCode::AssertionFailed,
+                        metadata: assertion_fault(35),
                     },
                 ),
             )
@@ -1179,7 +1191,7 @@ fn instruction_result_shape_program() -> loom_codegen_ir::Program {
                 terminator(
                     39,
                     TerminatorKind::Fault {
-                        code: FaultCode::AssertionFailed,
+                        metadata: assertion_fault(39),
                     },
                 ),
             )

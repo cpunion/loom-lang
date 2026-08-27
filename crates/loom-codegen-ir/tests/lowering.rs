@@ -2171,6 +2171,45 @@ pub fn main() Unit {
 }
 
 #[test]
+fn source_contracts_remain_one_atomic_fallback_until_contract_lowering_exists() {
+    let mir = compile(
+        r"module contract_fallback
+
+fn positive(value Int) Int
+    requires value > 0
+    ensures result > 0
+{
+    value
+}
+
+pub fn main() Unit {
+    discard positive(1)
+    Unit
+}
+",
+    );
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify contracts");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("source contracts must not be partially lowered")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::Contracts),
+        "{:#?}",
+        report.items()
+    );
+}
+
+#[test]
 fn closed_pod_records_lower_to_products_with_direct_and_fault_writebacks() {
     let dump = complete_dump(
         r"module product_records

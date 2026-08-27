@@ -49,11 +49,14 @@ code cannot change the route; one unsupported reachable test changes the
 whole ordered-test artifact. Invalid roots, resource limits, compiler defects,
 and LCIR emitter failures never fall back.
 
-Source contracts are outside that routing slice. Hand-built LCIR can carry the
-generic `ContractFailed` fault code, but LCIR does not yet preserve the contract
-category, user code, contract span, and blame span required by production
-diagnostics. The direct lowerer reports contracts as `Unsupported` until that
-metadata has a checked LCIR representation and differential tests.
+Source contracts remain outside that routing slice. Hand-built LCIR now carries
+canonical assertion, precondition, postcondition, and invariant fault metadata,
+including bounded user code, message, contract span, and concrete blame span.
+The LLVM emitter preserves the existing contract-channel JSON schema exactly.
+The direct source lowerer still reports contracts and assertions as
+`Unsupported` until it can materialize call-site precondition blame and complete
+all normal, return, fault, and cleanup paths. The vocabulary does not permit a
+partial source route.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
@@ -265,7 +268,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v5` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v6` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -277,12 +280,13 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v10` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v11` and never suppresses fingerprint
 errors.
 
-The current LCIR domains also encode the explicit transitive effect lattice.
-This compiler-private metadata change does not add a physical runtime boundary,
-so the native runtime ABI itself does not advance for this slice.
+The current LCIR domains encode both the explicit transitive effect lattice and
+canonical typed fault metadata. These compiler-private metadata changes do not
+add a physical runtime boundary, so the native runtime ABI itself does not
+advance for either slice.
 
 Every executable link consumes one validated runtime bundle; the compiler
 contains no runtime archive and its build script never starts Cargo. The CLI

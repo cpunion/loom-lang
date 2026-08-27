@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
-    BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, Effects, FaultCode, InstructionKind,
-    Origin, Program, ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator,
-    TerminatorKind, UnwindTarget, ValidationCode, dump_program,
+    BlockTarget, BoolPredicate, CheckedIntBinaryOp, Constant, ContractFaultMetadata, Effects,
+    FaultMetadata, InstructionKind, Origin, Program, ProgramBuilder, ResultTarget, Signature,
+    TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode, dump_program,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type};
 
@@ -11,6 +11,10 @@ fn origin(function: u32) -> Origin {
 
 fn terminator(function: u32, kind: TerminatorKind) -> Terminator {
     Terminator::new(kind, origin(function))
+}
+
+fn assertion_metadata(function: u32) -> ContractFaultMetadata {
+    ContractFaultMetadata::assertion(origin(function).span)
 }
 
 fn assert_has_code(program: Program, expected: ValidationCode) {
@@ -189,7 +193,7 @@ fn fallible_results_exist_only_on_normal_edges_and_faults_resume_on_unwind_paths
                     72,
                     TerminatorKind::Assert {
                         condition,
-                        code: FaultCode::AssertionFailed,
+                        metadata: assertion_metadata(72),
                         success: BlockTarget::new(after_assert, vec![left, right]),
                         fault: UnwindTarget::new(assert_fault, Vec::new()),
                     },
@@ -248,7 +252,7 @@ fn fallible_results_exist_only_on_normal_edges_and_faults_resume_on_unwind_paths
     assert_eq!(first, second);
     for syntax in [
         "checked_int.divide %v0, %v1, normal b1(result), fault b2()",
-        "assert %v0, AssertionFailed, success b1(%v1, %v2), fault b4()",
+        "assert %v0, contract AssertionFault category=assertion user_code=none message=\"assertion was not satisfied\" contract_span=file0:0..0 blame_span=file0:0..0, success b1(%v1, %v2), fault b4()",
         "invoke i0(%v3, %v4), normal b2(result; %v0), unwind b5()",
         "checked_int.negate %v5, normal b3(result), fault b6()",
         "resume_fault",
@@ -491,7 +495,7 @@ fn active_cleanup_keeps_the_primary_fault_across_a_secondary_checked_operation()
                     108,
                     TerminatorKind::Assert {
                         condition,
-                        code: FaultCode::ContractFailed,
+                        metadata: assertion_metadata(108),
                         success: BlockTarget::new(normal, Vec::new()),
                         fault: UnwindTarget::new(cleanup, Vec::new()),
                     },
@@ -597,7 +601,7 @@ fn build_recursive_invoker(
                 terminator(
                     source,
                     TerminatorKind::Fault {
-                        code: FaultCode::ContractFailed,
+                        metadata: FaultMetadata::contract(assertion_metadata(source)),
                     },
                 ),
             )
@@ -920,7 +924,7 @@ fn mixed_fault_state_program() -> Program {
                     94,
                     TerminatorKind::Assert {
                         condition,
-                        code: FaultCode::AssertionFailed,
+                        metadata: assertion_metadata(94),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(merge, Vec::new()),
                     },
@@ -1074,7 +1078,7 @@ fn call_form_program(source: u32, direct_to_faulting: bool) -> Program {
                     terminator(
                         source,
                         TerminatorKind::Fault {
-                            code: FaultCode::ContractFailed,
+                            metadata: FaultMetadata::contract(assertion_metadata(source)),
                         },
                     ),
                 )
