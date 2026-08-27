@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 12;
+pub const RUNTIME_ABI_VERSION: u32 = 13;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -12,9 +12,10 @@ pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
+pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v6/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v7/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -36,6 +37,8 @@ pub const GC_MAX_ROOT_DEPTH: u64 = 65_536;
 
 /// Hard limits for one typed managed allocation descriptor and allocation.
 pub const GC_MAX_OBJECT_POINTERS: u64 = 4_096;
+/// Maximum number of exact pointer cells traced in one repeated allocation.
+pub const GC_MAX_REPEATED_POINTER_CELLS: u64 = 16_777_216;
 pub const GC_MAX_OBJECT_BYTES: u64 = 1 << 30;
 pub const GC_MAX_OBJECT_ALIGNMENT: u64 = 4_096;
 
@@ -48,6 +51,8 @@ pub const TYPED_TASK_MAX_FAULT_TEXT_BYTES: u64 = 64 * 1024;
 /// stable for the complete call, including any collection triggered by the
 /// allocator. The output cell must not reside in either moving heap.
 pub const TYPED_GC_ALLOC_SYMBOL: &str = "loom_gc_typed_alloc_v1";
+/// Zeroed repeated-element allocator taking `(descriptor, capacity, output)`.
+pub const TYPED_GC_REPEATED_ALLOC_SYMBOL: &str = "loom_gc_typed_repeated_alloc_v1";
 pub const TYPED_GC_ROOT_PUSH_SYMBOL: &str = "loom_gc_typed_root_push_v1";
 pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
 /// Stages two complete Text payloads before its typed allocation safepoint and
@@ -212,6 +217,29 @@ pub struct LoomGcObjectDescriptor {
     pub object_align: u64,
     pub pointer_count: u64,
     pub pointer_offsets: *const u64,
+}
+
+/// Immutable precise trace metadata for a fixed header followed by elements.
+///
+/// The allocation size is derived from `fixed_size + capacity *
+/// element_stride`; it is never trusted from an object field. Fixed pointer
+/// offsets are relative to the object base. Element pointer offsets are
+/// relative to each element base and are repeated for the allocation capacity.
+/// Uninitialized capacity is zero-filled, so tracing it observes only null
+/// cells. Both offset tables are copied before the allocation can become
+/// visible, and the runtime retains neither caller pointer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomGcRepeatedObjectDescriptor {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub fixed_size: u64,
+    pub object_align: u64,
+    pub fixed_pointer_count: u64,
+    pub fixed_pointer_offsets: *const u64,
+    pub element_stride: u64,
+    pub element_pointer_count: u64,
+    pub element_pointer_offsets: *const u64,
 }
 
 /// Scheduler-private callback used by a typed stackless coroutine.
@@ -400,17 +428,18 @@ mod tests {
 
     use super::{
         COROUTINE_ABI_VERSION, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
-        GC_MAX_OBJECT_POINTERS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS,
-        GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
-        LoomGcObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor,
-        LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView,
-        LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
-        RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
-        TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-        TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-        TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-        TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
-        TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED,
+        GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
+        GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT,
+        LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
+        LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
+        LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, LoomWitnessDescriptor,
+        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, RUNTIME_ABI_VERSION,
+        SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TEXT_CONTAINS_SYMBOL,
+        TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_ALLOCATION_SIZE,
+        TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_LAYOUT,
+        TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+        TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
+        TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED,
         TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
         TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
         TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
@@ -420,14 +449,19 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 12);
+        assert_eq!(RUNTIME_ABI_VERSION, 13);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_ABI_VERSION, 1);
+        assert_eq!(TYPED_GC_REPEATED_ABI_VERSION, 1);
         assert_eq!(TYPED_SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_ALLOC_SYMBOL, "loom_gc_typed_alloc_v1");
+        assert_eq!(
+            TYPED_GC_REPEATED_ALLOC_SYMBOL,
+            "loom_gc_typed_repeated_alloc_v1"
+        );
         assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
         assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
         assert_eq!(
@@ -443,7 +477,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v6/gc-v8/shadow-stack-v1/typed-gc-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v7/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 
@@ -485,9 +519,14 @@ mod tests {
         assert_eq!(GC_MAX_ROOT_BITMAP_WORDS, 1_048_576);
         assert_eq!(GC_MAX_ROOT_DEPTH, 65_536);
         assert_eq!(GC_MAX_OBJECT_POINTERS, 4_096);
+        assert_eq!(GC_MAX_REPEATED_POINTER_CELLS, 16_777_216);
         assert_eq!(GC_MAX_OBJECT_BYTES, 1 << 30);
         assert_eq!(GC_MAX_OBJECT_ALIGNMENT, 4_096);
         assert_eq!(TYPED_GC_ALLOC_SYMBOL, "loom_gc_typed_alloc_v1");
+        assert_eq!(
+            TYPED_GC_REPEATED_ALLOC_SYMBOL,
+            "loom_gc_typed_repeated_alloc_v1"
+        );
         assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
         assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
     }
@@ -552,6 +591,33 @@ mod tests {
         assert_eq!(offset_of!(LoomGcObjectDescriptor, object_align), 16);
         assert_eq!(offset_of!(LoomGcObjectDescriptor, pointer_count), 24);
         assert_eq!(offset_of!(LoomGcObjectDescriptor, pointer_offsets), 32);
+
+        assert_eq!(size_of::<LoomGcRepeatedObjectDescriptor>(), 64);
+        assert_eq!(align_of::<LoomGcRepeatedObjectDescriptor>(), 8);
+        assert_eq!(offset_of!(LoomGcRepeatedObjectDescriptor, abi_version), 0);
+        assert_eq!(offset_of!(LoomGcRepeatedObjectDescriptor, flags), 4);
+        assert_eq!(offset_of!(LoomGcRepeatedObjectDescriptor, fixed_size), 8);
+        assert_eq!(offset_of!(LoomGcRepeatedObjectDescriptor, object_align), 16);
+        assert_eq!(
+            offset_of!(LoomGcRepeatedObjectDescriptor, fixed_pointer_count),
+            24
+        );
+        assert_eq!(
+            offset_of!(LoomGcRepeatedObjectDescriptor, fixed_pointer_offsets),
+            32
+        );
+        assert_eq!(
+            offset_of!(LoomGcRepeatedObjectDescriptor, element_stride),
+            40
+        );
+        assert_eq!(
+            offset_of!(LoomGcRepeatedObjectDescriptor, element_pointer_count),
+            48
+        );
+        assert_eq!(
+            offset_of!(LoomGcRepeatedObjectDescriptor, element_pointer_offsets),
+            56
+        );
 
         assert_eq!(size_of::<LoomWitnessDescriptor>(), 24);
         assert_eq!(align_of::<LoomWitnessDescriptor>(), 8);

@@ -25,6 +25,12 @@ artifact, or runtime compatibility.
 - A side-by-side typed moving-heap ABI with exact fixed-pointer descriptors,
   an independent direct-pointer shadow stack, strict shared root limits, and
   forced-relocation evidence without constructing an executor.
+- A versioned `typed-repeated-v1` allocator for tagless monomorphized
+  containers. The collector copies bounded header and per-element pointer
+  maps, owns capacity outside object bytes, and precisely rewrites repeated
+  managed cells. This advances the collector identity to `gc-v9` and native
+  runtime ABI to component 13 with `runtime-v7` while retaining the fixed
+  `typed-gc-v1` wire.
 
 ### Changed
 

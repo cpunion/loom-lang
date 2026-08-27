@@ -336,6 +336,12 @@ It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
 cleanup node, and the helper neither constructs a universal value nor enters
 the executor. Static-concept and deferred cleanup require no new runtime ABI.
 
+The runtime subsequently adds a bounded repeated-element descriptor without
+changing LCIR structure. This additive `typed-repeated-v1` symbol advances the
+native component to 13 with `runtime-v7` and the collector identity to
+`gc-v9`. List lowering may consume it directly; fixed typed objects retain the
+existing v1 allocator wire.
+
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
 one artifact.

@@ -153,6 +153,13 @@ selected leaf that consumes the complete root local. It deliberately does not
 introduce partially initialized aggregates or a wire-compatible interpretation
 for version `19` artifacts.
 
+Typed repeated-element allocation adds `typed-repeated-v1`. Its descriptor
+copies exact fixed-header and per-element pointer offsets and derives storage
+from an allocator-supplied capacity; no mutable object field controls GC
+tracing. This changes the collector identity to `gc-v9` and advances the native
+runtime ABI component to 13 with `runtime-v7`. The fixed-offset
+`typed-gc-v1` symbols remain unchanged.
+
 ## Reproducibility and rollback
 
 Commit `loom.lock` for reproducible applications. Build with `--locked` and the

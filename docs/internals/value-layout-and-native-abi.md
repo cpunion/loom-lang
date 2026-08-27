@@ -193,9 +193,14 @@ pointers, and unregistered finite-lifetime pointers are not legal typed cell
 contents. The typed allocator's output cell likewise has a stable non-heap
 address throughout its call and any collection that call triggers.
 
-The first runtime slice deliberately implements only fixed pointer offsets. A
-future repeated-element container shape must version and bound its descriptor
-instead of smuggling an imprecise scan or universal tag into this ABI.
+`LoomGcRepeatedObjectDescriptor` extends this model for monomorphized
+containers. It describes a fixed header and one repeated element region with a
+constant stride and exact managed-pointer offsets. Capacity is an allocator
+argument copied into private GC metadata; tracing never trusts an object
+header. The allocator scans zeroed unused capacity as null cells, keeping the
+representation precise and tagless. This additive boundary is
+`typed-repeated-v1`; it advances the collector identity to `gc-v9` and the
+native runtime component to 13 with `runtime-v7`.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof

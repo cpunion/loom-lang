@@ -43,7 +43,8 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         NATIVE_RUNTIME_ABI,
         loom_runtime_abi::NATIVE_RUNTIME_ABI_IDENTITY
     );
-    assert!(NATIVE_RUNTIME_ABI.contains("/gc-v8/"));
+    assert!(NATIVE_RUNTIME_ABI.contains("/gc-v9/"));
+    assert!(NATIVE_RUNTIME_ABI.contains("/typed-repeated-v1/"));
     assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v4"));
     assert!(runtime_bundle_identity().starts_with("runtime-bundle-v2;"));
     let project = tempfile::tempdir().expect("create standard-library project");

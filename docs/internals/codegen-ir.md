@@ -262,6 +262,10 @@ dump to `lcir 13`, the LCIR native-object domain to
 `typed-resource-v1` boundary and advances the native runtime ABI component to
 12 with `runtime-v6`; deferred blocks and statically selected concept disposal
 need no runtime cleanup representation.
+The additive repeated-element allocator then advances only the runtime
+boundary: native component 13, `runtime-v7`, `gc-v9`, and
+`typed-repeated-v1`. Fixed-offset typed allocations remain `typed-gc-v1`; LCIR
+does not use the repeated symbol until monomorphized List lowering lands.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
