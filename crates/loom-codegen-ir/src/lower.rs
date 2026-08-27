@@ -787,6 +787,28 @@ struct Classifier<'program> {
     places: PlaceBudget,
 }
 
+#[derive(Clone, Copy)]
+struct PlaceSite {
+    expression: Option<ExprId>,
+    span: Span,
+}
+
+impl PlaceSite {
+    const fn statement(span: Span) -> Self {
+        Self {
+            expression: None,
+            span,
+        }
+    }
+
+    const fn expression(expression: &mir::Expr) -> Self {
+        Self {
+            expression: Some(expression.id),
+            span: expression.span,
+        }
+    }
+}
+
 impl<'program> Classifier<'program> {
     fn new(program: &'program mir::Program) -> Self {
         Self {
@@ -999,19 +1021,19 @@ impl<'program> Classifier<'program> {
         &mut self,
         function: &mir::Function,
         key: &InstanceKey,
-        expression: Option<&mir::Expr>,
         place: &mir::Place,
         usage: PlaceUse,
-        span: Span,
+        site: PlaceSite,
         path: &str,
     ) -> Option<Type> {
-        let projected = self.supported_projected_place(function, key, place, usage, span, path);
+        let projected =
+            self.supported_projected_place(function, key, place, usage, site.span, path);
         if projected.is_none() {
             self.item(
                 UnsupportedFeature::ProjectedPlace,
                 function.id,
-                expression.map(|value| value.id),
-                span,
+                site.expression,
+                site.span,
                 path.to_owned(),
             );
         }
@@ -1072,10 +1094,9 @@ impl<'program> Classifier<'program> {
                 self.projected_place(
                     function,
                     key,
-                    None,
                     place,
                     PlaceUse::Write,
-                    statement.span,
+                    PlaceSite::statement(statement.span),
                     &format!("{path}.place"),
                 );
                 true
@@ -1152,10 +1173,9 @@ impl<'program> Classifier<'program> {
                 self.projected_place(
                     function,
                     key,
-                    Some(expression),
                     place,
                     usage,
-                    expression.span,
+                    PlaceSite::expression(expression),
                     &format!("{path}.place"),
                 );
                 true
@@ -1533,10 +1553,9 @@ impl<'program> Classifier<'program> {
                             let place_type = self.projected_place(
                                 function,
                                 key,
-                                Some(expression),
                                 place,
                                 PlaceUse::InOut,
-                                expression.span,
+                                PlaceSite::expression(expression),
                                 &format!("{path}.arguments[{index}].place"),
                             );
                             let allowed = index == 0
@@ -1578,10 +1597,9 @@ impl<'program> Classifier<'program> {
                 self.projected_place(
                     function,
                     key,
-                    Some(expression),
                     owner,
                     PlaceUse::Read,
-                    expression.span,
+                    PlaceSite::expression(expression),
                     &format!("{path}.owner"),
                 );
                 true
