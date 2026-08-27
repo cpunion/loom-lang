@@ -702,6 +702,14 @@ pub enum FaultCode {
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
+    ResourceClose,
+}
+
+/// Statically known external-resource class for typed lexical disposal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceKind {
+    File,
+    Socket,
 }
 
 /// Per-field UTF-8 byte budget for compiler-private contract-fault text.
@@ -953,6 +961,15 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         unwind: UnwindTarget,
     },
+    /// Closes one compiler-known File or Socket handle without a universal
+    /// value envelope. The operation functionally writes the closed resource
+    /// back on both edges so lexical disposal preserves exact inout state.
+    ResourceClose {
+        kind: ResourceKind,
+        resource: ValueId,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
     /// Continues through `success` when true or activates the checked contract
     /// fault metadata and enters `fault` when false.
     Assert {
@@ -1041,6 +1058,19 @@ impl TerminatorKind {
                 operands.extend_from_slice(&unwind.arguments);
                 operands
             }
+            Self::ResourceClose {
+                resource,
+                normal,
+                fault,
+                ..
+            } => {
+                let mut operands =
+                    Vec::with_capacity(1 + normal.arguments.len() + fault.arguments.len());
+                operands.push(*resource);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
             Self::Assert {
                 condition,
                 success,
@@ -1078,7 +1108,8 @@ impl TerminatorKind {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
             Self::CheckedIntNegate { normal, fault, .. }
-            | Self::CheckedIntBinary { normal, fault, .. } => {
+            | Self::CheckedIntBinary { normal, fault, .. }
+            | Self::ResourceClose { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]
             }
             Self::Invoke { normal, unwind, .. } => {

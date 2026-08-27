@@ -28,6 +28,17 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now expands source assertions, `defer`, and `scoped` disposal into
+  direct lexical control flow. Cleanup registers only after its statement or
+  scoped initializer succeeds, runs in strict LIFO order on normal block exit,
+  return, and fault, preserves the first fault while suppressing later cleanup
+  faults, and treats each branch body as an independent scope. Static-concept
+  disposal is a monomorphic typed call with functional writeback; File and
+  Socket disposal uses a new `typed-resource-v1` close ABI without a universal
+  value, runtime cleanup stack, or synchronous executor. This advances the
+  LCIR dump to 13, artifact identity to schema 14, native-object domain to v10,
+  CLI object cache to v15, and native runtime ABI to component 12 with
+  `runtime-v6`.
 - Checked MIR now treats exhaustive pattern matching as an affine
   decomposition boundary for resource-bearing carriers. This restores
   `scoped resource = fallible_task.await?` and explicit `Result[File, E]` or
@@ -103,8 +114,8 @@ artifact, or runtime compatibility.
   canonical messages, and concrete contract/blame spans through validation,
   dumps, identity, and LLVM machine diagnostics. This advances the LCIR dump
   to 9, artifact identity to schema 10, native-object domain to v6, and CLI
-  object cache to v11. Source contracts and assertions still select atomic
-  fallback until their control-flow and cleanup lowering is complete.
+  object cache to v11. At that stage, source contracts and assertions still
+  selected atomic fallback pending their control-flow and cleanup lowering.
 - Bounded concrete static concept calls now resolve to ordinary direct LCIR
   calls. Conformance head arguments, conditional prerequisite proofs, and
   method proofs remain part of exact instance identity, while associated-type
@@ -126,9 +137,8 @@ artifact, or runtime compatibility.
   closed. `Text.get`, Text inside enums or transparent/refined carriers, and
   managed lists remain atomic fallback. This advances the LCIR dump to 12,
   artifact identity to schema 13, native-object domain to v9, and CLI object
-  cache to v14. Product leaf rooting reuses typed-shadow-stack v1 and does not
-  change the current native runtime ABI component 11 or its `runtime-v5`
-  identity.
+  cache to v14. Product leaf rooting reuses typed-shadow-stack v1 and did not
+  change native runtime ABI component 11 or its `runtime-v5` identity.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

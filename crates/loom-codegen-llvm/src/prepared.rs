@@ -23,7 +23,7 @@ use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
 use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v9";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v10";
 
 /// Policy controlling the whole-artifact native route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -528,7 +528,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v9"
+            "loom-lcir-native-object-v10"
         );
     }
 }

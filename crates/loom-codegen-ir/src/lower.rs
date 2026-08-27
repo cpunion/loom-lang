@@ -20,12 +20,15 @@ use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::text_plan::TextLiteralBudget;
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
-    CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
-    FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstructionKind, IntPredicate, Origin,
-    ProgramBuilder, ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator,
-    TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
-    analyze_source_reachability,
+    CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultMetadata, Effects, FloatBinaryOp,
+    FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstructionKind,
+    IntPredicate, Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature, SourceRoots,
+    SumCase, TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId,
+    ValueTypeId, analyze_source_reachability,
 };
+
+const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
+const DIRECT_CLEANUP_MAX_EXPANSIONS: usize = 65_536;
 
 /// Source-level roots selected for one attempted LCIR artifact.
 ///
@@ -234,8 +237,6 @@ pub enum UnsupportedFeature {
     SignatureType,
     ExpressionType,
     ProjectedPlace,
-    AssertionCleanup,
-    DeferredCleanup,
     ListValue,
     PatternMatch,
     NominalValue,
@@ -268,8 +269,6 @@ impl UnsupportedFeature {
             Self::SignatureType => "SignatureType",
             Self::ExpressionType => "ExpressionType",
             Self::ProjectedPlace => "ProjectedPlace",
-            Self::AssertionCleanup => "AssertionCleanup",
-            Self::DeferredCleanup => "DeferredCleanup",
             Self::ListValue => "ListValue",
             Self::PatternMatch => "PatternMatch",
             Self::NominalValue => "NominalValue",
@@ -1107,21 +1106,10 @@ impl<'program> Classifier<'program> {
         path: &str,
     ) -> bool {
         match &statement.kind {
-            StatementKind::Let { value, .. } | StatementKind::LetTuple { value, .. } => {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Scoped { value, .. } => {
                 self.visit_expr(function, key, value, &format!("{path}.value"))
-            }
-            StatementKind::Scoped { value, .. } => {
-                if !self.visit_expr(function, key, value, &format!("{path}.value")) {
-                    return false;
-                }
-                self.item(
-                    UnsupportedFeature::DeferredCleanup,
-                    function.id,
-                    None,
-                    statement.span,
-                    path.to_owned(),
-                );
-                true
             }
             StatementKind::ForRange {
                 start, end, body, ..
@@ -1153,29 +1141,12 @@ impl<'program> Classifier<'program> {
                 true
             }
             StatementKind::Assert { condition } => {
-                if !self.visit_expr(function, key, condition, &format!("{path}.condition")) {
-                    return false;
-                }
-                self.item(
-                    UnsupportedFeature::AssertionCleanup,
-                    function.id,
-                    Some(condition.id),
-                    statement.span,
-                    path.to_owned(),
-                );
-                true
+                self.visit_expr(function, key, condition, &format!("{path}.condition"))
             }
             StatementKind::Evaluate(expression) => {
                 self.visit_expr(function, key, expression, &format!("{path}.value"))
             }
             StatementKind::Defer(cleanup) => {
-                self.item(
-                    UnsupportedFeature::DeferredCleanup,
-                    function.id,
-                    None,
-                    statement.span,
-                    path.to_owned(),
-                );
                 self.visit_block(function, key, cleanup, &format!("{path}.cleanup"));
                 true
             }
@@ -1867,10 +1838,17 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
         | StatementKind::LetTuple { value, .. }
         | StatementKind::Assign { value, .. }
         | StatementKind::Evaluate(value) => scan_effect_expr(value, summary),
-        StatementKind::Scoped { value, .. } => {
+        StatementKind::Scoped {
+            value, disposal, ..
+        } => {
             let continues = scan_effect_expr(value, summary);
-            if continues {
-                summary.include(Effects::MAY_FAULT);
+            if continues
+                && matches!(
+                    disposal,
+                    mir::ScopedDisposal::FileClose | mir::ScopedDisposal::SocketClose
+                )
+            {
+                summary.include(Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME));
             }
             continues
         }
@@ -2495,6 +2473,16 @@ enum StatementFlow {
     Terminated,
 }
 
+#[derive(Clone)]
+enum CleanupAction {
+    Deferred(mir::Block),
+    Scoped {
+        local: LocalId,
+        disposal: mir::ScopedDisposal,
+        span: Span,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum ProductConstruction {
     Plain,
@@ -2525,6 +2513,8 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
     fault_block: Option<BlockId>,
+    cleanups: Vec<CleanupAction>,
+    cleanup_expansions: usize,
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
@@ -2564,6 +2554,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             inout_locals,
             environments: EnvironmentArena::new(),
             fault_block: None,
+            cleanups: Vec::new(),
+            cleanup_expansions: 0,
         }
     }
 
@@ -2966,6 +2958,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     }
 
     fn fault_target(&mut self, flow: Flow) -> Result<UnwindTarget, LoweringError> {
+        if !self.cleanups.is_empty() {
+            let block = self.create_block()?;
+            let cleanup_flow = self.lower_cleanup_suffix(
+                Flow {
+                    block,
+                    env: flow.env,
+                },
+                0,
+            )?;
+            self.terminate_exit(
+                cleanup_flow,
+                TerminatorKind::ResumeFault,
+                Origin {
+                    source_function: self.source.id,
+                    expression: None,
+                    span: self.source.span,
+                },
+            )?;
+            return Ok(UnwindTarget::new(block, []));
+        }
         let arguments = self.current_writebacks(flow.env)?;
         Ok(UnwindTarget::new(self.fault_block()?, arguments))
     }
@@ -3026,10 +3038,336 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         flow: Flow,
         block: &mir::Block,
     ) -> Result<EvalFlow, LoweringError> {
-        // MIR LocalId values are function-scoped. The checked MIR dataflow is
-        // the authority for whether a local is available after a nested block;
-        // source lexical scopes are no longer present at this layer.
-        self.lower_block(flow, block)
+        let cleanup_base = self.cleanups.len();
+        let lowered = self.lower_block(flow, block)?;
+        let lowered = match lowered {
+            EvalFlow::Continue { flow, value } => EvalFlow::Continue {
+                flow: self.lower_cleanup_suffix(flow, cleanup_base)?,
+                value,
+            },
+            EvalFlow::Terminated => EvalFlow::Terminated,
+        };
+        self.cleanups.truncate(cleanup_base);
+        Ok(lowered)
+    }
+
+    fn lower_cleanup_suffix(&mut self, mut flow: Flow, base: usize) -> Result<Flow, LoweringError> {
+        if base > self.cleanups.len() {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "cleanup suffix starts beyond the active lexical cleanup stack",
+            ));
+        }
+        let saved = self.cleanups.clone();
+        let lowered = (|| {
+            for index in (base..saved.len()).rev() {
+                self.consume_cleanup_expansion()?;
+                self.cleanups.clear();
+                self.cleanups.extend_from_slice(&saved[..index]);
+                flow = self.lower_cleanup_action(flow, saved[index].clone())?;
+            }
+            Ok(flow)
+        })();
+        self.cleanups = saved;
+        lowered
+    }
+
+    fn register_cleanup(&mut self, cleanup: CleanupAction) -> Result<(), LoweringError> {
+        if self.cleanups.len() >= DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS {
+            return Err(LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: format!(
+                    "LCIR function #{} exceeds the {DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS}-action direct lexical cleanup depth",
+                    self.source.id.0
+                ),
+            });
+        }
+        self.cleanups.push(cleanup);
+        Ok(())
+    }
+
+    fn consume_cleanup_expansion(&mut self) -> Result<(), LoweringError> {
+        self.cleanup_expansions =
+            self.cleanup_expansions
+                .checked_add(1)
+                .ok_or_else(|| LoweringError::ResourceLimit {
+                    code: ResourceLimitCode::ProgramTooLarge,
+                    message: format!(
+                        "LCIR function #{} direct lexical cleanup expansion overflowed",
+                        self.source.id.0
+                    ),
+                })?;
+        if self.cleanup_expansions > DIRECT_CLEANUP_MAX_EXPANSIONS {
+            return Err(LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: format!(
+                    "LCIR function #{} exceeds the {DIRECT_CLEANUP_MAX_EXPANSIONS}-action direct lexical cleanup expansion budget",
+                    self.source.id.0
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn lower_cleanup_action(
+        &mut self,
+        flow: Flow,
+        cleanup: CleanupAction,
+    ) -> Result<Flow, LoweringError> {
+        match cleanup {
+            CleanupAction::Deferred(block) => match self.lower_scoped_block(flow, &block)? {
+                EvalFlow::Continue { flow, .. } => Ok(flow),
+                EvalFlow::Terminated => Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "checked defer cleanup terminated its enclosing function",
+                )),
+            },
+            CleanupAction::Scoped {
+                local,
+                disposal,
+                span,
+            } => self.lower_scoped_disposal(flow, local, &disposal, span),
+        }
+    }
+
+    fn lower_scoped_disposal(
+        &mut self,
+        flow: Flow,
+        local: LocalId,
+        disposal: &mir::ScopedDisposal,
+        span: Span,
+    ) -> Result<Flow, LoweringError> {
+        match disposal {
+            mir::ScopedDisposal::StaticConcept {
+                requirement,
+                witness,
+                dispatch_type,
+            } => self.lower_static_scoped_disposal(
+                flow,
+                local,
+                *requirement,
+                witness,
+                dispatch_type,
+                span,
+            ),
+            mir::ScopedDisposal::FileClose => {
+                self.lower_builtin_scoped_disposal(flow, local, ResourceKind::File, span)
+            }
+            mir::ScopedDisposal::SocketClose => {
+                self.lower_builtin_scoped_disposal(flow, local, ResourceKind::Socket, span)
+            }
+        }
+    }
+
+    fn lower_builtin_scoped_disposal(
+        &mut self,
+        mut flow: Flow,
+        local: LocalId,
+        kind: ResourceKind,
+        span: Span,
+    ) -> Result<Flow, LoweringError> {
+        let origin = Origin {
+            source_function: self.source.id,
+            expression: None,
+            span,
+        };
+        let place = self.place_plan(&mir::Place::local(local))?;
+        let EvalFlow::Continue {
+            flow: next_flow,
+            value: resource,
+        } = self.read_place(flow, &place, origin)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "built-in scoped resource read unexpectedly terminated",
+            ));
+        };
+        flow = next_flow;
+        let resource_type = place.leaf_type();
+        let unit_type = self.type_id(&Type::Unit)?;
+
+        let normal = self.create_block()?;
+        let _unit = self
+            .builder
+            .append_block_parameter(normal, unit_type)
+            .map_err(LoweringError::from)?;
+        let normal_resource = self
+            .builder
+            .append_block_parameter(normal, resource_type)
+            .map_err(LoweringError::from)?;
+        let normal_flow = self.write_place(
+            Flow {
+                block: normal,
+                env: flow.env,
+            },
+            &place,
+            normal_resource,
+            origin,
+        )?;
+
+        let fault = self.create_block()?;
+        let fault_resource = self
+            .builder
+            .append_block_parameter(fault, resource_type)
+            .map_err(LoweringError::from)?;
+        let fault_flow = self.write_place(
+            Flow {
+                block: fault,
+                env: flow.env,
+            },
+            &place,
+            fault_resource,
+            origin,
+        )?;
+        let propagation = self.fault_target(fault_flow)?;
+        self.terminate(
+            fault_flow.block,
+            TerminatorKind::Jump(BlockTarget::new(propagation.block, propagation.arguments)),
+            origin,
+        )?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::ResourceClose {
+                kind,
+                resource,
+                normal: ResultTarget::new(normal, []),
+                fault: UnwindTarget::new(fault, []),
+            },
+            origin,
+        )?;
+        Ok(normal_flow)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the statically selected disposal keeps its exact normal and unwind writeback edges together"
+    )]
+    fn lower_static_scoped_disposal(
+        &mut self,
+        mut flow: Flow,
+        local: LocalId,
+        requirement: mir::RequirementId,
+        witness: &mir::WitnessRef,
+        dispatch_type: &Type,
+        span: Span,
+    ) -> Result<Flow, LoweringError> {
+        let key = InstanceSubstitution::new(self.program, self.key)
+            .static_call_key(requirement, witness, dispatch_type, &[], &[])
+            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        let callee_source = self.program.function(key.source()).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "statically selected Dispose implementation disappeared",
+            )
+        })?;
+        if callee_source.receiver != Some(mir::Receiver::Mutable)
+            || callee_source.params.len() != 1
+            || !callee_source.params[0].mutable
+            || callee_source.return_ty != Type::Unit
+        {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "statically selected Dispose implementation lost its canonical mut self signature",
+            ));
+        }
+        let instance = self.instances.get(&key).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "statically selected Dispose implementation has no LCIR instance",
+            )
+        })?;
+        let origin = Origin {
+            source_function: self.source.id,
+            expression: None,
+            span,
+        };
+        let place = self.place_plan(&mir::Place::local(local))?;
+        let EvalFlow::Continue {
+            flow: next_flow,
+            value: receiver,
+        } = self.read_place(flow, &place, origin)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "scoped disposal receiver read unexpectedly terminated",
+            ));
+        };
+        flow = next_flow;
+        let unit = self.type_id(&Type::Unit)?;
+        let receiver_type = place.leaf_type();
+        let effect = effect_for(self.effects, instance)?;
+        if !effect.contains(Effects::MAY_FAULT) {
+            let results = self
+                .builder
+                .append_instruction(
+                    flow.block,
+                    InstructionKind::DirectCall {
+                        callee: instance,
+                        arguments: Box::new([receiver]),
+                    },
+                    &[unit, receiver_type],
+                    origin,
+                )
+                .map_err(LoweringError::from)?;
+            let writeback = results.get(1).copied().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "infallible scoped disposal produced no receiver writeback",
+                )
+            })?;
+            return self.write_place(flow, &place, writeback, origin);
+        }
+
+        let normal = self.create_block()?;
+        let _result = self
+            .builder
+            .append_block_parameter(normal, unit)
+            .map_err(LoweringError::from)?;
+        let normal_writeback = self
+            .builder
+            .append_block_parameter(normal, receiver_type)
+            .map_err(LoweringError::from)?;
+        let normal_flow = self.write_place(
+            Flow {
+                block: normal,
+                env: flow.env,
+            },
+            &place,
+            normal_writeback,
+            origin,
+        )?;
+
+        let unwind = self.create_block()?;
+        let unwind_writeback = self
+            .builder
+            .append_block_parameter(unwind, receiver_type)
+            .map_err(LoweringError::from)?;
+        let unwind_flow = self.write_place(
+            Flow {
+                block: unwind,
+                env: flow.env,
+            },
+            &place,
+            unwind_writeback,
+            origin,
+        )?;
+        let propagation = self.fault_target(unwind_flow)?;
+        self.terminate(
+            unwind_flow.block,
+            TerminatorKind::Jump(BlockTarget::new(propagation.block, propagation.arguments)),
+            origin,
+        )?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::Invoke {
+                callee: instance,
+                arguments: Box::new([receiver]),
+                normal: ResultTarget::new(normal, []),
+                unwind: UnwindTarget::new(unwind, []),
+            },
+            origin,
+        )?;
+        Ok(normal_flow)
     }
 
     fn lower_block(
@@ -3064,8 +3402,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
-            StatementKind::Scoped { value, .. } => match self.lower_expr(flow, value)? {
-                EvalFlow::Continue { .. } => Err(self.unsupported_reached("scoped cleanup")),
+            StatementKind::Scoped {
+                local,
+                value,
+                disposal,
+            } => match self.lower_expr(flow, value)? {
+                EvalFlow::Continue { mut flow, value } => {
+                    flow.env = self.environments.set(flow.env, *local, value)?;
+                    self.register_cleanup(CleanupAction::Scoped {
+                        local: *local,
+                        disposal: disposal.clone(),
+                        span: statement.span,
+                    })?;
+                    Ok(StatementFlow::Continue(flow))
+                }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
             StatementKind::ForRange {
@@ -3144,7 +3494,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
             StatementKind::Assert { condition } => match self.lower_expr(flow, condition)? {
-                EvalFlow::Continue { .. } => Err(self.unsupported_reached("assertion cleanup")),
+                EvalFlow::Continue {
+                    flow,
+                    value: condition,
+                } => {
+                    let success = self.create_block()?;
+                    let fault = self.fault_target(flow)?;
+                    self.terminate(
+                        flow.block,
+                        TerminatorKind::Assert {
+                            condition,
+                            metadata: ContractFaultMetadata::assertion(statement.span),
+                            success: BlockTarget::new(success, []),
+                            fault,
+                        },
+                        self.statement_origin(statement),
+                    )?;
+                    Ok(StatementFlow::Continue(Flow {
+                        block: success,
+                        env: flow.env,
+                    }))
+                }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
             StatementKind::Evaluate(expression) => match self.lower_expr(flow, expression)? {
@@ -3160,13 +3530,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 };
                 match lowered {
                     EvalFlow::Continue { flow, value } => {
+                        let flow = self.lower_cleanup_suffix(flow, 0)?;
                         self.terminate_exit(flow, TerminatorKind::Return(value), origin)?;
                         Ok(StatementFlow::Terminated)
                     }
                     EvalFlow::Terminated => Ok(StatementFlow::Terminated),
                 }
             }
-            StatementKind::Defer(_) => Err(self.unsupported_reached("deferred cleanup")),
+            StatementKind::Defer(cleanup) => {
+                self.register_cleanup(CleanupAction::Deferred(cleanup.clone()))?;
+                Ok(StatementFlow::Continue(flow))
+            }
         }
     }
 

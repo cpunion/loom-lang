@@ -390,7 +390,8 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
         } => vec![then_target.block, else_target.block],
         TerminatorKind::SumSwitch { cases, .. } => cases.iter().map(|case| case.block).collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
-        | TerminatorKind::CheckedIntBinary { normal, fault, .. } => {
+        | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+        | TerminatorKind::ResourceClose { normal, fault, .. } => {
             vec![normal.block, fault.block]
         }
         TerminatorKind::Invoke { normal, unwind, .. } => vec![normal.block, unwind.block],
@@ -432,6 +433,7 @@ fn add_terminator_local_uses(
         } => vec![*scrutinee],
         TerminatorKind::CheckedIntBinary { left, right, .. } => vec![*left, *right],
         TerminatorKind::Invoke { arguments, .. } => arguments.to_vec(),
+        TerminatorKind::ResourceClose { resource, .. } => vec![*resource],
     };
     add_managed(live, values, managed);
     add_managed(live, terminator.writebacks().iter().copied(), managed);
@@ -460,7 +462,8 @@ fn edge_live_values(
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
-        | TerminatorKind::CheckedIntBinary { normal, fault, .. } => vec![
+        | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+        | TerminatorKind::ResourceClose { normal, fault, .. } => vec![
             (normal.block, normal.arguments.as_ref()),
             (fault.block, fault.arguments.as_ref()),
         ],

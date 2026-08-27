@@ -1,5 +1,6 @@
 #![allow(clippy::default_trait_access)]
 
+use std::collections::BTreeMap;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
@@ -10,12 +11,16 @@ use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
     OptimizationProfile, emit_lcir_native_object, prepare_native_object,
 };
-use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_core::{
+    Span,
+    runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE},
+};
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
-    CheckedProgram, Constant as MirConstant, ContractExprKind, ExprKind, Function, Pattern,
-    StatementKind, UnaryOp,
+    Block, CallPlan, CheckedProgram, Constant as MirConstant, ConstructionMode, ContractExprKind,
+    Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, Pattern, PreludeIds,
+    Program, ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
 };
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
@@ -500,6 +505,103 @@ pub fn main() Unit {
     CheckedProgram::new(program).expect("manually edited IEEE-pattern MIR must validate")
 }
 
+fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
+    let span = Span::default();
+    let file_id = TypeId(9);
+    let file = Type::Nominal(file_id, Vec::new());
+    let mut types = (0_u32..9)
+        .map(|id| TypeDef {
+            id: TypeId(id),
+            name: format!("Placeholder{id}"),
+            span,
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: Vec::new(),
+                invariant: None,
+            },
+        })
+        .collect::<Vec<_>>();
+    types.push(TypeDef {
+        id: file_id,
+        name: "File".into(),
+        span,
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "raw".into(),
+                ty: Type::Int,
+                span,
+            }],
+            invariant: None,
+        },
+    });
+    let mut program = Program {
+        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
+        types,
+        functions: vec![Function {
+            id: FunctionId(0),
+            name: "manual.main".into(),
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: Vec::new(),
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: vec![LocalDecl {
+                id: LocalId(0),
+                name: "file".into(),
+                ty: file.clone(),
+                mutable: true,
+                span,
+            }],
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Scoped {
+                        local: LocalId(0),
+                        value: Expr::new(
+                            ExprKind::Record {
+                                ty: file_id,
+                                type_arguments: Vec::new(),
+                                fields: vec![Expr::new(
+                                    ExprKind::Constant(MirConstant::Int(-1)),
+                                    Type::Int,
+                                    span,
+                                )],
+                                construction: ConstructionMode::Plain,
+                            },
+                            file,
+                            span,
+                        ),
+                        disposal: ScopedDisposal::FileClose,
+                    },
+                    span,
+                }],
+                tail: Some(Box::new(Expr::new(
+                    ExprKind::Constant(MirConstant::Unit),
+                    Type::Unit,
+                    span,
+                ))),
+                span,
+            },
+            call_plan: CallPlan::default(),
+        }],
+        prelude: PreludeIds {
+            file: Some(file_id),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    program
+        .renumber_expr_ids()
+        .expect("number resource fixture");
+    program
+        .into_checked()
+        .expect("canonical built-in cleanup fixture must validate")
+}
+
 fn assert_no_legacy_surface(ir: &str) {
     for forbidden in [
         "loom.Value",
@@ -968,11 +1070,20 @@ fn retainInout(input Bundle) Bundle {{
     retained
 }}
 
+fn retainAcrossCleanup(input Bundle) Bundle {{
+    defer {{
+        let pressure = collectPressure()
+        discard pressure.length()
+        Unit
+    }}
+    input
+}}
+
 fn verify() Result[Unit, Problem] {{
     let kept = join("K", "eep")
     let input = retainDefinition(kept)
     let throughParameter = retainParameter(input)
-    let retained = retainInout(retain(throughParameter, true))
+    let retained = retainAcrossCleanup(retainInout(retain(throughParameter, true)))
     let tailText, number = retained.tail
     if retained.pair.left == "Keep" && retained.pair.right == "Keep" && tailText == "Keep" && retained.enabled && pointerFree((number, true)) == 42 {{
         Ok(Unit)
@@ -1083,6 +1194,31 @@ test fn managedProducts() Result[Unit, Problem] {{ verify() }}
             "inout product omitted `{required}`:\n{refresh}"
         );
     }
+    let retain_across_cleanup =
+        emitted_lcir_function(&native.ir, &tests_artifact, "retainAcrossCleanup");
+    for required in [
+        ".p0.0",
+        ".p0.1",
+        ".p1.0",
+        "managed.root.reload",
+        "managed.root.rebuild",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            retain_across_cleanup.contains(required),
+            "cleanup-crossing return product omitted `{required}`:\n{retain_across_cleanup}"
+        );
+    }
+    assert!(
+        retain_across_cleanup.contains("call ptr @loom.lcir.fn."),
+        "deferred collecting call is missing:\n{retain_across_cleanup}"
+    );
+    assert!(
+        retain_across_cleanup.contains("managed.root.rebuild")
+            && retain_across_cleanup.contains("ret"),
+        "the return product must be rebuilt after deferred forced collection:\n{retain_across_cleanup}"
+    );
     assert!(dump.contains("inout=[0]"), "{dump}");
     let pointer_free = emitted_lcir_function(&native.ir, &tests_artifact, "pointerFree");
     for forbidden in [
@@ -1511,16 +1647,52 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
 }
 
 #[test]
-fn legacy_sync_cleanup_fault_preserves_the_interpreter_primary_fault() {
-    let source = r#"module legacy_cleanup_primary
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps all lexical cleanup exit shapes and exact fault metadata together"
+)]
+fn typed_lexical_cleanup_matches_interpreter_and_legacy_on_every_exit_shape() {
+    let source = r"module typed_lexical_cleanup
 
-import standard.log.debug
+fn requireEqual(actual Int, expected Int) Unit {
+    assert actual == expected
+    Unit
+}
 
-pub fn main() Unit {
-    defer {
-        debug("older-cleanup-ran")
+pub fn normalMain() Unit {
+    var order = 0
+    {
+        defer {
+            order = order * 10 + 1
+        }
+        defer {
+            order = order * 10 + 2
+        }
         Unit
     }
+    requireEqual(order, 21)
+    if true {
+        defer {
+            order = 34
+        }
+        Unit
+    } else {
+        order = 99
+        Unit
+    }
+    requireEqual(order, 34)
+    Unit
+}
+
+pub fn earlyReturnMain() Unit {
+    defer {
+        assert false
+        Unit
+    }
+    return
+}
+
+pub fn bodyFaultMain() Unit {
     defer {
         assert false
         Unit
@@ -1529,27 +1701,238 @@ pub fn main() Unit {
     discard primary
     Unit
 }
-"#;
-    let program = compile_source(source);
-    let failure = interpret_run(&program, "main").expect_err("interpreter primary fault");
-    assert!(
-        matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerDivisionByZero"),
-        "{failure:?}"
-    );
 
-    let legacy =
-        emit_and_run_legacy_machine_fault_with_ir(&program, "main", "legacy-cleanup-primary");
-    assert!(!legacy.output.status.success(), "{:?}", legacy.output);
-    assert!(
-        legacy.ir.contains("define internal i32 @loom.fn."),
-        "the differential must exercise the legacy universal-value emitter:\n{}",
-        legacy.ir
+pub fn cleanupFaultMain() Unit {
+    defer {
+        let secondary = 1 / 0
+        discard secondary
+        Unit
+    }
+    defer {
+        assert false
+        Unit
+    }
+    Unit
+}
+";
+    let program = compile_source(source);
+    {
+        let entry = "normalMain";
+        assert_eq!(interpret_run(&program, entry), Ok(Value::Unit));
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-cleanup-{entry}"));
+        let legacy =
+            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-cleanup-{entry}"));
+        assert!(lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(legacy.status.success(), "{entry}: {legacy:?}");
+        assert_eq!(lcir.output.stdout, legacy.stdout, "{entry}");
+        assert_eq!(lcir.output.stderr, legacy.stderr, "{entry}");
+        assert_fallible_surface(&lcir.ir);
+    }
+
+    for (entry, expected) in [
+        ("earlyReturnMain", "AssertionFault"),
+        ("bodyFaultMain", "IntegerDivisionByZero"),
+        ("cleanupFaultMain", "AssertionFault"),
+    ] {
+        let interpreted = interpret_run(&program, entry).expect_err("interpreter cleanup fault");
+        let interpreted = serde_json::to_value(interpreted).expect("serialize cleanup fault");
+        assert_eq!(interpreted["fault"]["code"], expected, "{entry}");
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-cleanup-{entry}"));
+        let legacy =
+            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-cleanup-{entry}"));
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        let lcir_fault = machine_fault(&lcir.output);
+        let legacy_fault = machine_fault(&legacy);
+        let code = |fault: &serde_json::Value| {
+            fault["fault"]["code"]
+                .as_str()
+                .or_else(|| fault["code"].as_str())
+                .map(str::to_owned)
+        };
+        assert_eq!(code(&lcir_fault).as_deref(), Some(expected), "LCIR {entry}");
+        assert_eq!(
+            code(&legacy_fault).as_deref(),
+            Some(expected),
+            "legacy {entry}"
+        );
+        if expected == "AssertionFault" {
+            assert_eq!(legacy_fault, interpreted, "legacy metadata {entry}");
+            assert_eq!(lcir_fault, interpreted, "LCIR assertion metadata {entry}");
+        } else {
+            assert_eq!(
+                lcir_fault["sourceSpan"]["file"], interpreted["fault"]["span"]["file"],
+                "LCIR source file {entry}"
+            );
+            assert_eq!(
+                lcir_fault["sourceSpan"]["start"], interpreted["fault"]["span"]["range"]["start"],
+                "LCIR source start {entry}"
+            );
+            assert_eq!(
+                lcir_fault["sourceSpan"]["end"], interpreted["fault"]["span"]["range"]["end"],
+                "LCIR source end {entry}"
+            );
+        }
+        assert_fallible_surface(&lcir.ir);
+    }
+}
+
+#[test]
+fn typed_scoped_disposal_is_one_static_inout_call_after_initialization() {
+    let source = r"module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+concept NoSuspend {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        let acquired = self.value
+        assert acquired > 0
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+pub fn successMain() Unit {
+    scoped resource = Resource { value = 3 }
+    Unit
+}
+
+pub fn disposalFaultMain() Unit {
+    scoped resource = Resource { value = 0 }
+    Unit
+}
+
+pub fn initializerFaultMain() Unit {
+    scoped resource = Resource { value = 1 / 0 }
+    Unit
+}
+";
+    let program = compile_source(source);
+    for (entry, expected_fault) in [
+        ("successMain", None),
+        ("disposalFaultMain", Some("AssertionFault")),
+        ("initializerFaultMain", Some("IntegerDivisionByZero")),
+    ] {
+        let succeeds = expected_fault.is_none();
+        let interpreted = interpret_run(&program, entry);
+        assert_eq!(interpreted.is_ok(), succeeds, "interpreter {entry}");
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let dump = dump_program(artifact.program());
+        assert_eq!(dump.matches("invoke i0").count(), 1, "{entry}: {dump}");
+        if entry == "initializerFaultMain" {
+            let fault_target = dump
+                .lines()
+                .find(|line| line.contains("checked_int.divide"))
+                .and_then(|line| line.split("fault b").nth(1))
+                .and_then(|suffix| suffix.split('(').next())
+                .unwrap_or_else(|| panic!("missing initializer fault edge: {dump}"));
+            let block = dump
+                .split(&format!("  b{fault_target}:"))
+                .nth(1)
+                .and_then(|suffix| suffix.split("\n\n").next())
+                .unwrap_or_else(|| {
+                    panic!("missing initializer fault block b{fault_target}: {dump}")
+                });
+            assert!(block.contains("resume_fault"), "{block}\n{dump}");
+            assert!(!block.contains("invoke"), "{block}\n{dump}");
+        }
+        let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-scoped-{entry}"));
+        let legacy =
+            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-scoped-{entry}"));
+        assert_eq!(
+            lcir.output.status.success(),
+            succeeds,
+            "{entry}: {:?}",
+            lcir.output
+        );
+        assert_eq!(legacy.status.success(), succeeds, "{entry}: {legacy:?}");
+        assert_eq!(lcir.output.stdout, legacy.stdout, "{entry}");
+        if succeeds {
+            assert_eq!(lcir.output.stderr, legacy.stderr, "{entry}");
+        } else {
+            let fault_code = |fault: &serde_json::Value| {
+                fault["fault"]["code"]
+                    .as_str()
+                    .or_else(|| fault["code"].as_str())
+                    .map(str::to_owned)
+            };
+            assert_eq!(
+                fault_code(&machine_fault(&lcir.output)).as_deref(),
+                expected_fault,
+                "LCIR {entry}"
+            );
+            assert_eq!(
+                fault_code(&machine_fault(&legacy)).as_deref(),
+                expected_fault,
+                "legacy {entry}"
+            );
+        }
+        assert_fallible_surface(&lcir.ir);
+        assert_no_indirect_calls(&lcir.ir);
+    }
+}
+
+#[test]
+fn typed_builtin_scoped_cleanup_matches_interpreter_and_legacy_without_executor_routing() {
+    let program = checked_builtin_file_cleanup_fixture();
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
     );
-    let fault = machine_fault(&legacy.output);
-    assert_eq!(fault["fault"]["code"], "IntegerDivisionByZero");
-    let diagnostics = diagnostic_text(&legacy.output);
-    assert!(!diagnostics.contains("AssertionFault"), "{diagnostics}");
-    assert!(diagnostics.contains("older-cleanup-ran"), "{diagnostics}");
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("resource.close.file").count(), 1, "{dump}");
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-scoped-file-close");
+    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-scoped-file-close");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(
+        lcir.ir.contains("@loom_runtime_resource_close_typed_v1"),
+        "{}",
+        lcir.ir
+    );
+    assert_eq!(
+        lcir.ir
+            .matches("call i32 @loom_runtime_resource_close_typed_v1")
+            .count(),
+        1,
+        "{}",
+        lcir.ir
+    );
+    assert_fallible_surface(&lcir.ir);
+    assert_no_indirect_calls(&lcir.ir);
 }
 
 #[test]

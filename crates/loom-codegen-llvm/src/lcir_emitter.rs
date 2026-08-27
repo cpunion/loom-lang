@@ -36,7 +36,7 @@ use loom_codegen_ir::{
     ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
     IntPredicate as LcirIntPredicate, ManagedRootPlan, ManagedRootSlot, ManagedSafepoint, Origin,
-    Repr, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
+    Repr, ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind,
     TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, plan_managed_roots,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
@@ -44,7 +44,8 @@ use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, TEXT_CONCAT_TYPED_SYMBOL,
     TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
+    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -1710,6 +1711,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_resource_close_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_RESOURCE_CLOSE_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i32_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_RESOURCE_CLOSE_SYMBOL, function_type, None)
+            })
+    }
+
     fn typed_root_push(&self) -> FunctionValue<'ctx> {
         self.runtime_status_function(TYPED_GC_ROOT_PUSH_SYMBOL)
     }
@@ -1777,6 +1795,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_cells: Vec<Option<PointerValue<'ctx>>>,
     root_frame: Option<PointerValue<'ctx>>,
     root_state: Option<PointerValue<'ctx>>,
+    resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -1842,6 +1861,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_cells: vec![None; root_slot_count],
             root_frame: None,
             root_state: None,
+            resource_close_cells: vec![None; source.blocks().len()],
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
@@ -1961,6 +1981,36 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let slot_array = self.prepare_root_cells(entry, &slots)?;
         let descriptor = self.emit_root_descriptor(slots.len())?;
         self.link_root_frame(entry, descriptor, slot_array)
+    }
+
+    fn prepare_resource_close_cells(&mut self) -> Result<(), CodegenError> {
+        let entry = self.source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", self.source.id()),
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(self.blocks[entry.index()]);
+        for block in self.source.blocks() {
+            if !matches!(
+                block.terminator().map(Terminator::kind),
+                Some(TerminatorKind::ResourceClose { .. })
+            ) {
+                continue;
+            }
+            let cell = self
+                .backend
+                .builder
+                .build_alloca(
+                    self.backend.context.i64_type(),
+                    &format!("resource.close.b{}.handle.cell", block.id().raw()),
+                )
+                .map_err(builder_error)?;
+            self.resource_close_cells[block.id().index()] = Some(cell);
+        }
+        Ok(())
     }
 
     fn prepare_root_cells(
@@ -2386,6 +2436,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn compile(mut self) -> Result<(), CodegenError> {
+        self.prepare_resource_close_cells()?;
         self.prepare_root_frame()?;
         for index in 0..self.emission_order.len() {
             let block_id = self.emission_order[index];
@@ -2508,7 +2559,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     }
                 }
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
-                | TerminatorKind::CheckedIntBinary { normal, fault, .. } => {
+                | TerminatorKind::CheckedIntBinary { normal, fault, .. }
+                | TerminatorKind::ResourceClose { normal, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(normal.block);
                 }
@@ -3523,6 +3575,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 normal,
                 unwind,
             } => self.emit_invoke(block, *callee, arguments, normal, unwind),
+            TerminatorKind::ResourceClose {
+                kind,
+                resource,
+                normal,
+                fault,
+            } => self.emit_resource_close(
+                block,
+                *kind,
+                *resource,
+                terminator.origin(),
+                normal,
+                fault,
+            ),
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -3929,6 +3994,140 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.backend.builder.position_at_end(report);
         self.emit_contract_fault(metadata)?;
         self.unwind_branch(fault)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exact close ABI, functional writeback, and both fault states form one atomic terminator emission"
+    )]
+    fn emit_resource_close(
+        &mut self,
+        block: BlockId,
+        kind: ResourceKind,
+        resource: ValueId,
+        origin: Origin,
+        normal: &ResultTarget,
+        fault: &UnwindTarget,
+    ) -> Result<(), CodegenError> {
+        let resource = self.value(resource)?.into_struct_value();
+        let handle = self
+            .backend
+            .builder
+            .build_extract_value(resource, 0, "resource.close.handle")
+            .map_err(builder_error)?
+            .into_int_value();
+        let handle_cell = self
+            .resource_close_cells
+            .get(block.index())
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("typed resource cleanup block {block} has no entry scratch cell"),
+                )
+            })?;
+        self.backend
+            .builder
+            .build_store(handle_cell, handle)
+            .map_err(builder_error)?;
+        let fault_context = self.fault_context.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "infallible {} attempted typed resource cleanup",
+                    self.source.id()
+                ),
+            )
+        })?;
+        let runtime_cell = self
+            .backend
+            .builder
+            .build_struct_gep(
+                self.backend.fault_context_type,
+                fault_context,
+                0,
+                "resource.close.runtime.cell",
+            )
+            .map_err(builder_error)?;
+        let runtime = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.ptr_type,
+                runtime_cell,
+                "resource.close.runtime",
+            )
+            .map_err(builder_error)?;
+        let kind = match kind {
+            ResourceKind::File => TYPED_RESOURCE_KIND_FILE,
+            ResourceKind::Socket => TYPED_RESOURCE_KIND_SOCKET,
+        };
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_resource_close_typed(),
+            &[
+                runtime.into(),
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(kind), false)
+                    .into(),
+                handle_cell.into(),
+            ],
+            "resource.close",
+        )?;
+        let closed_handle = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                handle_cell,
+                "resource.close.writeback.handle",
+            )
+            .map_err(builder_error)?;
+        let closed_resource = self
+            .backend
+            .builder
+            .build_insert_value(resource, closed_handle, 0, "resource.close.writeback")
+            .map_err(builder_error)?
+            .into_struct_value();
+        let succeeded = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "resource.close.succeeded",
+            )
+            .map_err(builder_error)?;
+        let predecessor = self.current_block()?;
+        self.add_result_incoming(
+            normal,
+            &[
+                self.backend.unit_type.const_zero().into(),
+                closed_resource.into(),
+            ],
+            predecessor,
+        )?;
+        let report = self
+            .backend
+            .context
+            .append_basic_block(self.function, "resource.close.fault");
+        self.backend
+            .builder
+            .build_conditional_branch(succeeded, self.block(normal.block)?, report)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(report);
+        self.emit_source_fault(FaultCode::ResourceClose, origin)?;
+        let predecessor = self.current_block()?;
+        self.add_unwind_incoming(fault, &[closed_resource.into()], predecessor)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(self.block(fault.block)?)
+            .map_err(builder_error)?;
+        Ok(())
     }
 
     fn emit_source_fault(&self, code: FaultCode, origin: Origin) -> Result<(), CodegenError> {
@@ -5016,6 +5215,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
         FaultCode::IntegerDivisionOverflow => {
             ("IntegerDivisionOverflow", "integer division overflowed")
         }
+        FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
     }
 }
 
