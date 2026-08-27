@@ -484,7 +484,7 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
         TerminatorKind::Assert { success, fault, .. } => {
             vec![success.block, fault.block]
         }
-        TerminatorKind::AwaitTask { normal, .. } => vec![normal.block],
+        TerminatorKind::AwaitTasks { normal, .. } => vec![normal.block],
         TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
             Vec::new()
         }
@@ -527,7 +527,7 @@ fn add_terminator_local_uses(
         } => vec![*scrutinee],
         TerminatorKind::CheckedIntBinary { left, right, .. } => vec![*left, *right],
         TerminatorKind::Invoke { arguments, .. } => arguments.to_vec(),
-        TerminatorKind::AwaitTask { task, .. } => vec![*task],
+        TerminatorKind::AwaitTasks { tasks, .. } => tasks.to_vec(),
         TerminatorKind::ResourceClose { resource, .. } => vec![*resource],
     };
     add_managed(live, values, managed);
@@ -567,7 +567,7 @@ fn edge_live_values(
             (normal.block, normal.arguments.as_ref()),
             (unwind.block, unwind.arguments.as_ref()),
         ],
-        TerminatorKind::AwaitTask { normal, .. } => {
+        TerminatorKind::AwaitTasks { normal, .. } => {
             vec![(normal.block, normal.arguments.as_ref())]
         }
         TerminatorKind::Assert { success, fault, .. } => vec![

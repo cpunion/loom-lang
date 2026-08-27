@@ -630,10 +630,57 @@ pub fn lower_typed_artifact(
                 .instantiate_type(&source.return_ty)
                 .map_err(|error| instantiation_defect(source.id, None, error))?;
             let output = required_type(&builder, &dyn_concepts, &output)?;
+            let await_tasks = source
+                .exprs_preorder()
+                .filter_map(|expression| match &expression.kind {
+                    ExprKind::Await { state, task } => Some((*state, task.as_ref())),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
             let suspensions = source
                 .suspension_points
                 .iter()
                 .map(|point| {
+                    let await_task = await_tasks
+                        .get(&point.state)
+                        .copied()
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                format!(
+                                    "async function #{} suspension state {} has no Await expression",
+                                    source.id.0, point.state
+                                ),
+                            )
+                        })?;
+                    let awaited = awaited_source_outputs(await_task)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                format!(
+                                    "async function #{} suspension state {} has no fixed nonempty Task outputs",
+                                    source.id.0, point.state
+                                ),
+                            )
+                        })?;
+                    if awaited.is_empty() {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "async function #{} suspension state {} has an empty fixed await",
+                                source.id.0, point.state
+                            ),
+                        ));
+                    }
+                    let awaited = awaited
+                        .into_iter()
+                        .map(|ty| {
+                            let ty = substitution.instantiate_type(&ty).map_err(|error| {
+                                instantiation_defect(source.id, None, error)
+                            })?;
+                            required_type(&builder, &dyn_concepts, &ty)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                     let live = point
                         .live_locals
                         .iter()
@@ -658,7 +705,7 @@ pub fn lower_typed_artifact(
                             required_type(&builder, &dyn_concepts, &ty)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    Ok(CoroutineSuspension::new(point.state, live))
+                    Ok(CoroutineSuspension::new(point.state, awaited, live))
                 })
                 .collect::<Result<Vec<_>, LoweringError>>()?;
             Some(CoroutinePlan::new(output, suspensions))
@@ -796,6 +843,35 @@ fn required_type(
             format!("classified direct type {physical:?} has no LCIR representation"),
         )
     })
+}
+
+fn task_output_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Task(output) => Some(output.as_ref().clone()),
+        _ => None,
+    }
+}
+
+/// Returns the exact result slots injected by one checked await expression.
+/// Literal task tuples and immediately awaited fixed `Task.all` calls expose
+/// their heterogeneous children directly; every other Task produces one slot,
+/// including a first-class composite Task stored before it is awaited.
+fn awaited_source_outputs(task: &mir::Expr) -> Option<Vec<Type>> {
+    match &task.kind {
+        ExprKind::Tuple(tasks) => tasks
+            .iter()
+            .map(|task| task_output_type(&task.ty))
+            .collect(),
+        ExprKind::TaskJoin {
+            mode: mir::TaskJoinMode::All,
+            arguments,
+        } => arguments
+            .iter()
+            .map(|task| task_output_type(&task.ty))
+            .collect(),
+        ExprKind::TaskJoin { .. } => None,
+        _ => task_output_type(&task.ty).map(|output| vec![output]),
+    }
 }
 
 const fn is_mutable_view(ty: &Type) -> bool {
@@ -3075,11 +3151,43 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 true
             }
             ExprKind::Await { task, .. } => {
-                if !self.visit_expr(function, key, task, &format!("{path}.task")) {
+                let task_continues = if let ExprKind::Tuple(tasks) = &task.kind {
+                    self.visit_exprs(function, key, tasks, &format!("{path}.task.elements"))
+                } else {
+                    self.visit_expr(function, key, task, &format!("{path}.task"))
+                };
+                if !task_continues {
                     return false;
                 }
-                let supported = function.is_async
-                    && matches!(
+                let result = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let operand_matches = if let ExprKind::Tuple(tasks) = &task.kind {
+                    let outputs = tasks
+                        .iter()
+                        .enumerate()
+                        .map(|(index, task)| {
+                            self.instantiated_type(
+                                function,
+                                key,
+                                Some(task),
+                                &task.ty,
+                                task.span,
+                                &format!("{path}.task.elements[{index}].ty"),
+                            )
+                            .and_then(|ty| task_output_type(&ty))
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    outputs
+                        .filter(|outputs| !outputs.is_empty())
+                        .is_some_and(|outputs| result == Some(Type::Tuple(outputs)))
+                } else {
+                    matches!(
                         self.instantiated_type(
                             function,
                             key,
@@ -3088,8 +3196,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             task.span,
                             &format!("{path}.task.ty"),
                         ),
-                        Some(Type::Task(output)) if output.as_ref() == &expression.ty
-                    );
+                        Some(Type::Task(output)) if Some(output.as_ref()) == result.as_ref()
+                    )
+                };
+                let supported = function.is_async && operand_matches;
                 if !supported {
                     self.expression_item(
                         UnsupportedFeature::Suspension,
@@ -3143,16 +3253,49 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
                 expression.ty != Type::Never
             }
-            ExprKind::TaskJoin { arguments, .. } => {
+            ExprKind::TaskJoin { mode, arguments } => {
                 if !self.visit_exprs(function, key, arguments, &format!("{path}.arguments")) {
                     return false;
                 }
-                self.expression_item(
-                    UnsupportedFeature::TaskOperation,
+                let outputs = arguments
+                    .iter()
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.instantiated_type(
+                            function,
+                            key,
+                            Some(argument),
+                            &argument.ty,
+                            argument.span,
+                            &format!("{path}.arguments[{index}].ty"),
+                        )
+                        .and_then(|ty| task_output_type(&ty))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let result = self.instantiated_type(
                     function,
-                    expression,
-                    path,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
                 );
+                let supported = function.is_async
+                    && *mode == mir::TaskJoinMode::All
+                    && outputs
+                        .filter(|outputs| !outputs.is_empty())
+                        .is_some_and(|outputs| {
+                            result
+                                == Some(Type::Task(Box::new(Type::Tuple(outputs))))
+                        });
+                if !supported {
+                    self.expression_item(
+                        UnsupportedFeature::TaskOperation,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
         };
@@ -3601,7 +3744,13 @@ fn scan_effect_expr(
             }
             continues
         }
-        ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(program, arguments, summary),
+        ExprKind::TaskJoin { arguments, .. } => {
+            let continues = scan_effect_exprs(program, arguments, summary);
+            if continues {
+                summary.include(Effects::NEEDS_EXECUTOR);
+            }
+            continues
+        }
     }
 }
 
@@ -6958,9 +7107,61 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.read_place(flow, &plan, origin)
             }
             ExprKind::Await { state, task } => {
-                let EvalFlow::Continue { flow, value: task } = self.lower_expr(flow, task)? else {
-                    return Ok(EvalFlow::Terminated);
+                let direct_children = match &task.kind {
+                    ExprKind::Tuple(tasks) => Some(tasks.as_slice()),
+                    ExprKind::TaskJoin {
+                        mode: mir::TaskJoinMode::All,
+                        arguments,
+                    } => Some(arguments.as_slice()),
+                    _ => None,
                 };
+                let direct_results = direct_children.is_some();
+                let mut flow = flow;
+                let mut tasks = Vec::new();
+                if let Some(children) = direct_children {
+                    tasks.reserve(children.len());
+                    for child in children {
+                        let EvalFlow::Continue {
+                            flow: next_flow,
+                            value,
+                        } = self.lower_expr(flow, child)?
+                        else {
+                            return Ok(EvalFlow::Terminated);
+                        };
+                        flow = next_flow;
+                        tasks.push(value);
+                    }
+                } else {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, task)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    tasks.push(value);
+                }
+                let output_types = awaited_source_outputs(task).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!(
+                            "classified await expression #{} has no fixed child Task outputs",
+                            expression.id.0
+                        ),
+                    )
+                })?;
+                if output_types.is_empty() || output_types.len() != tasks.len() {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!(
+                            "classified await expression #{} has {} Task operands but {} result types",
+                            expression.id.0,
+                            tasks.len(),
+                            output_types.len()
+                        ),
+                    ));
+                }
                 let suspension = self
                     .source
                     .suspension_points
@@ -6976,10 +7177,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         )
                     })?;
                 let normal = self.create_block()?;
-                let result = self
-                    .builder
-                    .append_block_parameter(normal, self.type_id(&expression.ty)?)
-                    .map_err(LoweringError::from)?;
+                let mut results = Vec::with_capacity(output_types.len());
+                for output in &output_types {
+                    results.push(
+                        self.builder
+                            .append_block_parameter(normal, self.type_id(output)?)
+                            .map_err(LoweringError::from)?,
+                    );
+                }
                 let mut arguments = Vec::with_capacity(suspension.live_locals.len());
                 let mut env = EMPTY_ENVIRONMENT;
                 for local in &suspension.live_locals {
@@ -7001,17 +7206,35 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 self.terminate(
                     flow.block,
-                    TerminatorKind::AwaitTask {
+                    TerminatorKind::AwaitTasks {
                         state: *state,
-                        task,
+                        tasks: tasks.into_boxed_slice(),
                         normal: ResultTarget::new(normal, arguments),
                     },
                     origin,
                 )?;
-                Ok(EvalFlow::Continue {
-                    flow: Flow { block: normal, env },
-                    value: result,
-                })
+                let resumed = Flow { block: normal, env };
+                if direct_results {
+                    self.one_instruction(
+                        resumed,
+                        InstructionKind::ProductConstruct {
+                            fields: results.into_boxed_slice(),
+                        },
+                        self.type_id(&expression.ty)?,
+                        origin,
+                    )
+                } else {
+                    let [result] = results.as_slice() else {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "ordinary task await did not produce exactly one result slot",
+                        ));
+                    };
+                    Ok(EvalFlow::Continue {
+                        flow: resumed,
+                        value: *result,
+                    })
+                }
             }
             ExprKind::Sleep { milliseconds } => {
                 let EvalFlow::Continue {
@@ -7073,8 +7296,40 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     value: task,
                 })
             }
+            ExprKind::TaskJoin {
+                mode: mir::TaskJoinMode::All,
+                arguments,
+            } => {
+                let mut flow = flow;
+                let mut tasks = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, argument)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    tasks.push(value);
+                }
+                if tasks.is_empty() {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "classified Task.all has no fixed child Tasks",
+                    ));
+                }
+                self.one_instruction(
+                    flow,
+                    InstructionKind::TaskJoinAll {
+                        tasks: tasks.into_boxed_slice(),
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                )
+            }
             ExprKind::TaskJoin { arguments, .. } => {
-                self.lower_unsupported_values(flow, arguments, "task join")
+                self.lower_unsupported_values(flow, arguments, "non-all task join")
             }
         }
     }

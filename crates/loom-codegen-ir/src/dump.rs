@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 25")?;
+    writeln!(output, "lcir 26")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -131,7 +131,14 @@ pub fn write_program_with_options(
                 if index != 0 {
                     write!(output, ", ")?;
                 }
-                write!(output, "{}(", suspension.state())?;
+                write!(output, "{} awaited=(", suspension.state())?;
+                for (awaited_index, ty) in suspension.awaited().iter().enumerate() {
+                    if awaited_index != 0 {
+                        write!(output, ", ")?;
+                    }
+                    write!(output, "{ty}")?;
+                }
+                write!(output, ") live=(")?;
                 for (live_index, ty) in suspension.live().iter().enumerate() {
                     if live_index != 0 {
                         write!(output, ", ")?;
@@ -396,6 +403,11 @@ fn write_instruction(
             write_arguments(output, arguments)?;
             write!(output, ")")
         }
+        InstructionKind::TaskJoinAll { tasks } => {
+            write!(output, "task.join_all(")?;
+            write_arguments(output, tasks)?;
+            write!(output, ")")
+        }
     }
 }
 
@@ -502,13 +514,15 @@ fn write_terminator(
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)
         }
-        TerminatorKind::AwaitTask {
+        TerminatorKind::AwaitTasks {
             state,
-            task,
+            tasks,
             normal,
         } => {
-            write!(output, "task.await state {state}, %{task}, normal ")?;
-            write_result_target(output, normal, 0)
+            write!(output, "await_tasks state {state}, (")?;
+            write_arguments(output, tasks)?;
+            write!(output, "), normal ")?;
+            write_await_result_target(output, normal, tasks.len())
         }
         TerminatorKind::CheckedIntNegate {
             value,
@@ -612,6 +626,27 @@ fn write_result_target(
     }
     if !target.arguments.is_empty() {
         write!(output, "; ")?;
+        write_arguments(output, &target.arguments)?;
+    }
+    write!(output, ")")
+}
+
+fn write_await_result_target(
+    output: &mut impl Write,
+    target: &ResultTarget,
+    results: usize,
+) -> fmt::Result {
+    write!(output, "{}(", target.block)?;
+    for index in 0..results {
+        if index != 0 {
+            write!(output, ", ")?;
+        }
+        write!(output, "result{index}")?;
+    }
+    if !target.arguments.is_empty() {
+        if results != 0 {
+            write!(output, "; ")?;
+        }
         write_arguments(output, &target.arguments)?;
     }
     write!(output, ")")
