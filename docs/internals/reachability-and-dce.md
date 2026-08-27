@@ -15,6 +15,14 @@ automatic native router either lowers the complete reachable typed artifact
 to independently checked LCIR or stores this exact source graph for one
 whole-artifact legacy emission.
 
+For the LCIR route, source reachability is followed by a second, more precise
+closure over concrete callable instances. It starts from the selected exported
+run function or every test root, substitutes exact type and static witness
+arguments at each executable direct call, and deduplicates the resulting
+instances across all roots. Generic declarations are not roots by themselves.
+The typed LLVM emitter therefore declares only concrete signatures required by
+the selected artifact; it never emits a universal generic body.
+
 ## Roots
 
 - A binary build/run/debug has the selected exported function as its root.
@@ -60,6 +68,14 @@ The traversal repeats until neither functions nor witnesses grow, because a
 newly retained witness method can itself make more calls and witnesses live.
 Missing references in checked MIR are backend defects.
 
+The LCIR instance traversal applies the same executable-order rule. A call
+after a return or diverging expression cannot create an instance. Exact
+recursive calls close back onto one key, while recursion that changes the key
+is rejected as unsupported under finite instance, edge, and key-structure
+budgets. This rejection occurs during planning, before any partial LCIR is
+allocated. A generic function that is not reached cannot consume those budgets
+or change direct-versus-legacy route selection.
+
 ## Why unused conformances stay dead
 
 Declaring `impl C for A` is not by itself a native edge. Code must reach a proof
@@ -94,6 +110,9 @@ valid.
 Reachability changes need tests for:
 
 - direct and recursive call closure;
+- regular generic recursion, nonregular rejection, and planning budgets;
+- duplicate concrete instances shared across calls and test roots;
+- deterministic instance order and artifact identity;
 - static and dynamic concept dispatch;
 - a declared but never constructed conformance remaining absent;
 - witness flow narrowing and conservative fallback;

@@ -150,17 +150,27 @@ representation, while a protected invariant record uses the same product ABI
 as its fields. The native-object domain therefore remains
 `loom-lcir-native-object-v2`, and the independently versioned compiler cache
 remains schema 2 with object domain `loom-llvm-object-cache-v7`.
+Concrete generic-instance closure reuses those versions: the existing instance
+plan, canonical dump, and schema-6 identity already encode every exact type and
+witness argument, function body, signature, and call edge. The backend build
+fingerprint invalidates objects when the planner implementation changes. No
+serialized grammar or physical ABI changed, so the text, native-object, and
+object-cache domains do not advance.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
-request, and a target layout. It first selects `SourceRoots`, closes them with
-`analyze_source_reachability`, and classifies every reachable function before
-allocating LCIR. It returns either one complete independently checked
+request, and a target layout. It first selects the exported run root or ordered
+test roots, validates their source reachability, then closes exact concrete
+function instances before classifying any of them. Classification covers the
+entire instance and representation plan before allocating LCIR. It returns
+either one complete independently checked
 `CheckedArtifact` or one deterministic `SupportReport` for the whole artifact.
 Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
-The current lowering coverage is monomorphic synchronous scalar, structural
-tuple, closed-record, and established refined signatures, constants, locals and assignment,
+The current lowering coverage is synchronous scalar, structural tuple,
+closed-record, and established refined signatures, including bounded direct
+generic calls whose concrete types use those representations. It covers
+constants, locals and assignment,
 tuple construction and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
@@ -230,12 +240,32 @@ Roots, declarations, direct calls, invokes, and effect analysis consequently
 refer to planned instances rather than rebuilding a bare
 `FunctionId -> InstanceId` map.
 
-The current source lowerer creates only `InstanceKey::monomorphic(source)`, so
-every produced key has empty type and witness arguments. This foundation does
-not instantiate a generic function. Reachable generic source still produces
-`Unsupported` during whole-artifact classification and selects the complete
-legacy route atomically. Explicit builders can construct distinct keys to test
-planning and validation, but that API is not a claim of generic lowering.
+The source lowerer starts from monomorphic exported run or test roots and
+computes a bounded closure of executable direct and inherent calls. Each
+reachable body is keyed by its source `FunctionId`, exact substituted type
+arguments, and the complete static witness-argument tree. Duplicate calls and
+different test roots reuse the same key. Exact self and mutual recursion reuse
+the already planned instance; a recursive edge that reaches the same source
+function with a different key is nonregular and selects whole-artifact
+`Unsupported`. Generic declarations outside the selected closure do not affect
+route selection.
+
+Planning is iterative and deterministic. It admits at most 4,096 concrete
+instances and 16,384 reachable direct-call edges, while each key retains the
+shared 256-node combined type-and-witness budget. A call reserves its remaining
+edge budget and preflights the fully substituted key size before cloning the
+type or proof trees. An unresolved parameter, associated projection,
+nonregular recursive expansion, or exhausted planning budget selects one
+atomic unsupported result before an LCIR builder exists. Completed keys are
+ordered by source function and canonical key identity, so discovery order,
+duplicate roots, and repeated compilation do not perturb the artifact.
+
+The resulting LCIR functions and LLVM calls use the instantiated direct
+signature. Compile-time witness arguments remain in `InstanceKey` and artifact
+identity but consume no runtime argument when their proof is otherwise erased.
+Static concept-method dispatch and associated-type projection remain outside
+this slice; they still select complete legacy lowering rather than introducing
+a universal value or witness ABI.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report
@@ -380,7 +410,11 @@ infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
 origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
 dumps for structurally different recursive and iterative Fibonacci programs,
-plus zero-cost proven refinements and invariant records. Malformed-LCIR tests
+plus zero-cost proven refinements and invariant records. Generic regressions
+cover exact regular recursion, duplicate-instance elimination, cross-test-root
+reuse, witness-bearing identity, nonregular recursion, bounded key expansion,
+unreachable declarations, repeatable dumps and identities, and direct host and
+MSVC LLVM signatures. Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.
 Structural regressions cover thousands of live locals and identity branches,

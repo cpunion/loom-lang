@@ -32,6 +32,10 @@ artifact, or runtime compatibility.
 - Fresh-source proven refinements and record invariants use zero-check typed
   LCIR representations. Serialized proof rechecks atomically select the legacy
   route and retain canonical `ArtifactProofRejected` behavior.
+- Reachable direct generic calls now form one bounded, deterministic LCIR
+  instance closure with exact type and static-witness identity. Supported
+  instances use direct typed LLVM signatures; nonregular or over-budget
+  expansion selects whole-artifact fallback before LCIR construction.
 
 No historical release notes have been reconstructed. Future entries should
 describe observable changes, not reproduce the Git commit log.
