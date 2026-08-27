@@ -64,7 +64,7 @@ pub fn main() Unit {
     )
 }
 
-fn unsupported_timer_program() -> CheckedProgram {
+fn typed_timer_program() -> CheckedProgram {
     compile_source(
         r"module prepared_timer
 
@@ -186,7 +186,7 @@ fn dead() Text { "unreachable" }
 }
 
 #[test]
-fn one_unsupported_timer_test_selects_legacy_for_the_ordered_test_artifact() {
+fn typed_timer_test_keeps_the_ordered_test_artifact_on_lcir() {
     let program = compile_source(
         r"module prepared_tests
 
@@ -198,10 +198,11 @@ test async fn timer() Unit {
 }
 ",
     );
-    let prepared =
-        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
-            .expect("prepare complete test artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::tests(), policy)
+            .expect("prepare typed timer test artifact");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
 }
 
 #[test]
@@ -290,7 +291,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = unsupported_timer_program();
+    let program = sync_task_creation_program(false);
     let prepare = || {
         prepare_native_object(
             &program,
@@ -344,7 +345,7 @@ fn legacy_only_never_attempts_the_lcir_route() {
 }
 
 #[test]
-fn selected_emitters_publish_disjoint_llvm_surfaces() {
+fn selected_lcir_emitters_publish_typed_scalar_and_timer_surfaces() {
     let directory = tempfile::tempdir().expect("create output directory");
     let scalar = scalar_program();
     let scalar_ir = directory.path().join("scalar.ll");
@@ -359,17 +360,32 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
 
-    let timer = unsupported_timer_program();
+    let timer = typed_timer_program();
     let timer_ir = directory.path().join("timer.ll");
     let mut timer_options = EmitOptions::run("main");
     timer_options.emit_ir = Some(timer_ir.clone());
-    let timer_prepared = prepare_native_object(&timer, timer_options, NativeRoutePolicy::Automatic)
-        .expect("prepare unsupported timer artifact");
+    let timer_prepared = prepare_native_object(&timer, timer_options, NativeRoutePolicy::LcirOnly)
+        .expect("prepare typed timer artifact");
+    assert_eq!(timer_prepared.route_kind(), NativeRouteKind::Lcir);
     emit_prepared_native_object(&timer_prepared, &directory.path().join("timer.o"))
-        .expect("emit legacy MIR");
-    let timer_ir = std::fs::read_to_string(timer_ir).expect("read legacy IR");
-    assert!(timer_ir.contains("%loom.Value"), "{timer_ir}");
-    assert!(!timer_ir.contains("loom.lcir.fn"), "{timer_ir}");
+        .expect("emit typed timer LCIR");
+    let timer_ir = std::fs::read_to_string(timer_ir).expect("read typed timer IR");
+    for required in [
+        "loom.lcir.fn",
+        "loom_wait_now_ns",
+        "loom_typed_timer_task_create_v1",
+    ] {
+        assert!(
+            timer_ir.contains(required),
+            "missing `{required}`:\n{timer_ir}"
+        );
+    }
+    for forbidden in ["%loom.Value", "loom_task_from_wait_source"] {
+        assert!(
+            !timer_ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{timer_ir}"
+        );
+    }
 }
 
 #[test]
