@@ -57,13 +57,15 @@ library invalidates native object-cache entries.
 
 Loom also compiles target initialization from the exact
 `llvm-config --targets-built` set. A complete LLVM installation keeps the
-single all-target initializer; a release package containing only a subset,
-such as LLVM's Windows archive, references and initializes only the target
-libraries it actually ships. Inkwell's default all-target feature is disabled;
+all-target initializer for explicit cross-target requests. Native object
+emission uses LLVM's native-target entry point. A release package containing
+only a subset, such as LLVM's Windows archive, references only the target
+libraries it actually ships and initializes only the architecture selected by
+an explicit target triple. Inkwell's default all-target feature is disabled;
 its AArch64, ARM, and X86 initializers are the bounded partial-package set used
 by Loom's supported hosts and cross-object tests. This prevents an otherwise
 valid host compiler from acquiring unresolved symbols for omitted cross
-targets.
+targets, and it keeps unrelated packaged backends out of native emission.
 
 The statically linked LLVM 19 MSVC distribution is not asked to discover host
 CPU strings. Windows host codegen uses the generic x86-64 baseline with no

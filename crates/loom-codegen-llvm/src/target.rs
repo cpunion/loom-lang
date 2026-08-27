@@ -300,11 +300,11 @@ pub(crate) fn create_llvm_target_machine(
     requested: Option<&str>,
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetMachine, CodegenError> {
-    initialize_configured_targets();
     let host_native = requested.is_none();
     let triple = TargetMachine::normalize_triple(&TargetTriple::create(
         requested.unwrap_or(COMPILER_TARGET),
     ));
+    initialize_configured_targets(host_native, &triple)?;
     let (cpu, features) = if host_native {
         implicit_host_cpu_policy()
     } else {
@@ -354,19 +354,80 @@ fn implicit_host_cpu_policy() -> (String, String) {
 }
 
 #[cfg(loom_llvm_complete_target_set)]
-fn initialize_configured_targets() {
-    Target::initialize_all(&InitializationConfig::default());
+fn initialize_configured_targets(
+    host_native: bool,
+    _triple: &TargetTriple,
+) -> Result<(), CodegenError> {
+    let config = InitializationConfig::default();
+    if host_native {
+        Target::initialize_native(&config)
+            .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message))?;
+    } else {
+        Target::initialize_all(&config);
+    }
+    Ok(())
 }
 
 #[cfg(not(loom_llvm_complete_target_set))]
-fn initialize_configured_targets() {
+fn initialize_configured_targets(
+    host_native: bool,
+    triple: &TargetTriple,
+) -> Result<(), CodegenError> {
     let config = InitializationConfig::default();
-    #[cfg(loom_llvm_target_aarch64)]
-    Target::initialize_aarch64(&config);
-    #[cfg(loom_llvm_target_arm)]
-    Target::initialize_arm(&config);
-    #[cfg(loom_llvm_target_x86)]
-    Target::initialize_x86(&config);
+    if host_native {
+        return Target::initialize_native(&config)
+            .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message));
+    }
+
+    let triple = triple.as_str().to_string_lossy();
+    let initialized = if triple_uses_aarch64(&triple) {
+        #[cfg(loom_llvm_target_aarch64)]
+        Target::initialize_aarch64(&config);
+        cfg!(loom_llvm_target_aarch64)
+    } else if triple_uses_arm(&triple) {
+        #[cfg(loom_llvm_target_arm)]
+        Target::initialize_arm(&config);
+        cfg!(loom_llvm_target_arm)
+    } else if triple_uses_x86(&triple) {
+        #[cfg(loom_llvm_target_x86)]
+        Target::initialize_x86(&config);
+        cfg!(loom_llvm_target_x86)
+    } else {
+        false
+    };
+    if initialized {
+        Ok(())
+    } else {
+        Err(CodegenError::new(
+            "LlvmTargetUnavailable",
+            format!("the configured LLVM target set cannot initialize {triple}"),
+        ))
+    }
+}
+
+#[cfg(not(loom_llvm_complete_target_set))]
+fn triple_uses_aarch64(triple: &str) -> bool {
+    triple
+        .split('-')
+        .next()
+        .is_some_and(|architecture| matches!(architecture, "aarch64" | "aarch64_be" | "arm64"))
+}
+
+#[cfg(not(loom_llvm_complete_target_set))]
+fn triple_uses_arm(triple: &str) -> bool {
+    triple.split('-').next().is_some_and(|architecture| {
+        architecture == "arm"
+            || architecture.starts_with("armv")
+            || architecture == "thumb"
+            || architecture.starts_with("thumbv")
+    })
+}
+
+#[cfg(not(loom_llvm_complete_target_set))]
+fn triple_uses_x86(triple: &str) -> bool {
+    triple.split('-').next().is_some_and(|architecture| {
+        architecture == "x86_64" || matches!(architecture, "i386" | "i486" | "i586" | "i686")
+    })
 }
 
 /// Reports whether an explicit triple normalizes to the current host triple.
@@ -397,6 +458,21 @@ mod tests {
         let identity = native_target_identity().expect("native target identity");
 
         assert_eq!(identity.triple, expected.as_str().to_string_lossy());
+    }
+
+    #[cfg(not(loom_llvm_complete_target_set))]
+    #[test]
+    fn partial_target_selection_is_architecture_exact() {
+        assert!(triple_uses_aarch64("aarch64-pc-windows-msvc"));
+        assert!(triple_uses_arm("thumbv7em-none-eabihf"));
+        assert!(triple_uses_x86("x86_64-pc-windows-msvc"));
+        assert!(triple_uses_x86("i686-pc-windows-msvc"));
+
+        for triple in ["riscv64gc-unknown-linux-gnu", "wasm32-unknown-unknown"] {
+            assert!(!triple_uses_aarch64(triple));
+            assert!(!triple_uses_arm(triple));
+            assert!(!triple_uses_x86(triple));
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
