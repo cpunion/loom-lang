@@ -70,6 +70,11 @@ CPU strings. Windows host codegen uses the generic x86-64 baseline with no
 extra features, which is also the required runtime-archive policy. Linux and
 macOS retain native host tuning.
 
+Windows `runtime pack` also avoids creating an LLVM target machine solely to
+recover the compiler's immutable host identity. The x86-64 MSVC target triple
+and LLVM 19 data layout are embedded as compiler-build invariants, with a
+cross-target regression test checking the layout against the pinned LLVM.
+
 ## First build
 
 ```sh

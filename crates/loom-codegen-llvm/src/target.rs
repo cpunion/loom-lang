@@ -18,6 +18,12 @@ use crate::CodegenError;
 const PORTABLE_CPU: &str = "generic";
 const PORTABLE_CPU_FEATURES: &str = "";
 const COMPILER_TARGET: &str = env!("LOOM_COMPILER_TARGET");
+#[cfg(any(
+    test,
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
+const WINDOWS_X86_64_DATA_LAYOUT: &str =
+    "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
 pub const DEVELOPMENT_OPTIMIZATION_PIPELINE: &str = "default<O0>,globaldce";
 pub const RELEASE_OPTIMIZATION_PIPELINE: &str = "default<O2>,globaldce";
 pub const RELOCATION_MODE: &str = "pic";
@@ -164,6 +170,21 @@ impl NativeTargetMachine {
 ///
 /// Returns a stable backend error if native LLVM target initialization fails.
 pub fn native_target_identity() -> Result<NativeTargetIdentity, CodegenError> {
+    #[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+    {
+        // The compiler target and LLVM 19 data layout are build invariants.
+        // Runtime packaging needs this identity, not a target machine, so keep
+        // the static-MSVC filesystem path independent of LLVM process state.
+        return Ok(NativeTargetIdentity {
+            triple: COMPILER_TARGET.to_owned(),
+            data_layout: WINDOWS_X86_64_DATA_LAYOUT.to_owned(),
+            cpu_policy: PORTABLE_CPU.to_owned(),
+            cpu_features: PORTABLE_CPU_FEATURES.to_owned(),
+            optimization: DEVELOPMENT_OPTIMIZATION_PIPELINE.to_owned(),
+            relocation: RELOCATION_MODE.to_owned(),
+        });
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")))]
     target_identity(None, OptimizationProfile::Development)
 }
 
@@ -318,10 +339,9 @@ pub(crate) fn create_llvm_target_machine(
 
 #[cfg(target_os = "windows")]
 fn implicit_host_cpu_policy() -> (String, String) {
-    // LLVM 19's statically linked MSVC distribution can fault while probing
-    // host CPU strings, before it creates the target machine. A generic
-    // x86-64 machine is the platform baseline, matches the separately built
-    // runtime archive, and gives Windows a deterministic cache identity.
+    // A generic x86-64 machine is the platform baseline, matches the
+    // separately built runtime archive, and gives Windows a deterministic
+    // cache identity without an environment-dependent feature probe.
     (PORTABLE_CPU.to_owned(), PORTABLE_CPU_FEATURES.to_owned())
 }
 
@@ -377,6 +397,21 @@ mod tests {
         let identity = native_target_identity().expect("native target identity");
 
         assert_eq!(identity.triple, expected.as_str().to_string_lossy());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn static_windows_host_layout_matches_the_pinned_llvm_target() {
+        let identity = target_identity(
+            Some("x86_64-pc-windows-msvc"),
+            OptimizationProfile::Development,
+        )
+        .expect("pinned LLVM has the Windows x86-64 target");
+
+        assert_eq!(identity.triple, "x86_64-pc-windows-msvc");
+        assert_eq!(identity.data_layout, WINDOWS_X86_64_DATA_LAYOUT);
+        assert_eq!(identity.cpu_policy, PORTABLE_CPU);
+        assert_eq!(identity.cpu_features, PORTABLE_CPU_FEATURES);
     }
 
     #[cfg(target_os = "windows")]
