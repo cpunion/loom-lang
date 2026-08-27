@@ -1,0 +1,125 @@
+module lcir_async_writeback
+
+dyn concept Advance {
+    method advance(mut self) Int
+}
+
+dyn concept Source {
+    method next(mut self) Int
+}
+
+record Counter {
+    value Int
+}
+
+record Offset {
+    value Int
+}
+
+record OwnedCounter {
+    value Int
+}
+
+impl Counter {
+    method add(mut self, amount Int) Int {
+        self.value = self.value + amount
+        self.value
+    }
+
+    method mutateThenFail(mut self) Unit {
+        self.value = 9
+        discard 1 / 0
+        Unit
+    }
+}
+
+impl Advance for Counter {
+    method advance(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+impl Advance for Offset {
+    method advance(mut self) Int {
+        self.value = self.value + 2
+        self.value
+    }
+}
+
+impl Source for OwnedCounter {
+    method next(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+fn eraseCounter(value Counter) dyn Advance {
+    value
+}
+
+fn eraseOffset(value Offset) dyn Advance {
+    value
+}
+
+async fn takeOwnedSource(source Source) Int {
+    Task.sleep(0).await
+    source.next()
+}
+
+async fn makeOwnedSource() dyn Source {
+    Task.sleep(0).await
+    OwnedCounter { value = 4 }
+}
+
+async fn verifyWriteback() Unit {
+    var counter = Counter { value = 1 }
+    let before = counter.add(2)
+    let beforeStored = counter.value
+    assert before == 3
+    assert beforeStored == 3
+
+    Task.sleep(0).await
+
+    let after = counter.add(4)
+    let afterStored = counter.value
+    assert after == 7
+    assert afterStored == 7
+
+    var first = eraseCounter(Counter { value = 10 })
+    var second = eraseOffset(Offset { value = 20 })
+    let firstValue = first.advance()
+    let secondValue = second.advance()
+    assert firstValue == 11
+    assert secondValue == 22
+
+    let original = OwnedCounter { value = 0 }
+    let observed = takeOwnedSource(original).await
+    assert observed == 1
+    assert original.value == 0
+
+    var returned = makeOwnedSource().await
+    let returnedValue = returned.next()
+    assert returnedValue == 5
+    Unit
+}
+
+pub async fn faultWritebackMain() Unit {
+    var counter = Counter { value = 0 }
+    defer {
+        let cleaned = counter.value
+        assert cleaned == 9
+        Unit
+    }
+    Task.sleep(0).await
+    counter.mutateThenFail()
+    Unit
+}
+
+pub async fn main() Unit {
+    verifyWriteback().await
+}
+
+test async fn synchronousWritebackInsideCoroutine() Unit {
+    verifyWriteback().await
+}

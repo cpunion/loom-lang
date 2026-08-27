@@ -274,6 +274,95 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     }
 }
 
+#[test]
+fn typed_async_callers_reuse_synchronous_functional_writeback() {
+    let source = include_str!("../../../fixtures/lcir-async-writeback/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("writebacks("), "{dump}");
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with("verifyWriteback"))
+            .and_then(|function| function.coroutine())
+            .is_some(),
+        "the writeback caller must remain a checked coroutine"
+    );
+
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-async-writeback-normal");
+    let legacy =
+        emit_and_run_legacy_machine_fault(&program, "main", "legacy-async-writeback-normal");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
+    assert_no_indirect_calls(&lcir.ir);
+
+    let expected_fault = serde_json::to_value(
+        interpret_run(&program, "faultWritebackMain")
+            .expect_err("the synchronous callee must fault after mutating its receiver"),
+    )
+    .expect("serialize async writeback fault");
+    let fault_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "faultWritebackMain".into(),
+        },
+    );
+    let fault_dump = dump_program(fault_artifact.program());
+    assert!(
+        fault_dump.contains("resume_fault writebacks"),
+        "fault-edge receiver writeback must precede coroutine cleanup:\n{fault_dump}"
+    );
+    let faulted = emit_and_run_lcir_machine_fault(&fault_artifact, "lcir-async-writeback-fault");
+    let legacy_faulted = emit_and_run_legacy_machine_fault(
+        &program,
+        "faultWritebackMain",
+        "legacy-async-writeback-fault",
+    );
+    assert!(!faulted.output.status.success(), "{:?}", faulted.output);
+    assert!(!legacy_faulted.status.success(), "{legacy_faulted:?}");
+    let expected_code = expected_fault["fault"]["code"]
+        .as_str()
+        .expect("interpreter fault code");
+    let lcir_fault = machine_fault(&faulted.output);
+    let legacy_fault = machine_fault(&legacy_faulted);
+    assert_eq!(lcir_fault["code"].as_str(), Some(expected_code));
+    assert_eq!(legacy_fault["fault"]["code"].as_str(), Some(expected_code));
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create async writeback target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "async-writeback.obj"
+        } else {
+            "async-writeback.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit async writeback object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing async writeback object for {target}"
+        );
+    }
+}
+
 const PROJECTED_PLACE_SOURCE: &str =
     include_str!("../../../fixtures/lcir-projected-places/main.loom");
 
