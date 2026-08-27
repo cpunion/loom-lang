@@ -1,6 +1,7 @@
 #![allow(clippy::default_trait_access)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
@@ -2674,28 +2675,34 @@ fn deep_nested_sum_layout_is_cached_and_bounded_across_the_complete_graph() {
     let mut source =
         String::from("module lcir_deep_sum_layout\n\nenum Layer0 { Number(Int), Label(Text) }\n");
     for layer in 1..LAYERS {
-        source.push_str(&format!(
-            "enum Layer{layer} {{ Nested(Layer{}), Scalars((Int, Int, Int)) }}\n",
+        writeln!(
+            source,
+            "enum Layer{layer} {{ Nested(Layer{}), Scalars((Int, Int, Int)) }}",
             layer - 1
-        ));
+        )
+        .expect("append nested sum declaration");
     }
     source.push_str(
         "\nfn join(left Text, right Text) Text { left.concat(right) }\n\nfn label0(value Layer0) Text {\n    match value {\n        Label(text) => text\n        _ => \"missing\"\n    }\n}\n",
     );
     for layer in 1..LAYERS {
-        source.push_str(&format!(
-            "\nfn label{layer}(value Layer{layer}) Text {{\n    match value {{\n        Nested(inner) => label{}(inner)\n        _ => \"missing\"\n    }}\n}}\n",
+        writeln!(
+            source,
+            "\nfn label{layer}(value Layer{layer}) Text {{\n    match value {{\n        Nested(inner) => label{}(inner)\n        _ => \"missing\"\n    }}\n}}",
             layer - 1
-        ));
+        )
+        .expect("append nested sum matcher");
     }
     let mut wrapped = "Layer0.Label(kept)".to_owned();
     for layer in 1..LAYERS {
         wrapped = format!("Layer{layer}.Nested({wrapped})");
     }
-    source.push_str(&format!(
-        "\npub fn main() Unit {{\n    let kept = join(\"de\", \"ep\")\n    let values = [{wrapped}]\n    let pressure = join(\"mo\", \"ved\")\n    let valid = match values.get(0) {{\n        Some(value) => label{}(value) == \"deep\",\n        None => false,\n    }}\n    assert valid\n    discard pressure\n    Unit\n}}\n",
+    writeln!(
+        source,
+        "\npub fn main() Unit {{\n    let kept = join(\"de\", \"ep\")\n    let values = [{wrapped}]\n    let pressure = join(\"mo\", \"ved\")\n    let valid = match values.get(0) {{\n        Some(value) => label{}(value) == \"deep\",\n        None => false,\n    }}\n    assert valid\n    discard pressure\n    Unit\n}}",
         LAYERS - 1
-    ));
+    )
+    .expect("append nested sum entry");
 
     let program = compile_source(&source);
     let artifact = lower_source_artifact(
