@@ -2,6 +2,6 @@ module catalog.reporting
 
 import foundation.named.Named
 
-pub fn report_name(value Named) Text {
+pub fn report_name[T: Named](value T) Text {
     value.name()
 }

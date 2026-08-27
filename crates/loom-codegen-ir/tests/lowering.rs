@@ -543,7 +543,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn portable_proof_rechecks_select_one_atomic_legacy_fallback() {
+fn portable_nongeneric_proof_rechecks_lower_to_typed_fault_guards() {
     let source = r"module portable_proof_fallback
 
 type Money = Float where self >= 0.0
@@ -607,16 +607,25 @@ pub fn main() Unit {
         TargetLayout::new(64).expect("test target"),
     )
     .expect("classify decoded proof replay");
-    let LoweringOutcome::Unsupported(report) = decoded_outcome else {
-        panic!("one reachable Recheck must select fallback for the complete artifact")
+    let LoweringOutcome::Complete(decoded_artifact) = decoded_outcome else {
+        panic!("nongeneric proof rechecks must remain on the typed LCIR route")
     };
-    assert!(!report.is_empty());
+    let decoded_dump = dump_program(decoded_artifact.program());
+    assert_eq!(
+        decoded_dump
+            .matches("runtime ArtifactProofRejected")
+            .count(),
+        4,
+        "{decoded_dump}"
+    );
+    assert_eq!(
+        decoded_dump.matches("refine.proven").count(),
+        3,
+        "{decoded_dump}"
+    );
     assert!(
-        report
-            .items()
-            .iter()
-            .all(|item| { item.feature() == UnsupportedFeature::SerializedProofRecheck }),
-        "{report:?}"
+        decoded_dump.contains("invariant_record.proven"),
+        "{decoded_dump}"
     );
 }
 
@@ -3399,37 +3408,84 @@ pub fn main() Unit {
 }
 
 #[test]
-fn runtime_invariant_record_construction_selects_one_atomic_fallback() {
-    let invariant = lower_run(
+fn runtime_constraints_build_exact_typed_results_and_structured_errors() {
+    let outcome = lower_run(
         r"module invariant_record
 
 record Positive {
     value Int
-    invariant self.value >= 0
+    invariant self.value + 1 > 0
 }
 
-fn checked(value Int) Result[Positive, ConstraintError] {
+type StrictPositive = Int where self + 1 > 1
+
+fn checked_record(value Int) Result[Positive, ConstraintError] {
     Positive { value = value }
 }
 
+fn checked_refined(value Int) Result[StrictPositive, ConstraintError] {
+    StrictPositive(value)
+}
+
 pub fn main() Unit {
-    discard checked(1)
+    discard checked_record(1)
+    discard checked_refined(1)
     Unit
 }
 ",
     );
-    let LoweringOutcome::Unsupported(invariant) = invariant else {
-        panic!("invariant/runtime construction must select fallback")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("nongeneric runtime constraints must use typed LCIR: {outcome:?}")
     };
+    let instructions = artifact
+        .functions()
+        .iter()
+        .flat_map(loom_codegen_ir::Function::instructions)
+        .collect::<Vec<_>>();
+    assert!(instructions.iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::InvariantRecordProven { .. }
+    )));
     assert!(
-        invariant.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::NominalValue
-                | UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::PatternMatch
-        )),
-        "{invariant:?}"
+        instructions
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::RefineProven { .. }))
     );
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::ListConstruct { elements } if elements.is_empty()
+            ))
+            .count(),
+        2,
+        "each rejection path owns an exact empty List[Text] path"
+    );
+    let text_literals = instructions
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::TextLiteral { utf8 } => Some(utf8.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for literal in [
+        "Positive",
+        "StrictPositive",
+        "InvariantViolation",
+        "ConstraintViolation",
+        "Positive.invariant",
+        "StrictPositive.constraint",
+        "Int",
+    ] {
+        assert!(
+            text_literals.contains(&literal),
+            "missing generated ConstraintError literal {literal:?}: {text_literals:?}"
+        );
+    }
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("effects=may_fault"), "{dump}");
+    assert!(!dump.contains("loom.Value"), "{dump}");
 }
 
 #[test]

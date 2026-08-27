@@ -95,10 +95,12 @@ process-local proof boundary. The public raw LCIR builder cannot mint
 proof-bearing instructions, and LCIR validation checks their exact typed
 construction shape; it does not claim to reconstruct and re-prove a predicate
 that LCIR does not encode. Serialization replaces `Proven` with `Recheck`, and
-decoding normalizes a forged `Proven` spelling the same way. `Recheck` selects
-atomic legacy fallback and executes the predicate or invariant before
-publishing a nominal value. A checked-MIR wrapper is neither a portable proof
-certificate nor publisher authentication.
+decoding normalizes a forged `Proven` spelling the same way. Supported
+nongeneric `Recheck` executes the predicate or invariant in typed LCIR before
+publishing a nominal value and raises the canonical
+`ArtifactProofRejected` runtime fault when replay fails. Generic or otherwise
+unsupported replay selects atomic legacy fallback. A checked-MIR wrapper is
+neither a portable proof certificate nor publisher authentication.
 
 ## Representation policy
 

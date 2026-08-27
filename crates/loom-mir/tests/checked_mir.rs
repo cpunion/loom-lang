@@ -44,6 +44,27 @@ fn constant(value: Constant, ty: Type) -> Expr {
     expr(ExprKind::Constant(value), ty)
 }
 
+fn constraint_error_fields() -> Vec<FieldDef> {
+    [
+        ("target_type", Type::Text),
+        ("code", Type::Text),
+        ("predicate", Type::Text),
+        ("path", Type::List(Box::new(Type::Text))),
+        ("value_summary", Type::Text),
+        (
+            "contract_span",
+            Type::Tuple(vec![Type::Int, Type::Int, Type::Int]),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, ty)| FieldDef {
+        name: name.to_owned(),
+        ty,
+        span: span(),
+    })
+    .collect()
+}
+
 fn copy(id: u32, ty: Type) -> Expr {
     expr(ExprKind::Copy(Place::local(LocalId(id))), ty)
 }
@@ -1316,7 +1337,7 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
             span: span(),
             type_parameters: 0,
             kind: TypeDefKind::Record {
-                fields: Vec::new(),
+                fields: constraint_error_fields(),
                 invariant: None,
             },
         },
@@ -1471,6 +1492,18 @@ fn checked_construction_modes_are_a_validated_trust_boundary() {
         ..Program::default()
     };
     validate_program(&program).expect("valid checked construction modes");
+
+    let mut wrong_constraint_error_shape = program.clone();
+    let TypeDefKind::Record { fields, .. } =
+        &mut wrong_constraint_error_shape.types[constraint_error.0 as usize].kind
+    else {
+        unreachable!();
+    };
+    fields[4].ty = Type::Int;
+    assert!(
+        validation_errors(&wrong_constraint_error_shape).contains(MirValidationCode::RecordShape),
+        "ConstraintError must retain its exact compiler-private six-field shape"
+    );
 
     let mut wrong_recheck_shape = program.clone();
     let StatementKind::Evaluate(expression) =
@@ -2008,7 +2041,7 @@ fn artifact_twenty_does_not_cross_the_scoped_mir_boundary() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 22,
+            expected: 23,
             found: 20
         }
     ));
@@ -2025,7 +2058,7 @@ fn artifact_twenty_one_does_not_cross_the_resource_identity_boundary() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 22,
+            expected: 23,
             found: 21
         }
     ));
@@ -4042,7 +4075,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 22);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 23);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);
@@ -4054,6 +4087,23 @@ fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
         ArtifactError::VersionMismatch {
             expected,
             found: 17
+        } if expected == INTERPRETED_ARTIFACT_VERSION
+    ));
+}
+
+#[test]
+fn artifact_rejects_pre_constraint_error_shape_version_twenty_two() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(22);
+    value["program"] = serde_json::json!("version 22 allowed an empty ConstraintError record");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("version 22 must fail at the header boundary");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected,
+            found: 22
         } if expected == INTERPRETED_ARTIFACT_VERSION
     ));
 }

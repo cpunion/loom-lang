@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 17")?;
+    writeln!(output, "lcir 18")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -458,7 +458,7 @@ fn write_terminator(
             fault,
         } => {
             write!(output, "assert %{condition}, ")?;
-            write_contract_fault(output, metadata)?;
+            write_fault_metadata(output, metadata)?;
             write!(output, ", success ")?;
             write_target(output, success)?;
             write!(output, ", fault ")?;
@@ -667,6 +667,7 @@ const fn float_predicate_name(predicate: FloatPredicate) -> &'static str {
 
 const fn fault_code_name(code: crate::FaultCode) -> &'static str {
     match code {
+        crate::FaultCode::ArtifactProofRejected => "ArtifactProofRejected",
         crate::FaultCode::IntegerOverflow => "IntegerOverflow",
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",

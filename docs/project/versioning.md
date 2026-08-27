@@ -12,14 +12,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `17` |
-| LCIR artifact identity | schema `18` |
-| LCIR native-object domain | `loom-lcir-native-object-v14` |
+| LCIR textual dump | version `18` |
+| LCIR artifact identity | schema `19` |
+| LCIR native-object domain | `loom-lcir-native-object-v15` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v19` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v20` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `14` |
@@ -53,6 +53,20 @@ analysis rederives from the current HIR. The portable-library envelope remains
 version 1 because its nested checked-MIR payload has its own version boundary.
 No source syntax, resource lifetime rule, LCIR, native ABI, or runtime boundary
 changes in version 22.
+
+Interpreted MIR version 23 makes the compiler-private `ConstraintError` record
+shape explicit and validator-enforced. Older artifacts are rejected because
+their synthetic prelude record could omit the six structured fields. The
+persistent cache schema remains 3: cached checked-MIR envelopes already carry
+and validate the interpreted-artifact version, while semantic cache payloads
+do not encode this synthetic lowering shape.
+
+Nongeneric portable proof replay advances the LCIR dump to 18, artifact schema
+to 19, native-object domain to v15, and LLVM object-cache domain to v20. The
+checked predicate is explicit typed CFG, rejection raises the canonical
+`ArtifactProofRejected` `RuntimeFault`, and the established nominal value is
+created only on the accepted edge. This reuses the existing fault-context ABI
+and changes no runtime component.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC

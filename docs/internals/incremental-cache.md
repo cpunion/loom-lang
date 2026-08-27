@@ -70,13 +70,19 @@ current HIR. Checked-MIR cache entries carry the resulting concept module and
 identity under artifact version 22 and cross the ordinary MIR validator before
 reuse; inconsistent identity metadata is a cache miss.
 
+Checked-MIR cache envelopes use artifact version 23 for the canonical
+six-field `ConstraintError` shape. This does not advance the cache schema:
+artifact-version validation invalidates older checked-MIR entries, and typed
+semantic cache payloads do not contain the synthetic prelude record.
+
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
 and contract mode. A checked-MIR cache hit still runs the artifact decoder and
 MIR validator before execution or code generation. Proof-bearing checked MIR is
 not published; a forged or legacy proof-bearing payload loads as a miss. Source
 reanalysis reconstructs the same fresh `Proven` MIR as a cold build instead of
-permanently degrading a warm build to `Recheck` and the legacy route.
+permanently replacing its process-local proof with portable `Recheck`. Supported
+nongeneric replay is typed LCIR; generic or unsupported replay remains legacy.
 
 ## Native object reuse
 

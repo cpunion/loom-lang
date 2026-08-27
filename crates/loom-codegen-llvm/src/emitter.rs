@@ -33,7 +33,7 @@ use loom_mir::{
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
     FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, ScopedDisposal,
     Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId,
-    WitnessRef,
+    WitnessRef, disclosure_type_summary,
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, SHADOW_STACK_ABI_VERSION,
@@ -2357,19 +2357,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             );
             self.module.add_function(name, function_type, None)
         })
-    }
-
-    fn native_value_summary(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_value_summary")
-            .unwrap_or_else(|| {
-                let function_type = self
-                    .context
-                    .i32_type()
-                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
-                self.module
-                    .add_function("loom_runtime_value_summary", function_type, None)
-            })
     }
 
     fn native_set_arguments(&self) -> FunctionValue<'ctx> {
@@ -9071,7 +9058,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             invariant,
             &context,
             record,
-            record,
+            &Type::Nominal(ty, type_arguments.to_vec()),
             ty,
             "InvariantViolation",
             destination,
@@ -9209,7 +9196,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             predicate,
             &context,
             refined,
-            value,
+            &expression.ty,
             ty,
             "ConstraintViolation",
             destination,
@@ -9222,7 +9209,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         contract: &Contract,
         context: &ContractContext<'ctx>,
         accepted_value: PointerValue<'ctx>,
-        summary_source: PointerValue<'ctx>,
+        summary_type: &Type,
         target_type: TypeId,
         violation_code: &str,
         destination: PointerValue<'ctx>,
@@ -9266,24 +9253,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let path = self.alloc_value("constraint.path");
         self.initialize(path, VALUE_TAG_LIST)?;
         let summary = self.alloc_value("constraint.summary");
-        self.publish_gc_root_state()?;
-        let summary_status = call_int(
-            &self.backend.builder,
-            self.backend.native_value_summary(),
-            &[summary_source.into(), summary.into()],
-            "constraint.summary.build",
+        self.emit_constant(
+            &Constant::Text(disclosure_type_summary(self.backend.program, summary_type)),
+            summary,
         )?;
-        let summary_failed = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                summary_status,
-                self.backend.context.i32_type().const_zero(),
-                "constraint.summary.failed",
-            )
-            .map_err(builder_error)?;
-        self.fail_if(summary_failed, "ConstraintSummaryFault")?;
         let contract_span = self.alloc_value("constraint.span");
         let span_values = [
             i64::from(contract.span.file.0),

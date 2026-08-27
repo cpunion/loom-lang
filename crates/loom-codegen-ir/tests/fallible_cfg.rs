@@ -193,7 +193,7 @@ fn fallible_results_exist_only_on_normal_edges_and_faults_resume_on_unwind_paths
                     72,
                     TerminatorKind::Assert {
                         condition,
-                        metadata: assertion_metadata(72),
+                        metadata: FaultMetadata::contract(assertion_metadata(72)),
                         success: BlockTarget::new(after_assert, vec![left, right]),
                         fault: UnwindTarget::new(assert_fault, Vec::new()),
                     },
@@ -495,7 +495,7 @@ fn active_cleanup_keeps_the_primary_fault_across_a_secondary_checked_operation()
                     108,
                     TerminatorKind::Assert {
                         condition,
-                        metadata: assertion_metadata(108),
+                        metadata: FaultMetadata::contract(assertion_metadata(108)),
                         success: BlockTarget::new(normal, Vec::new()),
                         fault: UnwindTarget::new(cleanup, Vec::new()),
                     },
@@ -924,7 +924,7 @@ fn mixed_fault_state_program() -> Program {
                     94,
                     TerminatorKind::Assert {
                         condition,
-                        metadata: assertion_metadata(94),
+                        metadata: FaultMetadata::contract(assertion_metadata(94)),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(merge, Vec::new()),
                     },

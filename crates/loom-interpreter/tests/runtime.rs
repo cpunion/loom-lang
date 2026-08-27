@@ -467,7 +467,38 @@ fn constraint_error_type(id: TypeId) -> TypeDef {
         span: span(),
         type_parameters: 0,
         kind: TypeDefKind::Record {
-            fields: Vec::new(),
+            fields: vec![
+                FieldDef {
+                    name: "target_type".into(),
+                    ty: Type::Text,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "code".into(),
+                    ty: Type::Text,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "predicate".into(),
+                    ty: Type::Text,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "path".into(),
+                    ty: Type::List(Box::new(Type::Text)),
+                    span: span(),
+                },
+                FieldDef {
+                    name: "value_summary".into(),
+                    ty: Type::Text,
+                    span: span(),
+                },
+                FieldDef {
+                    name: "contract_span".into(),
+                    ty: Type::Tuple(vec![Type::Int, Type::Int, Type::Int]),
+                    span: span(),
+                },
+            ],
             invariant: None,
         },
     }
@@ -616,16 +647,29 @@ fn refined_construction_returns_language_result() {
     ));
 
     let rejected = interpreter
-        .invoke(FunctionId(0), vec![Value::Float { value: -0.01 }], span())
+        .invoke(
+            FunctionId(0),
+            vec![Value::Float { value: -97_531.125 }],
+            span(),
+        )
         .expect("constraint_error is data, not a runtime failure");
-    assert!(matches!(
-        rejected,
-        Value::Enum {
-            variant: VariantId(1),
-            payload,
-            ..
-        } if matches!(payload.as_slice(), [Value::ConstraintError { .. }])
-    ));
+    let Value::Enum {
+        variant: VariantId(1),
+        payload,
+        ..
+    } = rejected
+    else {
+        panic!("rejected construction must return Err");
+    };
+    let [Value::ConstraintError { value }] = payload.as_slice() else {
+        panic!("Err must contain ConstraintError");
+    };
+    assert_eq!(value.target_type, "shop.Price");
+    assert_eq!(value.code, "ConstraintViolation");
+    assert_eq!(value.predicate, "non_negative");
+    assert!(value.path.is_empty());
+    assert_eq!(value.value_summary, "Float");
+    assert!(!value.value_summary.contains("97531"));
 }
 
 #[test]
@@ -1255,11 +1299,39 @@ fn invalid_program_cannot_cross_the_interpreter_boundary() {
 }
 
 #[test]
-fn value_summaries_do_not_disclose_text_contents() {
-    let value = Value::Text {
-        value: "customer-secret".into(),
-    };
-    assert_eq!(value.summary(), "Text(bytes=15)");
+fn value_summaries_are_type_only_and_do_not_disclose_secrets_or_sizes() {
+    let cases = [
+        (Value::Bool { value: true }, "Bool"),
+        (Value::Int { value: 97_531 }, "Int"),
+        (Value::Float { value: 97_531.125 }, "Float"),
+        (
+            Value::Text {
+                value: "customer-secret".into(),
+            },
+            "Text",
+        ),
+        (
+            Value::Bytes {
+                value: b"customer-secret".to_vec(),
+            },
+            "Bytes",
+        ),
+        (
+            Value::List {
+                elements: vec![Value::Text {
+                    value: "customer-secret".into(),
+                }],
+            },
+            "List",
+        ),
+    ];
+    for (value, expected) in cases {
+        let summary = value.summary();
+        assert_eq!(summary, expected);
+        assert!(!summary.contains("customer-secret"));
+        assert!(!summary.contains("15"));
+        assert!(!summary.contains("97531"));
+    }
 }
 
 #[test]

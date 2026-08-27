@@ -33,9 +33,10 @@ may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proof-boundary shapes, and exact fault
 effects have already crossed independent validation. Predicate truth itself is
-a process-local conclusion supplied by fresh checked MIR; LCIR does not
-re-prove an omitted source predicate. A decoded `Recheck` is outside LCIR
-coverage and selects the complete legacy route. The emitter declares every
+a process-local conclusion supplied by fresh checked MIR. Supported portable
+nongeneric `Recheck` constructions re-evaluate their serialized predicate in
+LCIR and publish the nominal value only on the accepted path; generic or
+otherwise unsupported replay selects the complete legacy route. The emitter declares every
 source function with its typed LCIR ABI, keeps source symbols internal, emits a
 run or ordered test harness, verifies before and after optimization, and writes
 a relocatable object.
@@ -364,7 +365,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v14` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v15` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -376,11 +377,12 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v19` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v20` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
-canonical typed fault metadata and source-contract placement, direct managed
+canonical typed fault metadata, nongeneric proof-replay guards,
+source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists and uniqueness certificates, and lexical cleanup.
 The first two changes add no physical runtime boundary. Dynamic concat does:
