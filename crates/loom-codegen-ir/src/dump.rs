@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 16")?;
+    writeln!(output, "lcir 17")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -260,6 +260,9 @@ fn write_instruction(
         }
         InstructionKind::ListAppend { list, value } => {
             write!(output, "list.append %{list}, %{value}")
+        }
+        InstructionKind::ListAppendUnique { list, value } => {
+            write!(output, "list.append.unique %{list}, %{value}")
         }
         InstructionKind::ListLength { list } => write!(output, "list.length %{list}"),
         InstructionKind::ListGet { list, index } => {

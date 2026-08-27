@@ -482,6 +482,10 @@ impl FunctionBuilder<'_> {
         self.representations
     }
 
+    pub(crate) fn value_type(&self, value: ValueId) -> Option<ValueTypeId> {
+        self.function.value(value).map(|value| value.ty)
+    }
+
     /// Appends a block. Blocks and values use independent dense identity
     /// domains within this function.
     ///
@@ -573,6 +577,7 @@ impl FunctionBuilder<'_> {
             InstructionKind::RefineProven { .. }
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
+                | InstructionKind::ListAppendUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,
@@ -598,6 +603,7 @@ impl FunctionBuilder<'_> {
             InstructionKind::RefineProven { .. }
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
+                | InstructionKind::ListAppendUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,

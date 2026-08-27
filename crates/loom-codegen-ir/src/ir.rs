@@ -565,6 +565,14 @@ pub enum InstructionKind {
         list: ValueId,
         value: ValueId,
     },
+    /// Appends through a checked-MIR uniqueness certificate. The receiver is
+    /// consumed and the result becomes its sole owner; independent validation
+    /// proves the certificate across CFG edges before a backend may reuse the
+    /// backing allocation.
+    ListAppendUnique {
+        list: ValueId,
+        value: ValueId,
+    },
     /// Returns zero for the canonical null empty List, otherwise its checked
     /// nonnegative element count. This operation cannot collect.
     ListLength {
@@ -654,7 +662,9 @@ impl InstructionKind {
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],
-            Self::ListAppend { list, value } => vec![*list, *value],
+            Self::ListAppend { list, value } | Self::ListAppendUnique { list, value } => {
+                vec![*list, *value]
+            }
             Self::ListGet { list, index } => vec![*list, *index],
             Self::IntSuccessorBelow {
                 value,

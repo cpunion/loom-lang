@@ -1,6 +1,7 @@
 use loom_codegen_ir::{
-    Constant, Effects, InstructionKind, LIST_LITERAL_MAX_ELEMENTS, Origin, ProgramBuilder,
-    Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode, validate_program,
+    BuildErrorCode, Constant, Effects, InstructionKind, LIST_LITERAL_MAX_ELEMENTS, Origin,
+    ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -208,4 +209,55 @@ fn list_element_registration_fails_closed_for_missing_or_immortal_text() {
         error.code() == ValidationCode::RepresentationPlan
             && error.message().contains("concrete closed List")
     }));
+}
+
+#[test]
+fn raw_builder_cannot_forge_unique_append() {
+    let origin = Origin::synthetic(FunctionId(2));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let list = builder
+        .add_managed_list_type(Type::List(Box::new(Type::Int)))
+        .expect("List[Int]");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let root = builder
+        .declare_function(
+            origin,
+            "lists.unique.raw",
+            Signature::new([], list),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    let mut function = builder.function(root).expect("function builder");
+    let entry = function.create_block().expect("entry");
+    function.set_entry(entry).expect("set entry");
+    let value = function
+        .append_instruction(
+            entry,
+            InstructionKind::Constant(Constant::Int(1)),
+            &[integer],
+            origin,
+        )
+        .expect("Int")[0];
+    let values = function
+        .append_instruction(
+            entry,
+            InstructionKind::ListConstruct {
+                elements: Box::new([]),
+            },
+            &[list],
+            origin,
+        )
+        .expect("List")[0];
+    let error = function
+        .append_instruction(
+            entry,
+            InstructionKind::ListAppendUnique {
+                list: values,
+                value,
+            },
+            &[list],
+            origin,
+        )
+        .expect_err("raw unique certificate must be rejected");
+    assert_eq!(error.code(), BuildErrorCode::TrustedInstruction);
 }
