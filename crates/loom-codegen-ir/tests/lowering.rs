@@ -2679,8 +2679,11 @@ pub fn main() Unit {
         )),
         "{invariant:?}"
     );
+}
 
-    let projected_inout = lower_run(
+#[test]
+fn projected_inout_uses_typed_extraction_and_functional_root_reconstruction() {
+    let dump = complete_dump(
         r"module projected_inout
 
 record Counter { value Int }
@@ -2700,16 +2703,10 @@ pub fn main() Unit {
 }
 ",
     );
-    let LoweringOutcome::Unsupported(projected_inout) = projected_inout else {
-        panic!("projected inout must select fallback atomically")
-    };
-    assert!(projected_inout.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::InOutArgument && item.path().contains("arguments[0]")
-    }));
-    assert!(projected_inout.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::ProjectedPlace
-            && item.path().contains("arguments[0].place")
-    }));
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("product.insert"), "{dump}");
+    assert!(dump.contains("inout=[0]"), "{dump}");
+    assert!(dump.contains("invoke "), "{dump}");
 }
 
 #[test]

@@ -16,6 +16,7 @@ use crate::instance_closure::{
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
 use crate::match_plan::{MatchNode, MatchPlan, plan_match};
+use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
@@ -783,6 +784,7 @@ struct Classifier<'program> {
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
+    places: PlaceBudget,
 }
 
 impl<'program> Classifier<'program> {
@@ -792,6 +794,7 @@ impl<'program> Classifier<'program> {
             items: Vec::new(),
             aggregates: AggregatePlanner::new(program),
             match_plans: BTreeMap::new(),
+            places: PlaceBudget::default(),
         }
     }
 
@@ -800,14 +803,7 @@ impl<'program> Classifier<'program> {
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
-        let Type::Nominal(id, arguments) = ty else {
-            return false;
-        };
-        if !arguments.is_empty() {
-            return false;
-        }
-        let semantic = Type::Nominal(*id, Vec::new());
-        self.aggregates.supports_value_type(&semantic)
+        closed_record_fields(self.program, ty).is_some() && self.aggregates.supports_value_type(ty)
     }
 
     fn supported_expression_type(&mut self, ty: &Type) -> bool {
@@ -850,35 +846,36 @@ impl<'program> Classifier<'program> {
         function: &mir::Function,
         key: &InstanceKey,
         place: &mir::Place,
+        usage: PlaceUse,
         span: Span,
         path: &str,
-    ) -> bool {
-        if place.projection.is_empty() {
-            return true;
+    ) -> Option<Type> {
+        if !self.places.admit(usage, place.projection.len()) {
+            return None;
         }
         let Some(base) = Self::local_type(function, place.local) else {
-            return false;
+            return None;
         };
         let Some(mut ty) = self.instantiated_type(function, key, None, base, span, path) else {
-            return false;
+            return None;
         };
         if !self.supported_value_type(&ty) {
-            return false;
+            return None;
         }
         for field in &place.projection {
             let Some(fields) = closed_record_fields(self.program, &ty) else {
-                return false;
+                return None;
             };
             let Some(next) = usize::try_from(*field)
                 .ok()
                 .and_then(|index| fields.get(index))
                 .map(|field| field.ty.clone())
             else {
-                return false;
+                return None;
             };
             ty = next;
         }
-        self.supported_value_type(&ty)
+        self.supported_value_type(&ty).then_some(ty)
     }
 
     fn classify_function(&mut self, function: &mir::Function, key: &InstanceKey) {
@@ -1013,10 +1010,12 @@ impl<'program> Classifier<'program> {
         key: &InstanceKey,
         expression: Option<&mir::Expr>,
         place: &mir::Place,
+        usage: PlaceUse,
         span: Span,
         path: &str,
-    ) {
-        if !self.supported_projected_place(function, key, place, span, path) {
+    ) -> Option<Type> {
+        let projected = self.supported_projected_place(function, key, place, usage, span, path);
+        if projected.is_none() {
             self.item(
                 UnsupportedFeature::ProjectedPlace,
                 function.id,
@@ -1025,6 +1024,7 @@ impl<'program> Classifier<'program> {
                 path.to_owned(),
             );
         }
+        projected
     }
 
     fn visit_block(
@@ -1083,6 +1083,7 @@ impl<'program> Classifier<'program> {
                     key,
                     None,
                     place,
+                    PlaceUse::Write,
                     statement.span,
                     &format!("{path}.place"),
                 );
@@ -1152,24 +1153,20 @@ impl<'program> Classifier<'program> {
                 expression.ty != Type::Never
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
-                if matches!(expression.kind, ExprKind::Move(_)) && !place.projection.is_empty() {
-                    self.item(
-                        UnsupportedFeature::ProjectedPlace,
-                        function.id,
-                        Some(expression.id),
-                        expression.span,
-                        format!("{path}.place"),
-                    );
+                let usage = if matches!(expression.kind, ExprKind::Move(_)) {
+                    PlaceUse::Move
                 } else {
-                    self.projected_place(
-                        function,
-                        key,
-                        Some(expression),
-                        place,
-                        expression.span,
-                        &format!("{path}.place"),
-                    );
-                }
+                    PlaceUse::Read
+                };
+                self.projected_place(
+                    function,
+                    key,
+                    Some(expression),
+                    place,
+                    usage,
+                    expression.span,
+                    &format!("{path}.place"),
+                );
                 true
             }
             ExprKind::Unary(_, operand) => {
@@ -1542,14 +1539,18 @@ impl<'program> Classifier<'program> {
                             }
                         }
                         CallArgument::InOut(place) => {
-                            let local_type =
-                                Self::local_type(function, place.local).and_then(|ty| {
-                                    InstanceSubstitution::new(key).instantiate_type(ty).ok()
-                                });
+                            let place_type = self.projected_place(
+                                function,
+                                key,
+                                Some(expression),
+                                place,
+                                PlaceUse::InOut,
+                                expression.span,
+                                &format!("{path}.arguments[{index}].place"),
+                            );
                             let allowed = index == 0
-                                && place.projection.is_empty()
-                                && mutable_receiver.as_ref() == local_type.as_ref()
-                                && local_type
+                                && mutable_receiver.as_ref() == place_type.as_ref()
+                                && place_type
                                     .as_ref()
                                     .is_some_and(|ty| self.supported_record_type(ty));
                             if !allowed {
@@ -1558,15 +1559,6 @@ impl<'program> Classifier<'program> {
                                     function,
                                     expression,
                                     &format!("{path}.arguments[{index}]"),
-                                );
-                            }
-                            if !place.projection.is_empty() {
-                                self.item(
-                                    UnsupportedFeature::ProjectedPlace,
-                                    function.id,
-                                    Some(expression.id),
-                                    expression.span,
-                                    format!("{path}.arguments[{index}].place"),
                                 );
                             }
                         }
@@ -1597,6 +1589,7 @@ impl<'program> Classifier<'program> {
                     key,
                     Some(expression),
                     owner,
+                    PlaceUse::Read,
                     expression.span,
                     &format!("{path}.owner"),
                 );
@@ -2408,6 +2401,11 @@ struct LoweredMatchArm {
     captures: Box<[(LocalId, crate::match_plan::MatchValueId, ValueId)]>,
 }
 
+struct InOutArgumentPlan {
+    parameter: usize,
+    place: PlacePlan,
+}
+
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
     source: &'function mir::Function,
@@ -2557,6 +2555,205 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     format!("product field index {field} is missing from {aggregate}"),
                 )
             })
+    }
+
+    fn place_plan(&self, place: &mir::Place) -> Result<PlacePlan, LoweringError> {
+        PlacePlan::build(
+            self.builder.representations(),
+            place,
+            self.local_type(place.local)?,
+        )
+        .map_err(|error| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "function #{} has an invalid typed place plan for local #{}: {error}",
+                    self.source.id.0, place.local.0
+                ),
+            )
+        })
+    }
+
+    fn validate_place_plan_identity(&self, plan: &PlacePlan) -> Result<(), LoweringError> {
+        let representations = self.builder.representations();
+        let matches = |ty, repr| {
+            representations
+                .value_type(ty)
+                .is_some_and(|value_type| value_type.repr() == repr)
+        };
+        if !matches(plan.root_type(), plan.root_repr())
+            || !matches(plan.leaf_type(), plan.leaf_repr())
+            || plan.steps().iter().copied().any(|step| {
+                !matches(step.parent_type(), step.parent_repr())
+                    || !matches(step.field_type(), step.field_repr())
+            })
+        {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "function #{} place plan for local #{} lost exact representation identity",
+                    self.source.id.0,
+                    plan.local().0
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_place(
+        &mut self,
+        mut flow: Flow,
+        plan: &PlacePlan,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        self.validate_place_plan_identity(plan)?;
+        let mut value = self
+            .environments
+            .get(flow.env, plan.local())
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "function #{} reads unavailable local #{}",
+                        self.source.id.0,
+                        plan.local().0
+                    ),
+                )
+            })?;
+        for step in plan.steps().iter().copied() {
+            value = match self.one_instruction(
+                flow,
+                InstructionKind::ProductExtract {
+                    aggregate: value,
+                    field: step.field(),
+                },
+                step.field_type(),
+                origin,
+            )? {
+                EvalFlow::Continue {
+                    flow: next_flow,
+                    value,
+                } => {
+                    flow = next_flow;
+                    value
+                }
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "typed place extraction unexpectedly terminated",
+                    ));
+                }
+            };
+        }
+        Ok(EvalFlow::Continue { flow, value })
+    }
+
+    fn write_place(
+        &mut self,
+        mut flow: Flow,
+        plan: &PlacePlan,
+        value: ValueId,
+        origin: Origin,
+    ) -> Result<Flow, LoweringError> {
+        self.validate_place_plan_identity(plan)?;
+        let Some((leaf, prefix)) = plan.steps().split_last() else {
+            flow.env = self.environments.set(flow.env, plan.local(), value)?;
+            return Ok(flow);
+        };
+        let root = self
+            .environments
+            .get(flow.env, plan.local())
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "function #{} writes unavailable product local #{}",
+                        self.source.id.0,
+                        plan.local().0
+                    ),
+                )
+            })?;
+        let mut aggregate = root;
+        let mut parents = Vec::with_capacity(prefix.len());
+        for step in prefix.iter().copied() {
+            let extracted = match self.one_instruction(
+                flow,
+                InstructionKind::ProductExtract {
+                    aggregate,
+                    field: step.field(),
+                },
+                step.field_type(),
+                origin,
+            )? {
+                EvalFlow::Continue {
+                    flow: next_flow,
+                    value,
+                } => {
+                    flow = next_flow;
+                    value
+                }
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "typed place reconstruction unexpectedly terminated while extracting",
+                    ));
+                }
+            };
+            parents.push((aggregate, step));
+            aggregate = extracted;
+        }
+        let mut rebuilt = match self.one_instruction(
+            flow,
+            InstructionKind::ProductInsert {
+                aggregate,
+                field: leaf.field(),
+                value,
+            },
+            leaf.parent_type(),
+            origin,
+        )? {
+            EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } => {
+                flow = next_flow;
+                value
+            }
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "typed place reconstruction unexpectedly terminated while inserting",
+                ));
+            }
+        };
+        for (parent, step) in parents.into_iter().rev() {
+            rebuilt = match self.one_instruction(
+                flow,
+                InstructionKind::ProductInsert {
+                    aggregate: parent,
+                    field: step.field(),
+                    value: rebuilt,
+                },
+                step.parent_type(),
+                origin,
+            )? {
+                EvalFlow::Continue {
+                    flow: next_flow,
+                    value,
+                } => {
+                    flow = next_flow;
+                    value
+                }
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "typed place reconstruction unexpectedly terminated while rebuilding",
+                    ));
+                }
+            };
+        }
+        flow.env = self.environments.set(flow.env, plan.local(), rebuilt)?;
+        Ok(flow)
     }
 
     fn create_block(&mut self) -> Result<BlockId, LoweringError> {
@@ -2767,98 +2964,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 body,
             } => self.lower_for_range(flow, *local, start, end, body, statement),
             StatementKind::Assign { place, value } => match self.lower_expr(flow, value)? {
-                EvalFlow::Continue { mut flow, value } => {
-                    if let Some((field, prefix)) = place.projection.split_last() {
-                        let root =
-                            self.environments
-                                .get(flow.env, place.local)
-                                .ok_or_else(|| {
-                                    LoweringError::defect(
-                                        LoweringDefectCode::InconsistentPlan,
-                                        format!(
-                                            "function #{} writes unavailable product local #{}",
-                                            self.source.id.0, place.local.0
-                                        ),
-                                    )
-                                })?;
-                        let root_type = self.local_type(place.local)?;
-                        let mut aggregate = root;
-                        let mut aggregate_type = root_type;
-                        let mut parents = Vec::with_capacity(prefix.len());
-                        for projected in prefix {
-                            let field_type = self.product_field_type(aggregate_type, *projected)?;
-                            let extracted = match self.one_instruction(
-                                flow,
-                                InstructionKind::ProductExtract {
-                                    aggregate,
-                                    field: *projected,
-                                },
-                                field_type,
-                                self.statement_origin(statement),
-                            )? {
-                                EvalFlow::Continue { flow: next, value } => {
-                                    flow = next;
-                                    value
-                                }
-                                EvalFlow::Terminated => {
-                                    return Err(LoweringError::defect(
-                                        LoweringDefectCode::Builder,
-                                        "product extraction unexpectedly terminated",
-                                    ));
-                                }
-                            };
-                            parents.push((aggregate, aggregate_type, *projected));
-                            aggregate = extracted;
-                            aggregate_type = field_type;
-                        }
-                        let mut inserted = match self.one_instruction(
-                            flow,
-                            InstructionKind::ProductInsert {
-                                aggregate,
-                                field: *field,
-                                value,
-                            },
-                            aggregate_type,
-                            self.statement_origin(statement),
-                        )? {
-                            EvalFlow::Continue { flow: next, value } => {
-                                flow = next;
-                                value
-                            }
-                            EvalFlow::Terminated => {
-                                return Err(LoweringError::defect(
-                                    LoweringDefectCode::Builder,
-                                    "product insertion unexpectedly terminated",
-                                ));
-                            }
-                        };
-                        for (parent, parent_type, projected) in parents.into_iter().rev() {
-                            inserted = match self.one_instruction(
-                                flow,
-                                InstructionKind::ProductInsert {
-                                    aggregate: parent,
-                                    field: projected,
-                                    value: inserted,
-                                },
-                                parent_type,
-                                self.statement_origin(statement),
-                            )? {
-                                EvalFlow::Continue { flow: next, value } => {
-                                    flow = next;
-                                    value
-                                }
-                                EvalFlow::Terminated => {
-                                    return Err(LoweringError::defect(
-                                        LoweringDefectCode::Builder,
-                                        "product reconstruction unexpectedly terminated",
-                                    ));
-                                }
-                            };
-                        }
-                        flow.env = self.environments.set(flow.env, place.local, inserted)?;
-                    } else {
-                        flow.env = self.environments.set(flow.env, place.local, value)?;
-                    }
+                EvalFlow::Continue { flow, value } => {
+                    let plan = self.place_plan(place)?;
+                    let flow =
+                        self.write_place(flow, &plan, value, self.statement_origin(statement))?;
                     Ok(StatementFlow::Continue(flow))
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
@@ -2971,60 +3080,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.constant(flow, constant, &expression.ty, origin)
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
-                let mut flow = flow;
-                let value = self
-                    .environments
-                    .get(flow.env, place.local)
-                    .ok_or_else(|| {
-                        LoweringError::defect(
-                            LoweringDefectCode::InconsistentPlan,
-                            format!(
-                                "function #{} reads unavailable local #{} at expression #{}",
-                                self.source.id.0, place.local.0, expression.id.0
-                            ),
-                        )
-                    })?;
-                if !place.projection.is_empty() {
-                    if matches!(expression.kind, ExprKind::Move(_)) {
-                        return Err(self.unsupported_reached("projected move"));
-                    }
-                    let mut aggregate = value;
-                    let mut aggregate_type = self.local_type(place.local)?;
-                    for field in &place.projection {
-                        let field_type = self.product_field_type(aggregate_type, *field)?;
-                        aggregate = match self.one_instruction(
-                            flow,
-                            InstructionKind::ProductExtract {
-                                aggregate,
-                                field: *field,
-                            },
-                            field_type,
-                            origin,
-                        )? {
-                            EvalFlow::Continue { flow: next, value } => {
-                                flow = next;
-                                value
-                            }
-                            EvalFlow::Terminated => {
-                                return Err(LoweringError::defect(
-                                    LoweringDefectCode::Builder,
-                                    "product extraction unexpectedly terminated",
-                                ));
-                            }
-                        };
-                        aggregate_type = field_type;
-                    }
-                    if aggregate_type != self.type_id(&expression.ty)? {
-                        return Err(LoweringError::defect(
-                            LoweringDefectCode::InconsistentPlan,
-                            "projected read type does not match its checked MIR expression",
-                        ));
-                    }
-                    return Ok(EvalFlow::Continue {
-                        flow,
-                        value: aggregate,
-                    });
+                let plan = self.place_plan(place)?;
+                if plan.leaf_type() != self.type_id(&expression.ty)? {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "typed place result does not match its checked MIR expression",
+                    ));
                 }
+                let EvalFlow::Continue { mut flow, value } =
+                    self.read_place(flow, &plan, origin)?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "typed place read unexpectedly terminated",
+                    ));
+                };
                 if matches!(expression.kind, ExprKind::Move(_)) {
                     flow.env = self.environments.remove(flow.env, place.local)?;
                 }
@@ -4256,6 +4326,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .filter_map(|(index, parameter)| parameter.mutable.then_some(index))
             .collect::<Vec<_>>();
         let mut inout_arguments = Vec::with_capacity(expected_inout.len());
+        let origin = self.expression_origin(expression);
         for (index, argument) in arguments.iter().enumerate() {
             match argument {
                 CallArgument::Value(argument) => {
@@ -4270,30 +4341,30 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     lowered_arguments.push(value);
                 }
                 CallArgument::InOut(place) => {
-                    if !place.projection.is_empty() {
-                        return Err(self.unsupported_reached("projected inout call argument"));
-                    }
-                    let value = self
-                        .environments
-                        .get(flow.env, place.local)
-                        .ok_or_else(|| {
-                            LoweringError::defect(
-                                LoweringDefectCode::InconsistentPlan,
-                                format!(
-                                    "function #{} passes unavailable inout local #{}",
-                                    self.source.id.0, place.local.0
-                                ),
-                            )
-                        })?;
+                    let plan = self.place_plan(place)?;
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.read_place(flow, &plan, origin)?
+                    else {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::Builder,
+                            "typed inout place read unexpectedly terminated",
+                        ));
+                    };
+                    flow = next_flow;
                     lowered_arguments.push(value);
-                    inout_arguments.push((index, place.local, self.local_type(place.local)?));
+                    inout_arguments.push(InOutArgumentPlan {
+                        parameter: index,
+                        place: plan,
+                    });
                 }
             }
         }
         if expected_inout.as_slice()
             != inout_arguments
                 .iter()
-                .map(|(index, _, _)| *index)
+                .map(|argument| argument.parameter)
                 .collect::<Vec<_>>()
                 .as_slice()
         {
@@ -4315,11 +4386,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             )
         })?;
         let effect = effect_for(self.effects, instance)?;
-        let origin = self.expression_origin(expression);
         let result_type = self.type_id(&expression.ty)?;
         let mut result_types = Vec::with_capacity(1 + inout_arguments.len());
         result_types.push(result_type);
-        result_types.extend(inout_arguments.iter().map(|(_, _, ty)| *ty));
+        result_types.extend(
+            inout_arguments
+                .iter()
+                .map(|argument| argument.place.leaf_type()),
+        );
         if effect == Effects::NONE {
             let results = self
                 .builder
@@ -4339,10 +4413,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     "direct call produced no source result",
                 )
             })?;
-            for ((_, local, _), writeback) in
-                inout_arguments.iter().zip(results.iter().copied().skip(1))
+            for (argument, writeback) in inout_arguments.iter().zip(results.iter().copied().skip(1))
             {
-                flow.env = self.environments.set(flow.env, *local, writeback)?;
+                flow = self.write_place(flow, &argument.place, writeback, origin)?;
             }
             return Ok(EvalFlow::Continue {
                 flow,
@@ -4354,33 +4427,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .builder
             .append_block_parameter(normal, result_type)
             .map_err(LoweringError::from)?;
-        let mut normal_env = flow.env;
-        for (_, local, ty) in &inout_arguments {
-            let writeback = self
-                .builder
-                .append_block_parameter(normal, *ty)
-                .map_err(LoweringError::from)?;
-            normal_env = self.environments.set(normal_env, *local, writeback)?;
+        let mut normal_writebacks = Vec::with_capacity(inout_arguments.len());
+        for argument in &inout_arguments {
+            normal_writebacks.push(
+                self.builder
+                    .append_block_parameter(normal, argument.place.leaf_type())
+                    .map_err(LoweringError::from)?,
+            );
+        }
+        let mut normal_flow = Flow {
+            block: normal,
+            env: flow.env,
+        };
+        for (argument, writeback) in inout_arguments.iter().zip(normal_writebacks) {
+            normal_flow = self.write_place(normal_flow, &argument.place, writeback, origin)?;
         }
         let unwind = if inout_arguments.is_empty() {
             self.fault_target(flow)?
         } else {
             let bridge = self.create_block()?;
-            let mut bridge_env = flow.env;
-            for (_, local, ty) in &inout_arguments {
-                let writeback = self
-                    .builder
-                    .append_block_parameter(bridge, *ty)
-                    .map_err(LoweringError::from)?;
-                bridge_env = self.environments.set(bridge_env, *local, writeback)?;
+            let mut bridge_writebacks = Vec::with_capacity(inout_arguments.len());
+            for argument in &inout_arguments {
+                bridge_writebacks.push(
+                    self.builder
+                        .append_block_parameter(bridge, argument.place.leaf_type())
+                        .map_err(LoweringError::from)?,
+                );
             }
-            let bridge_flow = Flow {
+            let mut bridge_flow = Flow {
                 block: bridge,
-                env: bridge_env,
+                env: flow.env,
             };
+            for (argument, writeback) in inout_arguments.iter().zip(bridge_writebacks) {
+                bridge_flow = self.write_place(bridge_flow, &argument.place, writeback, origin)?;
+            }
             let propagation = self.fault_target(bridge_flow)?;
             self.terminate(
-                bridge,
+                bridge_flow.block,
                 TerminatorKind::Jump(BlockTarget::new(propagation.block, propagation.arguments)),
                 origin,
             )?;
@@ -4397,10 +4480,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             origin,
         )?;
         Ok(EvalFlow::Continue {
-            flow: Flow {
-                block: normal,
-                env: normal_env,
-            },
+            flow: normal_flow,
             value: result,
         })
     }

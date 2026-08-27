@@ -30,6 +30,7 @@ mod instance_closure;
 mod ir;
 mod lower;
 mod match_plan;
+mod place_plan;
 mod repr;
 mod source_graph;
 mod validate;
