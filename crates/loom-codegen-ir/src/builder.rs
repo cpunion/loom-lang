@@ -20,6 +20,7 @@ pub enum BuildErrorCode {
     InvalidFunction,
     InvalidBlock,
     InvalidValueType,
+    InvalidTextType,
     InvalidProductType,
     InvalidSumType,
     DuplicateEntry,
@@ -89,6 +90,34 @@ impl ProgramBuilder {
     #[must_use]
     pub const fn instances(&self) -> &InstancePlan {
         &self.instances
+    }
+
+    /// Registers the compiler-private representation used by the bounded
+    /// literal-only Text slice.
+    ///
+    /// This is intentionally not a general managed Text representation. Its
+    /// only constructor is [`InstructionKind::TextLiteral`], and the complete
+    /// artifact boundary prevents foreign values from entering internal
+    /// functions. The current native runtime Text layout is defined only for
+    /// 64-bit targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a non-64-bit target,
+    /// for duplicate registration, or when an identity table is exhausted.
+    pub fn add_immortal_text_type(&mut self) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidTextType,
+                "LCIR immortal Text must be registered before functions",
+            ));
+        }
+        self.representations.add_immortal_text().ok_or_else(|| {
+            BuildError::new(
+                BuildErrorCode::InvalidTextType,
+                "LCIR immortal Text requires one unique registration on a 64-bit target",
+            )
+        })
     }
 
     /// Adds one monomorphic record whose fields already have canonical direct

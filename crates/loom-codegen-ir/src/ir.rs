@@ -391,6 +391,28 @@ pub enum FloatPredicate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionKind {
     Constant(Constant),
+    /// Constructs one process-lifetime UTF-8 Text object. Its result must use
+    /// the dedicated immortal Text representation; no other instruction may
+    /// construct that representation from raw bits or a foreign pointer.
+    TextLiteral {
+        utf8: Box<str>,
+    },
+    /// Reads the cached Unicode scalar length from an immortal Text object.
+    TextLength {
+        text: ValueId,
+    },
+    /// Tests UTF-8 byte-subsequence containment without allocating or reaching
+    /// a moving-GC safepoint.
+    TextContains {
+        text: ValueId,
+        needle: ValueId,
+    },
+    /// Compares Text contents. Pointer identity is never language equality.
+    TextCompare {
+        predicate: BoolPredicate,
+        left: ValueId,
+        right: ValueId,
+    },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
     ProductConstruct {
@@ -484,7 +506,9 @@ pub enum InstructionKind {
 impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
-            Self::Constant(_) => Vec::new(),
+            Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
+            Self::TextLength { text } => vec![*text],
+            Self::TextContains { text, needle } => vec![*text, *needle],
             Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
                 fields.to_vec()
             }
@@ -497,7 +521,8 @@ impl InstructionKind {
             | Self::BoolNot { value }
             | Self::FloatNegate { value } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
-            Self::BoolCompare { left, right, .. }
+            Self::TextCompare { left, right, .. }
+            | Self::BoolCompare { left, right, .. }
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],

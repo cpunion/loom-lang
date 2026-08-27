@@ -17,10 +17,11 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, structural-tuple, closed-record, and compile-time-established
-refined artifacts, plus bounded concrete direct generic instances over those
-representations and eligible concrete closed-enum artifacts, into typed LCIR
-and falls back atomically for reachable unsupported features. The broader
+primitive, literal-proven immortal-text, structural-tuple, closed-record, and
+compile-time-established refined artifacts, plus bounded concrete direct
+generic instances over those representations and eligible concrete
+closed-enum artifacts, into typed LCIR and falls back atomically for reachable
+unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
 
@@ -28,7 +29,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed values, unsupported or recursive enums,
+native specializations. Moving, dynamically produced, or nested managed values,
+unsupported or recursive enums,
 runtime-checked constraints, concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
@@ -100,6 +102,9 @@ vocabulary is:
 - `Scalar(I1)` for `Bool`;
 - `Scalar(I64)` for `Int`;
 - `Scalar(F64)` for `Float`;
+- one opaque `ImmortalText` pointer for a 64-bit closed artifact in which every
+  text value is transitively produced by a compiler-emitted process-lifetime
+  literal;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -114,14 +119,22 @@ vocabulary is:
 
 Products and sums are immutable register aggregates. Tuples, records, sums,
 established refinements, and protected invariant products may contain one
-another when the resulting by-value graph is acyclic. Each representation plan
+another when the resulting by-value graph is acyclic. `ImmortalText` is not
+admitted inside those aggregates. Each representation plan
 has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
-are not required to be globally unique by semantic type. Managed,
+are not required to be globally unique by semantic type. General managed,
 dynamic-witness, erased, and coroutine representations are added only with
 complete lowering and validation rules. A generic or dynamic operation
 elsewhere in an artifact does not make an unrelated direct value carry a
 universal tag.
+
+The narrow text slice supports only allocation-free length, containment, and
+content equality or inequality; equality is never pointer equality. `concat`,
+`get`, dynamic producers, and aggregate-contained text remain whole-artifact
+fallback until a typed shadow-root ABI can keep direct pointers precise across
+moving-GC safepoints. Literal planning is bounded to 1 MiB of UTF-8 for one
+literal and 16 MiB across one LCIR artifact.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
 records the exact base type, `RefineProven` requires that base and a distinct

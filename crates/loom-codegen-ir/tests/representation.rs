@@ -65,6 +65,47 @@ fn target_pointer_width_is_validated_at_the_boundary() {
 }
 
 #[test]
+fn immortal_text_is_explicit_64_bit_only_and_not_an_aggregate_leaf() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    assert_eq!(builder.type_id(&Type::Text), None);
+    let text = builder
+        .add_immortal_text_type()
+        .expect("register immortal Text");
+    let planned = builder
+        .representations()
+        .value_type(text)
+        .expect("Text value type");
+    assert_eq!(planned.semantic(), &Type::Text);
+    assert_eq!(
+        builder.representations().repr(planned.repr()),
+        Some(&Repr::ImmortalText)
+    );
+    assert_eq!(
+        builder
+            .add_immortal_text_type()
+            .expect_err("duplicate Text registration must fail")
+            .code(),
+        BuildErrorCode::InvalidTextType
+    );
+    assert_eq!(
+        builder
+            .add_tuple_type(&[Type::Text])
+            .expect_err("managed Text cannot enter a direct aggregate yet")
+            .code(),
+        BuildErrorCode::InvalidProductType
+    );
+
+    let mut narrow = ProgramBuilder::new(TargetLayout::new(32).expect("target"));
+    assert_eq!(
+        narrow
+            .add_immortal_text_type()
+            .expect_err("the native Text object ABI is 64-bit only")
+            .code(),
+        BuildErrorCode::InvalidTextType
+    );
+}
+
+#[test]
 fn tuple_builder_requires_child_first_unique_predeclaration() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let inner = Type::Tuple(vec![Type::Int, Type::Bool]);

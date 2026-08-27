@@ -59,6 +59,135 @@ fn complete_dump(source: &str) -> String {
 }
 
 #[test]
+fn literal_only_text_values_and_allocation_free_operations_lower_directly() {
+    let dump = complete_dump(
+        r#"module lcir_text
+
+fn identity[T](value T) T { value }
+
+fn inspect(value Text) Bool {
+    value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
+}
+
+pub fn main() Unit {
+    discard inspect(identity("hello界"))
+    Unit
+}
+"#,
+    );
+    for expected in [
+        "repr r5 = immortal_text_ptr",
+        "type t5 = Text => r5",
+        "types=[Text] witnesses=[]",
+        "text.literal \"hello界\"",
+        "text.length",
+        "text.contains",
+        "text.compare.equal",
+        "text.compare.not_equal",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+}
+
+#[test]
+fn text_literal_bytes_participate_in_artifact_identity() {
+    let identity = |literal: &str| {
+        let source = format!(
+            "module lcir_text_identity\n\npub fn main() Unit {{\n    discard \"{literal}\".length()\n    Unit\n}}\n"
+        );
+        let LoweringOutcome::Complete(artifact) = lower_run(&source) else {
+            panic!("bounded Text literal should lower directly")
+        };
+        artifact_identity(&artifact)
+    };
+    assert_ne!(identity("alpha"), identity("omega"));
+}
+
+#[test]
+fn immortal_text_requires_the_pinned_64_bit_runtime_layout() {
+    let mir = compile(
+        r#"module lcir_text_32
+
+pub fn main() Unit {
+    discard "literal".length()
+    Unit
+}
+"#,
+    );
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit test target"),
+    )
+    .expect("classify 32-bit Text artifact");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("the 64-bit Text object ABI must not be guessed on a 32-bit target")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn allocating_or_derived_text_operations_select_one_atomic_fallback() {
+    let outcome = lower_run(
+        r#"module lcir_text_fallback
+
+pub fn main() Unit {
+    discard "left".concat("right")
+    discard "value".get(0)
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("allocating Text operations must keep the complete artifact on fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .filter(|item| { item.feature() == UnsupportedFeature::BuiltinCall })
+            .count()
+            >= 2,
+        "{report:?}"
+    );
+}
+
+#[test]
+fn managed_text_inside_aggregates_remains_atomic_fallback() {
+    let outcome = lower_run(
+        r#"module lcir_text_aggregate_fallback
+
+record Named { value Text }
+
+pub fn main() Unit {
+    discard Named { value = "safe" }
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("managed aggregate roots require the future typed GC-root ABI")
+    };
+    assert!(
+        report.items().iter().any(|item| {
+            matches!(
+                item.feature(),
+                UnsupportedFeature::ExpressionType | UnsupportedFeature::NominalValue
+            )
+        }),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn checked_mir_is_the_only_source_of_proven_refinement_instructions() {
     let dump = complete_dump(
         r"module proven_boundaries
@@ -1009,7 +1138,7 @@ fn reachable_unsupported_sites_report_the_whole_artifact_before_building() {
     let mir = compile(
         r#"module coverage
 
-fn textValue() Text { "legacy" }
+fn textValue() Text { "left".concat("right") }
 
 pub fn main() Unit {
     let value = textValue()
@@ -1026,7 +1155,7 @@ pub fn main() Unit {
     )
     .expect("classification succeeds");
     let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("reachable Text must select whole-artifact fallback")
+        panic!("reachable allocating Text must select whole-artifact fallback")
     };
     let repeated = lower_typed_artifact(
         &mir,
@@ -1037,14 +1166,14 @@ pub fn main() Unit {
     )
     .expect("repeat classification");
     let LoweringOutcome::Unsupported(repeated) = repeated else {
-        panic!("repeated reachable Text classification must be unsupported")
+        panic!("repeated allocating Text classification must be unsupported")
     };
     assert_eq!(report, repeated);
     assert!(
         report
             .items()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::SignatureType)
+            .any(|item| item.feature() == UnsupportedFeature::BuiltinCall)
     );
     assert!(
         report.items().iter().all(|item| !item.path().is_empty())

@@ -39,12 +39,12 @@ pub fn main() Unit {
     )
 }
 
-fn text_program() -> CheckedProgram {
+fn allocating_text_program() -> CheckedProgram {
     compile_source(
         r#"module prepared_text
 
 pub fn main() Unit {
-    discard "legacy"
+    discard "left".concat("right")
     Unit
 }
 "#,
@@ -62,7 +62,7 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
     .expect("prepare typed artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
-    let text = text_program();
+    let text = allocating_text_program();
     let prepared = prepare_native_object(
         &text,
         EmitOptions::run("main"),
@@ -117,7 +117,7 @@ fn one_unsupported_test_selects_legacy_for_the_ordered_test_artifact() {
 test fn scalar() Unit { Unit }
 
 test fn text() Unit {
-    discard "legacy"
+    discard "left".concat("right")
     Unit
 }
 "#,
@@ -184,12 +184,12 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
 
-    let text = text_program();
+    let text = allocating_text_program();
     let text_ir = directory.path().join("text.ll");
     let mut text_options = EmitOptions::run("main");
     text_options.emit_ir = Some(text_ir.clone());
     let text_prepared = prepare_native_object(&text, text_options, NativeRoutePolicy::Automatic)
-        .expect("prepare text artifact");
+        .expect("prepare allocating Text artifact");
     emit_prepared_native_object(&text_prepared, &directory.path().join("text.o"))
         .expect("emit legacy MIR");
     let text_ir = std::fs::read_to_string(text_ir).expect("read legacy IR");
@@ -412,7 +412,7 @@ fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
             .starts_with(b"\x7fELF")
     );
 
-    let text = text_program();
+    let text = allocating_text_program();
     let options =
         EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
     let error = prepare_native_object(&text, options, NativeRoutePolicy::Automatic)

@@ -45,6 +45,13 @@ artifact, or runtime compatibility.
 - Typed LCIR now lowers bounded nested record places through exact product SSA.
   Projected mutable receivers reconstruct the latest aggregate root on normal
   and fault edges without universal values, proxy storage, or runtime helpers.
+- Typed LCIR now carries literal-proven `Text` values as one pointer to an
+  immortal compiler-emitted object on 64-bit targets. Direct `length`,
+  `contains`, and content equality require no universal value, GC root, or
+  executor; allocating or derived text and text nested in aggregates still
+  select atomic whole-artifact fallback. This advances the LCIR dump to 7,
+  artifact identity to schema 8, native-object domain to v4, and CLI object
+  cache to v9 without changing the native runtime ABI.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

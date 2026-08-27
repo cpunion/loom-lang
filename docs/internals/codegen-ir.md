@@ -3,10 +3,10 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar, closed-product, closed-sum, and transparent
-nominal representations, whole-artifact checked-MIR lowering, typed SSA data
-structures, builders, independent program and
-artifact-root validators, and a textual dump for tests and review.
+provides target-aware scalar, literal-proven immortal-text, closed-product,
+closed-sum, and transparent nominal representations, whole-artifact
+checked-MIR lowering, typed SSA data structures, builders, independent program
+and artifact-root validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
 its typed functions and run/test harness without the universal value ABI or
@@ -51,6 +51,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Bool` | `Scalar(I1)` |
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
+| literal-proven `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
 | structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
 | closed record with a proven invariant | protected `Product(field value types...)` |
@@ -71,6 +72,31 @@ sums, and aggregates containing managed, list, Task, dynamic-witness, or
 uninhabited fields are not selected. `InvariantRecordProven` is the only
 construction for an invariant product; `RefineProven` and exact `Unrefine`
 preserve the physical SSA value while retaining the proof boundary.
+
+`ImmortalText` is deliberately not a general managed representation. Its only
+producer is an LCIR `TextLiteral`, which points at an immutable,
+compiler-emitted object that lives for the process lifetime. A run or test root
+has no parameters, all source functions in a checked artifact have internal
+linkage, and the artifact validator requires the exact direct-call closure.
+Consequently, a `Text` parameter or block parameter in this slice can only
+receive a value derived transitively from a literal in that same closed
+artifact; no external or moving pointer can enter the closure. Text may flow
+through locals, block parameters, direct calls, returns, and concrete generic
+identity functions. It cannot appear in products, sums, or transparent
+representations.
+
+The admitted operations are allocation-free `TextLength`, `TextContains`, and
+`TextCompare` for content equality or inequality. Equality compares content,
+never object addresses. `concat`, `get`, every other dynamic or allocating text
+producer, and every aggregate containing `Text` select atomic whole-artifact
+fallback. Those forms remain outside LCIR until a typed shadow-root ABI can
+publish and update direct managed pointers across moving-GC safepoints.
+
+Text planning is bounded before LCIR allocation or source storage is cloned.
+One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
+one artifact may contain at most 16 MiB in total. Crossing either bound is
+unsupported coverage and selects the complete legacy route. Independent LCIR
+validation repeats both limits before LLVM constructs any constant object.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
@@ -140,7 +166,7 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 7 carries
+compiler-private identity for that complete checked artifact. Schema 8 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -170,18 +196,23 @@ encoded before the representation became selectable. Transparent value
 provenance, its explicit proof operations, and explicit test outcome plans
 advance the artifact identity to schema 6 and the dump to `lcir 5`;
 transparent values and protected invariant records reuse their base/product
-ABIs. Closed-sum representation and control-flow semantics then advance the
-identity to schema 7 and the dump to `lcir 6`. Sums add a new physical ABI,
-including when transparent or protected products are payloads. The LCIR
-native-object format is therefore
-`loom-lcir-native-object-v3`, and the CLI cache domain is
-`loom-llvm-object-cache-v8`.
+ABIs. Closed-sum representation and control-flow semantics then advanced the
+identity to schema 7 and the dump to `lcir 6`. Sums added a new physical ABI,
+including when transparent or protected products were payloads. At that point,
+the LCIR native-object format became `loom-lcir-native-object-v3`, and the CLI
+cache domain became `loom-llvm-object-cache-v8`.
 Concrete generic-instance closure reuses those versions: the existing instance
 plan, canonical dump, and schema-7 identity already encode every exact type and
 witness argument, function body, signature, and call edge. The backend build
 fingerprint invalidates objects when the planner implementation changes. No
 serialized grammar or physical ABI changed, so the text, native-object, and
 object-cache domains do not advance again.
+Literal-only `ImmortalText`, its operations, and its one-pointer callable ABI
+then advance the artifact identity to schema 8, the dump to `lcir 7`, the LCIR
+native-object domain to `loom-lcir-native-object-v4`, and the CLI object-cache
+domain to `loom-llvm-object-cache-v9`. The emitted constants use the existing
+native text layout descriptor and containment-helper symbols. The native
+runtime ABI is therefore unchanged.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -193,10 +224,10 @@ either one complete independently checked
 Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
-The current lowering coverage is synchronous scalar, structural tuple,
-closed-record, concrete closed-enum, and established refined signatures,
-including bounded direct generic calls whose concrete types use those
-representations. It covers constants, locals and assignment, tuple construction
+The current lowering coverage is synchronous scalar, literal-proven `Text`,
+structural tuple, closed-record, concrete closed-enum, and established refined
+signatures, including bounded direct generic calls whose concrete types use
+those representations. It covers constants, locals and assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
@@ -385,10 +416,11 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values, open or managed enums, refined values, dynamic dispatch,
-cleanup registration and ordering, and coroutine control flow are not
-implemented. The current CFG represents direct products, concrete closed sums,
-and the scalar operations and fault-state transitions which later slices use.
+Moving or dynamically produced managed values, open or managed enums, refined
+values, dynamic dispatch, cleanup registration and ordering, and coroutine
+control flow are not implemented. The current CFG represents direct products,
+concrete closed sums, literal-proven immortal text, and the scalar operations
+and fault-state transitions which later slices use.
 Here “refined values” means runtime-checked or otherwise unproved values;
 statically established monomorphic refinements are represented directly.
 
@@ -428,6 +460,9 @@ not repair a malformed program. Current checks include:
 - edge argument arity and types;
 - ordered exhaustive sum cases, exact construction payloads, and typed implicit
   payload parameters on every `SumSwitch` edge;
+- exact immortal-`Text` registration, 64-bit representation, literal budgets,
+  operand/result types, and artifact-level literal/closed-flow provenance for
+  length, containment, and content comparison;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal `MAY_FAULT` closure across the complete call graph;
@@ -467,7 +502,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 6` text includes
+text even when the graphs are otherwise equivalent. The `lcir 7` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block, and the checked value
 type of every block parameter and instruction result. Representation semantic
@@ -492,7 +527,10 @@ plus zero-cost proven refinements and invariant records. Generic regressions
 cover exact regular recursion, duplicate-instance elimination, cross-test-root
 reuse, witness-bearing identity, nonregular recursion, bounded key expansion,
 unreachable declarations, repeatable dumps and identities, and direct host and
-MSVC LLVM signatures. Malformed-LCIR tests
+MSVC LLVM signatures. Literal-text regressions cover bounded planning,
+representation rejection on 32-bit layouts, exact direct calls and generic
+identity flow, content comparison, host execution, cross-target 64-bit object
+emission, and atomic fallback for derived or nested text. Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.
 Structural regressions cover thousands of live locals and identity branches,
@@ -510,7 +548,8 @@ blocks for wide enums, high-use validation against wide schemas, live
 optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
-legacy route because its root also reaches Text, List, parsing, and matching;
+legacy route because its root also reaches dynamic text, List, parsing, and
+matching;
 the direct aggregate tests are the current closed-workload evidence. The
 platform-independent Windows CI job checks, lints, tests, and builds
 `loom-codegen-ir`; cross-target LLVM tests also emit direct closed-sum MSVC

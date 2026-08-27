@@ -155,6 +155,10 @@ pub const TEXT_OBJECT_FIELD_SCALAR_LENGTH: u32 = 3;
 pub const TEXT_OBJECT_FIELD_BYTES: u32 = 4;
 pub const TEXT_OBJECT_HEADER_SIZE: u64 = 32;
 pub const TEXT_OBJECT_ALIGNMENT: u64 = 8;
+/// Runtime descriptor referenced by compiler-emitted immortal Text objects.
+pub const TEXT_LAYOUT_SYMBOL: &str = "loom_layout_text_v1";
+/// Allocation-free UTF-8 byte-subsequence helper used by typed LCIR Text.
+pub const TEXT_CONTAINS_SYMBOL: &str = "loom_runtime_text_contains";
 pub const FAULT_SCHEMA_VERSION: u32 = 1;
 pub const FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 pub const FAULT_FORMAT_JSON: &str = "json";
@@ -200,6 +204,9 @@ mod tests {
         COROUTINE_ABI_VERSION, LAYOUT_ABI_VERSION, LoomGcRootDescriptor, LoomGcRootFrame,
         LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
+        TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+        TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+        TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
         WITNESS_ABI_VERSION,
     };
 
@@ -215,6 +222,19 @@ mod tests {
             NATIVE_RUNTIME_ABI_IDENTITY,
             "loom-value-v2/layout-v1/text-v1/wait-v1/task-v2/runtime-v2/gc-v7/shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
+    }
+
+    #[test]
+    fn compiler_visible_text_layout_declarations_are_pinned() {
+        assert_eq!(TEXT_OBJECT_FIELD_LAYOUT, 0);
+        assert_eq!(TEXT_OBJECT_FIELD_ALLOCATION_SIZE, 1);
+        assert_eq!(TEXT_OBJECT_FIELD_BYTE_LENGTH, 2);
+        assert_eq!(TEXT_OBJECT_FIELD_SCALAR_LENGTH, 3);
+        assert_eq!(TEXT_OBJECT_FIELD_BYTES, 4);
+        assert_eq!(TEXT_OBJECT_HEADER_SIZE, 32);
+        assert_eq!(TEXT_OBJECT_ALIGNMENT, 8);
+        assert_eq!(TEXT_LAYOUT_SYMBOL, "loom_layout_text_v1");
+        assert_eq!(TEXT_CONTAINS_SYMBOL, "loom_runtime_text_contains");
     }
 
     #[test]

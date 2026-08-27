@@ -729,7 +729,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
 
     let unsupported = TestProject::new(
-        "module automatic_legacy\n\npub fn main() Unit {\n    discard \"legacy\"\n    Unit\n}\n",
+        "module automatic_legacy\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
     );
     let legacy_object = unsupported.0.join("legacy.o");
     let build = loomc()
@@ -829,6 +829,55 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
         .arg(&project.0)
         .output()
         .expect("run projected-place source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
+fn immortal_text_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!("../../../fixtures/lcir-text/main.loom"));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check immortal-Text source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("immortal-text.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build immortal-Text source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read immortal-Text object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(contains_bytes(&object, b"loom_runtime_text_contains"));
+    assert!(contains_bytes(&object, b"loom_layout_text_v1"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+    assert!(!contains_bytes(&object, b"loom.Value"));
+    assert!(!contains_bytes(&object, b"ValueNode"));
+    assert!(!contains_bytes(&object, b"loom_gc_"));
+    assert!(!contains_bytes(&object, b"loom_executor_"));
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test immortal-Text source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_text.immortalText"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run immortal-Text source through the CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
 }
@@ -1817,7 +1866,7 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
 #[test]
 fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
     let project = TestProject::new(
-        "module debug_legacy\n\npub fn main() Unit {\n    discard \"legacy\"\n    Unit\n}\n",
+        "module debug_legacy\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
     );
     project.write(
         "debug-wrapper",
@@ -1832,7 +1881,7 @@ fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
         .arg(&project.0)
         .args(["--"])
         .output()
-        .expect("launch debugger wrapper for reachable Text");
+        .expect("launch debugger wrapper for reachable allocating Text");
     assert_eq!(
         output.status.code(),
         Some(0),

@@ -26,8 +26,8 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values, structural tuples, closed records, and established
-transparent refined values.
+primitive values, literal-proven immortal `Text`, structural tuples, closed
+records, and established transparent refined values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -96,10 +96,13 @@ target's LLVM data layout.
 
 The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete
-direct LCIR object can therefore be emitted for a matching 32-bit LLVM target.
-The legacy universal representation's 64-bit restriction is applied only
-after that route is selected. Neither case establishes 32-bit runtime, linker,
-CI, or release support; LLVM target availability proves only object emission.
+direct LCIR object whose representations are all width-independent can
+therefore be emitted for a matching 32-bit LLVM target. `ImmortalText` and the
+legacy universal representation both require 64-bit pointers; reachable text
+selects atomic legacy fallback during 32-bit direct classification, and that
+legacy route then reports its existing unsupported-target boundary. None of
+these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
+target availability proves only object emission.
 
 ## Verification and optimization
 
@@ -177,6 +180,39 @@ metadata does not yet synthesize nominal source aliases such as `Money` or
 `Range`. This deliberate display limitation does not erase nominal identity
 from LCIR dumps, validation, cache fingerprints, or object artifact identity.
 
+## Direct LCIR literal text
+
+An admitted `Text` SSA value is one opaque LLVM pointer to an immutable object
+emitted as a private, unnamed-address global. The global uses the runtime's
+existing text-object prefix—layout descriptor pointer, allocation size, UTF-8
+byte length, Unicode scalar length—followed by the exact UTF-8 bytes. It points
+at the existing `loom_layout_text_v1` descriptor and lives for the process
+lifetime. The pointer is not a universal `loom.Value`, a tagged interface
+value, or an address whose identity is visible to source code.
+
+LCIR loads scalar length directly from the immutable header. Containment calls
+the existing allocation-free `loom_runtime_text_contains` byte-slice helper.
+Equality and inequality compare content by combining byte length with that
+helper; LLVM never compares literal object pointers to implement source
+equality. The helper and descriptor declarations retain their exact target
+pointer ABI when emitting 64-bit ELF, Mach-O, or COFF objects.
+
+The complete artifact proof is intentionally narrow. Roots accept no source
+arguments, every source callable has internal linkage, direct-call closure is
+exactly validated, and `TextLiteral` is the only admitted producer. A text
+pointer can therefore cross direct function, return, block-parameter, local,
+or concrete generic boundaries only after originating in the same artifact's
+immortal literal. These Text operations add no universal value,
+GC/shadow-stack setup, runtime-object creation, or executor/scheduler setup;
+independent fault effects elsewhere in the artifact may still require the
+ordinary fault runtime context.
+
+`concat`, `get`, dynamically created or otherwise moving text, and `Text`
+nested in a product, sum, or transparent representation remain atomic
+whole-artifact fallback. Supporting them requires a typed shadow-root ABI that
+lets the moving collector update direct managed pointers at every safepoint;
+this literal-only slice does not weaken that requirement.
+
 ## Direct LCIR closed sums
 
 LLVM derives every sum layout from the checked `SumRepr` and target data. A
@@ -229,7 +265,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v3` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v4` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -241,8 +277,13 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v8` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v9` and never suppresses fingerprint
 errors.
+
+The LCIR domains advance because literal text adds a new IR encoding and
+one-pointer physical ABI. The emitted globals and containment calls reuse
+runtime ABI symbols that were already versioned in the native runtime
+identity, so the native runtime ABI itself does not advance for this slice.
 
 Every executable link consumes one validated runtime bundle; the compiler
 contains no runtime archive and its build script never starts Cargo. The CLI

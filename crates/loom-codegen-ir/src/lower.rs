@@ -17,6 +17,7 @@ use crate::instance_closure::{
 };
 use crate::match_plan::{MatchNode, MatchPlan, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
+use crate::text_plan::TextLiteralBudget;
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
@@ -427,7 +428,7 @@ pub fn lower_typed_artifact(
             }));
         }
     };
-    let mut classifier = Classifier::new(mir.as_program());
+    let mut classifier = Classifier::new(mir.as_program(), target);
     for key in closure.entries() {
         let source = mir.function(key.source()).ok_or_else(|| {
             LoweringError::defect(
@@ -445,6 +446,7 @@ pub fn lower_typed_artifact(
     let Classifier {
         aggregates,
         match_plans,
+        immortal_text,
         ..
     } = classifier;
     let aggregate_plan = aggregates.finish();
@@ -469,6 +471,11 @@ pub fn lower_typed_artifact(
         .collect::<Result<Vec<_>, LoweringError>>()?;
     let effects = solve_effects(summaries)?;
     let mut builder = ProgramBuilder::new(target);
+    if immortal_text {
+        builder
+            .add_immortal_text_type()
+            .map_err(LoweringError::from)?;
+    }
     aggregate_plan
         .register(&mut builder)
         .map_err(|error| match error {
@@ -781,10 +788,13 @@ const fn is_scalar_type(ty: &Type) -> bool {
 
 struct Classifier<'program> {
     program: &'program mir::Program,
+    target: TargetLayout,
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
     places: PlaceBudget,
+    text_literals: TextLiteralBudget,
+    immortal_text: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -810,17 +820,27 @@ impl PlaceSite {
 }
 
 impl<'program> Classifier<'program> {
-    fn new(program: &'program mir::Program) -> Self {
+    fn new(program: &'program mir::Program, target: TargetLayout) -> Self {
         Self {
             program,
+            target,
             items: Vec::new(),
             aggregates: AggregatePlanner::new(program),
             match_plans: BTreeMap::new(),
             places: PlaceBudget::default(),
+            text_literals: TextLiteralBudget::default(),
+            immortal_text: false,
         }
     }
 
     fn supported_value_type(&mut self, ty: &Type) -> bool {
+        if ty == &Type::Text {
+            if self.target.pointer_bits() != 64 {
+                return false;
+            }
+            self.immortal_text = true;
+            return true;
+        }
         self.aggregates.supports_value_type(ty)
     }
 
@@ -1146,8 +1166,17 @@ impl<'program> Classifier<'program> {
         path: &str,
     ) -> bool {
         let continues = match &expression.kind {
-            ExprKind::Constant(mir::Constant::Text(_)) => {
-                self.expression_item(UnsupportedFeature::TextConstant, function, expression, path);
+            ExprKind::Constant(mir::Constant::Text(value)) => {
+                if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                    self.expression_item(
+                        UnsupportedFeature::TextConstant,
+                        function,
+                        expression,
+                        path,
+                    );
+                } else {
+                    self.immortal_text = true;
+                }
                 true
             }
             ExprKind::Constant(_) => true,
@@ -1215,7 +1244,11 @@ impl<'program> Classifier<'program> {
                             left.span,
                             &format!("{path}.left.ty"),
                         )
-                        .is_some_and(|ty| is_scalar_type(&ty));
+                        .is_some_and(|ty| {
+                            is_scalar_type(&ty)
+                                || (ty == Type::Text
+                                    && matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual))
+                        });
                     if right_continues && !scalar {
                         self.expression_item(
                             UnsupportedFeature::NominalValue,
@@ -1578,6 +1611,9 @@ impl<'program> Classifier<'program> {
                     CallTarget::Direct(_) | CallTarget::Inherent(_) => None,
                     CallTarget::StaticConcept { .. } => Some(UnsupportedFeature::StaticDispatch),
                     CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicDispatch),
+                    CallTarget::Builtin(mir::Builtin::TextLength | mir::Builtin::TextContains) => {
+                        None
+                    }
                     CallTarget::Builtin(_) => Some(UnsupportedFeature::BuiltinCall),
                 };
                 if let Some(feature) = target_feature {
@@ -3082,8 +3118,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     mir::Constant::Bool(value) => Constant::Bool(*value),
                     mir::Constant::Int(value) => Constant::Int(*value),
                     mir::Constant::Float(value) => Constant::float(*value),
-                    mir::Constant::Text(_) => {
-                        return Err(self.unsupported_reached("text constant"));
+                    mir::Constant::Text(value) => {
+                        return self.one_instruction(
+                            flow,
+                            InstructionKind::TextLiteral {
+                                utf8: value.clone().into_boxed_str(),
+                            },
+                            self.type_id(&Type::Text)?,
+                            origin,
+                        );
                     }
                 };
                 self.constant(flow, constant, &expression.ty, origin)
@@ -3811,6 +3854,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 left,
                 right,
             },
+            Type::Text => InstructionKind::TextCompare {
+                predicate: match operator {
+                    BinaryOp::Equal => BoolPredicate::Equal,
+                    BinaryOp::NotEqual => BoolPredicate::NotEqual,
+                    _ => return Err(self.unsupported_reached("Text comparison")),
+                },
+                left,
+                right,
+            },
             _ => return Err(self.unsupported_reached("scalar comparison")),
         };
         self.one_instruction(flow, kind, ty, origin)
@@ -4317,6 +4369,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         witnesses: &[mir::WitnessRef],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
+        if let CallTarget::Builtin(builtin) = target {
+            return self.lower_text_builtin(flow, *builtin, arguments, expression);
+        }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
         let callee = match target {
             CallTarget::Direct(callee) | CallTarget::Inherent(callee) => *callee,
@@ -4492,6 +4547,44 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow: normal_flow,
             value: result,
         })
+    }
+
+    fn lower_text_builtin(
+        &mut self,
+        mut flow: Flow,
+        builtin: mir::Builtin,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let CallArgument::Value(argument) = argument else {
+                return Err(self.unsupported_reached("Text builtin inout argument"));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, argument)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            values.push(value);
+        }
+        let kind = match (builtin, values.as_slice()) {
+            (mir::Builtin::TextLength, [text]) => InstructionKind::TextLength { text: *text },
+            (mir::Builtin::TextContains, [text, needle]) => InstructionKind::TextContains {
+                text: *text,
+                needle: *needle,
+            },
+            _ => return Err(self.unsupported_reached("unsupported Text builtin")),
+        };
+        self.one_instruction(
+            flow,
+            kind,
+            self.type_id(&expression.ty)?,
+            self.expression_origin(expression),
+        )
     }
 
     fn unsupported_reached(&self, what: &str) -> LoweringError {

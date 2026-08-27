@@ -7,10 +7,10 @@ conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values, structural tuples, closed records, and
-compile-time-established refined values and eligible closed enums. Any
-reachable feature outside current LCIR coverage selects the complete legacy
-layout below; the two callable ABIs are never mixed in one object. In
+LCIR for primitive values, literal-proven immortal `Text`, structural tuples,
+closed records, compile-time-established refined values, and eligible closed
+enums. Any reachable feature outside current LCIR coverage selects the complete
+legacy layout below; the two callable ABIs are never mixed in one object. In
 particular, portable MIR `Recheck` constructions use the legacy checker and
 cannot enter the zero-check transparent LCIR representation.
 
@@ -55,7 +55,8 @@ internally.
 ## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, `Float` as `F64`, and each supported structural tuple
+as `I1`, `Int` as `I64`, `Float` as `F64`, literal-proven `Text` as one opaque
+`ImmortalText` pointer on 64-bit targets, and each supported structural tuple
 or closed record as an immutable `Product` of canonical element or field value
 types. Tuples and records may contain one another as long as the representation
 graph is acyclic. An explicit registration table chooses the canonical value
@@ -98,7 +99,7 @@ and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
-Generic records, managed aggregate elements, protected projections,
+Generic records, moving or nested managed values, protected projections,
 runtime-checked construction, concepts, contracts, cleanup, and async
 operations still select the complete universal route. Typed LCIR does not
 change the legacy runtime ABI or make either object ABI public.
@@ -111,13 +112,31 @@ representation and migration design.
 
 A universal `Text` slot contains its tag and one pointer to a `TextObject`.
 The object has a versioned layout descriptor, allocation size, UTF-8 byte
-length, Unicode scalar length, and trailing UTF-8 bytes. String literals use
-the same object layout in immortal globals; dynamically created text is moved
-by the GC.
+length, Unicode scalar length, and trailing UTF-8 bytes. Dynamically created
+text is moved by the GC.
+
+The narrow typed LCIR representation is one opaque pointer to a
+compiler-emitted `TextObject` global with that same header and exact UTF-8
+bytes. The global is immutable and lives for the process lifetime. Source
+roots have no parameters, LCIR source functions have internal linkage, the
+artifact contains the exact direct-call closure, and `TextLiteral` is the only
+producer. Thus every typed text pointer is proven transitively to originate in
+the same artifact's immortal literal even when it flows through locals, block
+parameters, calls, returns, or a concrete generic identity function.
+
+Length reads the scalar-count field. Containment and content equality use the
+existing allocation-free containment helper, with equality also requiring
+equal UTF-8 byte lengths. Source equality never compares object pointers. The
+Text operations themselves need no universal `ValueSlot`, GC/shadow-stack
+setup, runtime object, or executor; unrelated fault effects may still need a
+fault context. `concat`, `get`, any moving or dynamic producer, and any aggregate
+containing `Text` remain complete legacy fallback until LCIR has a typed
+shadow-root ABI that the moving collector can update.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
-tag and does not make `Text` a dynamic type. No direct typed-call `Text` layout
-is implemented.
+tag and does not make `Text` a dynamic type. LCIR reuses the existing layout
+descriptor and containment-helper symbols, so this direct compiler ABI does
+not bump the native runtime ABI.
 
 ## Dynamic concept values
 

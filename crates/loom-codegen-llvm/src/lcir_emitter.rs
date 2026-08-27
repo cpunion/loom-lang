@@ -27,7 +27,7 @@ use inkwell::types::{
 };
 use inkwell::values::{
     AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PhiValue,
-    PointerValue,
+    PointerValue, UnnamedAddress,
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
@@ -39,6 +39,10 @@ use loom_codegen_ir::{
     ValueId, ValueTypeId,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
+use loom_runtime_abi::{
+    TEXT_CONTAINS_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
+    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+};
 
 use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -145,6 +149,7 @@ struct DebugState<'ctx> {
     bool_type: DIType<'ctx>,
     int_type: DIType<'ctx>,
     float_type: DIType<'ctx>,
+    text_type: DIType<'ctx>,
     status_type: DIType<'ctx>,
     fault_context_pointer_type: DIType<'ctx>,
     fallible_unit_type: DIType<'ctx>,
@@ -239,6 +244,33 @@ impl<'ctx> DebugState<'ctx> {
             .create_basic_type("Float", 64, 0x04, DIFlags::PUBLIC)
             .map_err(|error| debug_info_error(&error))?
             .as_type();
+        let text_alignment_bits = u32::try_from(TEXT_OBJECT_ALIGNMENT.saturating_mul(8))
+            .map_err(|_| CodegenError::new("LlvmDebugInfoFailed", "Text alignment is too wide"))?;
+        let text_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "TextObject",
+                file,
+                0,
+                TEXT_OBJECT_HEADER_SIZE.saturating_mul(8),
+                text_alignment_bits,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.TextObject",
+            )
+            .as_type();
+        let text_type = builder
+            .create_pointer_type(
+                "Text",
+                text_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
         let status_type = builder
             .create_basic_type("LoomStatus", 32, 0x05, DIFlags::ARTIFICIAL)
             .map_err(|error| debug_info_error(&error))?
@@ -317,6 +349,7 @@ impl<'ctx> DebugState<'ctx> {
             bool_type,
             int_type,
             float_type,
+            text_type,
             status_type,
             fault_context_pointer_type,
             fallible_unit_type,
@@ -391,6 +424,7 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
+            Some(Repr::ImmortalText) => Ok(self.text_type),
             Some(Repr::Product(product)) => {
                 if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
                     return Ok(existing);
@@ -594,6 +628,16 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.fallible_bool_type),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.fallible_int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.fallible_float_type),
+            Some(Repr::ImmortalText) => create_fallible_debug_type(
+                backend.context,
+                &self.builder,
+                self.type_file,
+                &backend.target_data,
+                "Text",
+                self.text_type,
+                backend.ptr_type.into(),
+                self.status_type,
+            ),
             Some(Repr::Product(_)) => create_fallible_debug_type(
                 backend.context,
                 &self.builder,
@@ -1070,6 +1114,7 @@ struct Backend<'ctx, 'artifact> {
     ptr_type: inkwell::types::PointerType<'ctx>,
     unit_type: StructType<'ctx>,
     fault_context_type: StructType<'ctx>,
+    text_object_type: StructType<'ctx>,
     target_data: TargetData,
     functions: Vec<FunctionValue<'ctx>>,
     debug: Option<DebugState<'ctx>>,
@@ -1092,6 +1137,33 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let unit_type = context.struct_type(&[], false);
         let fault_context_type = context.opaque_struct_type("loom.lcir.FaultContext");
         fault_context_type.set_body(&[ptr_type.into(), context.bool_type().into()], false);
+        let text_object_type = context.struct_type(
+            &[
+                ptr_type.into(),
+                context.i64_type().into(),
+                context.i64_type().into(),
+                context.i64_type().into(),
+                context.i8_type().array_type(0).into(),
+            ],
+            false,
+        );
+        if artifact
+            .representations()
+            .reprs()
+            .contains(&Repr::ImmortalText)
+        {
+            let actual_size = target_data.get_abi_size(&text_object_type);
+            let actual_alignment = u64::from(target_data.get_abi_alignment(&text_object_type));
+            if actual_size != TEXT_OBJECT_HEADER_SIZE || actual_alignment != TEXT_OBJECT_ALIGNMENT {
+                return Err(CodegenError::new(
+                    "LcirTextAbiMismatch",
+                    format!(
+                        "LLVM target {} gives the runtime Text header size/alignment {actual_size}/{actual_alignment}, expected {TEXT_OBJECT_HEADER_SIZE}/{TEXT_OBJECT_ALIGNMENT}",
+                        target.triple
+                    ),
+                ));
+            }
+        }
         let debug = (!options.debug_sources.is_empty())
             .then(|| {
                 DebugState::new(
@@ -1113,6 +1185,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ptr_type,
             unit_type,
             fault_context_type,
+            text_object_type,
             target_data,
             functions: Vec::with_capacity(artifact.functions().len()),
             debug,
@@ -1192,6 +1265,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             Some(Repr::Scalar(ScalarRepr::I1)) => Ok(self.context.bool_type().into()),
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.context.i64_type().into()),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.context.f64_type().into()),
+            Some(Repr::ImmortalText) => Ok(self.ptr_type.into()),
             Some(Repr::Product(product)) => {
                 let fields = self
                     .artifact
@@ -1432,6 +1506,169 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let index = self.names.get();
         self.names.set(index.saturating_add(1));
         format!("loom.lcir.{prefix}.{index}")
+    }
+
+    fn text_layout(&self) -> inkwell::values::GlobalValue<'ctx> {
+        self.module
+            .get_global(TEXT_LAYOUT_SYMBOL)
+            .unwrap_or_else(|| {
+                let descriptor = self.context.struct_type(
+                    &[
+                        self.context.i32_type().into(),
+                        self.context.i32_type().into(),
+                        self.context.i64_type().into(),
+                        self.context.i64_type().into(),
+                        self.context.i64_type().into(),
+                        self.context.i64_type().into(),
+                        self.context.i32_type().into(),
+                        self.context.i32_type().into(),
+                    ],
+                    false,
+                );
+                let layout = self.module.add_global(descriptor, None, TEXT_LAYOUT_SYMBOL);
+                layout.set_linkage(Linkage::External);
+                layout
+            })
+    }
+
+    fn emit_text_literal(&self, utf8: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        if utf8.len() > loom_codegen_ir::TEXT_LITERAL_MAX_BYTES {
+            return Err(CodegenError::new(
+                "TextLiteralTooLarge",
+                "checked LCIR Text literal exceeds its byte budget",
+            ));
+        }
+        let byte_length = u64::try_from(utf8.len()).map_err(|_| {
+            CodegenError::new("TextLiteralTooLarge", "Text literal length exceeds u64")
+        })?;
+        let array_length = u32::try_from(utf8.len()).map_err(|_| {
+            CodegenError::new(
+                "TextLiteralTooLarge",
+                "Text literal exceeds LLVM's constant array limit",
+            )
+        })?;
+        let allocation_size = TEXT_OBJECT_HEADER_SIZE
+            .checked_add(byte_length)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "TextLiteralTooLarge",
+                    "Text literal allocation size overflowed",
+                )
+            })?;
+        let scalar_length = u64::try_from(utf8.chars().count()).map_err(|_| {
+            CodegenError::new("TextLiteralTooLarge", "Text scalar count exceeds u64")
+        })?;
+        let bytes_type = self.context.i8_type().array_type(array_length);
+        let literal_type = self.context.struct_type(
+            &[
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                bytes_type.into(),
+            ],
+            false,
+        );
+        let bytes = utf8
+            .as_bytes()
+            .iter()
+            .map(|byte| self.context.i8_type().const_int(u64::from(*byte), false))
+            .collect::<Vec<_>>();
+        let initializer = literal_type.const_named_struct(&[
+            self.text_layout().as_pointer_value().into(),
+            self.context
+                .i64_type()
+                .const_int(allocation_size, false)
+                .into(),
+            self.context.i64_type().const_int(byte_length, false).into(),
+            self.context
+                .i64_type()
+                .const_int(scalar_length, false)
+                .into(),
+            self.context.i8_type().const_array(&bytes).into(),
+        ]);
+        let literal = self
+            .module
+            .add_global(literal_type, None, &self.unique("text.literal"));
+        literal.set_initializer(&initializer);
+        literal.set_constant(true);
+        literal.set_linkage(Linkage::Private);
+        literal.set_unnamed_address(UnnamedAddress::Global);
+        let alignment = u32::try_from(TEXT_OBJECT_ALIGNMENT).map_err(|_| {
+            CodegenError::new(
+                "LcirTextAbiMismatch",
+                "runtime Text object alignment exceeds LLVM's alignment domain",
+            )
+        })?;
+        literal.set_alignment(alignment);
+        Ok(literal.as_pointer_value())
+    }
+
+    fn text_field(
+        &self,
+        object: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.builder
+            .build_struct_gep(self.text_object_type, object, field, name)
+            .map_err(builder_error)
+    }
+
+    fn text_parts(
+        &self,
+        object: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let length_pointer = self.text_field(
+            object,
+            TEXT_OBJECT_FIELD_BYTE_LENGTH,
+            &format!("{name}.length.pointer"),
+        )?;
+        let length = self
+            .builder
+            .build_load(
+                self.context.i64_type(),
+                length_pointer,
+                &format!("{name}.length"),
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let data = self.text_field(object, TEXT_OBJECT_FIELD_BYTES, &format!("{name}.bytes"))?;
+        Ok((data, length))
+    }
+
+    fn text_scalar_length(
+        &self,
+        object: PointerValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let pointer = self.text_field(
+            object,
+            TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+            "text.scalar_length.pointer",
+        )?;
+        self.builder
+            .build_load(self.context.i64_type(), pointer, "text.scalar_length")
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_int_value)
+    }
+
+    fn runtime_text_contains(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TEXT_CONTAINS_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TEXT_CONTAINS_SYMBOL, function_type, None)
+            })
     }
 }
 
@@ -1714,6 +1951,103 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let one = |value: BasicValueEnum<'ctx>| vec![value];
         let values = match instruction.kind() {
             InstructionKind::Constant(constant) => one(self.emit_constant(*constant)?),
+            InstructionKind::TextLiteral { utf8 } => {
+                one(self.backend.emit_text_literal(utf8)?.into())
+            }
+            InstructionKind::TextLength { text } => one(self
+                .backend
+                .text_scalar_length(self.value(*text)?.into_pointer_value())?
+                .into()),
+            InstructionKind::TextContains { text, needle } => {
+                let (data, length) = self.backend.text_parts(
+                    self.value(*text)?.into_pointer_value(),
+                    "text.contains.value",
+                )?;
+                let (needle_data, needle_length) = self.backend.text_parts(
+                    self.value(*needle)?.into_pointer_value(),
+                    "text.contains.needle",
+                )?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_text_contains(),
+                    &[
+                        data.into(),
+                        length.into(),
+                        needle_data.into(),
+                        needle_length.into(),
+                    ],
+                    "text.contains.status",
+                )?;
+                one(self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.backend.context.i32_type().const_int(1, false),
+                        "text.contains",
+                    )
+                    .map(Into::into)
+                    .map_err(builder_error)?)
+            }
+            InstructionKind::TextCompare {
+                predicate,
+                left,
+                right,
+            } => {
+                let (left_data, left_length) = self
+                    .backend
+                    .text_parts(self.value(*left)?.into_pointer_value(), "text.compare.left")?;
+                let (right_data, right_length) = self.backend.text_parts(
+                    self.value(*right)?.into_pointer_value(),
+                    "text.compare.right",
+                )?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_text_contains(),
+                    &[
+                        left_data.into(),
+                        left_length.into(),
+                        right_data.into(),
+                        right_length.into(),
+                    ],
+                    "text.compare.contains.status",
+                )?;
+                let contained = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.backend.context.i32_type().const_int(1, false),
+                        "text.compare.contains",
+                    )
+                    .map_err(builder_error)?;
+                let same_length = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        left_length,
+                        right_length,
+                        "text.compare.same_length",
+                    )
+                    .map_err(builder_error)?;
+                let equal = self
+                    .backend
+                    .builder
+                    .build_and(contained, same_length, "text.compare.equal")
+                    .map_err(builder_error)?;
+                let compared = match predicate {
+                    BoolPredicate::Equal => equal,
+                    BoolPredicate::NotEqual => self
+                        .backend
+                        .builder
+                        .build_not(equal, "text.compare.not_equal")
+                        .map_err(builder_error)?,
+                };
+                one(compared.into())
+            }
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
