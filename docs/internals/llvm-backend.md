@@ -328,18 +328,25 @@ after selecting their tag case.
 One backend-owned cache and in-progress set cover sum layouts and recursive
 managed-offset walks for the complete emission. A shared 65,536-step graph
 budget prevents nested sums from restarting work or expanding exponentially.
-Carrier bytes are limited to 16 MiB and the placement search to 64 Mi byte
-steps, with checked arithmetic at every extent and alignment calculation.
-Cycles, invalid pointer cells, and exhausted bounds fail closed before LLVM can
-emit a descriptor. The independent LCIR validator continues to validate
-semantic sum identities; it does not reproduce target-specific physical
-bytes.
+Carrier bytes are limited to 64 KiB, and all carrier plans in one artifact
+consume one 65,536-byte-step placement budget. Every pack and unpack charges
+its target ABI payload size to an independent shared 65,536-byte emission
+budget before generating bytewise LLVM instructions. Checked arithmetic covers
+every extent and alignment calculation. Cycles, invalid pointer cells, and
+exhausted planning or emission bounds fail closed before LLVM can emit an
+unsafe or unbounded artifact. Checked wide-sum source regressions prove that
+neither budget resets between layouts or construct sites. The independent LCIR
+validator continues to validate semantic sum identities; it does not reproduce
+target-specific physical bytes.
 
 This general rule keeps the canonical recursive `Json` at 24 bytes on
 supported 64-bit targets, with Bool/Float bytes at physical offset 8 and its
 managed cell at offset 16. `List[Json]` derives stride 24/pointer offset 16 and
 its TextMap entry derives stride 32/pointer offsets 0 and 24. A separate
 `Choice(Number(Int), Label(Text), Pair)` receives the same compact safe shape.
+Two 16-byte record variants with pointer/scalar cells in opposing order receive
+different carrier offsets, producing a 32-byte sum whose exact pointer cells
+are bytes 8 and 24.
 An `Outer(Json, (Int, Int, Int))` value is 40 bytes with the nested managed
 cell at offset 32. Pack/unpack, active managed-root rebuild, and List/TextMap
 descriptor construction all consume this exact plan. There is no

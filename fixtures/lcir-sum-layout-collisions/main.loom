@@ -13,6 +13,21 @@ enum Choice {
     Pair(Pair)
 }
 
+record PointerThenScalar {
+    label Text
+    number Int
+}
+
+record ScalarThenPointer {
+    number Int
+    label Text
+}
+
+enum Interleaved {
+    PointerFirst(PointerThenScalar)
+    PointerSecond(ScalarThenPointer)
+}
+
 enum Outer {
     J(Json)
     Scalars((Int, Int, Int))
@@ -32,6 +47,20 @@ fn choiceLabel(value Choice) Text {
         Label(label) => label
         Pair(pair) => pair.label
         _ => "missing"
+    }
+}
+
+fn interleavedLabel(value Interleaved) Text {
+    match value {
+        PointerFirst(payload) => payload.label
+        PointerSecond(payload) => payload.label
+    }
+}
+
+fn interleavedNumber(value Interleaved) Int {
+    match value {
+        PointerFirst(payload) => payload.number
+        PointerSecond(payload) => payload.number
     }
 }
 
@@ -64,6 +93,12 @@ fn verify() Result[Unit, Problem] {
     ]
     let choiceFields = TextMap[Choice]().insert("number", Choice.Number(2)).insert("label", Choice.Label(label)).insert("pair", Choice.Pair(Pair { number = 8, label = label }))
 
+    let interleaved = [
+        Interleaved.PointerFirst(PointerThenScalar { label = label, number = 11 }),
+        Interleaved.PointerSecond(ScalarThenPointer { number = 12, label = label }),
+    ]
+    let interleavedFields = TextMap[Interleaved]().insert("first", Interleaved.PointerFirst(PointerThenScalar { label = label, number = 13 })).insert("second", Interleaved.PointerSecond(ScalarThenPointer { number = 14, label = label }))
+
     let json = Json.Object(TextMap[Json]().insert("label", Json.Text(label)))
     let outers = [Outer.Scalars((1, 2, 3)), Outer.J(json)]
     let outerFields = TextMap[Outer]().insert("scalars", Outer.Scalars((4, 5, 6))).insert("json", Outer.J(json))
@@ -93,6 +128,22 @@ fn verify() Result[Unit, Problem] {
         }
         && match choiceFields.get("pair") {
             Some(value) => choiceLabel(value) == "label",
+            None => false,
+        }
+        && match interleaved.get(0) {
+            Some(value) => interleavedLabel(value) == "label" && interleavedNumber(value) == 11,
+            None => false,
+        }
+        && match interleaved.get(1) {
+            Some(value) => interleavedLabel(value) == "label" && interleavedNumber(value) == 12,
+            None => false,
+        }
+        && match interleavedFields.get("first") {
+            Some(value) => interleavedLabel(value) == "label" && interleavedNumber(value) == 13,
+            None => false,
+        }
+        && match interleavedFields.get("second") {
+            Some(value) => interleavedLabel(value) == "label" && interleavedNumber(value) == 14,
             None => false,
         }
         && match outers.get(0) {

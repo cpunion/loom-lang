@@ -158,8 +158,12 @@ padding bytes are non-pointer. The bounded planner chooses the lowest aligned
 offset for each variant where those two classes never overlap, while allowing
 same-class reuse. The carrier is zeroed before the active payload is inserted,
 and packing, matching, root rebuild, and repeated descriptors share the one
-plan. This applies to every admitted closed sum rather than recognizing a
-source type name.
+plan. Carrier storage is capped at 64 KiB; all sums in an artifact share a
+65,536-byte-step placement budget, and all pack/unpack sites independently
+share a 65,536-payload-byte emission budget. These bounds contain search and
+bytewise LLVM expansion across the whole artifact rather than per sum. This
+applies to every admitted closed sum rather than recognizing a source type
+name.
 
 The canonical recursive `Json` value, admitted through List/TextMap pointer
 cycle breakers, consequently remains 24 bytes on supported 64-bit targets:

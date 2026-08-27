@@ -606,10 +606,15 @@ layouts are retained. Constructors zero the complete carrier before inserting
 the active payload. Pack/unpack, active managed-root publication and rebuild,
 and List/TextMap repeated descriptors all consume the same offset plan.
 
-Carrier storage is limited to 16 MiB and placement to 64 Mi bounded byte
-steps; checked overflow or budget exhaustion is an emission-time
-`ProgramTooLarge` failure. Independent LCIR validation remains responsible for
-semantic sum shape and does not guess target byte offsets. As one consequence,
+Carrier storage is limited to 64 KiB. All layout plans in one artifact share a
+65,536-byte-step placement budget; completing one plan cannot reset the budget
+for the next sum. Pack/unpack operations independently share a
+65,536-payload-byte budget across the complete emitter, bounding bytewise LLVM
+instructions even when every individual carrier layout is representable.
+Checked overflow or budget exhaustion is an emission-time `ProgramTooLarge`
+failure before an object or partial IR output is written. Independent LCIR
+validation remains responsible for semantic sum shape and does not guess
+target byte offsets. As one consequence,
 canonical `Json` remains 24 bytes on supported 64-bit targets: tag byte 0,
 scalar payload byte 8, and managed payload cell byte 16. `List[Json]` therefore
 has stride 24 and pointer offset 16, while `TextMap[Json]` entries have stride

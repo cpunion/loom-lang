@@ -682,6 +682,48 @@ test fn carriesAcrossLoop() Result[Unit, Problem] {
 }
 ";
 
+const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r#"module lcir_interleaved_managed_release
+
+record PointerThenScalar { label Text, number Int }
+record ScalarThenPointer { number Int, label Text }
+
+enum Interleaved {
+    PointerFirst(PointerThenScalar)
+    PointerSecond(ScalarThenPointer)
+}
+
+enum Problem { WrongCarrier }
+
+fn choose(flag Bool, label Text, number Int, depth Int) Interleaved {
+    if depth > 0 {
+        choose(flag, label, number, depth - 1)
+    } else if flag {
+        Interleaved.PointerFirst(PointerThenScalar { label = label, number = number })
+    } else {
+        Interleaved.PointerSecond(ScalarThenPointer { number = number, label = label })
+    }
+}
+
+fn number(value Interleaved) Int {
+    match value {
+        PointerFirst(payload) => payload.number
+        PointerSecond(payload) => payload.number
+    }
+}
+
+test fn keepsManagedCarrierInRegisters() Result[Unit, Problem] {
+    let label = "ma".concat("naged")
+    var value = choose(true, label, 0, 1)
+    var flag = true
+    for index in 0..1000 {
+        value = choose(flag, label, index, 1)
+        flag = !flag
+        Unit
+    }
+    if number(value) == 999 { Ok(Unit) } else { Err(Problem.WrongCarrier) }
+}
+"#;
+
 #[test]
 fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
     let program = checked_float_pattern_fixture();
@@ -2493,7 +2535,7 @@ fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one gate proves compact collision-free Choice/Outer sum bytes, exact repeated tracing, forced relocation, differential behavior, and cross-target emission together"
+    reason = "one gate proves compact collision-free Choice/Interleaved/Outer sum bytes, exact repeated tracing, forced relocation, differential behavior, and cross-target emission together"
 )]
 fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells() {
     let source = include_str!("../../../fixtures/lcir-sum-layout-collisions/main.loom");
@@ -2540,13 +2582,20 @@ fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells()
     }
 
     // Choice and Json both retain compact 24-byte values with one managed
-    // cell at byte 16. Outer nests Json beside a 24-byte scalar tuple and
-    // grows only to 40 bytes, moving its one managed cell to byte 32.
+    // cell at byte 16. The two Interleaved variants have opposing pointer and
+    // scalar cells, so they must occupy offsets 0 and 8: the physical sum is
+    // 32 bytes with exact managed cells at bytes 8 and 24. Outer nests Json
+    // beside a 24-byte scalar tuple and grows only to 40 bytes, moving its one
+    // managed cell to byte 32.
     for required in [
         "[1 x i64] [i64 16]",
         "i64 24, i64 1, ptr @loom.lcir.list.pointer_offsets",
         "[2 x i64] [i64 0, i64 24]",
         "i64 32, i64 2, ptr @loom.lcir.text_map.pointer_offsets",
+        "[2 x i64] [i64 8, i64 24]",
+        "i64 32, i64 2, ptr @loom.lcir.list.pointer_offsets",
+        "[3 x i64] [i64 0, i64 16, i64 32]",
+        "i64 40, i64 3, ptr @loom.lcir.text_map.pointer_offsets",
         "[1 x i64] [i64 32]",
         "i64 40, i64 1, ptr @loom.lcir.list.pointer_offsets",
         "[2 x i64] [i64 0, i64 40]",
@@ -2583,6 +2632,8 @@ fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells()
         for required in [
             "[1 x i64] [i64 16]",
             "[2 x i64] [i64 0, i64 24]",
+            "[2 x i64] [i64 8, i64 24]",
+            "[3 x i64] [i64 0, i64 16, i64 32]",
             "[1 x i64] [i64 32]",
             "[2 x i64] [i64 0, i64 40]",
         ] {
@@ -2669,6 +2720,84 @@ fn deep_nested_sum_layout_is_cached_and_bounded_across_the_complete_graph() {
     let ir = std::fs::read_to_string(ir_path).expect("read deep sum-layout IR");
     assert!(ir.contains("loom.lcir.list.pointer_offsets"), "{ir}");
     assert!(!ir.contains("%loom.Value"), "{ir}");
+}
+
+fn wide_sum_definition(name: &str, scalar_fields: usize) -> String {
+    let fields = std::iter::repeat_n("Int", scalar_fields)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("enum {name} {{ Scalars({fields}), Managed(Text) }}\n")
+}
+
+fn wide_sum_construct(name: &str, scalar_fields: usize) -> String {
+    let fields = std::iter::repeat_n("0", scalar_fields)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("    discard {name}.Scalars({fields})\n")
+}
+
+fn assert_sum_emission_resource_error(source: &str, label: &str, message: &str) {
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create bounded sum-emission directory");
+    let object = directory.path().join(format!("{label}.o"));
+    let ir_path = directory.path().join(format!("{label}.ll"));
+    let error = emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect_err("shared sum resource exhaustion must fail before LLVM IR materialization");
+    assert_eq!(error.code(), "ProgramTooLarge", "{error}");
+    assert!(
+        error.message().contains(message),
+        "unexpected structured resource error: {error}"
+    );
+    assert!(
+        !object.exists(),
+        "resource rejection emitted a partial object"
+    );
+    assert!(!ir_path.exists(), "resource rejection emitted bytewise IR");
+}
+
+#[test]
+fn independent_wide_sums_share_one_bounded_carrier_placement_budget() {
+    const SCALAR_FIELDS: usize = 250;
+    const SUMS: usize = 11;
+    let mut source = String::from("module lcir_shared_sum_placement\n\n");
+    for index in 0..SUMS {
+        source.push_str(&wide_sum_definition(&format!("Wide{index}"), SCALAR_FIELDS));
+    }
+    source.push_str("\npub fn main() Unit {\n");
+    for index in 0..SUMS {
+        source.push_str(&wide_sum_construct(&format!("Wide{index}"), SCALAR_FIELDS));
+    }
+    source.push_str("    Unit\n}\n");
+
+    assert_sum_emission_resource_error(&source, "shared-sum-placement", "sum carrier placement");
+}
+
+#[test]
+fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
+    const SCALAR_FIELDS: usize = 250;
+    const CONSTRUCTS: usize = 34;
+    let mut source = String::from("module lcir_shared_sum_emission\n\n");
+    source.push_str(&wide_sum_definition("Wide", SCALAR_FIELDS));
+    source.push_str("\npub fn main() Unit {\n");
+    for _ in 0..CONSTRUCTS {
+        source.push_str(&wide_sum_construct("Wide", SCALAR_FIELDS));
+    }
+    source.push_str("    Unit\n}\n");
+
+    assert_sum_emission_resource_error(&source, "shared-sum-emission", "sum carrier pack/unpack");
 }
 
 #[test]
@@ -5649,6 +5778,39 @@ fn release_keeps_a_live_sum_carrier_in_register_ssa() {
         assert!(
             !release.ir.contains(forbidden),
             "unexpected `{forbidden}` in live release carrier IR:\n{}",
+            release.ir
+        );
+    }
+    assert_no_indirect_calls(&release.ir);
+}
+
+#[test]
+fn release_keeps_oppositely_interleaved_managed_sum_carriers_in_register_ssa() {
+    let program = compile_source(INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1);
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let release = emit_and_run_lcir_with_options(
+        &artifact,
+        "release-interleaved-managed-sum",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+
+    assert!(release.output.status.success(), "{:?}", release.output);
+    assert!(
+        release.ir.contains(" phi { i8, {") || release.ir.contains("insertvalue { i8, {"),
+        "managed carrier did not remain an aggregate SSA value:\n{}",
+        release.ir
+    );
+    for forbidden in ["alloca { i8, {", "llvm.memcpy", "loom.Value"] {
+        assert!(
+            !release.ir.contains(forbidden),
+            "unexpected carrier scratch surface `{forbidden}` in managed release IR:\n{}",
             release.ir
         );
     }

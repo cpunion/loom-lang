@@ -73,14 +73,19 @@ artifact, or runtime compatibility.
   canonical recursive `Json`. Json remains 24 bytes on supported 64-bit
   targets rather than growing to a fully disjoint carrier. The
   `lcir-sum-layout-collisions` and `lcir-typed-json` fixtures cover forced
-  relocation, interpreter/legacy/typed differential execution, Linux/MSVC
-  object emission, 32-bit fail-closed classification, and real
+  relocation, opposing pointer-first/scalar-first record variants,
+  interpreter/legacy/typed differential execution, Linux/MSVC object emission,
+  32-bit fail-closed classification, and real
   `check/build/test/run`. The implementation reuses the existing repeated
   allocator and shadow stack; it adds no universal value, executor, registry,
   or runtime symbol. The compiler-private identity advances monotonically to
   LCIR dump 22, artifact schema 23, native-object domain v19, and LLVM
   object-cache domain v24. Json equality, parsing, and formatting remain
-  separate typed-LCIR slices.
+  separate typed-LCIR slices. Carrier storage is capped at 64 KiB. Independent
+  artifact-wide 65,536-step placement and 65,536-payload-byte pack/unpack
+  budgets prevent many legal wide sums or construct sites from multiplying
+  search and bytewise LLVM IR work; checked source regressions exhaust both
+  bounds before an object or partial IR file is produced.
 - Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
   `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;
