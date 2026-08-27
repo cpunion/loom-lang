@@ -210,6 +210,7 @@ struct TypedTaskStorage {
     result_disposed: bool,
     cancel_invoked: bool,
     dispose_invoked: bool,
+    join_completion_pending: bool,
     join_cancel_authorized: bool,
 }
 
@@ -539,6 +540,10 @@ fn all_terminal(tasks: &[*mut LoomTask]) -> bool {
 unsafe fn make_join_runnable(executor: &mut LoomExecutor, parent: *mut LoomTask) {
     // SAFETY: caller established that parent belongs to executor.
     unsafe {
+        if let Some(typed) = (*parent).typed.as_mut() {
+            typed.join_completion_pending = true;
+            typed.join_cancel_authorized = false;
+        }
         (*parent).join_active = false;
         (*parent).status = TaskStatus::Runnable;
         enqueue_task(executor, parent);
@@ -2224,6 +2229,7 @@ unsafe fn copy_typed_task_storage(
         result_disposed: false,
         cancel_invoked: false,
         dispose_invoked: false,
+        join_completion_pending: false,
         join_cancel_authorized: false,
     })
 }
@@ -4076,6 +4082,7 @@ pub unsafe extern "C" fn task_prepare_join(
         (*parent).join_step = TASK_COMPLETED;
         (*parent).join_active = true;
         if let Some(typed) = (*parent).typed.as_mut() {
+            typed.join_completion_pending = false;
             typed.join_cancel_authorized = false;
         }
     }
@@ -4215,24 +4222,18 @@ pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
     };
     let step = parent.join_step;
     let executor = parent.executor;
-    let child_cancel_is_complete = step == TASK_CANCELLED
-        && !executor.is_null()
+    let active_parent = !executor.is_null()
         && !unsafe { (*executor).cleanup_active() }
         && executor_owns(unsafe { &*executor }, parent_pointer)
         && unsafe { (*executor).active_task } == parent_pointer
         && parent.status == TaskStatus::Running
-        && !parent.cancel_requested
-        && !parent.join_active
-        && !parent.join_children.is_empty()
-        && all_terminal(&parent.join_children)
-        && parent
-            .join_children
-            .iter()
-            .any(|child| unsafe { (**child).status } == TaskStatus::Cancelled);
+        && !parent.cancel_requested;
     if let Some(typed) = parent.typed.as_mut() {
-        // This authorization lasts only until the current callback step is
-        // validated. Merely returning TASK_CANCELLED remains a runtime defect.
-        typed.join_cancel_authorized = child_cancel_is_complete;
+        // Only the scheduler can mint this token when a join becomes runnable.
+        // Reading the outcome consumes it atomically, so an old Cancelled step
+        // cannot authorize a later callback activation.
+        let completed = active_parent && std::mem::take(&mut typed.join_completion_pending);
+        typed.join_cancel_authorized = completed && step == TASK_CANCELLED;
     }
     step
 }
@@ -4721,13 +4722,12 @@ pub unsafe extern "C" fn task_cancel(executor: *mut LoomExecutor, task: *mut Loo
 
 unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: i32) -> i32 {
     let join_cancel_authorized = unsafe {
-        std::mem::take(
-            &mut (*task)
-                .typed
-                .as_mut()
-                .expect("typed scheduler branch")
-                .join_cancel_authorized,
-        )
+        let typed = (*task).typed.as_mut().expect("typed scheduler branch");
+        // A normal callback activation gets one opportunity to observe and
+        // propagate its newly completed join. Both an unread completion and a
+        // read authorization expire when this step is validated.
+        typed.join_completion_pending = false;
+        std::mem::take(&mut typed.join_cancel_authorized)
     };
     // Recording a primary fault commits this resume/cancel activation to the
     // faulted terminal path even if buggy generated cleanup returns otherwise.
@@ -7006,6 +7006,47 @@ mod typed_task_tests {
             assert_eq!(executor_run(executor, task), TASK_FAULTED);
             assert_eq!(typed_task_status_v1(task), TASK_FAULTED);
             assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED");
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn observed_join_cancel_expires_when_the_callback_returns_pending() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            activate_test_task(executor, task);
+
+            (*task).status = TaskStatus::Waiting;
+            (*task).join_active = true;
+            (*task).join_step = TASK_CANCELLED;
+            make_join_runnable(&mut *executor, task);
+            activate_test_task(executor, task);
+
+            assert_eq!(task_join_step(task), TASK_CANCELLED);
+            assert!(!(*task).typed.as_ref().unwrap().join_completion_pending);
+            assert!((*task).typed.as_ref().unwrap().join_cancel_authorized);
+            assert_eq!(
+                validate_typed_task_step(task, false, TASK_PENDING),
+                TASK_PENDING
+            );
+            assert!(!(*task).typed.as_ref().unwrap().join_completion_pending);
+            assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
+
+            // The public join step remains readable for diagnostics and
+            // legacy consumers, but it cannot mint another authorization.
+            assert_eq!(task_join_step(task), TASK_CANCELLED);
+            assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
+            assert_eq!(
+                validate_typed_task_step(task, false, TASK_CANCELLED),
+                TASK_FAULTED
+            );
+            assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED");
+            (*executor).active_task = ptr::null_mut();
+            (*task).status = TaskStatus::Faulted;
             destroy(runtime, executor);
         }
     }
