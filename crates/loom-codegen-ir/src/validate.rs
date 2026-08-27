@@ -4726,14 +4726,13 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 {
                     effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                 }
-                TerminatorKind::TaskSleep { .. } => {
-                    effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
-                    if propagates_fault {
-                        effects[caller] = effects[caller].union(Effects::MAY_FAULT);
-                    }
-                }
-                TerminatorKind::ResourceClose { .. } => {
-                    effects[caller] = effects[caller].union(Effects::NEEDS_RUNTIME);
+                TerminatorKind::TaskSleep { .. } | TerminatorKind::ResourceClose { .. } => {
+                    let required = if matches!(terminator.kind(), TerminatorKind::TaskSleep { .. }) {
+                        Effects::NEEDS_EXECUTOR
+                    } else {
+                        Effects::NEEDS_RUNTIME
+                    };
+                    effects[caller] = effects[caller].union(required);
                     if propagates_fault {
                         effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                     }

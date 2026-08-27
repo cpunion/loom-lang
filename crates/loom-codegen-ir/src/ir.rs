@@ -1391,10 +1391,8 @@ impl TerminatorKind {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
             Self::AwaitTask { normal, .. } => vec![preserve(normal.block)],
-            Self::TaskSleep { normal, fault, .. } => {
-                vec![preserve(normal.block), activate(fault.block)]
-            }
-            Self::CheckedIntNegate { normal, fault, .. }
+            Self::TaskSleep { normal, fault, .. }
+            | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
             | Self::ResourceClose { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]

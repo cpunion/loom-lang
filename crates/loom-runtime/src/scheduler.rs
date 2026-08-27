@@ -5787,7 +5787,10 @@ mod typed_task_tests {
                 if view.length == 0 {
                     &[][..]
                 } else {
-                    std::slice::from_raw_parts(view.data, view.length as usize)
+                    std::slice::from_raw_parts(
+                        view.data,
+                        usize::try_from(view.length).expect("fault byte view fits usize"),
+                    )
                 }
             };
             assert_eq!(
