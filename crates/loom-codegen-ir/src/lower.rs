@@ -445,6 +445,7 @@ pub fn lower_typed_artifact(
         aggregates,
         match_plans,
         immortal_text,
+        managed_text,
         ..
     } = classifier;
     let aggregate_plan = aggregates.finish();
@@ -469,7 +470,11 @@ pub fn lower_typed_artifact(
         .collect::<Result<Vec<_>, LoweringError>>()?;
     let effects = solve_effects(summaries)?;
     let mut builder = ProgramBuilder::new(target);
-    if immortal_text {
+    if managed_text {
+        builder
+            .add_managed_text_type()
+            .map_err(LoweringError::from)?;
+    } else if immortal_text {
         builder
             .add_immortal_text_type()
             .map_err(LoweringError::from)?;
@@ -800,6 +805,7 @@ struct Classifier<'program> {
     places: PlaceBudget,
     text_literals: TextLiteralBudget,
     immortal_text: bool,
+    managed_text: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -835,6 +841,7 @@ impl<'program> Classifier<'program> {
             places: PlaceBudget::default(),
             text_literals: TextLiteralBudget::default(),
             immortal_text: false,
+            managed_text: false,
         }
     }
 
@@ -1628,7 +1635,14 @@ impl<'program> Classifier<'program> {
                     | CallTarget::Inherent(_)
                     | CallTarget::StaticConcept { .. } => None,
                     CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicDispatch),
-                    CallTarget::Builtin(mir::Builtin::TextLength | mir::Builtin::TextContains) => {
+                    CallTarget::Builtin(
+                        mir::Builtin::TextLength
+                        | mir::Builtin::TextContains
+                        | mir::Builtin::TextConcat,
+                    ) => {
+                        if matches!(target, CallTarget::Builtin(mir::Builtin::TextConcat)) {
+                            self.managed_text = true;
+                        }
                         None
                     }
                     CallTarget::Builtin(_) => Some(UnsupportedFeature::BuiltinCall),
@@ -1931,6 +1945,8 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
             }
             if let CallTarget::Direct(callee) | CallTarget::Inherent(callee) = target {
                 summary.calls.insert(*callee);
+            } else if matches!(target, CallTarget::Builtin(mir::Builtin::TextConcat)) {
+                summary.include(Effects::MAY_COLLECT);
             }
             expression.ty != Type::Never
         }
@@ -4606,6 +4622,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
         let kind = match (builtin, values.as_slice()) {
             (mir::Builtin::TextLength, [text]) => InstructionKind::TextLength { text: *text },
+            (mir::Builtin::TextConcat, [left, right]) => InstructionKind::TextConcat {
+                left: *left,
+                right: *right,
+            },
             (mir::Builtin::TextContains, [text, needle]) => InstructionKind::TextContains {
                 text: *text,
                 needle: *needle,

@@ -61,8 +61,9 @@ counter, trace, sweep, or move any allocation. One descriptor is limited to
 65,536 slots, 65,536 states, and 1,048,576 bitmap words in total across all
 states. Each independent chain is limited to 65,536 linked frames. The limits
 are shared ABI constants so compiler rejection and hostile-runtime-input
-validation agree. The legacy LLVM emitter validates this pure root-map shape
-before allocating a bitmap or emitting a descriptor.
+validation agree. Both LLVM emitters reject an oversized root-map shape as
+`ProgramTooLarge` before emitting a descriptor; this is an emission error, not
+unsupported source coverage and never a fallback signal.
 
 Async values live across suspension are stored in Task slots. Coroutine
 descriptors provide the exact live bitmap for each state. Task results remain
@@ -123,13 +124,25 @@ witness instances use a separate non-moving arena because generated proof
 arguments can hold their addresses across a safepoint; unreachable instances
 are marked and swept.
 
-The typed LCIR literal-text slice is outside the managed heap. Its immutable
-compiler-emitted `TextObject` globals live for the process lifetime, so their
-one-pointer values need neither a shadow-stack entry nor relocation. This is
-not a general exemption for `Text`. The runtime now has the typed allocation
-and root foundation required by future moving LCIR values, but current LCIR
-does not yet emit these frames or dynamically allocate typed `Text`. Those
-source paths still select complete legacy lowering.
+Typed LCIR uses two artifact-wide Text modes. A literal-only artifact keeps its
+immutable compiler-emitted `TextObject` globals outside the managed heap, so
+their process-lifetime pointers need no relocation. If any reachable function
+uses concat, every Text has the direct managed-capable pointer representation.
+`loom_runtime_text_concat_typed_v1(left, right, output)` copies and validates
+both complete input byte sequences before its typed allocation can collect,
+then creates one pointer-free typed leaf with a 32-byte header and trailing
+UTF-8 bytes. It initializes without another safepoint and publishes the output
+last. This staging rule also makes aliased inputs safe when collection moves
+the old object.
+
+LCIR functions publish exact live-after typed-root bitmap states at concat and
+at calls whose transitive effects may collect. Direct managed SSA values use
+stable pointer cells; definitions and block parameters update those cells and
+post-safepoint uses reload them. An edge argument is live only when the paired
+explicit successor parameter is live, and a call result cannot be live at its
+own safepoint. No live-across values means no typed frame. Synchronous concat
+uses a runtime but constructs no executor. Text inside aggregates, `Text.get`,
+and other dynamic producers remain outside the current typed LCIR slice.
 
 ## Source semantics
 
@@ -155,10 +168,12 @@ shared resource bounds, copied typed layout metadata, advertised alignment,
 forced collection, pointer-free trailing-byte preservation, typed
 parent/child graphs, cycles, aliased and state-selective roots, legacy/typed
 coexistence, relocation, nested managed values, witness mark/sweep, and
-partial-construction helpers. The synchronous typed tests also prove that the
-heap path constructs no executor. LLVM integration tests exercise
-synchronous shadow-stack maps, coroutine state liveness, structured values,
-standard-library outputs, and collections at compiler-generated boundaries.
+partial-construction helpers. The synchronous typed tests also prove concat
+staging across forced relocation and that the heap path constructs no
+executor. LLVM integration tests exercise exact Text live-after maps, alias
+reloads, no-empty-frame emission, synchronous shadow-stack maps, coroutine
+state liveness, structured values, standard-library outputs, and collections
+at compiler-generated boundaries.
 
 A complete Windows native job is configured with GC/runtime fixture coverage,
 but it is not verified Windows runtime or release evidence until a real Windows

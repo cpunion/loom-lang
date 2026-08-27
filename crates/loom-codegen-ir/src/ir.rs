@@ -454,13 +454,23 @@ pub enum FloatPredicate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionKind {
     Constant(Constant),
-    /// Constructs one process-lifetime UTF-8 Text object. Its result must use
-    /// the dedicated immortal Text representation; no other instruction may
-    /// construct that representation from raw bits or a foreign pointer.
+    /// Constructs one process-lifetime UTF-8 Text object. Its result uses the
+    /// artifact's canonical Text pointer representation: `ImmortalText` for a
+    /// literal-only artifact or `ManagedPointer` when concat is reachable. No
+    /// instruction may construct either representation from raw bits or a
+    /// foreign pointer.
     TextLiteral {
         utf8: Box<str>,
     },
-    /// Reads the cached Unicode scalar length from an immortal Text object.
+    /// Concatenates two complete Text objects. This is an infallible language
+    /// operation with a moving-GC safepoint; resource exhaustion is a terminal
+    /// runtime fault rather than an LCIR unwind edge.
+    TextConcat {
+        left: ValueId,
+        right: ValueId,
+    },
+    /// Reads the cached Unicode scalar length from a canonical Text object,
+    /// whether its checked representation is immortal or managed.
     TextLength {
         text: ValueId,
     },
@@ -584,7 +594,8 @@ impl InstructionKind {
             | Self::BoolNot { value }
             | Self::FloatNegate { value } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
-            Self::TextCompare { left, right, .. }
+            Self::TextConcat { left, right }
+            | Self::TextCompare { left, right, .. }
             | Self::BoolCompare { left, right, .. }
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }

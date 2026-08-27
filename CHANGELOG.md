@@ -24,8 +24,7 @@ artifact, or runtime compatibility.
   target, ABI, archive, and linker validation.
 - A side-by-side typed moving-heap ABI with exact fixed-pointer descriptors,
   an independent direct-pointer shadow stack, strict shared root limits, and
-  forced-relocation evidence without constructing an executor. Production
-  LCIR does not yet emit the new allocation or root symbols.
+  forced-relocation evidence without constructing an executor.
 
 ### Changed
 
@@ -58,10 +57,9 @@ artifact, or runtime compatibility.
 - Typed LCIR now carries literal-proven `Text` values as one pointer to an
   immortal compiler-emitted object on 64-bit targets. Direct `length`,
   `contains`, and content equality require no universal value, GC root, or
-  executor; allocating or derived text and text nested in aggregates still
-  select atomic whole-artifact fallback. This advances the LCIR dump to 7,
-  artifact identity to schema 8, native-object domain to v4, and CLI object
-  cache to v9 without changing the native runtime ABI.
+  executor. This initially advanced the LCIR dump to 7, artifact identity to
+  schema 8, native-object domain to v4, and CLI object cache to v9 without
+  changing the native runtime ABI.
 - Typed LCIR function effects now use one explicit transitive capability set:
   `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`, `NEEDS_EXECUTOR`, and
   `MAY_SUSPEND`. Independent validation recomputes the least call-graph fixed
@@ -85,11 +83,21 @@ artifact, or runtime compatibility.
   surface is added. Open instance keys are rejected independently by the
   builder and validator. This advances the LCIR dump to 10, artifact identity
   to schema 11, LCIR native-object domain to v7, and CLI object cache to v12.
+- Dynamic `Text.concat` now compiles through typed LCIR. One artifact-wide
+  direct pointer representation covers its literals and moving results; the
+  runtime stages both complete UTF-8 inputs before collection, initializes a
+  pointer-free typed leaf, and publishes it last. Exact live-after SSA root
+  maps use the typed shadow stack, reload relocated aliases, omit dead edge
+  arguments and empty frames, and construct no universal value or executor.
+  OOM remains an uncatchable process fault and invalid helper status fails
+  closed. `Text.get` and Text nested in aggregates still select atomic
+  fallback. This advances the LCIR dump to 11, artifact identity to schema 12,
+  native-object domain to v8, and CLI object cache to v13.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.
-- The native runtime ABI component advances to `9`, GC identity to `gc-v8`,
-  and the whole identity gains `typed-gc-v1` and
+- The native runtime ABI component advances to `10`. Its exact identity uses
+  `text-v2` and `runtime-v4`, keeps `gc-v8`, and includes `typed-gc-v1` plus
   `typed-shadow-stack-v1`. Existing legacy GC symbols and behavior remain
   available within the new whole-toolchain ABI identity.
 

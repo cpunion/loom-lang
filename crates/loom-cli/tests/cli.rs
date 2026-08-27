@@ -728,20 +728,24 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
         .expect("run scalar tests through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
 
-    let unsupported = TestProject::new(
-        "module automatic_legacy\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
+    let managed = TestProject::new(
+        "module automatic_managed_text\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
     );
-    let legacy_object = unsupported.0.join("legacy.o");
+    let managed_object = managed.0.join("managed-text.o");
     let build = loomc()
         .args(["build", "--emit", "object", "--output"])
-        .arg(&legacy_object)
-        .arg(&unsupported.0)
+        .arg(&managed_object)
+        .arg(&managed.0)
         .output()
-        .expect("build unsupported object through the production CLI");
+        .expect("build managed Text object through the production CLI");
     assert_eq!(build.status.code(), Some(0), "{build:?}");
-    let object = fs::read(&legacy_object).expect("read legacy object");
-    assert!(contains_bytes(&object, b"loom.fn."));
-    assert!(!contains_bytes(&object, b"loom.lcir.fn"));
+    let object = fs::read(&managed_object).expect("read managed Text object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+    assert!(contains_bytes(
+        &object,
+        b"loom_runtime_text_concat_typed_v1"
+    ));
 }
 
 #[test]
@@ -937,6 +941,76 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
         .arg(&project.0)
         .output()
         .expect("run immortal-Text source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
+fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-managed-text/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check managed-Text source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("managed-text.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build managed-Text source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read managed-Text object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_layout_text_v1",
+        b"loom_runtime_text_concat_typed_v1",
+        b"loom_gc_typed_root_push_v1",
+        b"loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "managed Text object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_gc_root_push_v1",
+        b"loom_gc_root_pop_v1",
+        b"loom_executor_",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "managed Text object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test managed-Text source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_managed_text.managedText"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run managed-Text source through the CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
 }
@@ -1925,7 +1999,7 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
 #[test]
 fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
     let project = TestProject::new(
-        "module debug_legacy\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
+        "module debug_legacy\n\npub fn main() Unit {\n    discard \"value\".get(0)\n    Unit\n}\n",
     );
     project.write(
         "debug-wrapper",
@@ -1940,7 +2014,7 @@ fn debug_routes_one_reachable_unsupported_artifact_through_legacy_codegen() {
         .arg(&project.0)
         .args(["--"])
         .output()
-        .expect("launch debugger wrapper for reachable allocating Text");
+        .expect("launch debugger wrapper for reachable derived Text");
     assert_eq!(
         output.status.code(),
         Some(0),

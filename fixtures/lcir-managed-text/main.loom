@@ -1,0 +1,27 @@
+module lcir_managed_text
+
+enum Problem { WrongText }
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn exercise() Unit {
+    let kept = "Keep"
+    let joined = join(kept, "Right")
+    discard joined.length()
+    discard kept.length()
+    Unit
+}
+
+fn verify() Result[Unit, Problem] {
+    let kept = "Keep"
+    let joined = join(kept, "Right")
+    if joined == "KeepRight" && kept == "Keep" {
+        Ok(Unit)
+    } else {
+        Err(Problem.WrongText)
+    }
+}
+
+pub fn main() Unit { exercise() }
+
+test fn managedText() Result[Unit, Problem] { verify() }

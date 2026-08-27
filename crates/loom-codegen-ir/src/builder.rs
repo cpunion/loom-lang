@@ -121,6 +121,29 @@ impl ProgramBuilder {
         })
     }
 
+    /// Registers the direct moving-GC representation used by dynamic Text.
+    /// Compiler-emitted literals use the same pointer representation whenever
+    /// one allocating Text operation appears anywhere in the artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a non-64-bit target,
+    /// for duplicate registration, or when an identity table is exhausted.
+    pub fn add_managed_text_type(&mut self) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidTextType,
+                "LCIR managed Text must be registered before functions",
+            ));
+        }
+        self.representations.add_managed_text().ok_or_else(|| {
+            BuildError::new(
+                BuildErrorCode::InvalidTextType,
+                "LCIR managed Text requires one unique registration on a 64-bit target",
+            )
+        })
+    }
+
     /// Adds one monomorphic record whose fields already have canonical direct
     /// representations. Nested products must therefore be registered before
     /// their containing products. Product types must be registered before
