@@ -1,7 +1,7 @@
 use std::fmt;
 
 use loom_core::Span;
-use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId};
+use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId, TypeId};
 
 use crate::ids::ProgramBrand;
 use crate::{
@@ -283,15 +283,17 @@ impl Function {
 /// Target-typed logical frame contract for one stackless coroutine instance.
 ///
 /// Parameter and result slots are implied by the function signature. Each
-/// suspension row lists the child results injected in task order followed by,
-/// in deterministic local-id order, the exact live values forwarded to its
-/// continuation. The LLVM backend derives byte offsets and precise
-/// managed-pointer projections from these checked value types; no universal
-/// value envelope or interpreter frame is involved.
+/// suspension row lists the exact child output types which determine either
+/// the completed values (`all`/`any`) or terminal child handles
+/// (`settled`/`race`) injected before, in deterministic local-id order, the
+/// exact live values forwarded to its continuation. The LLVM backend derives
+/// byte offsets and precise managed-pointer projections from these checked
+/// value types; no universal value envelope or interpreter frame is involved.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoroutinePlan {
     output: ValueTypeId,
     suspensions: Box<[CoroutineSuspension]>,
+    carries_caller_span: bool,
 }
 
 impl CoroutinePlan {
@@ -300,7 +302,17 @@ impl CoroutinePlan {
         Self {
             output,
             suspensions: suspensions.into(),
+            carries_caller_span: false,
         }
+    }
+
+    /// Adds the compiler-private source span of the `TaskCreate` call to the
+    /// coroutine frame. A checked plan may carry it only when a precondition
+    /// fault in this function uses [`ContractFaultBlame::CoroutineCallSite`].
+    #[must_use]
+    pub const fn with_caller_span(mut self) -> Self {
+        self.carries_caller_span = true;
+        self
     }
 
     #[must_use]
@@ -312,10 +324,16 @@ impl CoroutinePlan {
     pub const fn suspensions(&self) -> &[CoroutineSuspension] {
         &self.suspensions
     }
+
+    #[must_use]
+    pub const fn carries_caller_span(&self) -> bool {
+        self.carries_caller_span
+    }
 }
 
 /// One nonzero MIR resume state, its exact child Task output types, join mode,
-/// and forwarded live-value types.
+/// and forwarded live-value types. `awaited` always describes the child output
+/// `T`, including modes whose normal edge injects a terminal `Task[T]` handle.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoroutineSuspension {
     state: u32,
@@ -765,6 +783,16 @@ pub enum InstructionKind {
     TaskJoinAll {
         tasks: Box<[ValueId]>,
     },
+    /// Consumes one terminal child handle produced by a `settled` or `race`
+    /// await and constructs its exact canonical `TaskOutcome[T]`. Completed
+    /// payloads are moved from the child frame, fault code/message bytes become
+    /// freshly allocated canonical Text objects, and cancelled outcomes carry
+    /// no payload. The runtime helper publishes those exact payload components
+    /// at this instruction's explicit moving-GC safepoint before retiring the
+    /// child; the backend constructs the validated closed sum.
+    TaskOutcomeTake {
+        task: ValueId,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -861,6 +889,7 @@ impl InstructionKind {
                 arguments.to_vec()
             }
             Self::TaskJoinAll { tasks } => tasks.to_vec(),
+            Self::TaskOutcomeTake { task } => vec![*task],
             Self::IntSuccessorBelow {
                 value,
                 upper_bound,
@@ -980,7 +1009,26 @@ pub enum AwaitMode {
     /// Completes after the first successful child and injects only that
     /// winner's result. All fixed children must have one common output type.
     Any,
+    /// Completes only after every child reaches a terminal state and injects
+    /// every terminal child handle in source order. Each handle must then be
+    /// consumed by [`InstructionKind::TaskOutcomeTake`].
+    Settled,
+    /// Completes after the first terminal child, cancels and drains every
+    /// loser, and injects only the terminal winner handle. All fixed children
+    /// must have one common output type, and the winner must then be consumed
+    /// by [`InstructionKind::TaskOutcomeTake`].
+    Race,
 }
+
+/// Canonical prelude identities and ordered variants consumed by
+/// [`InstructionKind::TaskOutcomeTake`]. Checked MIR establishes the source
+/// definitions; independent LCIR validation rechecks their concrete semantic
+/// identities and complete target representation shapes.
+pub const TASK_FAULT_TYPE_ID: TypeId = TypeId(6);
+pub const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(7);
+pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
+pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
+pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
 
 /// Statically known external-resource class for typed lexical disposal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1027,19 +1075,36 @@ impl ContractFaultKind {
     }
 }
 
+/// Source location blamed when a contract fails.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractFaultBlame {
+    /// A span known statically in the current LCIR function.
+    Static(Span),
+    /// The source span carried from the `TaskCreate` instruction which
+    /// instantiated the current coroutine.
+    CoroutineCallSite,
+}
+
+impl From<Span> for ContractFaultBlame {
+    fn from(span: Span) -> Self {
+        Self::Static(span)
+    }
+}
+
 /// Complete diagnostic identity for one source contract-fault origin.
 ///
-/// LCIR stores concrete spans. A precondition check therefore carries the
-/// exact closed-world call-site span as `blame_span`; all other kinds use their
-/// contract or assertion span. Independent validation checks those canonical
-/// relationships and the current language-defined message schema.
+/// A synchronous precondition stores its exact closed-world call-site span.
+/// An asynchronous precondition instead names the compiler-private call-site
+/// span carried in its coroutine frame. All other kinds use their contract or
+/// assertion span. Independent validation checks those canonical relationships
+/// and the current language-defined message schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractFaultMetadata {
     kind: ContractFaultKind,
     user_code: Option<String>,
     message: String,
     contract_span: Span,
-    blame_span: Span,
+    blame: ContractFaultBlame,
 }
 
 impl ContractFaultMetadata {
@@ -1051,14 +1116,14 @@ impl ContractFaultMetadata {
         user_code: Option<String>,
         message: impl Into<String>,
         contract_span: Span,
-        blame_span: Span,
+        blame: impl Into<ContractFaultBlame>,
     ) -> Self {
         Self {
             kind,
             user_code,
             message: message.into(),
             contract_span,
-            blame_span,
+            blame: blame.into(),
         }
     }
 
@@ -1068,11 +1133,24 @@ impl ContractFaultMetadata {
         kind: ContractFaultKind,
         user_code: impl Into<String>,
         contract_span: Span,
-        blame_span: Span,
+        blame: impl Into<ContractFaultBlame>,
     ) -> Self {
         let user_code = user_code.into();
         let message = format!("contract `{user_code}` was not satisfied");
-        Self::new(kind, Some(user_code), message, contract_span, blame_span)
+        Self::new(kind, Some(user_code), message, contract_span, blame)
+    }
+
+    /// Constructs the canonical payload for a precondition checked inside an
+    /// asynchronous callee. The exact blame span is supplied by the
+    /// coroutine's `TaskCreate` call site at run time.
+    #[must_use]
+    pub fn coroutine_precondition(user_code: impl Into<String>, contract_span: Span) -> Self {
+        Self::contract(
+            ContractFaultKind::Precondition,
+            user_code,
+            contract_span,
+            ContractFaultBlame::CoroutineCallSite,
+        )
     }
 
     /// Constructs the canonical payload for a source `assert` statement.
@@ -1108,8 +1186,18 @@ impl ContractFaultMetadata {
     }
 
     #[must_use]
-    pub const fn blame_span(&self) -> Span {
-        self.blame_span
+    pub const fn blame(&self) -> ContractFaultBlame {
+        self.blame
+    }
+
+    /// Returns the statically known blame span, or `None` when a coroutine
+    /// obtains the span from its creating call at run time.
+    #[must_use]
+    pub const fn blame_span(&self) -> Option<Span> {
+        match self.blame {
+            ContractFaultBlame::Static(span) => Some(span),
+            ContractFaultBlame::CoroutineCallSite => None,
+        }
     }
 }
 
@@ -1234,11 +1322,13 @@ pub enum TerminatorKind {
     /// Consumes one or more structured child Tasks. The initial callback
     /// invocation stores `normal.arguments`, attaches all children to one
     /// exact mode-specific join, and returns pending when needed. Resume state
-    /// `state` injects either every exact child result in task order (`all`) or
-    /// the one successful winner (`any`) into the leading normal parameters
-    /// before the forwarded values. `fault` and `cancel` receive the same
-    /// forwarded live row without child results, allowing lexical cleanup to
-    /// run before the propagated terminal outcome.
+    /// `state` injects completed values (`all`/`any`) or terminal child handles
+    /// (`settled`/`race`) into the leading normal parameters before the
+    /// forwarded values. Terminal handles remain affine and are converted to
+    /// canonical outcomes only by explicit collecting `task.outcome_take`
+    /// instructions. `fault` and `cancel` receive the same forwarded live row
+    /// without child values, allowing lexical cleanup to run before the
+    /// propagated terminal outcome.
     AwaitTasks {
         state: u32,
         mode: AwaitMode,

@@ -20,8 +20,8 @@ The implemented core includes:
   polymorphism, and `dyn C` dynamic values;
 - automatic moving GC without ownership, borrow, or lifetime syntax;
 - block-level `scoped` resources and block-level `defer` cleanup;
-- stackless async functions, postfix `.await`, structured `Task` ownership, and
-  tuple/list task joins;
+- stackless async functions, postfix `.await`, structured `Task` ownership,
+  terminal task outcomes, and standard-library task composition;
 - manifest packages, lockfiles, registries, portable artifacts, a persistent
   cache, an interpreter backend, and an LLVM native backend.
 

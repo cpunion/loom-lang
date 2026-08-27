@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, GC_MAX_OBJECT_ALIGNMENT,
-    GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+    GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK,
     LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedTaskCallback, LoomTypedTaskFaultView,
     LoomWitnessInstance, TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
     TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
@@ -212,7 +212,7 @@ struct TypedTaskStorage {
     dispose_invoked: bool,
     join_completion_pending: bool,
     join_cancel_authorized: bool,
-    join_any_finalized: bool,
+    join_winner_finalized: bool,
 }
 
 impl TypedTaskStorage {
@@ -2310,7 +2310,7 @@ unsafe fn copy_typed_task_storage(
         dispose_invoked: false,
         join_completion_pending: false,
         join_cancel_authorized: false,
-        join_any_finalized: false,
+        join_winner_finalized: false,
     })
 }
 
@@ -2987,6 +2987,174 @@ pub unsafe extern "C" fn typed_task_take_result_v1(
         unsafe { retire_typed_child(&mut *executor, owner, task) };
     }
     TYPED_TASK_OK
+}
+
+/// Consumes one terminal typed child and publishes the payload for its exact
+/// `TaskOutcome[T]` case. Completed values are moved byte-for-byte from the
+/// descriptor-pinned result slot. Fault text is copied into two independently
+/// managed `Text` values while the first allocation is precisely rooted.
+///
+/// The caller must keep all output cells in stable, non-GC storage for the
+/// complete call. Contract validation is a preflight and does not modify caller
+/// storage. On success the child is detached from its active join and retired.
+#[unsafe(export_name = "loom_typed_task_take_outcome_v1")]
+#[allow(clippy::too_many_lines)]
+pub unsafe extern "C" fn typed_task_take_outcome_v1(
+    task: *mut LoomTask,
+    value_output: *mut c_void,
+    value_size: u64,
+    value_align: u64,
+    code_output: *mut *mut c_void,
+    message_output: *mut *mut c_void,
+) -> i32 {
+    let Some(task_ref) = (unsafe { task.as_ref() }) else {
+        return TYPED_TASK_STATUS_INVALID;
+    };
+    let Some(typed) = task_ref.typed.as_ref() else {
+        return TYPED_TASK_STATUS_INVALID;
+    };
+    let (Ok(value_size), Ok(value_align)) =
+        (usize::try_from(value_size), usize::try_from(value_align))
+    else {
+        return TYPED_TASK_STATUS_INVALID;
+    };
+    let pointer_size = size_of::<*mut c_void>();
+    let pointer_align = align_of::<*mut c_void>();
+    if !terminal(task_ref.status)
+        || !typed.initialized
+        || !typed.published
+        || typed.result_taken
+        || typed.result_disposed
+        || typed.dispose_invoked
+        || value_size != typed.result_size
+        || value_align != typed.result_align
+        || (value_size != 0
+            && (value_output.is_null() || !(value_output as usize).is_multiple_of(value_align)))
+        || code_output.is_null()
+        || message_output.is_null()
+        || !(code_output as usize).is_multiple_of(pointer_align)
+        || !(message_output as usize).is_multiple_of(pointer_align)
+        || code_output == message_output
+        || (task_ref.status == TaskStatus::Completed && !typed.result_initialized)
+        || (task_ref.status != TaskStatus::Completed && typed.result_initialized)
+        || (task_ref.status == TaskStatus::Faulted && !task_ref.primary_fault_recorded)
+    {
+        return TYPED_TASK_STATUS_INVALID;
+    }
+
+    let checked_overlap = |left_start: usize,
+                           left_size: usize,
+                           right_start: usize,
+                           right_size: usize|
+     -> Option<bool> {
+        let left_end = left_start.checked_add(left_size)?;
+        let right_end = right_start.checked_add(right_size)?;
+        Some(left_start < right_end && right_start < left_end)
+    };
+    let value_start = value_output as usize;
+    let source_start = typed.result_pointer() as usize;
+    let frame_start = typed.frame.as_ptr() as usize;
+    let frame_size = typed.frame_layout.size();
+    let code_start = code_output as usize;
+    let message_start = message_output as usize;
+    let ranges_valid = checked_overlap(code_start, pointer_size, message_start, pointer_size)
+        == Some(false)
+        && checked_overlap(code_start, pointer_size, frame_start, frame_size) == Some(false)
+        && checked_overlap(message_start, pointer_size, frame_start, frame_size) == Some(false)
+        && (value_size == 0
+            || (checked_overlap(value_start, value_size, source_start, value_size) == Some(false)
+                && checked_overlap(value_start, value_size, frame_start, frame_size)
+                    == Some(false)
+                && checked_overlap(value_start, value_size, code_start, pointer_size)
+                    == Some(false)
+                && checked_overlap(value_start, value_size, message_start, pointer_size)
+                    == Some(false)));
+    if !ranges_valid {
+        return TYPED_TASK_STATUS_INVALID;
+    }
+
+    let executor = task_ref.executor;
+    let owner = task_ref.owner;
+    if executor.is_null()
+        || owner.is_null()
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+        || !executor_owns(unsafe { &*executor }, owner)
+        || unsafe { (*executor).active_task } != owner
+        || unsafe { (*owner).status } != TaskStatus::Running
+        || unsafe {
+            (*owner)
+                .owned_children
+                .iter()
+                .filter(|child| **child == task)
+                .count()
+                != 1
+        }
+        || unsafe {
+            (*owner)
+                .join_children
+                .iter()
+                .filter(|child| **child == task)
+                .count()
+                != 1
+        }
+    {
+        return TYPED_TASK_STATUS_INVALID;
+    }
+
+    // Invalid calls never clear caller storage. Once the complete contract is
+    // known-valid, every non-faulted outcome publishes null Text payloads.
+    unsafe {
+        code_output.write(ptr::null_mut());
+        message_output.write(ptr::null_mut());
+    }
+    let outcome = match task_ref.status {
+        TaskStatus::Completed => {
+            if value_size != 0 {
+                // SAFETY: descriptor equality and the non-overlap checks above
+                // establish exact, disjoint source and destination ranges.
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        typed.result_pointer(),
+                        value_output.cast(),
+                        value_size,
+                    );
+                    ptr::write_bytes(typed.result_pointer(), 0, value_size);
+                }
+            }
+            let Some(typed) = (unsafe { (*task).typed.as_mut() }) else {
+                std::process::abort();
+            };
+            typed.result_initialized = false;
+            typed.result_taken = true;
+            TASK_COMPLETED
+        }
+        TaskStatus::Faulted => {
+            let allocation_status = unsafe {
+                crate::text::allocate_typed_text_pair(
+                    task_ref.fault_code.as_bytes(),
+                    task_ref.fault_message.as_bytes(),
+                    code_output,
+                    message_output,
+                )
+            };
+            if allocation_status != GC_OK {
+                // A validated generated-code call has an active runtime and
+                // bounded scheduler-owned UTF-8. No recoverable GC status can
+                // arise here without violating that internal contract.
+                std::process::abort();
+            }
+            TASK_FAULTED
+        }
+        TaskStatus::Cancelled => TASK_CANCELLED,
+        TaskStatus::Unpublished
+        | TaskStatus::Runnable
+        | TaskStatus::Running
+        | TaskStatus::Waiting
+        | TaskStatus::Draining => unreachable!("terminal status was validated above"),
+    };
+    unsafe { retire_typed_child(&mut *executor, owner, task) };
+    outcome
 }
 
 #[unsafe(export_name = "loom_typed_task_request_cancel_v1")]
@@ -4471,7 +4639,7 @@ pub unsafe extern "C" fn task_prepare_join(
         if let Some(typed) = (*parent).typed.as_mut() {
             typed.join_completion_pending = false;
             typed.join_cancel_authorized = false;
-            typed.join_any_finalized = false;
+            typed.join_winner_finalized = false;
         }
     }
     WAIT_OK
@@ -4602,15 +4770,16 @@ pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
     }
 }
 
-/// Finalizes a typed `Task.any` child set before generated code observes its
-/// terminal step. The winner remains attached until its exact result is moved
-/// from the child frame; every non-winner is deterministically disposed and
-/// retired now so a long-lived parent cannot accumulate completed children.
-unsafe fn finalize_typed_any_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
+/// Finalizes a typed winner-selecting join before generated code observes its
+/// terminal step. The original winner ordinal remains stable and that child
+/// stays attached until its exact result or outcome is consumed. Every loser
+/// is deterministically disposed in reverse input order and retired now.
+unsafe fn finalize_typed_winner_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
+    let mode = unsafe { (*parent).join_mode };
     if !executor_owns(executor, parent)
         || unsafe { (*parent).typed.is_none() }
-        || unsafe { (*parent).join_mode } != TASK_JOIN_ANY
-        || unsafe { (*parent).typed.as_ref().unwrap().join_any_finalized }
+        || !matches!(mode, TASK_JOIN_ANY | TASK_JOIN_RACE)
+        || unsafe { (*parent).typed.as_ref().unwrap().join_winner_finalized }
     {
         return;
     }
@@ -4642,28 +4811,34 @@ unsafe fn finalize_typed_any_join(executor: &mut LoomExecutor, parent: *mut Loom
                 }
         });
     let outcome_valid = children_valid
-        && match (unsafe { (*parent).join_step }, winner) {
-            (TASK_COMPLETED, Some(winner)) => {
-                (unsafe { (*children[winner]).status }) == TaskStatus::Completed
+        && match mode {
+            TASK_JOIN_ANY => match (unsafe { (*parent).join_step }, winner) {
+                (TASK_COMPLETED, Some(winner)) => {
+                    (unsafe { (*children[winner]).status }) == TaskStatus::Completed
+                }
+                (TASK_FAULTED, None) if winner_raw == NO_JOIN_WINNER => children
+                    .iter()
+                    .all(|child| unsafe { (**child).status } != TaskStatus::Completed),
+                _ => false,
+            },
+            TASK_JOIN_RACE => {
+                (unsafe { (*parent).join_step }) == TASK_COMPLETED && winner.is_some()
             }
-            (TASK_FAULTED, None) if winner_raw == NO_JOIN_WINNER => children
-                .iter()
-                .all(|child| unsafe { (**child).status } != TaskStatus::Completed),
             _ => false,
         };
     if !children_valid || !outcome_valid {
         unsafe {
-            (*parent).typed.as_mut().unwrap().join_any_finalized = true;
+            (*parent).typed.as_mut().unwrap().join_winner_finalized = true;
             record_typed_runtime_defect(
                 parent,
-                "LOOM_RUNTIME_TYPED_ANY_FINALIZE",
-                "typed Task.any completion had an invalid child topology or winner state",
+                "LOOM_RUNTIME_TYPED_WINNER_FINALIZE",
+                "typed winner-selecting join had an invalid child topology or winner state",
             );
             (*parent).join_step = TASK_FAULTED;
         }
         return;
     }
-    unsafe { (*parent).typed.as_mut().unwrap().join_any_finalized = true };
+    unsafe { (*parent).typed.as_mut().unwrap().join_winner_finalized = true };
 
     let mut first_non_clean = None;
     for (index, child) in children.into_iter().enumerate().rev() {
@@ -4686,8 +4861,8 @@ unsafe fn finalize_typed_any_join(executor: &mut LoomExecutor, parent: *mut Loom
             unsafe {
                 record_typed_runtime_defect(
                     parent,
-                    "LOOM_RUNTIME_TYPED_ANY_DISPOSE",
-                    "a typed Task.any loser result could not be disposed",
+                    "LOOM_RUNTIME_TYPED_WINNER_DISPOSE",
+                    "a typed winner-selecting join loser result could not be disposed",
                 );
             }
         }
@@ -4719,8 +4894,13 @@ pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
     } else {
         false
     };
-    if completed && unsafe { (*parent_pointer).join_mode } == TASK_JOIN_ANY {
-        unsafe { finalize_typed_any_join(&mut *executor, parent_pointer) };
+    if completed
+        && matches!(
+            unsafe { (*parent_pointer).join_mode },
+            TASK_JOIN_ANY | TASK_JOIN_RACE
+        )
+    {
+        unsafe { finalize_typed_winner_join(&mut *executor, parent_pointer) };
     }
     unsafe { (*parent_pointer).join_step }
 }
@@ -6301,6 +6481,138 @@ mod typed_task_tests {
                 .iter()
                 .map(|task| (&raw const **task).cast_mut())
                 .collect()
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn typed_task_take_outcome_consumes_every_settled_terminal_case_exactly() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+
+            let completed = create_typed_u64_child(executor, &descriptor);
+            let faulted = create_typed_u64_child(executor, &descriptor);
+            let cancelled = create_typed_u64_child(executor, &descriptor);
+            complete_typed_u64_for_test(completed, 0xfeed_beef);
+            record_primary_task_fault(
+                &mut *faulted,
+                "AssertionFault".into(),
+                "assertion failed".into(),
+                "fault detail is not part of TaskFault".into(),
+            );
+            (*faulted).status = TaskStatus::Faulted;
+            (*cancelled).status = TaskStatus::Cancelled;
+
+            // Being a structured child is insufficient: outcome consumption
+            // is authorized only after the active join publishes the handle.
+            let mut untouched_value = 7_u64;
+            let sentinel = ptr::dangling_mut::<c_void>();
+            let mut untouched_code = sentinel;
+            let mut untouched_message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    completed,
+                    (&raw mut untouched_value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    &raw mut untouched_code,
+                    &raw mut untouched_message,
+                ),
+                TYPED_TASK_STATUS_INVALID
+            );
+            assert_eq!(untouched_value, 7);
+            assert_eq!(untouched_code, sentinel);
+            assert_eq!(untouched_message, sentinel);
+
+            assert_eq!(
+                task_prepare_join(executor, parent, TASK_JOIN_SETTLED),
+                WAIT_OK
+            );
+            for child in [completed, faulted, cancelled] {
+                assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            }
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+            assert_eq!((*parent).join_children, vec![completed, faulted, cancelled]);
+
+            enter_executor(executor);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let mut completed_value = 0_u64;
+            let mut completed_code = sentinel;
+            let mut completed_message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    completed,
+                    (&raw mut completed_value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    &raw mut completed_code,
+                    &raw mut completed_message,
+                ),
+                TASK_COMPLETED
+            );
+            assert_eq!(completed_value, 0xfeed_beef);
+            assert!(completed_code.is_null());
+            assert!(completed_message.is_null());
+
+            let mut fault_value = 19_u64;
+            let mut fault_code = ptr::null_mut();
+            let mut fault_message = ptr::null_mut();
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    faulted,
+                    (&raw mut fault_value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    &raw mut fault_code,
+                    &raw mut fault_message,
+                ),
+                TASK_FAULTED
+            );
+            assert_eq!(fault_value, 19, "Faulted has no T payload");
+            assert_eq!(
+                crate::text::text_bytes(fault_code).unwrap(),
+                b"AssertionFault"
+            );
+            assert_eq!(
+                crate::text::text_bytes(fault_message).unwrap(),
+                b"assertion failed"
+            );
+
+            let mut cancelled_value = 23_u64;
+            let mut cancelled_code = sentinel;
+            let mut cancelled_message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    cancelled,
+                    (&raw mut cancelled_value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    &raw mut cancelled_code,
+                    &raw mut cancelled_message,
+                ),
+                TASK_CANCELLED
+            );
+            assert_eq!(cancelled_value, 23, "Cancelled has no T payload");
+            assert!(cancelled_code.is_null());
+            assert!(cancelled_message.is_null());
+
+            (*runtime).heap.collect_before_every_allocation = false;
+            leave_executor();
+            assert!((*parent).owned_children.is_empty());
+            assert!((*parent).join_children.is_empty());
+            for child in [completed, faulted, cancelled] {
+                assert!((*child).owner.is_null());
+                assert!((*executor).retired_tasks.contains(&child));
+            }
+            destroy(runtime, executor);
         }
     }
 
@@ -7969,6 +8281,133 @@ mod typed_task_tests {
     }
 
     #[test]
+    fn typed_race_keeps_an_arbitrary_faulted_winner_and_retires_every_loser() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        ANY_LOSER_DISPOSE_CALLS.store(0, Ordering::SeqCst);
+        let (runtime, executor) = runtime_and_executor();
+        let child_descriptor = descriptor(remain_pending, cancel_noop);
+        let mut disposable_descriptor = descriptor(remain_pending, cancel_noop);
+        disposable_descriptor.dispose_result = Some(count_any_loser_dispose);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &child_descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let cancelled_loser = create_typed_u64_child(executor, &child_descriptor);
+            let winner = create_typed_u64_child(executor, &child_descriptor);
+            let completed_loser = create_typed_u64_child(executor, &disposable_descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_RACE), WAIT_OK);
+            for child in [cancelled_loser, winner, completed_loser] {
+                assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            }
+
+            record_primary_task_fault(
+                &mut *winner,
+                "RaceWinnerFault".into(),
+                "the first terminal task faulted".into(),
+                String::new(),
+            );
+            (*winner).status = TaskStatus::Faulted;
+            complete_typed_u64_for_test(completed_loser, 99);
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            assert_eq!((*parent).join_winner, 1);
+            assert!((*cancelled_loser).cancel_requested);
+            assert!((*parent).status == TaskStatus::Waiting);
+
+            (*cancelled_loser).status = TaskStatus::Cancelled;
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+            assert_eq!(
+                task_join_winner(parent),
+                1,
+                "winner keeps its input ordinal"
+            );
+            assert_eq!(ANY_LOSER_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!((*parent).owned_children.as_slice(), [winner]);
+            assert_eq!((*parent).join_children.as_slice(), [winner]);
+            assert!((*completed_loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*executor).retired_tasks.contains(&cancelled_loser));
+            assert!((*executor).retired_tasks.contains(&completed_loser));
+
+            enter_executor(executor);
+            let mut value = 41_u64;
+            let mut code = ptr::null_mut();
+            let mut message = ptr::null_mut();
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    winner,
+                    (&raw mut value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    &raw mut code,
+                    &raw mut message,
+                ),
+                TASK_FAULTED
+            );
+            assert_eq!(value, 41);
+            assert_eq!(crate::text::text_bytes(code).unwrap(), b"RaceWinnerFault");
+            assert_eq!(
+                crate::text::text_bytes(message).unwrap(),
+                b"the first terminal task faulted"
+            );
+            leave_executor();
+            assert!((*parent).owned_children.is_empty());
+            assert!((*parent).join_children.is_empty());
+            assert!((*executor).retired_tasks.contains(&winner));
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_race_loser_cleanup_fault_overrides_and_uses_reverse_input_order() {
+        let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
+        let (runtime, executor) = runtime_and_executor();
+        let parent_descriptor = descriptor(remain_pending, cancel_noop);
+        let mut older_loser_descriptor = descriptor(remain_pending, cancel_noop);
+        older_loser_descriptor.dispose_result = Some(pending_dispose);
+        let winner_descriptor = descriptor(remain_pending, cancel_noop);
+        let mut younger_loser_descriptor = descriptor(remain_pending, cancel_noop);
+        younger_loser_descriptor.dispose_result = Some(fault_during_result_dispose);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &parent_descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let older_loser = create_typed_u64_child(executor, &older_loser_descriptor);
+            let winner = create_typed_u64_child(executor, &winner_descriptor);
+            let younger_loser = create_typed_u64_child(executor, &younger_loser_descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_RACE), WAIT_OK);
+            for child in [older_loser, winner, younger_loser] {
+                assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            }
+
+            (*winner).status = TaskStatus::Cancelled;
+            complete_typed_u64_for_test(younger_loser, 3);
+            (*parent).status = TaskStatus::Waiting;
+            update_join(&mut *executor, parent);
+            assert_eq!((*parent).join_winner, 1);
+            complete_typed_u64_for_test(older_loser, 2);
+            update_join(&mut *executor, parent);
+            activate_test_task(executor, parent);
+
+            assert_eq!(task_join_step(parent), TASK_FAULTED);
+            assert_eq!(task_join_winner(parent), 1);
+            assert_eq!(
+                (*parent).fault_code,
+                "SuppressedDisposeCleanup",
+                "the younger loser is cleaned first and remains primary"
+            );
+            assert_eq!((*parent).owned_children.as_slice(), [winner]);
+            assert_eq!((*parent).join_children.as_slice(), [winner]);
+            assert!((*older_loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*younger_loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*executor).retired_tasks.contains(&older_loser));
+            assert!((*executor).retired_tasks.contains(&younger_loser));
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
     fn typed_any_loser_dispose_fault_overrides_success_and_is_inherited() {
         let _serial = ANY_JOIN_TEST_LOCK.lock().unwrap();
         let (runtime, executor) = runtime_and_executor();
@@ -8058,7 +8497,7 @@ mod typed_task_tests {
             let joined = (*parent).join_children.clone();
 
             assert_eq!(task_join_step(parent), TASK_FAULTED);
-            assert_eq!((*parent).fault_code, "LOOM_RUNTIME_TYPED_ANY_FINALIZE");
+            assert_eq!((*parent).fault_code, "LOOM_RUNTIME_TYPED_WINNER_FINALIZE");
             assert_eq!((*parent).owned_children, owned);
             assert_eq!((*parent).join_children, joined);
             assert!(!(*winner).typed.as_ref().unwrap().result_disposed);

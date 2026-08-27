@@ -2,8 +2,12 @@
 
 > Normative for Loom language version 0.3.
 
-Loom async is structured and explicit. An async call creates a typed child task,
-and every suspension point is written with postfix `.await`.
+Loom async is structured and explicit. Core defines `Task[T]`, async functions,
+postfix suspension, structured task obligations, and terminal task outcomes.
+`Task.all`, `Task.any`, `Task.settled`, and `Task.race` are standard-library
+policies rather than keywords, operators, or additional control-flow syntax.
+Their callable signatures are specified in
+[Task composition](../standard-library/task-composition.md).
 
 ## Async calls and `.await`
 
@@ -45,7 +49,7 @@ async concept-requirement declaration form.
 lexical scope, a task must be:
 
 - awaited;
-- transferred into one of the Task join operations;
+- transferred into one of the standard Task join operations;
 - returned as the complete logical result of a synchronous callable; or
 - transferred as a complete task-carrying value through a statically declared
   synchronous parameter or receiver that can assume the same obligation.
@@ -65,7 +69,15 @@ callable's logical result cannot itself contain a Task. These restrictions keep
 the parent-child task relation explicit. Loom provides no detached spawn,
 user-callable cancellation, or source-level task handle duplication.
 
-## Waiting for more than one task
+## Standard Task joins
+
+`Task.all`, `Task.any`, `Task.settled`, and `Task.race` form the standard Task
+source API. They are not reserved syntax and user code cannot invoke the
+compiler/runtime join protocol directly. The semantic identity is the resolved
+standard-library declaration, which implementations may specialize without
+changing the source types, evaluation order, or fault semantics below. Version
+0.3 still has a temporary implementation gap: the frontend recognizes these
+exact qualified names before ordinary declaration resolution.
 
 A tuple of tasks can be awaited as one all-success operation:
 

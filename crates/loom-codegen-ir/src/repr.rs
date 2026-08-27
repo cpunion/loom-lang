@@ -141,8 +141,10 @@ pub enum Repr {
     ManagedPointer,
     /// One scheduler-owned structured Task handle. The pointee is stable and
     /// never belongs to the moving heap, so this representation is excluded
-    /// from typed GC root maps. Values can be created only by `TaskCreate` and
-    /// are consumed by an async suspension terminator.
+    /// from typed GC root maps. Values can be created only by `TaskCreate`.
+    /// Ordinary handles are consumed by an async suspension terminator;
+    /// terminal handles injected by `settled` or `race` are consumed by
+    /// `TaskOutcomeTake` immediately after resumption.
     TaskHandle,
     /// An immutable register aggregate whose ordered fields are independently
     /// typed LCIR values. Closed products may contain other products and exact

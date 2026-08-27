@@ -21,7 +21,8 @@ arena.
 
 The first typed-LCIR coroutine slice uses the existing `typed-task-v1` runtime
 wire with a different, exact compiler-shaped descriptor. LLVM target data lays
-out one frame containing state, parameters, the ordered children and live values
+out one frame containing state, parameters, optional creation-site span
+coordinates for state-zero preconditions, the ordered children and live values
 for each suspension, and the result. The descriptor publishes frame
 size/alignment, resume/cancel callbacks, result size/alignment, exact
 managed-leaf byte offsets, and one live bitmap per resume state plus
@@ -36,15 +37,19 @@ there is no suspended lexical state to restore.
 root. No universal value slot, witness arena, runtime type tag, or synchronous
 expression executor is introduced by this route.
 
-LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoinAll`, and `AwaitTasks`
-operations. `AwaitTasks` stores its checked ordered child row and live row,
-registers one structured `all` join, and publishes its state. The terminator has
-explicit normal, fault, and cancellation edges. All three forward the same
-exact live-value row; only the normal edge prefixes it with every child's exact
-typed result in task order. A child fault activates the source fault state,
-enters the compiler-expanded static LIFO cleanup suffix, and ends in
-`ResumeFault`. Cancellation preserves an inactive source-fault state, enters
-the same statically selected cleanup suffix, and ends in `TaskCancelled`.
+LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoinAll`, `AwaitTasks`, and
+`TaskOutcomeTake` operations. `AwaitTasks` stores its checked ordered child row,
+join mode, and live row, registers one private structured join, and publishes
+its state. The terminator has explicit normal, fault, and cancellation edges.
+All three forward the same exact live-value row. The normal edge additionally
+receives results for `all` and `any`, every terminal child handle for `settled`,
+or the terminal winner handle for `race`. Each terminal handle is affine and
+must be consumed immediately by `TaskOutcomeTake`, which constructs the exact
+canonical `TaskOutcome[T]` at an explicit moving-GC safepoint. A propagating
+child fault activates the source fault state, enters the compiler-expanded
+static LIFO cleanup suffix, and ends in `ResumeFault`. Cancellation preserves
+an inactive source-fault state, enters the same statically selected cleanup
+suffix, and ends in `TaskCancelled`.
 Cancellation cleanup cannot create, aggregate, or await Tasks, including
 through an executor-dependent callee. It remains scheduler-topology neutral. If
 cleanup faults after cancellation is established, the runtime keeps
@@ -61,8 +66,8 @@ runtime cleanup stack, runtime symbol, or runtime ABI revision.
 
 Current typed coverage includes coroutines without explicit mutable parameters
 whose parameters, results, and live values use direct scalar/refined/product/Text
-shapes or closed sums over those shapes, plus nonempty fixed-arity
-heterogeneous `Task.all`. A synchronous callee may still use Loom's functional
+shapes or closed sums over those shapes, plus the closed static Task joins
+described below. A synchronous callee may still use Loom's functional
 inout ABI. The coroutine caller applies every normal or fault writeback to its
 current SSA environment before continuing; on fault, this happens before the
 coroutine's active lexical cleanup suffix. The coroutine itself does not expose
@@ -84,17 +89,20 @@ exact pointer offsets, and pack leaves inactive pointer lanes zero. This applies
 equally to coroutine parameters, suspension rows, completed Task results, and
 exact stored-join tuple results without changing typed-task v1. A fallible
 callback creates one activation-local fault context attached to its executor.
-Checked arithmetic, assertions, ordinary fallible invokes, caller-side
+Checked arithmetic, assertions, ordinary fallible invokes, async state-zero
 preconditions, and callee-side postconditions record only the first fault on the
-active Task. Await propagates a child's `Faulted` or `Cancelled` state; it never
+active Task. An async precondition reads its creation-site span from the Task
+frame; a root Task receives its declaration span from the harness. Await
+propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-Selected async roots with `requires`, explicit mutable coroutine parameters,
-raw readiness, dynamically sized Task joins, `Task.settled`, `Task.any` whose
-result is stored or otherwise used first-class, `Task.race`, List/TextMap frame
-values, and finite-catalog or open dynamic-concept frame values still select the
-complete legacy route.
+Selected async functions with explicit mutable coroutine parameters, raw
+readiness, dynamically sized or computed-List Task joins, `Task.any`,
+`Task.settled`, or `Task.race` whose result is stored or otherwise used
+first-class, List/TextMap frame values, and finite-catalog or open
+dynamic-concept frame values still select the complete legacy route. Async
+roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor
 
@@ -168,7 +176,17 @@ The additive factory advances the native runtime ABI to component 16 and adds
 wait wires remain version 1; the timer carries no universal value, moving-GC
 root, or new scheduler protocol.
 
-## Typed fixed Task joins
+## Private primitives for static standard-library joins
+
+The source names `Task.all`, `Task.any`, `Task.settled`, and `Task.race` define
+standard-library policies. Version 0.3 source lowering still recognizes those
+qualified names directly; this temporary name match must be replaced by
+ordinary library resolution followed by stable compiler-private intrinsic
+identity. The target private substrate exposes only typed join/select readiness,
+exact result or outcome extraction, and structured cancellation-and-drain. It
+does not make the four public policy names source-language constructs. The
+current `AwaitMode` variants are the migration representation of those policies,
+not the intended public or long-term library boundary.
 
 Inside an admitted async function, a nonempty fixed argument list preserves its
 heterogeneous child outputs as `Task[(T0, ..., Tn)]`. Children are evaluated
@@ -220,10 +238,33 @@ continues to suppress a cleanup fault.
 The winner keeps its original input ordinal and remains attached until generated
 code switches over the coroutine frame's original child fields and performs the
 exact typed result take. Loser retirement may therefore shrink the runtime join
-list without changing result selection. This changes the semantics of the
-existing join-step entry rather than adding a symbol, so the exact native runtime
-identity advances to component 18 with `typed-task-any-finalize-v1` and
-`runtime-v12`. Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+list without changing result selection.
+
+`Task.settled` and `Task.race` use the same static child rows. `settled` waits
+for every terminal child and injects all child handles in source order. `race`
+selects the first terminal child, cancels and drains the losers, and injects
+only the winner handle. The compiler emits one `TaskOutcomeTake` for each
+injected handle. Its `loom_typed_task_take_outcome_v1` boundary moves an exact
+completed value, allocates independently rooted managed Text for a fault code
+and message, or records the payload-free cancelled variant, then detaches and
+retires the child. LLVM constructs the canonical closed `TaskOutcome[T]` value
+from that status and the exact payloads. Each capture is an explicit collecting
+safepoint, so outcomes already constructed remain in the ordinary exact root
+plan while a later fault is captured.
+
+Both `any` and `race` use generalized winner finalization when the source
+callback consumes `loom_task_join_step`. It retains the original winner,
+disposes completed loser results, and retires losers in static reverse-input
+order. A loser-disposal fault becomes primary before source cleanup. This
+revision advances the exact native runtime identity to component 19 with
+`typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
+Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+
+A sole nonempty List literal is also a closed static row. Lowering consumes its
+elements directly without allocating the input List. `all` and `settled`
+construct the requested output List after resume; `any` and `race` retain their
+scalar result. Empty, stored, computed, and runtime-sized Lists stay outside
+this fixed-row boundary.
 
 ## Blocking I/O
 
@@ -259,7 +300,8 @@ observe terminal child states, represent the same fault as `TaskFault`; this
 includes an artifact construction-proof replay failure. OOM alone remains
 process-level and is not a Task terminal value.
 
-Current join modes implement the language's tuple and list forms of:
+The runtime join protocol supports the standard library's tuple and list forms
+of:
 
 - `Task.all`;
 - `Task.settled`;
@@ -271,11 +313,12 @@ number of homogeneous tasks. Join-result resources are transferred to the
 parent before retired children are reclaimed.
 
 The complete runtime and legacy compiler route implement all of those source
-forms. The current typed-LCIR route admits nonempty fixed-arity heterogeneous
-`Task.all` and a nonempty, immediately awaited, fixed-arity homogeneous
-`Task.any`. List-sized `Task.all`, every `Task.settled` and `Task.race`, and
-List-sized `Task.any` or one whose result is stored or otherwise used first-class
-remain atomic whole-artifact fallback.
+forms. The typed-LCIR route admits nonempty immediately awaited fixed-argument
+forms of all four APIs and a sole nonempty List literal. `all` and `settled`
+may preserve heterogeneous fixed outputs; `any` and `race` require one exact
+output type. A stored fixed `Task.all` also has an exact composite Task. Empty,
+stored, computed, or runtime-sized List joins and first-class results of the
+other three APIs remain atomic whole-artifact fallback.
 
 ## Current limits
 

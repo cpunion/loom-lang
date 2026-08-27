@@ -7,8 +7,9 @@ use loom_mir::Type;
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
-    SumTagRepr, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId,
-    ValueTypeId, ValueTypeKind,
+    SumTagRepr, TASK_FAULT_TYPE_ID, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
+    TASK_OUTCOME_FAULTED_VARIANT, TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget,
+    Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -1648,6 +1649,39 @@ impl<'a> Validator<'a> {
             return;
         };
 
+        let has_caller_blame_precondition = function.blocks().iter().any(|block| {
+            let metadata = match block.terminator().map(Terminator::kind) {
+                Some(
+                    TerminatorKind::Assert { metadata, .. } | TerminatorKind::Fault { metadata },
+                ) => Some(metadata),
+                _ => None,
+            };
+            matches!(
+                metadata,
+                Some(crate::FaultMetadata::Contract(metadata))
+                    if metadata.kind() == crate::ContractFaultKind::Precondition
+                        && metadata.blame()
+                            == crate::ContractFaultBlame::CoroutineCallSite
+            )
+        });
+        if plan.carries_caller_span() != has_caller_blame_precondition {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.caller_span"),
+                if plan.carries_caller_span() {
+                    "a coroutine may carry its caller span only when at least one precondition uses coroutine-call-site blame"
+                } else {
+                    "a coroutine precondition using coroutine-call-site blame requires its plan to carry the caller span"
+                },
+            );
+        }
+        if plan.carries_caller_span() {
+            self.validate_contract_fault_span(
+                function.origin().span,
+                &format!("{base}.origin.span"),
+            );
+        }
+
         if plan.output() != function.signature().result() {
             self.error(
                 ValidationCode::InvalidCoroutinePlan,
@@ -1859,6 +1893,279 @@ impl<'a> Validator<'a> {
                 "await_tasks terminator has no matching coroutine-plan row",
             );
         }
+    }
+
+    /// Validates the complete compiler/runtime contract for consuming one
+    /// terminal typed child. The nominal ids and ordered physical fields are
+    /// intentionally rechecked here: a target backend may construct the sum
+    /// directly only after this boundary proves that it is the canonical
+    /// `TaskOutcome[T]` backed by the canonical `TaskFault` and managed Text.
+    #[allow(clippy::too_many_lines)]
+    fn validate_task_outcome_take(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        task: ValueId,
+        path: &str,
+    ) {
+        if !Self::task_outcome_take_has_terminal_provenance(function, instruction, task) {
+            self.error(
+                ValidationCode::InvalidTaskOwnership,
+                format!("{path}.task"),
+                "task.outcome_take operand must be a leading normal block parameter produced by exactly one settled or race await_tasks edge",
+            );
+        }
+        let output = self.task_output_type(function, task);
+        if function.value(task).is_some() && output.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task"),
+                "task.outcome_take operand must be a canonical concrete Task handle",
+            );
+        }
+        let output_semantic = output.and_then(|output| {
+            self.program
+                .representations
+                .value_type(output)
+                .map(crate::ValueType::semantic)
+                .cloned()
+        });
+        let outcome_semantic = output_semantic
+            .as_ref()
+            .map(|output| Type::Nominal(TASK_OUTCOME_TYPE_ID, vec![output.clone()]));
+        let expected_outcome = outcome_semantic
+            .as_ref()
+            .and_then(|semantic| self.program.representations.type_id(semantic));
+        if output_semantic.is_some() && expected_outcome.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "task.outcome_take requires the canonical Nominal#7[T] result type",
+            );
+        }
+        self.require_results(function, instruction, &[expected_outcome], path);
+
+        let result_ty = instruction
+            .results()
+            .first()
+            .and_then(|result| function.value(*result))
+            .map(Value::ty);
+        if let (Some(result_ty), Some(outcome_semantic)) = (result_ty, outcome_semantic.as_ref()) {
+            let canonical_result = self
+                .program
+                .representations
+                .value_type(result_ty)
+                .is_some_and(|result| {
+                    result.kind() == ValueTypeKind::Direct
+                        && result.semantic() == outcome_semantic
+                        && self.program.representations.type_id(result.semantic())
+                            == Some(result_ty)
+                });
+            if !canonical_result {
+                self.error(
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.result[0]"),
+                    "task.outcome_take result must use the canonical direct Nominal#7[T] value type",
+                );
+            }
+        }
+
+        let text = self.scalar_type(&Type::Text);
+        let managed_text = text.is_some_and(|text| {
+            self.program
+                .representations
+                .value_type(text)
+                .is_some_and(|value| {
+                    value.kind() == ValueTypeKind::Direct
+                        && value.semantic() == &Type::Text
+                        && self.program.representations.repr(value.repr())
+                            == Some(&Repr::ManagedPointer)
+                })
+        });
+        if !managed_text {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task_fault.text"),
+                "task.outcome_take requires the canonical managed Text representation",
+            );
+        }
+
+        let fault_semantic = Type::Nominal(TASK_FAULT_TYPE_ID, Vec::new());
+        let fault = self.program.representations.type_id(&fault_semantic);
+        let fault_fields = fault.and_then(|fault| {
+            let value = self.program.representations.value_type(fault)?;
+            (value.kind() == ValueTypeKind::Direct
+                && value.semantic() == &fault_semantic
+                && self.program.representations.type_id(value.semantic()) == Some(fault))
+            .then(|| self.product_fields(fault).map(<[ValueTypeId]>::to_vec))
+            .flatten()
+        });
+        let expected_fault_fields = text.map(|text| vec![text, text]);
+        if fault_fields != expected_fault_fields {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.task_fault"),
+                "task.outcome_take requires canonical Nominal#6 as direct product (Text, Text)",
+            );
+        }
+
+        if let Some(outcome) = expected_outcome {
+            let variants = self.sum_repr(outcome).and_then(|sum| {
+                self.program.representations.sum(sum).map(|sum| {
+                    sum.variants()
+                        .iter()
+                        .map(|variant| variant.fields().to_vec())
+                        .collect::<Vec<_>>()
+                })
+            });
+            let completed = usize::try_from(TASK_OUTCOME_COMPLETED_VARIANT).ok();
+            let faulted = usize::try_from(TASK_OUTCOME_FAULTED_VARIANT).ok();
+            let cancelled = usize::try_from(TASK_OUTCOME_CANCELLED_VARIANT).ok();
+            let expected_completed = output.map(|output| vec![output]);
+            let expected_faulted = fault.map(|fault| vec![fault]);
+            let exact_variants = variants.as_ref().is_some_and(|variants| {
+                variants.len() == 3
+                    && completed.and_then(|index| variants.get(index))
+                        == expected_completed.as_ref()
+                    && faulted.and_then(|index| variants.get(index)) == expected_faulted.as_ref()
+                    && cancelled
+                        .and_then(|index| variants.get(index))
+                        .is_some_and(Vec::is_empty)
+            });
+            if !exact_variants {
+                self.error(
+                    ValidationCode::InstructionShape,
+                    format!("{path}.result[0]"),
+                    "TaskOutcome must have exactly ordered variants Completed(T), Faulted(TaskFault), Cancelled",
+                );
+            }
+        }
+
+        if function.coroutine().is_none() {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                path,
+                "task.outcome_take requires an active typed-coroutine executor context",
+            );
+        }
+        if !function.effects().contains(Effects::MAY_COLLECT) {
+            self.error(
+                ValidationCode::EffectMismatch,
+                path,
+                "task.outcome_take requires the function's MAY_COLLECT effect",
+            );
+        }
+        if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+            self.error(
+                ValidationCode::EffectMismatch,
+                path,
+                "task.outcome_take requires the function's NEEDS_EXECUTOR effect",
+            );
+        }
+    }
+
+    /// Keeps terminal child ownership linear at the settled/race resume
+    /// boundary. The leading implicit normal parameters are runtime-owned
+    /// terminal capabilities, whereas every following parameter is an ordinary
+    /// forwarded live value. Requiring the takes as an ordered instruction
+    /// prefix makes it impossible for checked LCIR to drop a terminal child,
+    /// delay its retirement, or clear it from a later join row before capture;
+    /// the general affine Task transfer separately rejects every repeated take.
+    fn validate_terminal_task_take_prefix(
+        &mut self,
+        function: &Function,
+        mode: AwaitMode,
+        implicit_results: usize,
+        normal: &ResultTarget,
+        path: &str,
+    ) {
+        if !matches!(mode, AwaitMode::Settled | AwaitMode::Race) {
+            return;
+        }
+        let Some(block) = function.block(normal.block) else {
+            return;
+        };
+        for index in 0..implicit_results {
+            let expected = block.params().get(index).copied();
+            let actual = block
+                .instructions()
+                .get(index)
+                .and_then(|instruction| function.instruction(*instruction))
+                .and_then(|instruction| match instruction.kind() {
+                    InstructionKind::TaskOutcomeTake { task } => Some(*task),
+                    _ => None,
+                });
+            if expected.is_none() || actual != expected {
+                self.error(
+                    ValidationCode::InvalidTaskOwnership,
+                    format!("{path}.normal.take[{index}]"),
+                    "settled/race normal blocks must begin with one task.outcome_take for every terminal Task result in exact parameter order",
+                );
+            }
+        }
+    }
+
+    /// Proves the capability carried by the otherwise ordinary `Task[T]`
+    /// operand. Exactly one incoming edge must define the parameter, that edge
+    /// must be the normal edge of `settled` or `race`, and the take must remain
+    /// in that dedicated normal block. This rejects arbitrary created, returned,
+    /// or forwarded handles whose tasks may still be pending at runtime.
+    fn task_outcome_take_has_terminal_provenance(
+        function: &Function,
+        instruction: &Instruction,
+        task: ValueId,
+    ) -> bool {
+        let Some(value) = function.value(task) else {
+            return false;
+        };
+        let ValueDefinition::BlockParameter { block, index } = value.definition() else {
+            return false;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return false;
+        };
+        if !function
+            .block(block)
+            .is_some_and(|block| block.instructions().contains(&instruction.id()))
+        {
+            return false;
+        }
+
+        let mut incoming = 0_usize;
+        let mut terminal_producer = false;
+        for source in function.blocks() {
+            let Some(terminator) = source.terminator() else {
+                continue;
+            };
+            incoming = incoming.saturating_add(
+                terminator
+                    .control_flow_edges()
+                    .into_iter()
+                    .filter(|edge| edge.block == block)
+                    .count(),
+            );
+            let TerminatorKind::AwaitTasks {
+                mode,
+                tasks,
+                normal,
+                ..
+            } = terminator.kind()
+            else {
+                continue;
+            };
+            if normal.block != block {
+                continue;
+            }
+            let source_task = match mode {
+                AwaitMode::Settled => tasks.get(index),
+                AwaitMode::Race if index == 0 => tasks.first(),
+                AwaitMode::All | AwaitMode::Any | AwaitMode::Race => None,
+            };
+            terminal_producer = source_task
+                .and_then(|task| function.value(*task))
+                .is_some_and(|source| source.ty() == value.ty());
+        }
+        incoming == 1 && terminal_producer
     }
 
     fn task_output_type(&self, function: &Function, task: ValueId) -> Option<ValueTypeId> {
@@ -3199,6 +3506,15 @@ impl<'a> Validator<'a> {
                         "task.create requires a checked coroutine instance",
                     );
                 }
+                if callee
+                    .coroutine()
+                    .is_some_and(crate::CoroutinePlan::carries_caller_span)
+                {
+                    self.validate_contract_fault_span(
+                        instruction.origin().span,
+                        &format!("{path}.origin.span"),
+                    );
+                }
                 if !callee.signature().inout_params().is_empty() {
                     self.error(
                         ValidationCode::CallShape,
@@ -3345,6 +3661,9 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::TaskOutcomeTake { task } => {
+                self.validate_task_outcome_take(function, instruction, *task, &path);
+            }
             InstructionKind::DirectCall { callee, arguments } => {
                 let callee_id = *callee;
                 let Some(callee) = self.program.function(callee_id) else {
@@ -3355,6 +3674,13 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
+                if callee.coroutine().is_some() {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.callee"),
+                        "direct call cannot target a coroutine constructor; use task.create",
+                    );
+                }
                 if let Some(effects) = self.exact_effect(callee_id) {
                     if effects.contains(Effects::MAY_FAULT) {
                         self.error(
@@ -3713,7 +4039,7 @@ impl<'a> Validator<'a> {
                         "await_tasks cannot consume the same child Task more than once",
                     );
                 }
-                let outputs = tasks
+                let (task_types, outputs): (Vec<_>, Vec<_>) = tasks
                     .iter()
                     .copied()
                     .enumerate()
@@ -3727,9 +4053,9 @@ impl<'a> Validator<'a> {
                                 "await_tasks operand must be a canonical concrete Task handle",
                             );
                         }
-                        output
+                        (task_type.filter(|_| output.is_some()), output)
                     })
-                    .collect::<Vec<_>>();
+                    .unzip();
                 let result_outputs = match mode {
                     AwaitMode::All => outputs.clone(),
                     AwaitMode::Any => {
@@ -3748,12 +4074,36 @@ impl<'a> Validator<'a> {
                         }
                         vec![first]
                     }
+                    AwaitMode::Settled => task_types,
+                    AwaitMode::Race => {
+                        let first = outputs.first().copied().flatten();
+                        if outputs
+                            .iter()
+                            .copied()
+                            .flatten()
+                            .any(|output| Some(output) != first)
+                        {
+                            self.error(
+                                ValidationCode::TypeMismatch,
+                                format!("{path}.tasks"),
+                                "await_tasks race requires every child Task to have the same output type",
+                            );
+                        }
+                        vec![task_types.first().copied().flatten()]
+                    }
                 };
                 self.validate_result_target(
                     function,
                     normal,
                     &result_outputs,
                     &format!("{path}.normal"),
+                );
+                self.validate_terminal_task_take_prefix(
+                    function,
+                    *mode,
+                    result_outputs.len(),
+                    normal,
+                    &path,
                 );
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.validate_target(function, cancel, format!("{path}.cancel"));
@@ -3867,6 +4217,13 @@ impl<'a> Validator<'a> {
                     }
                 }
                 if let Some(callee) = callee {
+                    if callee.coroutine().is_some() {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "invoke cannot target a coroutine constructor; use task.create",
+                        );
+                    }
                     self.validate_call_arguments(
                         function,
                         arguments,
@@ -3968,11 +4325,11 @@ impl<'a> Validator<'a> {
                 );
                 self.validate_target(function, success, format!("{path}.success"));
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
-                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
+                self.validate_fault_metadata(function, metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
             TerminatorKind::Fault { metadata } => {
-                self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
+                self.validate_fault_metadata(function, metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "fault");
             }
             TerminatorKind::ResumeFault => {
@@ -4216,23 +4573,51 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_fault_metadata(&mut self, metadata: &crate::FaultMetadata, path: &str) {
+    fn validate_fault_metadata(
+        &mut self,
+        function: &Function,
+        metadata: &crate::FaultMetadata,
+        path: &str,
+    ) {
         if let crate::FaultMetadata::Contract(metadata) = metadata {
-            self.validate_contract_fault_metadata(metadata, path);
+            self.validate_contract_fault_metadata(function, metadata, path);
         }
     }
 
     fn validate_contract_fault_metadata(
         &mut self,
+        function: &Function,
         metadata: &crate::ContractFaultMetadata,
         path: &str,
     ) {
         let user_code_in_budget = self.validate_contract_fault_text(metadata, path);
-        for (name, span) in [
-            ("contract_span", metadata.contract_span()),
-            ("blame_span", metadata.blame_span()),
-        ] {
-            self.validate_contract_fault_span(span, &format!("{path}.{name}"));
+        self.validate_contract_fault_span(
+            metadata.contract_span(),
+            &format!("{path}.contract_span"),
+        );
+        match metadata.blame() {
+            crate::ContractFaultBlame::Static(span) => {
+                self.validate_contract_fault_span(span, &format!("{path}.blame_span"));
+            }
+            crate::ContractFaultBlame::CoroutineCallSite => {
+                if metadata.kind() != crate::ContractFaultKind::Precondition {
+                    self.error(
+                        ValidationCode::FaultMetadata,
+                        format!("{path}.blame_span"),
+                        "only PreconditionFault may blame the coroutine call site",
+                    );
+                }
+                if !function
+                    .coroutine()
+                    .is_some_and(crate::CoroutinePlan::carries_caller_span)
+                {
+                    self.error(
+                        ValidationCode::FaultMetadata,
+                        format!("{path}.blame_span"),
+                        "coroutine-call-site blame requires a coroutine plan carrying the caller span",
+                    );
+                }
+            }
         }
 
         match metadata.kind() {
@@ -4314,7 +4699,7 @@ impl<'a> Validator<'a> {
                 "AssertionFault message must be `assertion was not satisfied`",
             );
         }
-        if metadata.contract_span() != metadata.blame_span() {
+        if metadata.blame() != crate::ContractFaultBlame::Static(metadata.contract_span()) {
             self.error(
                 ValidationCode::FaultMetadata,
                 format!("{path}.blame_span"),
@@ -4364,7 +4749,7 @@ impl<'a> Validator<'a> {
             );
         }
         if metadata.kind() != crate::ContractFaultKind::Precondition
-            && metadata.contract_span() != metadata.blame_span()
+            && metadata.blame() != crate::ContractFaultBlame::Static(metadata.contract_span())
         {
             self.error(
                 ValidationCode::FaultMetadata,
@@ -4442,6 +4827,9 @@ impl<'a> Validator<'a> {
                 let operation = match instruction.kind() {
                     InstructionKind::TaskCreate { .. } => Some("create a Task"),
                     InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
+                    InstructionKind::TaskOutcomeTake { .. } => {
+                        Some("consume a terminal Task outcome")
+                    }
                     InstructionKind::DirectCall { callee, .. }
                         if self
                             .exact_effect(*callee)
@@ -5190,23 +5578,29 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
             | InstructionKind::TextMapInsert { .. }
             | InstructionKind::TextMapRemove { .. }
             | InstructionKind::DynConstruct { .. }
+            | InstructionKind::TaskOutcomeTake { .. }
     ) || matches!(kind, InstructionKind::ListConstruct { elements } if !elements.is_empty())
     {
         effects = effects.union(Effects::MAY_COLLECT);
     }
     if matches!(
         kind,
-        InstructionKind::TaskCreate { .. } | InstructionKind::TaskJoinAll { .. }
+        InstructionKind::TaskCreate { .. }
+            | InstructionKind::TaskJoinAll { .. }
+            | InstructionKind::TaskOutcomeTake { .. }
     ) {
         effects = effects.union(Effects::NEEDS_EXECUTOR);
     }
     effects
 }
 
-/// Computes the least transitive function effects from operation and call
-/// edges. Operations in active cleanup can only preserve the primary fault or
-/// suppress a secondary one, so those paths strip only `MAY_FAULT`; runtime,
-/// collection, executor, and suspension capabilities still propagate.
+/// Computes the least transitive function effects from operations and
+/// synchronous call edges. `TaskCreate` is an ownership transfer into a new
+/// coroutine, not execution of the child body, so child fault, collection, and
+/// suspension capabilities never propagate into the creator. Operations in
+/// active cleanup can only preserve the primary fault or suppress a secondary
+/// one, so those paths strip only `MAY_FAULT`; runtime, collection, executor,
+/// and suspension capabilities still propagate across synchronous calls.
 fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>]) -> Vec<Effects> {
     let function_count = program.functions.len();
     let mut reverse_calls = vec![Vec::new(); function_count];
@@ -5233,10 +5627,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 };
                 effects[caller] =
                     effects[caller].union(instruction_direct_effects(instruction.kind()));
-                if let InstructionKind::DirectCall { callee, .. }
-                | InstructionKind::TaskCreate {
-                    coroutine: callee, ..
-                } = instruction.kind()
+                if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
                     && let Some(callee) = canonical_function_index(program, *callee)
                 {
                     reverse_calls[callee].push(EffectCaller {

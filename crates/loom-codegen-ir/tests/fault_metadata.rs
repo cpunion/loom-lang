@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
     ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, CONTRACT_FAULT_TEXT_MAX_BYTES,
-    ContractFaultKind, ContractFaultMetadata, Effects, FaultMetadata, Origin, Program,
-    ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    ContractFaultBlame, ContractFaultKind, ContractFaultMetadata, Effects, FaultMetadata, Origin,
+    Program, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
     artifact_identity, dump_program,
 };
 use loom_core::{FileId, Span};
@@ -149,7 +149,7 @@ fn canonical_fault_kinds_have_stable_ordered_dump_vocabulary() {
     let checked = builder.finish_checked().expect("canonical fault metadata");
     let first = dump_program(&checked);
     assert_eq!(first, dump_program(&checked));
-    assert!(first.starts_with("lcir 28\n"), "{first}");
+    assert!(first.starts_with("lcir 30\n"), "{first}");
     for expected in [
         "fault contract PreconditionFault category=precondition user_code=\"amount.positive\" message=\"contract `amount.positive` was not satisfied\" contract_span=file4:5..6 blame_span=file7:8..9",
         "fault contract PostconditionFault category=postcondition user_code=\"result.positive\" message=\"contract `result.positive` was not satisfied\" contract_span=file4:5..6 blame_span=file4:5..6",
@@ -216,6 +216,38 @@ fn precondition_accepts_a_concrete_distinct_call_site_blame_span() {
     ))
     .into_checked()
     .expect("precondition blame is its concrete call site");
+}
+
+#[test]
+fn coroutine_call_site_blame_is_rejected_outside_a_carrying_coroutine() {
+    let errors = validation_errors(ContractFaultMetadata::coroutine_precondition(
+        "input.valid",
+        Span::new(FileId(6), 10, 20),
+    ));
+
+    assert!(errors.iter().any(|(code, path, message)| {
+        *code == ValidationCode::FaultMetadata
+            && path.ends_with("blame_span")
+            && message.contains("requires a coroutine plan carrying the caller span")
+    }));
+}
+
+#[test]
+fn coroutine_call_site_blame_is_rejected_for_non_preconditions() {
+    let contract_span = Span::new(FileId(7), 10, 20);
+    let errors = validation_errors(ContractFaultMetadata::new(
+        ContractFaultKind::Postcondition,
+        Some("output.valid".into()),
+        "contract `output.valid` was not satisfied",
+        contract_span,
+        ContractFaultBlame::CoroutineCallSite,
+    ));
+
+    assert!(errors.iter().any(|(code, path, message)| {
+        *code == ValidationCode::FaultMetadata
+            && path.ends_with("blame_span")
+            && message.contains("only PreconditionFault")
+    }));
 }
 
 #[test]
@@ -302,7 +334,7 @@ fn independent_validation_bounds_hostile_fault_text_before_encoding() {
 
 #[test]
 fn contract_metadata_is_part_of_artifact_identity() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 29);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 31);
     let contract_span = Span::new(FileId(7), 10, 20);
     let first = checked_fault_artifact(ContractFaultMetadata::contract(
         ContractFaultKind::Precondition,

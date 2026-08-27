@@ -486,10 +486,9 @@ fn language_specs(workspace: &Path) -> Result<Vec<LanguageSpec>, String> {
     let output_dir = workspace.join("target/benchmarks/basic/bin");
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("create {}: {error}", output_dir.display()))?;
-    let loomc = std::env::var_os("LOOM_BENCH_LOOMC").map_or_else(
-        || executable_path(&workspace.join("target/release"), "loomc").into_os_string(),
-        |path| path,
-    );
+    let loomc = std::env::var_os("LOOM_BENCH_LOOMC").unwrap_or_else(|| {
+        executable_path(&workspace.join("target/release"), "loomc").into_os_string()
+    });
     let go = ToolCommand::from_env("LOOM_BENCH_GO", "go");
     let rustc = ToolCommand::rustc();
     let cc = ToolCommand::from_env("LOOM_BENCH_CC", "clang");
@@ -1010,26 +1009,23 @@ fn parse_first_number(value: &str) -> Option<f64> {
 }
 
 fn cpu_name() -> String {
-    if cfg!(target_os = "macos") {
-        if let Ok(output) = Command::new("sysctl")
+    if cfg!(target_os = "macos")
+        && let Ok(output) = Command::new("sysctl")
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
-        {
-            if output.status.success() {
-                return first_nonempty_line(&String::from_utf8_lossy(&output.stdout));
-            }
-        }
+        && output.status.success()
+    {
+        return first_nonempty_line(&String::from_utf8_lossy(&output.stdout));
     }
-    if cfg!(target_os = "linux") {
-        if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
-            if let Some(name) = cpuinfo.lines().find_map(|line| {
-                line.strip_prefix("model name")
-                    .and_then(|rest| rest.split_once(':'))
-                    .map(|(_, value)| value.trim().to_owned())
-            }) {
-                return name;
-            }
-        }
+    if cfg!(target_os = "linux")
+        && let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo")
+        && let Some(name) = cpuinfo.lines().find_map(|line| {
+            line.strip_prefix("model name")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+        })
+    {
+        return name;
     }
     "unknown".to_owned()
 }

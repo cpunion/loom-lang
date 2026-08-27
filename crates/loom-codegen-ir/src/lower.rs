@@ -435,21 +435,6 @@ pub fn lower_typed_artifact(
         })?;
         classifier.classify_function(source, key);
     }
-    for root in &selected.ordered {
-        let source = mir.function(*root).ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::SourceGraph,
-                format!("selected root function #{} disappeared", root.0),
-            )
-        })?;
-        if source.is_async && !source.call_plan.requires.is_empty() {
-            classifier.function_item(
-                UnsupportedFeature::AsyncFunction,
-                source,
-                &format!("function[{}].async_root_requires", source.id.0),
-            );
-        }
-    }
     if !classifier.items.is_empty() {
         return Ok(LoweringOutcome::Unsupported(SupportReport {
             items: classifier.items,
@@ -475,10 +460,9 @@ pub fn lower_typed_artifact(
         .iter()
         .map(|source| {
             let body = InstanceKey::monomorphic(*source);
-            if mir
-                .function(*source)
-                .is_some_and(|function| !function.call_plan.requires.is_empty())
-            {
+            if mir.function(*source).is_some_and(|function| {
+                !function.is_async && !function.call_plan.requires.is_empty()
+            }) {
                 InstanceKey::checked_root(body)
             } else {
                 body
@@ -672,29 +656,35 @@ pub fn lower_typed_artifact(
                             ),
                         ));
                     }
-                    let awaited = await_source
+                    let awaited_types = await_source
                         .outputs
                         .into_iter()
                         .map(|ty| {
-                            let ty = substitution.instantiate_type(&ty).map_err(|error| {
-                                instantiation_defect(source.id, None, error)
-                            })?;
-                            required_type(&builder, &dyn_concepts, &ty)
+                            substitution
+                                .instantiate_type(&ty)
+                                .map_err(|error| instantiation_defect(source.id, None, error))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    if await_source.mode == AwaitMode::Any
-                        && awaited
-                            .first()
-                            .is_some_and(|first| awaited.iter().any(|output| output != first))
+                    if await_result_type(
+                        mir.as_program(),
+                        await_source.mode,
+                        await_source.result_shape,
+                        &awaited_types,
+                    )
+                    .is_none()
                     {
                         return Err(LoweringError::defect(
                             LoweringDefectCode::InconsistentPlan,
                             format!(
-                                "async function #{} suspension state {} has heterogeneous instantiated Task.any outputs",
+                                "async function #{} suspension state {} has an invalid instantiated fixed await result",
                                 source.id.0, point.state
                             ),
                         ));
                     }
+                    let awaited = awaited_types
+                        .iter()
+                        .map(|ty| required_type(&builder, &dyn_concepts, ty))
+                        .collect::<Result<Vec<_>, _>>()?;
                     let live = point
                         .live_locals
                         .iter()
@@ -727,7 +717,12 @@ pub fn lower_typed_artifact(
                     ))
                 })
                 .collect::<Result<Vec<_>, LoweringError>>()?;
-            Some(CoroutinePlan::new(output, suspensions))
+            let plan = CoroutinePlan::new(output, suspensions);
+            Some(if source.call_plan.requires.is_empty() {
+                plan
+            } else {
+                plan.with_caller_span()
+            })
         } else {
             None
         };
@@ -871,52 +866,166 @@ fn task_output_type(ty: &Type) -> Option<Type> {
     }
 }
 
-struct AwaitSourcePlan {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AwaitResultShape {
+    Scalar,
+    Tuple,
+    List,
+}
+
+struct AwaitSourcePlan<'a> {
     mode: AwaitMode,
+    /// Child Task expressions evaluated directly, in source order. A
+    /// recognized List literal contributes its elements, never its managed
+    /// List wrapper.
+    children: &'a [mir::Expr],
     /// One exact output type for every directly consumed child Task.
     outputs: Vec<Type>,
+    result_shape: AwaitResultShape,
 }
 
 /// Returns the exact fixed child row consumed by one checked await expression.
 /// Literal task tuples and immediately awaited fixed joins expose their child
 /// handles directly; every first-class Task remains one ordinary `all` child.
-fn await_source_plan(task: &mir::Expr) -> Option<AwaitSourcePlan> {
+/// A List join is specialized only for one nonempty literal argument. Empty,
+/// stored, computed, and otherwise dynamic Lists deliberately remain outside
+/// this fixed-row LCIR contract.
+fn await_source_plan(task: &mir::Expr) -> Option<AwaitSourcePlan<'_>> {
     match &task.kind {
-        ExprKind::Tuple(tasks) => Some(AwaitSourcePlan {
+        ExprKind::Tuple(tasks) if !tasks.is_empty() => Some(AwaitSourcePlan {
             mode: AwaitMode::All,
+            children: tasks,
             outputs: tasks
                 .iter()
                 .map(|task| task_output_type(&task.ty))
                 .collect::<Option<_>>()?,
+            result_shape: AwaitResultShape::Tuple,
         }),
-        ExprKind::TaskJoin {
-            mode: mir::TaskJoinMode::All,
-            arguments,
-        } => Some(AwaitSourcePlan {
-            mode: AwaitMode::All,
-            outputs: arguments
-                .iter()
-                .map(|task| task_output_type(&task.ty))
-                .collect::<Option<_>>()?,
-        }),
-        ExprKind::TaskJoin {
-            mode: mir::TaskJoinMode::Any,
-            arguments,
-        } => {
-            let outputs = arguments
+        ExprKind::TaskJoin { mode, arguments } => {
+            let (children, result_shape) = match arguments.as_slice() {
+                [
+                    mir::Expr {
+                        kind: ExprKind::List(elements),
+                        ..
+                    },
+                ] if !elements.is_empty() => (
+                    elements.as_slice(),
+                    match mode {
+                        mir::TaskJoinMode::All | mir::TaskJoinMode::Settled => {
+                            AwaitResultShape::List
+                        }
+                        mir::TaskJoinMode::Any | mir::TaskJoinMode::Race => {
+                            AwaitResultShape::Scalar
+                        }
+                    },
+                ),
+                [] => return None,
+                arguments => (
+                    arguments,
+                    match mode {
+                        mir::TaskJoinMode::All | mir::TaskJoinMode::Settled => {
+                            AwaitResultShape::Tuple
+                        }
+                        mir::TaskJoinMode::Any | mir::TaskJoinMode::Race => {
+                            AwaitResultShape::Scalar
+                        }
+                    },
+                ),
+            };
+            let outputs = children
                 .iter()
                 .map(|task| task_output_type(&task.ty))
                 .collect::<Option<Vec<_>>>()?;
-            (!outputs.is_empty()).then_some(AwaitSourcePlan {
-                mode: AwaitMode::Any,
+            Some(AwaitSourcePlan {
+                mode: match mode {
+                    mir::TaskJoinMode::All => AwaitMode::All,
+                    mir::TaskJoinMode::Settled => AwaitMode::Settled,
+                    mir::TaskJoinMode::Any => AwaitMode::Any,
+                    mir::TaskJoinMode::Race => AwaitMode::Race,
+                },
+                children,
                 outputs,
+                result_shape,
             })
         }
-        ExprKind::TaskJoin { .. } => None,
         _ => task_output_type(&task.ty).map(|output| AwaitSourcePlan {
             mode: AwaitMode::All,
+            children: std::slice::from_ref(task),
             outputs: vec![output],
+            result_shape: AwaitResultShape::Scalar,
         }),
+    }
+}
+
+fn homogeneous_output(outputs: &[Type]) -> Option<Type> {
+    let first = outputs.first()?.clone();
+    outputs
+        .iter()
+        .all(|output| output == &first)
+        .then_some(first)
+}
+
+fn task_outcome_type(program: &mir::Program, output: Type) -> Option<Type> {
+    program
+        .prelude
+        .task_outcome
+        .map(|outcome| Type::Nominal(outcome, vec![output]))
+}
+
+/// Computes the exact source-visible value produced after the raw child row
+/// completes. This is intentionally stricter than MIR validation so the
+/// direct lowering never widens fixed-row support by accident.
+fn await_result_type(
+    program: &mir::Program,
+    mode: AwaitMode,
+    shape: AwaitResultShape,
+    outputs: &[Type],
+) -> Option<Type> {
+    if outputs.is_empty() {
+        return None;
+    }
+    match (mode, shape) {
+        (AwaitMode::All, AwaitResultShape::Scalar) if outputs.len() == 1 => {
+            outputs.first().cloned()
+        }
+        (AwaitMode::All, AwaitResultShape::Tuple) => Some(Type::Tuple(outputs.to_vec())),
+        (AwaitMode::All, AwaitResultShape::List) => {
+            homogeneous_output(outputs).map(|output| Type::List(Box::new(output)))
+        }
+        (AwaitMode::Any, AwaitResultShape::Scalar) => homogeneous_output(outputs),
+        (AwaitMode::Settled, AwaitResultShape::Tuple) => outputs
+            .iter()
+            .cloned()
+            .map(|output| task_outcome_type(program, output))
+            .collect::<Option<Vec<_>>>()
+            .map(Type::Tuple),
+        (AwaitMode::Settled, AwaitResultShape::List) => homogeneous_output(outputs)
+            .and_then(|output| task_outcome_type(program, output))
+            .map(|outcome| Type::List(Box::new(outcome))),
+        (AwaitMode::Race, AwaitResultShape::Scalar) => {
+            homogeneous_output(outputs).and_then(|output| task_outcome_type(program, output))
+        }
+        _ => None,
+    }
+}
+
+/// The `AwaitTasks` normal edge carries raw values for all/any and terminal
+/// child handles for settled/race. The latter are materialized as
+/// `TaskOutcome` values only after resumption.
+fn await_normal_types(mode: AwaitMode, outputs: &[Type]) -> Option<Vec<Type>> {
+    match mode {
+        AwaitMode::All => Some(outputs.to_vec()),
+        AwaitMode::Any => homogeneous_output(outputs).map(|output| vec![output]),
+        AwaitMode::Settled => Some(
+            outputs
+                .iter()
+                .cloned()
+                .map(|output| Type::Task(Box::new(output)))
+                .collect(),
+        ),
+        AwaitMode::Race => {
+            homogeneous_output(outputs).map(|output| vec![Type::Task(Box::new(output))])
+        }
     }
 }
 
@@ -2976,6 +3085,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
                         | mir::Builtin::FormatFloat
+                        | mir::Builtin::TaskFaultCode
+                        | mir::Builtin::TaskFaultMessage
                         | mir::Builtin::DurationMilliseconds
                         | mir::Builtin::DurationAsMilliseconds,
                     ) => {
@@ -2991,6 +3102,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapContains
                                     | mir::Builtin::TextMapGet
                                     | mir::Builtin::TextMapRemove
+                                    | mir::Builtin::TaskFaultCode
+                                    | mir::Builtin::TaskFaultMessage
                             )
                         ) {
                             self.managed_text = true;
@@ -3121,22 +3234,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 true
             }
             ExprKind::Await { task, .. } => {
-                let task_continues = match &task.kind {
-                    ExprKind::Tuple(tasks) => {
-                        self.visit_exprs(function, key, tasks, &format!("{path}.task.elements"))
+                let await_source = await_source_plan(task);
+                let task_continues = match await_source.as_ref() {
+                    // A fixed join is represented only by its enclosing await
+                    // terminator. For a sole nonempty List literal this visits
+                    // only the element Tasks and never admits the managed
+                    // List[Task] wrapper as an LCIR value.
+                    Some(source)
+                        if matches!(&task.kind, ExprKind::Tuple(_) | ExprKind::TaskJoin { .. }) =>
+                    {
+                        self.visit_exprs(
+                            function,
+                            key,
+                            source.children,
+                            &format!("{path}.task.children"),
+                        )
                     }
-                    // A fixed Task.any is represented only by its enclosing
-                    // await terminator. Visiting the join expression itself
-                    // would incorrectly require a first-class composite Task.
-                    ExprKind::TaskJoin {
-                        mode: mir::TaskJoinMode::Any,
-                        arguments,
-                    } => self.visit_exprs(
-                        function,
-                        key,
-                        arguments,
-                        &format!("{path}.task.arguments"),
-                    ),
                     _ => self.visit_expr(function, key, task, &format!("{path}.task")),
                 };
                 if !task_continues {
@@ -3150,82 +3263,44 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let operand_matches = match &task.kind {
-                    ExprKind::Tuple(tasks) => {
-                        let outputs = tasks
-                            .iter()
-                            .enumerate()
-                            .map(|(index, task)| {
+                let operand_matches = await_source.is_some_and(|source| {
+                    let outputs = source
+                        .children
+                        .iter()
+                        .enumerate()
+                        .map(|(index, child)| {
+                            self.instantiated_type(
+                                function,
+                                key,
+                                Some(child),
+                                &child.ty,
+                                child.span,
+                                &format!("{path}.task.children[{index}].ty"),
+                            )
+                            .and_then(|ty| task_output_type(&ty))
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    let expected = outputs.as_deref().and_then(|outputs| {
+                        await_result_type(self.program, source.mode, source.result_shape, outputs)
+                    });
+                    let source_matches = match &task.kind {
+                        ExprKind::Tuple(_) => true,
+                        _ => expected.as_ref().is_some_and(|expected| {
+                            matches!(
                                 self.instantiated_type(
                                     function,
                                     key,
                                     Some(task),
                                     &task.ty,
                                     task.span,
-                                    &format!("{path}.task.elements[{index}].ty"),
-                                )
-                                .and_then(|ty| task_output_type(&ty))
-                            })
-                            .collect::<Option<Vec<_>>>();
-                        outputs
-                            .filter(|outputs| !outputs.is_empty())
-                            .is_some_and(|outputs| result == Some(Type::Tuple(outputs)))
-                    }
-                    ExprKind::TaskJoin {
-                        mode: mir::TaskJoinMode::Any,
-                        arguments,
-                    } => {
-                        let outputs = arguments
-                            .iter()
-                            .enumerate()
-                            .map(|(index, argument)| {
-                                self.instantiated_type(
-                                    function,
-                                    key,
-                                    Some(argument),
-                                    &argument.ty,
-                                    argument.span,
-                                    &format!("{path}.task.arguments[{index}].ty"),
-                                )
-                                .and_then(|ty| task_output_type(&ty))
-                            })
-                            .collect::<Option<Vec<_>>>();
-                        outputs
-                            .filter(|outputs| !outputs.is_empty())
-                            .and_then(|outputs| {
-                                let first = outputs.first()?.clone();
-                                outputs
-                                    .iter()
-                                    .all(|output| output == &first)
-                                    .then_some(first)
-                            })
-                            .is_some_and(|output| {
-                                result.as_ref() == Some(&output)
-                                    && matches!(
-                                        self.instantiated_type(
-                                            function,
-                                            key,
-                                            Some(task),
-                                            &task.ty,
-                                            task.span,
-                                            &format!("{path}.task.ty"),
-                                        ),
-                                        Some(Type::Task(task_output)) if task_output.as_ref() == &output
-                                    )
-                            })
-                    }
-                    _ => matches!(
-                        self.instantiated_type(
-                            function,
-                            key,
-                            Some(task),
-                            &task.ty,
-                            task.span,
-                            &format!("{path}.task.ty"),
-                        ),
-                        Some(Type::Task(output)) if Some(output.as_ref()) == result.as_ref()
-                    ),
-                };
+                                    &format!("{path}.task.ty"),
+                                ),
+                                Some(Type::Task(output)) if output.as_ref() == expected
+                            )
+                        }),
+                    };
+                    source_matches && expected.as_ref() == result.as_ref()
+                });
                 let supported = function.is_async && operand_matches;
                 if !supported {
                     self.expression_item(
@@ -3448,6 +3523,12 @@ fn summarize_effects(
     let mut summary = EffectSummary::default();
     if function.is_async {
         summary.include(Effects::NEEDS_EXECUTOR);
+        // Calling an async function only constructs its Task. Entry
+        // preconditions run when that Task starts, so their fault capability
+        // belongs to the coroutine rather than leaking into its creator.
+        if !function.call_plan.requires.is_empty() {
+            summary.include(Effects::MAY_FAULT);
+        }
     }
     scan_effect_block(program, &function.body, &mut summary);
     let substitution = InstanceSubstitution::new(program, key);
@@ -3490,12 +3571,13 @@ fn summarize_effects(
     }) {
         summary.include(Effects::MAY_COLLECT);
     }
-    // Preconditions execute at each concrete caller boundary. They make the
-    // caller's operation fallible, never the assumed callee body by itself.
+    // Synchronous preconditions execute at each concrete caller boundary.
+    // Async preconditions execute in the child coroutine and were accounted
+    // for above, so Task construction remains non-fallible source control.
     if calls.iter().any(|callee| {
         program
             .function(callee.source())
-            .is_some_and(|source| !source.call_plan.requires.is_empty())
+            .is_some_and(|source| !source.is_async && !source.call_plan.requires.is_empty())
     }) {
         summary.include(Effects::MAY_FAULT);
     }
@@ -3506,7 +3588,15 @@ fn summarize_effects(
     InstanceEffectSummary {
         key: key.clone(),
         local: summary.local,
-        calls: calls.to_vec().into_boxed_slice(),
+        calls: calls
+            .iter()
+            .filter(|callee| {
+                program
+                    .function(callee.source())
+                    .is_some_and(|source| !source.is_async)
+            })
+            .cloned()
+            .collect(),
     }
 }
 
@@ -3755,13 +3845,27 @@ fn scan_effect_expr(
             scan_effect_expr(program, value, summary)
         }
         ExprKind::Await { task: value, .. } => {
-            let continues = scan_effect_expr(program, value, summary);
+            let await_source = await_source_plan(value);
+            let continues = match await_source.as_ref() {
+                Some(source)
+                    if matches!(&value.kind, ExprKind::Tuple(_) | ExprKind::TaskJoin { .. }) =>
+                {
+                    scan_effect_exprs(program, source.children, summary)
+                }
+                _ => scan_effect_expr(program, value, summary),
+            };
             if continues {
                 // Every awaited Task may complete with a scheduler-owned
                 // fault independently of its source result type. LCIR models
                 // that propagation explicitly so an active lexical cleanup
                 // suffix can run before the coroutine reports the fault.
                 summary.include(Effects::MAY_FAULT.union(Effects::MAY_SUSPEND));
+                if await_source.as_ref().is_some_and(|source| {
+                    source.result_shape == AwaitResultShape::List
+                        || matches!(source.mode, AwaitMode::Settled | AwaitMode::Race)
+                }) {
+                    summary.include(Effects::MAY_COLLECT);
+                }
             }
             continues
         }
@@ -4655,6 +4759,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 &context,
             )?;
         }
+        if self.source.is_async && !self.source.call_plan.requires.is_empty() {
+            let context = self.contract_context(flow.env, None, false)?;
+            for contract in &self.source.call_plan.requires {
+                flow = self.lower_async_precondition(flow, contract, &context)?;
+            }
+        }
         match self.lower_scoped_block(flow, &self.source.body)? {
             EvalFlow::Continue { flow, value } => {
                 let flow = self.lower_exit_contracts(flow, value)?;
@@ -5093,30 +5203,57 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         result: Option<ValueId>,
         include_old: bool,
     ) -> Result<ContractContext, LoweringError> {
+        let exit_parameters = if include_old {
+            mir::exit_contract_parameter_locals(
+                &self.source.params,
+                self.source.receiver,
+                &self.source.call_plan,
+            )
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
         let mut parameters = Vec::with_capacity(self.source.params.len());
         for (index, parameter) in self.source.params.iter().enumerate() {
-            let value = self
-                .environments
-                .get(environment, parameter.id)
-                .ok_or_else(|| {
-                    LoweringError::defect(
+            let snapshot = self.old_parameters.get(index).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "contract parameter type snapshot is missing",
+                )
+            })?;
+            let value = match self.environments.get(environment, parameter.id) {
+                Some(value) => value,
+                None if include_old && !exit_parameters.contains(&parameter.id) => snapshot.value,
+                None => {
+                    return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!("contract context lost parameter local #{}", parameter.id.0),
-                    )
-                })?;
-            let ty = self
-                .old_parameters
-                .get(index)
-                .ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        "contract parameter type snapshot is missing",
-                    )
-                })?
-                .ty
-                .clone();
-            parameters.push(ContractOperand { value, ty });
+                    ));
+                }
+            };
+            parameters.push(ContractOperand {
+                value,
+                ty: snapshot.ty.clone(),
+            });
         }
+        // Immutable async parameters have the same old/current source value.
+        // Reuse the post-resume SSA values so an exit contract never reaches
+        // back to an entry-block ValueId across a suspension. Mutable async
+        // parameters are outside the current LCIR boundary and retain the
+        // ordinary entry snapshots for the fallback path.
+        let old_parameters = if include_old
+            && self.source.is_async
+            && self
+                .source
+                .params
+                .iter()
+                .all(|parameter| !parameter.mutable)
+        {
+            parameters.clone()
+        } else {
+            self.old_parameters.clone()
+        };
         let (receiver, arguments) = if self.source.receiver.is_some() {
             let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
                 LoweringError::defect(
@@ -5130,7 +5267,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         };
         let (old_receiver, old_arguments) = if include_old {
             if self.source.receiver.is_some() {
-                let (receiver, arguments) = self.old_parameters.split_first().ok_or_else(|| {
+                let (receiver, arguments) = old_parameters.split_first().ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "receiver old-value snapshot is missing",
@@ -5141,10 +5278,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     arguments.iter().cloned().map(Some).collect(),
                 )
             } else {
-                (
-                    None,
-                    self.old_parameters.iter().cloned().map(Some).collect(),
-                )
+                (None, old_parameters.iter().cloned().map(Some).collect())
             }
         } else {
             (None, Vec::new())
@@ -5304,6 +5438,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         blame_span: Span,
         context: &ContractContext,
     ) -> Result<Flow, LoweringError> {
+        self.lower_contract_check_with_metadata(
+            flow,
+            contract,
+            FaultMetadata::contract(ContractFaultMetadata::contract(
+                kind,
+                contract.code.clone(),
+                contract.span,
+                blame_span,
+            )),
+            context,
+        )
+    }
+
+    fn lower_async_precondition(
+        &mut self,
+        flow: Flow,
+        contract: &Contract,
+        context: &ContractContext,
+    ) -> Result<Flow, LoweringError> {
+        self.lower_contract_check_with_metadata(
+            flow,
+            contract,
+            FaultMetadata::contract(ContractFaultMetadata::coroutine_precondition(
+                contract.code.clone(),
+                contract.span,
+            )),
+            context,
+        )
+    }
+
+    fn lower_contract_check_with_metadata(
+        &mut self,
+        flow: Flow,
+        contract: &Contract,
+        metadata: FaultMetadata,
+        context: &ContractContext,
+    ) -> Result<Flow, LoweringError> {
         let EvalFlow::Continue {
             flow,
             value: condition,
@@ -5320,12 +5491,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow.block,
             TerminatorKind::Assert {
                 condition,
-                metadata: FaultMetadata::contract(ContractFaultMetadata::contract(
-                    kind,
-                    contract.code.clone(),
-                    contract.span,
-                    blame_span,
-                )),
+                metadata,
                 success: BlockTarget::new(success, []),
                 fault,
             },
@@ -7157,48 +7323,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.read_place(flow, &plan, origin)
             }
             ExprKind::Await { state, task } => {
-                let direct_children = match &task.kind {
-                    ExprKind::Tuple(tasks) => Some(tasks.as_slice()),
-                    ExprKind::TaskJoin {
-                        mode: mir::TaskJoinMode::All | mir::TaskJoinMode::Any,
-                        arguments,
-                    } => Some(arguments.as_slice()),
-                    _ => None,
-                };
-                let construct_tuple = matches!(
-                    &task.kind,
-                    ExprKind::Tuple(_)
-                        | ExprKind::TaskJoin {
-                            mode: mir::TaskJoinMode::All,
-                            ..
-                        }
-                );
-                let mut flow = flow;
-                let mut tasks = Vec::new();
-                if let Some(children) = direct_children {
-                    tasks.reserve(children.len());
-                    for child in children {
-                        let EvalFlow::Continue {
-                            flow: next_flow,
-                            value,
-                        } = self.lower_expr(flow, child)?
-                        else {
-                            return Ok(EvalFlow::Terminated);
-                        };
-                        flow = next_flow;
-                        tasks.push(value);
-                    }
-                } else {
-                    let EvalFlow::Continue {
-                        flow: next_flow,
-                        value,
-                    } = self.lower_expr(flow, task)?
-                    else {
-                        return Ok(EvalFlow::Terminated);
-                    };
-                    flow = next_flow;
-                    tasks.push(value);
-                }
                 let await_source = await_source_plan(task).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
@@ -7208,6 +7332,19 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ),
                     )
                 })?;
+                let mut flow = flow;
+                let mut tasks = Vec::with_capacity(await_source.children.len());
+                for child in await_source.children {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, child)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    tasks.push(value);
+                }
                 if await_source.outputs.is_empty() || await_source.outputs.len() != tasks.len() {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
@@ -7219,27 +7356,57 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ),
                     ));
                 }
-                let output_types = match await_source.mode {
-                    AwaitMode::All => await_source.outputs.clone(),
-                    AwaitMode::Any => vec![await_source.outputs[0].clone()],
-                };
-                let child_output_types = await_source
+                let substitution = InstanceSubstitution::new(self.program, self.key);
+                let child_outputs = await_source
                     .outputs
                     .iter()
-                    .map(|output| self.type_id(output))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if await_source.mode == AwaitMode::Any
-                    && child_output_types.first().is_some_and(|first| {
-                        child_output_types.iter().any(|output| output != first)
+                    .map(|output| {
+                        substitution
+                            .instantiate_type(output)
+                            .map_err(|error| instantiation_defect(self.source.id, None, error))
                     })
-                {
+                    .collect::<Result<Vec<_>, _>>()?;
+                let expected_result = await_result_type(
+                    self.program,
+                    await_source.mode,
+                    await_source.result_shape,
+                    &child_outputs,
+                );
+                let actual_result = substitution
+                    .instantiate_type(&expression.ty)
+                    .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+                if expected_result.as_ref() != Some(&actual_result) {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!(
-                            "classified await expression #{} has heterogeneous instantiated Task.any outputs",
-                            expression.id.0
+                            "classified await expression #{} result {actual_result:?} does not match fixed source {expected_result:?}",
+                            expression.id.0,
                         ),
                     ));
+                }
+                let normal_types = await_normal_types(await_source.mode, &child_outputs)
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "classified await expression #{} has an invalid normal result row",
+                                expression.id.0
+                            ),
+                        )
+                    })?;
+                for ((task, output), child) in
+                    tasks.iter().zip(&child_outputs).zip(await_source.children)
+                {
+                    let expected_task = Type::Task(Box::new(output.clone()));
+                    if self.builder.value_type(*task) != Some(self.type_id(&expected_task)?) {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "classified await child expression #{} does not produce its declared Task handle",
+                                child.id.0
+                            ),
+                        ));
+                    }
                 }
                 let suspension = self
                     .source
@@ -7257,8 +7424,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 let live_locals = suspension.live_locals.clone();
                 let normal = self.create_block()?;
-                let mut results = Vec::with_capacity(output_types.len());
-                for output in &output_types {
+                let mut results = Vec::with_capacity(normal_types.len());
+                for output in &normal_types {
                     results.push(
                         self.builder
                             .append_block_parameter(normal, self.type_id(output)?)
@@ -7322,26 +7489,70 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     block: normal,
                     env: normal_env,
                 };
-                if construct_tuple {
-                    self.one_instruction(
+                let (resumed, values) = match await_source.mode {
+                    AwaitMode::All | AwaitMode::Any => (resumed, results),
+                    AwaitMode::Settled | AwaitMode::Race => {
+                        let outcome_outputs = if await_source.mode == AwaitMode::Race {
+                            vec![child_outputs[0].clone()]
+                        } else {
+                            child_outputs
+                        };
+                        let mut flow = resumed;
+                        let mut outcomes = Vec::with_capacity(results.len());
+                        for (task, output) in results.into_iter().zip(outcome_outputs) {
+                            let outcome = task_outcome_type(self.program, output).ok_or_else(|| {
+                                LoweringError::defect(
+                                    LoweringDefectCode::InconsistentPlan,
+                                    "classified settled/race await has no canonical TaskOutcome type",
+                                )
+                            })?;
+                            let (next_flow, value) = self.required_instruction(
+                                flow,
+                                InstructionKind::TaskOutcomeTake { task },
+                                &outcome,
+                                origin,
+                            )?;
+                            flow = next_flow;
+                            outcomes.push(value);
+                        }
+                        (flow, outcomes)
+                    }
+                };
+                match await_source.result_shape {
+                    AwaitResultShape::Tuple => self.one_instruction(
                         resumed,
                         InstructionKind::ProductConstruct {
-                            fields: results.into_boxed_slice(),
+                            fields: values.into_boxed_slice(),
                         },
                         self.type_id(&expression.ty)?,
                         origin,
-                    )
-                } else {
-                    let [result] = results.as_slice() else {
-                        return Err(LoweringError::defect(
-                            LoweringDefectCode::InconsistentPlan,
-                            "ordinary task await did not produce exactly one result slot",
-                        ));
-                    };
-                    Ok(EvalFlow::Continue {
-                        flow: resumed,
-                        value: *result,
-                    })
+                    ),
+                    AwaitResultShape::List => self.one_instruction(
+                        resumed,
+                        InstructionKind::ListConstruct {
+                            elements: values.into_boxed_slice(),
+                        },
+                        self.type_id(&expression.ty)?,
+                        origin,
+                    ),
+                    AwaitResultShape::Scalar => {
+                        let [result] = values.as_slice() else {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "scalar task await did not produce exactly one result slot",
+                            ));
+                        };
+                        if self.builder.value_type(*result) != Some(self.type_id(&expression.ty)?) {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "scalar task await result does not match its expression type",
+                            ));
+                        }
+                        Ok(EvalFlow::Continue {
+                            flow: resumed,
+                            value: *result,
+                        })
+                    }
                 }
             }
             ExprKind::Sleep { milliseconds } => {
@@ -9926,7 +10137,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        if !callee_source.call_plan.requires.is_empty() {
+        if !callee_source.is_async && !callee_source.call_plan.requires.is_empty() {
             let parameters = callee_source
                 .params
                 .iter()
@@ -10717,6 +10928,16 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::IsFinite, [value]) => {
                 return self.lower_float_is_finite(flow, *value, origin);
             }
+            (mir::Builtin::TaskFaultCode, [fault]) => InstructionKind::ProductExtract {
+                aggregate: *fault,
+                field: 0,
+            }
+            .into(),
+            (mir::Builtin::TaskFaultMessage, [fault]) => InstructionKind::ProductExtract {
+                aggregate: *fault,
+                field: 1,
+            }
+            .into(),
             (mir::Builtin::DurationMilliseconds, [milliseconds]) => {
                 let EvalFlow::Continue { flow, value: zero } =
                     self.constant(flow, Constant::Int(0), &Type::Int, origin)?

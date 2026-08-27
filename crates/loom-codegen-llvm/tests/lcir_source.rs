@@ -752,14 +752,18 @@ fn diagnostic_text(output: &Output) -> String {
 }
 
 fn machine_fault(output: &Output) -> serde_json::Value {
+    let faults = machine_faults(output);
+    assert_eq!(faults.len(), 1, "expected one machine fault: {output:?}");
+    faults.into_iter().next().expect("one machine fault")
+}
+
+fn machine_faults(output: &Output) -> Vec<serde_json::Value> {
     let stderr = String::from_utf8(output.stderr.clone()).expect("machine fault is UTF-8");
-    let faults = stderr
+    stderr
         .lines()
         .filter_map(|line| line.strip_prefix(FAULT_JSON_PREFIX))
         .map(|json| serde_json::from_str(json).expect("machine fault is valid JSON"))
-        .collect::<Vec<_>>();
-    assert_eq!(faults.len(), 1, "expected one machine fault: {output:?}");
-    faults.into_iter().next().expect("one machine fault")
+        .collect()
 }
 
 fn integer_overflow_fault(span: &impl serde::Serialize) -> serde_json::Value {
@@ -5087,6 +5091,177 @@ pub fn argumentFaultMain() Unit {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps both coroutine call-site blame and the async-root boundary"
+)]
+fn typed_async_precondition_blame_preserves_each_call_site_and_root_span() {
+    let source = r"module async_contract_blame
+
+async fn positive(value Int) Unit
+    requires value > 0
+{
+    Unit
+}
+
+test async fn a_first_call() Unit {
+    positive(0).await
+}
+
+test async fn b_second_call() Unit {
+    positive(0).await
+}
+
+test async fn c_checked_root() Unit
+    requires false
+{
+    Unit
+}
+";
+    let program = compile_source(source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(
+        interpreted
+            .iter()
+            .map(|result| result.name.rsplit('.').next().expect("test suffix"))
+            .collect::<Vec<_>>(),
+        ["a_first_call", "b_second_call", "c_checked_root"]
+    );
+    let expected = interpreted
+        .into_iter()
+        .map(|result| {
+            assert_eq!(result.status, TestStatus::Failed, "{result:#?}");
+            serde_json::to_value(result.failure.expect("precondition must reject"))
+                .expect("serialize interpreter precondition fault")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected[0]["fault"]["contractSpan"],
+        expected[1]["fault"]["contractSpan"]
+    );
+    assert_ne!(
+        expected[0]["fault"]["blameSpan"],
+        expected[1]["fault"]["blameSpan"]
+    );
+    let root = source_function(&program, "c_checked_root");
+    assert_eq!(
+        expected[2]["fault"]["blameSpan"],
+        serde_json::to_value(root.span).expect("serialize async root span")
+    );
+
+    let prepared =
+        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::LcirOnly)
+            .expect("force the typed LCIR test route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let positive_instances = artifact
+        .functions()
+        .iter()
+        .filter(|function| function.name().ends_with("positive"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positive_instances.len(),
+        1,
+        "the two closed-world calls must share one checked coroutine instance"
+    );
+    let positive = positive_instances[0];
+    assert!(
+        positive
+            .coroutine()
+            .expect("positive coroutine plan")
+            .carries_caller_span()
+    );
+    let call_spans = ["a_first_call", "b_second_call"].map(|suffix| {
+        let caller = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(suffix))
+            .unwrap_or_else(|| panic!("LCIR test function ending in `{suffix}`"));
+        caller
+            .instructions()
+            .iter()
+            .find_map(|instruction| match instruction.kind() {
+                InstructionKind::TaskCreate { coroutine, .. } if coroutine == &positive.id() => {
+                    Some(instruction.origin().span)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("typed child construction in `{suffix}`"))
+    });
+    assert_ne!(call_spans[0], call_spans[1]);
+    assert_eq!(
+        expected[0]["fault"]["blameSpan"],
+        serde_json::json!(call_spans[0])
+    );
+    assert_eq!(
+        expected[1]["fault"]["blameSpan"],
+        serde_json::json!(call_spans[1])
+    );
+
+    let lcir = emit_and_run_lcir_with_options_and_fault_format(
+        &artifact,
+        "lcir-async-contract-blame",
+        NativeObjectOptions::default(),
+        true,
+    );
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(machine_faults(&lcir.output), expected, "typed LCIR faults");
+
+    let legacy_directory = tempfile::tempdir().expect("create legacy contract test output");
+    let legacy_executable = legacy_directory.path().join("legacy-async-contract-blame");
+    emit_native(&program, &legacy_executable, &EmitOptions::tests())
+        .expect("emit legacy async contract comparison");
+    let legacy = Command::new(legacy_executable)
+        .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
+        .output()
+        .expect("run legacy async contract comparison");
+    assert!(!legacy.status.success(), "{legacy:?}");
+    assert_eq!(machine_faults(&legacy), expected, "legacy LLVM faults");
+
+    let descriptor_name = format!("@loom.lcir.coroutine.descriptor.{} =", positive.id().raw());
+    assert_eq!(
+        lcir.ir.matches(&descriptor_name).count(),
+        1,
+        "one coroutine instance must own one descriptor:\n{}",
+        lcir.ir
+    );
+    let constructor_name = format!("@loom.lcir.fn.{}(", positive.id().raw());
+    assert_eq!(
+        lcir.ir
+            .lines()
+            .filter(|line| {
+                line.starts_with("define internal ptr ") && line.contains(&constructor_name)
+            })
+            .count(),
+        1,
+        "the shared coroutine constructor must be emitted once:\n{}",
+        lcir.ir
+    );
+    let constructor_calls = lcir
+        .ir
+        .lines()
+        .filter(|line| line.contains("call ptr") && line.contains(&constructor_name))
+        .collect::<Vec<_>>();
+    assert_eq!(constructor_calls.len(), 2, "{constructor_calls:#?}");
+    for span in call_spans {
+        let encoded = format!(
+            "i64 {}, i64 {}, i64 {}",
+            span.file.0, span.range.start, span.range.end
+        );
+        assert!(
+            constructor_calls.iter().any(|call| call.contains(&encoded)),
+            "constructor calls omitted `{encoded}`: {constructor_calls:#?}"
+        );
+    }
+    assert!(
+        lcir.ir
+            .contains("call i32 @loom_context_raise_fault_with_span_v1"),
+        "typed coroutine preconditions must use the dynamic-span fault ABI:\n{}",
+        lcir.ir
+    );
+}
+
+#[test]
 fn mutable_receiver_old_current_and_cleanup_order_match_all_backends() {
     let source = r"module contract_mutable_receiver
 
@@ -6885,8 +7060,8 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
     );
     assert!(
         exercise.effects().contains(Effects::NEEDS_EXECUTOR)
-            && exercise.effects().contains(Effects::MAY_COLLECT),
-        "typed Task.all did not preserve executor/GC effects: {dump}"
+            && !exercise.effects().contains(Effects::MAY_COLLECT),
+        "typed Task creation must require its executor without inheriting child collection: {dump}"
     );
 
     let lcir = emit_and_run_lcir_with_options(
@@ -7097,6 +7272,133 @@ pub async fn allFailed() Unit {
     let native = emit_and_run_lcir_machine_fault(&failed_artifact, "source-typed-task-any-failed");
     assert!(!native.output.status.success(), "{:?}", native.output);
     assert_eq!(machine_fault(&native.output), expected);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source gate keeps settled/race outcome capture, managed fault roots, winner selection, loser cleanup, tests, and cross-target objects together"
+)]
+fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
+    let source = include_str!("../../../fixtures/lcir-typed-task-outcomes/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic typed Task outcome route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "await_tasks settled",
+        "await_tasks race",
+        "task.outcome_take %",
+    ] {
+        assert!(
+            dump.contains(required),
+            "typed Task outcome LCIR omitted `{required}`:\n{dump}"
+        );
+    }
+    assert!(
+        dump.matches("task.outcome_take %").count() >= 9,
+        "every fixed settled child and race winner must be captured explicitly:\n{dump}"
+    );
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-task-outcomes-release",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
+    for required in [
+        "loom_typed_task_take_outcome_v1",
+        "loom_task_prepare_join",
+        "loom_task_add_join_child",
+        "loom_task_suspend_join",
+        "loom_task_join_step",
+        "loom_task_join_winner",
+        "task.await.settled.child.2",
+        "task.await.race.1",
+        "task.outcome.fault.code",
+        "task.outcome.fault.message",
+        "coroutine.cancel.live",
+        "loom_gc_typed_root_push_v1",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}` from typed Task outcome release IR:\n{}",
+            lcir.ir
+        );
+    }
+    for forbidden in [
+        "%loom.Value",
+        "loom.Value",
+        "ValueNode",
+        "loom_join_create",
+        "loom_join_add_task",
+        "loom_task_write_join_result",
+        "loom_task_join_result",
+    ] {
+        assert!(
+            !lcir.ir.contains(forbidden),
+            "unexpected `{forbidden}` in typed Task outcome release IR:\n{}",
+            lcir.ir
+        );
+    }
+
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-typed-task-outcomes-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(
+        native_tests.output.stderr.is_empty(),
+        "{:?}",
+        native_tests.output
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create typed Task outcome target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-task-outcomes.obj"
+        } else {
+            "typed-task-outcomes.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed Task outcome object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing typed Task outcome object for {target}"
+        );
+    }
 }
 
 #[test]

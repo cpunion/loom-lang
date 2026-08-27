@@ -128,6 +128,14 @@ impl Range {
 - `invariant` checks nominal record state at construction and method boundaries.
 - `assert` checks a fact at its source position.
 
+For a synchronous call, a failed `requires` check faults the current control
+flow. An async call instead creates the child Task first. The child checks its
+preconditions in state zero before entering the body, and a failure becomes that
+child's primary fault while retaining the creation expression as blame. An
+exported async root uses its declaration span because it has no creation
+expression. Consequently, Task creation itself does not acquire the child's
+fault effects.
+
 Contracts are enabled in every build profile. Release mode does not globally
 disable them.
 

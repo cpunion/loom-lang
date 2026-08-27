@@ -124,7 +124,8 @@ or managed-heap reference to the handle. Task handles are stable for their
 scheduler lifetime and are not moving-GC roots.
 
 A typed coroutine frame is target-laid out from its checked plan. It contains
-state, parameters, one ordered child-handle row and exact live-value row per
+state, parameters, optional creation-site span coordinates for async
+preconditions, one ordered child-handle row and exact live-value row per
 `AwaitTasks` suspension, and the exact completed result. Each plan row records
 the output type of every awaited child before the forwarded live types. The
 descriptor lists managed-leaf offsets only for values live in each state and
@@ -140,10 +141,14 @@ and callback. A one-child fixed join retains a one-field tuple result rather
 than collapsing its type. No universal `ValueSlot` or runtime-described join
 result participates in either path. A nonempty, immediately awaited,
 fixed-arity homogeneous `Task.any` also uses the suspension row directly. The
-row retains every child handle and exact output type, while the normal edge takes
-only the winner's statically known output from the original winner field.
-Dynamically sized joins, `Task.settled`, `Task.race`, and `Task.any` whose result
-is stored or otherwise used first-class remain complete fallback.
+row retains every child handle and exact output type, while the normal edge
+takes only the winner's statically known output from the original winner field.
+Fixed `Task.settled` and `Task.race` rows instead forward terminal affine child
+handles to explicit `TaskOutcomeTake` instructions. The resulting canonical
+sums use the ordinary collision-free closed-sum carrier and exact managed Text
+leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
+static row; empty, stored, computed, and runtime-sized List joins and
+first-class `any`, `settled`, or `race` results remain complete fallback.
 
 ## `Text`
 
@@ -324,6 +329,14 @@ results and retires losers before returning the observable step. This adds no
 symbol or source-value layout, but advances the exact native runtime identity to
 component 18 with `typed-task-any-finalize-v1` and `runtime-v12`. Typed-task v1,
 coroutine v2, wait v1, and GC v9 remain unchanged.
+
+Static `Task.settled` and `Task.race` use
+`loom_typed_task_take_outcome_v1` to move one exact completed result or publish
+managed fault Text before retiring a terminal child. Generalized winner
+finalization is shared by `any` and `race`. The current identity is native
+component 19 with `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and
+`runtime-v13`; Task handles and source `TaskOutcome[T]` layouts do not gain an
+extra runtime tag or pointer.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof

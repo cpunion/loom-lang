@@ -1,9 +1,155 @@
 use loom_codegen_ir::{
-    AwaitMode, BlockTarget, Constant, CoroutinePlan, CoroutineSuspension, Effects, FaultCode,
-    FaultMetadata, InstructionKind, Origin, ProgramBuilder, ResultTarget, Signature, TargetLayout,
-    Terminator, TerminatorKind, UnwindTarget, ValidationCode, validate_program,
+    AwaitMode, BlockTarget, Constant, ContractFaultBlame, ContractFaultKind, ContractFaultMetadata,
+    CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata, InstructionKind, Origin,
+    Program, ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind,
+    UnwindTarget, ValidationCode, dump_program, validate_program,
 };
+use loom_core::{FileId, Span};
 use loom_mir::{FunctionId, Type, TypeId};
+
+fn caller_span_coroutine_program(
+    carries_caller_span: bool,
+    metadata: ContractFaultMetadata,
+) -> Program {
+    caller_span_coroutine_program_with_origin(
+        Origin::synthetic(FunctionId(50)),
+        carries_caller_span,
+        metadata,
+    )
+}
+
+fn caller_span_coroutine_program_with_origin(
+    origin: Origin,
+    carries_caller_span: bool,
+    metadata: ContractFaultMetadata,
+) -> Program {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let root = builder
+        .declare_function(
+            origin,
+            "coroutine.caller_blame",
+            Signature::new([], unit),
+            Effects::MAY_FAULT
+                .union(Effects::NEEDS_EXECUTOR)
+                .with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let mut plan = CoroutinePlan::new(unit, []);
+        if carries_caller_span {
+            plan = plan.with_caller_span();
+        }
+        function.set_coroutine_plan(plan).expect("coroutine plan");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Fault {
+                        metadata: FaultMetadata::contract(metadata),
+                    },
+                    origin,
+                ),
+            )
+            .expect("precondition fault");
+    }
+    builder.finish()
+}
+
+#[test]
+fn validator_accepts_coroutine_call_site_precondition_blame_with_a_carried_span() {
+    let checked = caller_span_coroutine_program(
+        true,
+        ContractFaultMetadata::coroutine_precondition("input.valid", Span::new(FileId(1), 10, 20)),
+    )
+    .into_checked()
+    .expect("canonical asynchronous precondition blame");
+
+    let dump = dump_program(&checked);
+    assert!(dump.contains("caller_span=carried"), "{dump}");
+    assert!(dump.contains("blame_span=coroutine_call_site"), "{dump}");
+}
+
+#[test]
+fn coroutine_plan_and_dynamic_precondition_blame_must_agree_bidirectionally() {
+    let contract_span = Span::new(FileId(2), 10, 20);
+    let missing_slot = validate_program(&caller_span_coroutine_program(
+        false,
+        ContractFaultMetadata::coroutine_precondition("input.valid", contract_span),
+    ))
+    .expect_err("dynamic blame requires a caller-span slot");
+    assert!(missing_slot.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error.path().ends_with("coroutine.caller_span")
+            && error.message().contains("requires its plan to carry")
+    }));
+
+    let unused_slot = validate_program(&caller_span_coroutine_program(
+        true,
+        ContractFaultMetadata::contract(
+            ContractFaultKind::Precondition,
+            "input.valid",
+            contract_span,
+            contract_span,
+        ),
+    ))
+    .expect_err("a caller-span slot cannot exist without dynamic blame");
+    assert!(unused_slot.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error.path().ends_with("coroutine.caller_span")
+            && error
+                .message()
+                .contains("only when at least one precondition")
+    }));
+}
+
+#[test]
+fn a_carrying_coroutine_cannot_use_dynamic_blame_for_a_postcondition() {
+    let contract_span = Span::new(FileId(3), 10, 20);
+    let errors = validate_program(&caller_span_coroutine_program(
+        true,
+        ContractFaultMetadata::new(
+            ContractFaultKind::Postcondition,
+            Some("output.valid".into()),
+            "contract `output.valid` was not satisfied",
+            contract_span,
+            ContractFaultBlame::CoroutineCallSite,
+        ),
+    ))
+    .expect_err("dynamic blame is reserved for asynchronous preconditions");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::FaultMetadata
+            && error.path().ends_with("blame_span")
+            && error.message().contains("only PreconditionFault")
+    }));
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error.path().ends_with("coroutine.caller_span")
+    }));
+}
+
+#[test]
+fn a_carried_coroutine_call_site_requires_a_valid_root_fallback_span() {
+    let contract_span = Span::new(FileId(4), 10, 20);
+    let errors = validate_program(&caller_span_coroutine_program_with_origin(
+        Origin {
+            source_function: FunctionId(50),
+            expression: None,
+            span: Span::new(FileId(4), 30, 20),
+        },
+        true,
+        ContractFaultMetadata::coroutine_precondition("input.valid", contract_span),
+    ))
+    .expect_err("an async root cannot carry an invalid fallback blame span");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::FaultMetadata
+            && error.path().ends_with("origin.span")
+            && error.message().contains("starts at 30, after its end 20")
+    }));
+}
 
 #[test]
 fn validator_accepts_a_fallible_coroutine_with_a_managed_sum_result() {
@@ -1664,20 +1810,25 @@ fn cancellation_cleanup_cannot_suspend_again() {
 
 #[test]
 fn cancellation_cleanup_cannot_call_or_invoke_executor_dependent_functions() {
-    for (exit_case, diagnostic) in [
+    for (exit_case, diagnostic, call_shape) in [
         (
             AwaitExitCase::CancelDirectCallsExecutor,
             "cancellation cleanup cannot call an executor-dependent function; it must remain scheduler-topology neutral",
+            "direct call cannot target a coroutine constructor; use task.create",
         ),
         (
             AwaitExitCase::CancelInvokesExecutor,
             "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
+            "invoke cannot target a coroutine constructor; use task.create",
         ),
     ] {
         let errors = validate_program(&await_tasks_program(false, false, exit_case))
             .expect_err("cancellation cleanup cannot enter executor-dependent code");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InvalidCoroutinePlan && error.message() == diagnostic
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::CallShape && error.message() == call_shape
         }));
     }
 }

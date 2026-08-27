@@ -338,6 +338,7 @@ fn collect_safepoint_values(
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::FormatFloat { .. }
+                    | InstructionKind::TaskOutcomeTake { .. }
                     | InstructionKind::TextMapInsert { .. }
                     | InstructionKind::TextMapRemove { .. }
             ) || list_allocation
