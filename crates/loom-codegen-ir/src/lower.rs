@@ -6,6 +6,7 @@ use loom_core::Span;
 use loom_mir::{
     self as mir, BinaryOp, CallArgument, CallTarget, Contract, ContractExpr, ContractExprKind,
     ContractValue, ExprId, ExprKind, FunctionId, LocalId, StatementKind, Type, UnaryOp,
+    disclosure_type_summary,
 };
 
 use crate::aggregate_plan::{
@@ -964,6 +965,47 @@ fn contract_expr_type(
     })
 }
 
+fn contract_expr_may_fault(
+    program: &mir::Program,
+    expression: &ContractExpr,
+    context: &ContractTypeContext,
+) -> bool {
+    match &expression.kind {
+        ContractExprKind::Constant(_)
+        | ContractExprKind::Value(_)
+        | ContractExprKind::Binding(_) => false,
+        ContractExprKind::Field(owner, _) | ContractExprKind::IsFinite(owner) => {
+            contract_expr_may_fault(program, owner, context)
+        }
+        ContractExprKind::Unary(operator, operand) => {
+            let checked_integer_negate = *operator == UnaryOp::Negate
+                && contract_expr_type(program, operand, context)
+                    .and_then(|ty| contract_base_type(program, &ty))
+                    == Some(Type::Int);
+            checked_integer_negate || contract_expr_may_fault(program, operand, context)
+        }
+        ContractExprKind::Binary(operator, left, right) => {
+            let checked_integer_arithmetic = matches!(
+                operator,
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
+            ) && contract_expr_type(program, left, context)
+                .and_then(|ty| contract_base_type(program, &ty))
+                == Some(Type::Int);
+            checked_integer_arithmetic
+                || contract_expr_may_fault(program, left, context)
+                || contract_expr_may_fault(program, right, context)
+        }
+        ContractExprKind::Match { scrutinee, arms } => {
+            contract_expr_may_fault(program, scrutinee, context)
+                || arms.iter().any(|arm| {
+                    let mut nested = context.clone();
+                    nested.bindings.extend(arm.bindings.iter().cloned());
+                    contract_expr_may_fault(program, &arm.value, &nested)
+                })
+        }
+    }
+}
+
 const fn is_scalar_type(ty: &Type) -> bool {
     is_direct_scalar(ty)
 }
@@ -1058,6 +1100,15 @@ fn direct_structural_equality_dependencies(
     .then_some(dependencies)
 }
 
+fn runtime_constraint_result_type(program: &mir::Program, success: Type) -> Option<Type> {
+    let result = program.prelude.result?;
+    let constraint_error = program.prelude.constraint_error?;
+    Some(Type::Nominal(
+        result,
+        vec![success, Type::Nominal(constraint_error, Vec::new())],
+    ))
+}
+
 struct Classifier<'program> {
     program: &'program mir::Program,
     target: TargetLayout,
@@ -1145,6 +1196,11 @@ impl<'program> Classifier<'program> {
             && dependencies
                 .iter()
                 .all(|dependency| self.supported_value_type(dependency))
+    }
+
+    fn admit_generated_text_literals(&mut self, literals: &[&str]) -> bool {
+        self.text_literals
+            .admit_all(literals.iter().map(|literal| literal.len()))
     }
 
     fn local_type(function: &mir::Function, local: LocalId) -> Option<&Type> {
@@ -1954,6 +2010,69 @@ impl<'program> Classifier<'program> {
                     .instantiate_types(type_arguments)
                     .ok()
                     .map(|arguments| Type::Nominal(*ty, arguments));
+                if *construction == mir::ConstructionMode::Runtime {
+                    let runtime = self
+                        .program
+                        .type_def(*ty)
+                        .and_then(|definition| {
+                            (definition.type_parameters == 0).then_some(definition)
+                        })
+                        .and_then(|definition| match &definition.kind {
+                            mir::TypeDefKind::Record {
+                                invariant: Some(invariant),
+                                ..
+                            } => Some((definition.name.clone(), invariant.clone())),
+                            _ => None,
+                        });
+                    let target = Type::Nominal(*ty, Vec::new());
+                    let result = runtime_constraint_result_type(self.program, target.clone());
+                    let direct_runtime = semantic.as_ref() == Some(&target)
+                        && expression_ty.as_ref() == result.as_ref()
+                        && self.supported_value_type(&target)
+                        && result
+                            .as_ref()
+                            .is_some_and(|result| self.supported_value_type(result));
+                    let contract_supported = runtime.as_ref().is_some_and(|(_, invariant)| {
+                        self.classify_contract_expr(
+                            function,
+                            key,
+                            &invariant.expression,
+                            &ContractTypeContext {
+                                receiver: Some(target.clone()),
+                                result: None,
+                                arguments: Vec::new(),
+                                old_receiver: None,
+                                old_arguments: Vec::new(),
+                                bindings: Vec::new(),
+                            },
+                            &format!("{path}.runtime_invariant"),
+                        ) == Some(Type::Bool)
+                    });
+                    if !direct_runtime || !contract_supported {
+                        self.expression_item(
+                            UnsupportedFeature::NominalValue,
+                            function,
+                            expression,
+                            path,
+                        );
+                    } else if let Some((name, invariant)) = runtime.as_ref() {
+                        let summary = disclosure_type_summary(self.program, &target);
+                        if !self.admit_generated_text_literals(&[
+                            name,
+                            "InvariantViolation",
+                            &invariant.code,
+                            &summary,
+                        ]) {
+                            self.expression_item(
+                                UnsupportedFeature::TextConstant,
+                                function,
+                                expression,
+                                path,
+                            );
+                        }
+                    }
+                    return expression.ty != Type::Never;
+                }
                 if *construction == mir::ConstructionMode::Recheck {
                     let invariant = self
                         .program
@@ -2092,6 +2211,69 @@ impl<'program> Classifier<'program> {
                     value.span,
                     &format!("{path}.value.ty"),
                 );
+                if *construction == mir::ConstructionMode::Runtime {
+                    let runtime = self
+                        .program
+                        .type_def(*ty)
+                        .and_then(|definition| {
+                            (definition.type_parameters == 0).then_some(definition)
+                        })
+                        .and_then(|definition| match &definition.kind {
+                            mir::TypeDefKind::Refined { base, predicate } => {
+                                Some((definition.name.clone(), base.clone(), predicate.clone()))
+                            }
+                            _ => None,
+                        });
+                    let target = Type::Nominal(*ty, Vec::new());
+                    let result = runtime_constraint_result_type(self.program, target.clone());
+                    let direct_runtime = expression_ty.as_ref() == result.as_ref()
+                        && value_ty.as_ref() == runtime.as_ref().map(|(_, base, _)| base)
+                        && self.supported_value_type(&target)
+                        && result
+                            .as_ref()
+                            .is_some_and(|result| self.supported_value_type(result));
+                    let contract_supported =
+                        runtime.as_ref().is_some_and(|(_, base, predicate)| {
+                            self.classify_contract_expr(
+                                function,
+                                key,
+                                &predicate.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(base.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                                &format!("{path}.runtime_predicate"),
+                            ) == Some(Type::Bool)
+                        });
+                    if !direct_runtime || !contract_supported {
+                        self.expression_item(
+                            UnsupportedFeature::RefinedValue,
+                            function,
+                            expression,
+                            path,
+                        );
+                    } else if let Some((name, base, predicate)) = runtime.as_ref() {
+                        let summary = disclosure_type_summary(self.program, base);
+                        if !self.admit_generated_text_literals(&[
+                            name,
+                            "ConstraintViolation",
+                            &predicate.code,
+                            &summary,
+                        ]) {
+                            self.expression_item(
+                                UnsupportedFeature::TextConstant,
+                                function,
+                                expression,
+                                path,
+                            );
+                        }
+                    }
+                    return expression.ty != Type::Never;
+                }
                 if *construction == mir::ConstructionMode::Recheck {
                     let refined = self
                         .program
@@ -2480,7 +2662,7 @@ fn summarize_effects(
     calls: &[InstanceKey],
 ) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
-    scan_effect_block(&function.body, &mut summary);
+    scan_effect_block(program, &function.body, &mut summary);
     // Preconditions execute at each concrete caller boundary. They make the
     // caller's operation fallible, never the assumed callee body by itself.
     if calls.iter().any(|callee| {
@@ -2501,28 +2683,36 @@ fn summarize_effects(
     }
 }
 
-fn scan_effect_block(block: &mir::Block, summary: &mut EffectSummary) -> bool {
+fn scan_effect_block(
+    program: &mir::Program,
+    block: &mir::Block,
+    summary: &mut EffectSummary,
+) -> bool {
     for statement in &block.statements {
-        if !scan_effect_statement(statement, summary) {
+        if !scan_effect_statement(program, statement, summary) {
             return false;
         }
     }
     block
         .tail
         .as_deref()
-        .is_none_or(|tail| scan_effect_expr(tail, summary))
+        .is_none_or(|tail| scan_effect_expr(program, tail, summary))
 }
 
-fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary) -> bool {
+fn scan_effect_statement(
+    program: &mir::Program,
+    statement: &mir::Statement,
+    summary: &mut EffectSummary,
+) -> bool {
     match &statement.kind {
         StatementKind::Let { value, .. }
         | StatementKind::LetTuple { value, .. }
         | StatementKind::Assign { value, .. }
-        | StatementKind::Evaluate(value) => scan_effect_expr(value, summary),
+        | StatementKind::Evaluate(value) => scan_effect_expr(program, value, summary),
         StatementKind::Scoped {
             value, disposal, ..
         } => {
-            let continues = scan_effect_expr(value, summary);
+            let continues = scan_effect_expr(program, value, summary);
             if continues
                 && matches!(
                     disposal,
@@ -2536,26 +2726,28 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
         StatementKind::ForRange {
             start, end, body, ..
         } => {
-            if !scan_effect_expr(start, summary) || !scan_effect_expr(end, summary) {
+            if !scan_effect_expr(program, start, summary)
+                || !scan_effect_expr(program, end, summary)
+            {
                 return false;
             }
-            scan_effect_block(body, summary);
+            scan_effect_block(program, body, summary);
             true
         }
         StatementKind::Assert { condition } => {
-            let continues = scan_effect_expr(condition, summary);
+            let continues = scan_effect_expr(program, condition, summary);
             if continues {
                 summary.include(Effects::MAY_FAULT);
             }
             continues
         }
         StatementKind::Defer(cleanup) => {
-            scan_effect_block(cleanup, summary);
+            scan_effect_block(program, cleanup, summary);
             true
         }
         StatementKind::Return(value) => {
             if let Some(value) = value {
-                scan_effect_expr(value, summary);
+                scan_effect_expr(program, value, summary);
             }
             false
         }
@@ -2563,22 +2755,26 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
 }
 
 #[allow(clippy::too_many_lines)]
-fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool {
+fn scan_effect_expr(
+    program: &mir::Program,
+    expression: &mir::Expr,
+    summary: &mut EffectSummary,
+) -> bool {
     match &expression.kind {
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
         | ExprKind::ReborrowView { .. } => true,
-        ExprKind::Tuple(values) => scan_effect_exprs(values, summary),
+        ExprKind::Tuple(values) => scan_effect_exprs(program, values, summary),
         ExprKind::List(values) => {
-            let continues = scan_effect_exprs(values, summary);
+            let continues = scan_effect_exprs(program, values, summary);
             if continues && !values.is_empty() {
                 summary.include(Effects::MAY_COLLECT);
             }
             continues
         }
         ExprKind::Unary(operator, operand) => {
-            if !scan_effect_expr(operand, summary) {
+            if !scan_effect_expr(program, operand, summary) {
                 return false;
             }
             if *operator == UnaryOp::Negate && operand.ty == Type::Int {
@@ -2587,10 +2783,10 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
             true
         }
         ExprKind::Binary(operator, left, right) => {
-            if !scan_effect_expr(left, summary) {
+            if !scan_effect_expr(program, left, summary) {
                 return false;
             }
-            let right_continues = scan_effect_expr(right, summary);
+            let right_continues = scan_effect_expr(program, right, summary);
             if right_continues
                 && matches!(
                     operator,
@@ -2602,44 +2798,94 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
             }
             right_continues || matches!(operator, BinaryOp::And | BinaryOp::Or)
         }
-        ExprKind::Block(block) => scan_effect_block(block, summary),
+        ExprKind::Block(block) => scan_effect_block(program, block, summary),
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            scan_effect_expr(condition, summary)
-                && (scan_effect_block(then_branch, summary)
-                    | scan_effect_block(else_branch, summary))
+            scan_effect_expr(program, condition, summary)
+                && (scan_effect_block(program, then_branch, summary)
+                    | scan_effect_block(program, else_branch, summary))
         }
         ExprKind::Match { scrutinee, arms } => {
-            if !scan_effect_expr(scrutinee, summary) {
+            if !scan_effect_expr(program, scrutinee, summary) {
                 return false;
             }
             arms.iter().fold(false, |continues, arm| {
-                scan_effect_expr(&arm.value, summary) | continues
+                scan_effect_expr(program, &arm.value, summary) | continues
             })
         }
         ExprKind::Record {
+            ty,
             fields,
             construction,
             ..
         } => {
-            let continues = scan_effect_exprs(fields, summary);
-            if continues && *construction == mir::ConstructionMode::Recheck {
-                summary.include(Effects::MAY_FAULT);
+            let continues = scan_effect_exprs(program, fields, summary);
+            if continues {
+                if *construction == mir::ConstructionMode::Recheck {
+                    summary.include(Effects::MAY_FAULT);
+                } else if *construction == mir::ConstructionMode::Runtime
+                    && program.type_def(*ty).is_some_and(|definition| {
+                        let mir::TypeDefKind::Record {
+                            invariant: Some(invariant),
+                            ..
+                        } = &definition.kind
+                        else {
+                            return false;
+                        };
+                        contract_expr_may_fault(
+                            program,
+                            &invariant.expression,
+                            &ContractTypeContext {
+                                receiver: Some(Type::Nominal(*ty, Vec::new())),
+                                result: None,
+                                arguments: Vec::new(),
+                                old_receiver: None,
+                                old_arguments: Vec::new(),
+                                bindings: Vec::new(),
+                            },
+                        )
+                    })
+                {
+                    summary.include(Effects::MAY_FAULT);
+                }
             }
             continues
         }
-        ExprKind::Variant { payload, .. } => scan_effect_exprs(payload, summary),
+        ExprKind::Variant { payload, .. } => scan_effect_exprs(program, payload, summary),
         ExprKind::Refine {
+            ty,
             value,
             construction,
             ..
         } => {
-            let continues = scan_effect_expr(value, summary);
-            if continues && *construction == mir::ConstructionMode::Recheck {
-                summary.include(Effects::MAY_FAULT);
+            let continues = scan_effect_expr(program, value, summary);
+            if continues {
+                if *construction == mir::ConstructionMode::Recheck {
+                    summary.include(Effects::MAY_FAULT);
+                } else if *construction == mir::ConstructionMode::Runtime
+                    && program.type_def(*ty).is_some_and(|definition| {
+                        let mir::TypeDefKind::Refined { base, predicate } = &definition.kind else {
+                            return false;
+                        };
+                        contract_expr_may_fault(
+                            program,
+                            &predicate.expression,
+                            &ContractTypeContext {
+                                receiver: Some(base.clone()),
+                                result: None,
+                                arguments: Vec::new(),
+                                old_receiver: None,
+                                old_arguments: Vec::new(),
+                                bindings: Vec::new(),
+                            },
+                        )
+                    })
+                {
+                    summary.include(Effects::MAY_FAULT);
+                }
             }
             continues
         }
@@ -2648,7 +2894,7 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
         } => {
             for argument in arguments {
                 if let CallArgument::Value(value) = argument
-                    && !scan_effect_expr(value, summary)
+                    && !scan_effect_expr(program, value, summary)
                 {
                     return false;
                 }
@@ -2666,20 +2912,24 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
             expression.ty != Type::Never
         }
         ExprKind::Unrefine(value) | ExprKind::MakeView { value, .. } => {
-            scan_effect_expr(value, summary)
+            scan_effect_expr(program, value, summary)
         }
         ExprKind::Await { task: value, .. }
         | ExprKind::Sleep {
             milliseconds: value,
-        } => scan_effect_expr(value, summary),
-        ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(arguments, summary),
+        } => scan_effect_expr(program, value, summary),
+        ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(program, arguments, summary),
     }
 }
 
-fn scan_effect_exprs(expressions: &[mir::Expr], summary: &mut EffectSummary) -> bool {
+fn scan_effect_exprs(
+    program: &mir::Program,
+    expressions: &[mir::Expr],
+    summary: &mut EffectSummary,
+) -> bool {
     expressions
         .iter()
-        .all(|expression| scan_effect_expr(expression, summary))
+        .all(|expression| scan_effect_expr(program, expression, summary))
 }
 
 fn continuing_mutations(block: &mir::Block) -> Option<BTreeSet<LocalId>> {
@@ -5162,6 +5412,38 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         self.one_instruction(flow, InstructionKind::Constant(constant), ty, origin)
     }
 
+    fn required_instruction(
+        &mut self,
+        flow: Flow,
+        kind: InstructionKind,
+        ty: &Type,
+        origin: Origin,
+    ) -> Result<(Flow, ValueId), LoweringError> {
+        match self.one_instruction(flow, kind, self.type_id(ty)?, origin)? {
+            EvalFlow::Continue { flow, value } => Ok((flow, value)),
+            EvalFlow::Terminated => Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "one-result LCIR instruction unexpectedly terminated",
+            )),
+        }
+    }
+
+    fn required_trusted_instruction(
+        &mut self,
+        flow: Flow,
+        kind: InstructionKind,
+        ty: &Type,
+        origin: Origin,
+    ) -> Result<(Flow, ValueId), LoweringError> {
+        match self.one_trusted_instruction(flow, kind, self.type_id(ty)?, origin)? {
+            EvalFlow::Continue { flow, value } => Ok((flow, value)),
+            EvalFlow::Terminated => Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "one-result trusted LCIR instruction unexpectedly terminated",
+            )),
+        }
+    }
+
     fn lower_scoped_block(
         &mut self,
         flow: Flow,
@@ -5843,7 +6125,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     mir::ConstructionMode::Plain => ProductConstruction::Plain,
                     mir::ConstructionMode::Proven => ProductConstruction::InvariantProven,
                     mir::ConstructionMode::Runtime => {
-                        return Err(self.unsupported_reached("runtime record constraint"));
+                        return self.lower_runtime_checked_record(flow, *ty, fields, expression);
                     }
                     mir::ConstructionMode::Recheck => {
                         return self.lower_rechecked_record(flow, *ty, fields, expression);
@@ -5863,11 +6145,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 match construction {
                     mir::ConstructionMode::Proven => {}
                     mir::ConstructionMode::Runtime => {
-                        return self.lower_unsupported_operand(
-                            flow,
-                            value,
-                            "runtime refinement constraint",
-                        );
+                        return self.lower_runtime_checked_refinement(flow, *ty, value, expression);
                     }
                     mir::ConstructionMode::Recheck => {
                         return self.lower_rechecked_refinement(flow, *ty, value, expression);
@@ -5954,6 +6232,354 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.expression_origin(expression),
             ),
         }
+    }
+
+    fn lower_runtime_checked_record(
+        &mut self,
+        mut flow: Flow,
+        ty: mir::TypeId,
+        fields: &[mir::Expr],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let (name, field_types, invariant) = self
+            .program
+            .type_def(ty)
+            .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
+            .and_then(|definition| match &definition.kind {
+                mir::TypeDefKind::Record {
+                    fields,
+                    invariant: Some(invariant),
+                } => Some((
+                    definition.name.clone(),
+                    fields
+                        .iter()
+                        .map(|field| field.ty.clone())
+                        .collect::<Vec<_>>(),
+                    invariant.clone(),
+                )),
+                _ => None,
+            })
+            .ok_or_else(|| self.unsupported_reached("runtime record constraint"))?;
+        if field_types.len() != fields.len() {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime record constraint field arity changed after classification",
+            ));
+        }
+        let mut lowered = Vec::with_capacity(fields.len());
+        let mut candidates = Vec::with_capacity(fields.len());
+        for (field, field_ty) in fields.iter().zip(field_types) {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, field)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+            candidates.push(ContractOperand {
+                value,
+                ty: field_ty,
+            });
+        }
+        let target = Type::Nominal(ty, Vec::new());
+        let context = ContractContext {
+            receiver: None,
+            record_candidate: Some(ContractRecordCandidate {
+                ty: target.clone(),
+                fields: candidates,
+            }),
+            result: None,
+            arguments: Vec::new(),
+            old_receiver: None,
+            old_arguments: Vec::new(),
+            bindings: Vec::new(),
+        };
+        let EvalFlow::Continue {
+            flow,
+            value: condition,
+        } = self.lower_contract_expr(flow, &invariant.expression, &context)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime record predicate unexpectedly terminated",
+            ));
+        };
+        let accepted = self.create_block()?;
+        let rejected = self.create_block()?;
+        let origin = self.expression_origin(expression);
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(accepted, []),
+                else_target: BlockTarget::new(rejected, []),
+            },
+            origin,
+        )?;
+        let (accepted_flow, established) = self.required_trusted_instruction(
+            Flow {
+                block: accepted,
+                env: flow.env,
+            },
+            InstructionKind::InvariantRecordProven {
+                fields: lowered.into_boxed_slice(),
+            },
+            &target,
+            origin,
+        )?;
+        let (accepted_flow, ok) = self.required_instruction(
+            accepted_flow,
+            InstructionKind::SumConstruct {
+                variant: 0,
+                payload: Box::new([established]),
+            },
+            &expression.ty,
+            origin,
+        )?;
+        let (rejected_flow, error) = self.lower_constraint_error(
+            Flow {
+                block: rejected,
+                env: flow.env,
+            },
+            &name,
+            "InvariantViolation",
+            &invariant,
+            &target,
+            origin,
+        )?;
+        let (rejected_flow, error) = self.required_instruction(
+            rejected_flow,
+            InstructionKind::SumConstruct {
+                variant: 1,
+                payload: Box::new([error]),
+            },
+            &expression.ty,
+            origin,
+        )?;
+        self.merge_evaluations(
+            [
+                EvalFlow::Continue {
+                    flow: accepted_flow,
+                    value: ok,
+                },
+                EvalFlow::Continue {
+                    flow: rejected_flow,
+                    value: error,
+                },
+            ],
+            flow.env,
+            &expression.ty,
+            origin,
+        )
+    }
+
+    fn lower_runtime_checked_refinement(
+        &mut self,
+        flow: Flow,
+        ty: mir::TypeId,
+        value: &mir::Expr,
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let (name, base, predicate) = self
+            .program
+            .type_def(ty)
+            .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
+            .and_then(|definition| match &definition.kind {
+                mir::TypeDefKind::Refined { base, predicate } => {
+                    Some((definition.name.clone(), base.clone(), predicate.clone()))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| self.unsupported_reached("runtime refinement constraint"))?;
+        let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
+            return Ok(EvalFlow::Terminated);
+        };
+        let context = ContractContext {
+            receiver: Some(ContractOperand {
+                value,
+                ty: base.clone(),
+            }),
+            record_candidate: None,
+            result: None,
+            arguments: Vec::new(),
+            old_receiver: None,
+            old_arguments: Vec::new(),
+            bindings: Vec::new(),
+        };
+        let EvalFlow::Continue {
+            flow,
+            value: condition,
+        } = self.lower_contract_expr(flow, &predicate.expression, &context)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime refinement predicate unexpectedly terminated",
+            ));
+        };
+        let accepted = self.create_block()?;
+        let rejected = self.create_block()?;
+        let origin = self.expression_origin(expression);
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(accepted, []),
+                else_target: BlockTarget::new(rejected, []),
+            },
+            origin,
+        )?;
+        let target = Type::Nominal(ty, Vec::new());
+        let (accepted_flow, established) = self.required_trusted_instruction(
+            Flow {
+                block: accepted,
+                env: flow.env,
+            },
+            InstructionKind::RefineProven { value },
+            &target,
+            origin,
+        )?;
+        let (accepted_flow, ok) = self.required_instruction(
+            accepted_flow,
+            InstructionKind::SumConstruct {
+                variant: 0,
+                payload: Box::new([established]),
+            },
+            &expression.ty,
+            origin,
+        )?;
+        let (rejected_flow, error) = self.lower_constraint_error(
+            Flow {
+                block: rejected,
+                env: flow.env,
+            },
+            &name,
+            "ConstraintViolation",
+            &predicate,
+            &base,
+            origin,
+        )?;
+        let (rejected_flow, error) = self.required_instruction(
+            rejected_flow,
+            InstructionKind::SumConstruct {
+                variant: 1,
+                payload: Box::new([error]),
+            },
+            &expression.ty,
+            origin,
+        )?;
+        self.merge_evaluations(
+            [
+                EvalFlow::Continue {
+                    flow: accepted_flow,
+                    value: ok,
+                },
+                EvalFlow::Continue {
+                    flow: rejected_flow,
+                    value: error,
+                },
+            ],
+            flow.env,
+            &expression.ty,
+            origin,
+        )
+    }
+
+    fn lower_constraint_error(
+        &mut self,
+        flow: Flow,
+        target_name: &str,
+        violation_code: &str,
+        contract: &Contract,
+        summary_type: &Type,
+        origin: Origin,
+    ) -> Result<(Flow, ValueId), LoweringError> {
+        let summary = disclosure_type_summary(self.program, summary_type);
+        let (flow, target) = self.required_instruction(
+            flow,
+            InstructionKind::TextLiteral {
+                utf8: target_name.into(),
+            },
+            &Type::Text,
+            origin,
+        )?;
+        let (flow, code) = self.required_instruction(
+            flow,
+            InstructionKind::TextLiteral {
+                utf8: violation_code.into(),
+            },
+            &Type::Text,
+            origin,
+        )?;
+        let (flow, predicate) = self.required_instruction(
+            flow,
+            InstructionKind::TextLiteral {
+                utf8: contract.code.clone().into_boxed_str(),
+            },
+            &Type::Text,
+            origin,
+        )?;
+        let list_text = Type::List(Box::new(Type::Text));
+        let (flow, path) = self.required_instruction(
+            flow,
+            InstructionKind::ListConstruct {
+                elements: Box::new([]),
+            },
+            &list_text,
+            origin,
+        )?;
+        let (mut flow, summary) = self.required_instruction(
+            flow,
+            InstructionKind::TextLiteral {
+                utf8: summary.into_boxed_str(),
+            },
+            &Type::Text,
+            origin,
+        )?;
+        let mut span_fields = Vec::with_capacity(3);
+        for component in [
+            i64::from(contract.span.file.0),
+            i64::from(contract.span.range.start),
+            i64::from(contract.span.range.end),
+        ] {
+            let (next_flow, component) = self.required_instruction(
+                flow,
+                InstructionKind::Constant(Constant::Int(component)),
+                &Type::Int,
+                origin,
+            )?;
+            flow = next_flow;
+            span_fields.push(component);
+        }
+        let span_type = Type::Tuple(vec![Type::Int, Type::Int, Type::Int]);
+        let (flow, contract_span) = self.required_instruction(
+            flow,
+            InstructionKind::ProductConstruct {
+                fields: span_fields.into_boxed_slice(),
+            },
+            &span_type,
+            origin,
+        )?;
+        let constraint_error = self
+            .program
+            .prelude
+            .constraint_error
+            .map(|ty| Type::Nominal(ty, Vec::new()))
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "runtime constraint construction has no ConstraintError prelude type",
+                )
+            })?;
+        self.required_instruction(
+            flow,
+            InstructionKind::ProductConstruct {
+                fields: Box::new([target, code, predicate, path, summary, contract_span]),
+            },
+            &constraint_error,
+            origin,
+        )
     }
 
     fn lower_rechecked_record(
@@ -8420,8 +9046,9 @@ mod tests {
             span,
         };
         let mut summary = EffectSummary::default();
+        let program = mir::Program::default();
 
-        assert!(!scan_effect_block(&block, &mut summary));
+        assert!(!scan_effect_block(&program, &block, &mut summary));
         assert_eq!(summary.calls, BTreeSet::from([FunctionId(1)]));
     }
 
