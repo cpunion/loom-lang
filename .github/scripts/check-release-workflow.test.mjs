@@ -16,8 +16,9 @@ test("accepts the repository release and Windows bootstrap structure", async () 
 
 test("requires every named PowerShell bootstrap argument", () => {
   const errors = checkReleaseWorkflow({
-    ci: "bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
-    release: "bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
+    ci: "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
+    release:
+      "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
     bootstrap: "",
     argumentTest: "",
   });
@@ -30,11 +31,11 @@ test("requires every named PowerShell bootstrap argument", () => {
 test("rejects duplicated download policy and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
     ci: [
-      "bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
+      "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
       "https://github.com/llvm/llvm-project/releases/download/example",
     ].join("\n"),
     release:
-      "bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
+      "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
     bootstrap: "& curl.exe --output archive url\n& cmake.exe -S source -B build",
     argumentTest: "",
   });

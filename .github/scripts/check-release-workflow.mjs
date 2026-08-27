@@ -14,7 +14,7 @@ function requireText(errors, source, expected, label) {
 
 function bootstrapInvocationErrors(source, label) {
   const errors = [];
-  const marker = "bootstrap-windows-llvm.ps1";
+  const marker = "./.github/scripts/bootstrap-windows-llvm.ps1";
   const index = source.indexOf(marker);
   if (index === -1) {
     return [`${label}: does not invoke ${bootstrapName}`];
@@ -41,6 +41,12 @@ export function checkReleaseWorkflow({ ci, release, bootstrap, argumentTest }) {
     ["release workflow", release],
   ]) {
     errors.push(...bootstrapInvocationErrors(source, label));
+    requireText(
+      errors,
+      source,
+      "./.github/scripts/test-windows-llvm-bootstrap.ps1",
+      label,
+    );
     if (source.includes("https://github.com/llvm/llvm-project/releases/download/")) {
       errors.push(`${label}: duplicates the pinned LLVM download owned by ${bootstrapName}`);
     }
