@@ -109,6 +109,16 @@ $version = (& $llvmConfig --version).Trim()
 if ($LASTEXITCODE -ne 0 -or $version -ne $llvmVersion) {
   throw "unexpected llvm-config version: $version"
 }
+$sharedMode = (& $llvmConfig --shared-mode).Trim()
+$buildMode = (& $llvmConfig --build-mode).Trim()
+$compilerFlags = (& $llvmConfig --cxxflags).Trim()
+Write-Host "LLVM shared mode: $sharedMode"
+Write-Host "LLVM build mode: $buildMode"
+Write-Host "LLVM C++ flags: $compilerFlags"
+$llvmCDll = Join-Path $InstallRoot "bin\LLVM-C.dll"
+$llvmCImportLibrary = Join-Path $InstallRoot "lib\LLVM-C.lib"
+Write-Host "LLVM-C.dll present: $(Test-Path $llvmCDll -PathType Leaf)"
+Write-Host "LLVM-C.lib present: $(Test-Path $llvmCImportLibrary -PathType Leaf)"
 $targetsBuilt = (& $llvmConfig --targets-built).Trim() -split '\s+' | Sort-Object -Unique
 $expectedTargets = @("AArch64", "ARM", "X86")
 if ($LASTEXITCODE -ne 0 -or
