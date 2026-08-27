@@ -853,26 +853,17 @@ impl<'program> Classifier<'program> {
         if !self.places.admit(usage, place.projection.len()) {
             return None;
         }
-        let Some(base) = Self::local_type(function, place.local) else {
-            return None;
-        };
-        let Some(mut ty) = self.instantiated_type(function, key, None, base, span, path) else {
-            return None;
-        };
+        let base = Self::local_type(function, place.local)?;
+        let mut ty = self.instantiated_type(function, key, None, base, span, path)?;
         if !self.supported_value_type(&ty) {
             return None;
         }
         for field in &place.projection {
-            let Some(fields) = closed_record_fields(self.program, &ty) else {
-                return None;
-            };
-            let Some(next) = usize::try_from(*field)
+            let fields = closed_record_fields(self.program, &ty)?;
+            let next = usize::try_from(*field)
                 .ok()
                 .and_then(|index| fields.get(index))
-                .map(|field| field.ty.clone())
-            else {
-                return None;
-            };
+                .map(|field| field.ty.clone())?;
             ty = next;
         }
         self.supported_value_type(&ty).then_some(ty)
