@@ -39,10 +39,6 @@ const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
-const CORE02_TEST_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
-    name: "core02-first-class-dyn-storage",
-    reason: "first-class dyn values inside products, sums, and Lists are not yet represented in typed LCIR",
-};
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
     reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
@@ -72,7 +68,7 @@ const TASKS: &[TaskSpec] = &[
         source: "examples/core02/concepts.loom",
         sha256: "60bc7e21bd475ae3fb0f795f25cbae92e4d86c7c48675abad02c9561d2701d4a",
         main_native_route: NativeRouteExpectation::Lcir,
-        test_native_route: CORE02_TEST_LEGACY_ROUTE,
+        test_native_route: NativeRouteExpectation::Lcir,
     },
     TaskSpec {
         name: "structured-async",

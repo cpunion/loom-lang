@@ -106,6 +106,16 @@ receives no dispatch table, indirect call, type tag, or witness pointer. A
 missing, open, or competing witness set is a structured unsupported site; the
 compiler never guesses a target or consults all declared conformances.
 
+View discovery walks both reachable expression/signature types and their
+bounded concrete record, enum, and refined schemas. The selected concrete type
+is substituted recursively through product fields, sum payloads, generic
+arguments, and List elements before the direct aggregate closure is planned.
+This catches a view stored but never projected, keeps the List repeated
+descriptor identical to its concrete element descriptor, and re-runs ordinary
+by-value cycle rejection after erasure. Raw concrete and erased uses converge
+on the same canonical LCIR value type rather than creating layout-compatible
+duplicates.
+
 ## Why unused conformances stay dead
 
 Declaring `impl C for A` is not by itself a native edge. Code must reach a proof

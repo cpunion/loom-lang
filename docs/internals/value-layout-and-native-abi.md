@@ -175,9 +175,15 @@ witness, the view is represented by its concrete value alone and every used
 requirement becomes a direct call. Mutable interface parameters reuse LCIR's
 typed inout result edges, so normal and fault exits write the updated logical
 value back without an owner pointer hidden in the dynamic representation.
-Copies remain ordinary concrete value copies. Competing or open witness sets
-do not receive a runtime tag layout yet; they select structured unsupported
-classification for the whole artifact.
+Copies remain ordinary concrete value copies. The same checked substitution is
+recursive: product fields and closed-sum payloads store the concrete value,
+while `List[dyn C]` uses the concrete element stride, alignment, and exact
+managed-pointer offsets in its typed repeated descriptor. Construction,
+forwarding, field extraction, sum matching, List reads, and mutable copies add
+no view wrapper. Raw concrete and erased values share one canonical physical
+type. Missing, competing, or open witness sets do not receive a runtime tag
+layout yet; they select structured unsupported classification for the whole
+artifact.
 
 Loom does not support runtime conversion from an untyped universal value to
 `dyn C` by searching every conformance. This keeps witness reachability

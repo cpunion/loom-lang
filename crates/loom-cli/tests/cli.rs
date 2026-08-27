@@ -1120,7 +1120,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn core02_main_uses_the_unique_witness_lcir_route() {
+fn core02_main_and_tests_use_the_unique_witness_lcir_route() {
     let project = TestProject::new(include_str!("../../../examples/core02/concepts.loom"));
     let object_path = project.0.join("core02-unique-dyn.o");
     let build = loomc()
@@ -1153,6 +1153,21 @@ fn core02_main_uses_the_unique_witness_lcir_route() {
         .expect("run Core02 main through the production CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("run Core02 tests through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    let stdout = String::from_utf8_lossy(&tests.stdout);
+    for expected in [
+        "static_and_readonly_dynamic_dispatch",
+        "mutable_dynamic_dispatch_writes_the_owner",
+        "dynamic_interfaces_are_first_class_values",
+    ] {
+        assert!(stdout.contains(expected), "missing `{expected}`: {tests:?}");
+    }
 }
 
 #[test]
