@@ -2813,6 +2813,13 @@ fn preserve_choice(value Choice, expected Choice) Choice
     expected
 }
 
+fn preserve_pairs(value List[Pair], expected List[Pair]) List[Pair]
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
 pub fn main() Unit {
     let pair = Pair { number = 7, enabled = true }
     let same_pair = Pair { number = 7, enabled = true }
@@ -2828,7 +2835,13 @@ pub fn main() Unit {
     let other_choice = Choice.BoxValue(boxed)
     let checked_pair = preserve_pair(pair, same_pair)
     let checked_choice = preserve_choice(choice, same_choice)
-    if pair == same_pair && pair != other_pair && boxed == same_boxed && positive == same_positive && tuple == same_tuple && choice == same_choice && choice != other_choice && checked_pair == pair && checked_choice == choice {
+    let pairs = [pair, other_pair]
+    let same_pairs = [same_pair, Pair { number = 8, enabled = true }]
+    let other_pairs = [same_pair]
+    let checked_pairs = preserve_pairs(pairs, same_pairs)
+    let nested = [[1, 2], [3]]
+    let same_nested = [[1, 2], [3]]
+    if pair == same_pair && pair != other_pair && boxed == same_boxed && positive == same_positive && tuple == same_tuple && choice == same_choice && choice != other_choice && checked_pair == pair && checked_choice == choice && pairs == same_pairs && pairs != other_pairs && checked_pairs == pairs && nested == same_nested {
         Unit
     } else {
         discard 1 / 0
@@ -2844,6 +2857,36 @@ pub fn main() Unit {
     assert!(dump.contains("int.compare.equal"), "{dump}");
     assert!(dump.contains("bool.compare.equal"), "{dump}");
     assert!(dump.contains("bool.not"), "{dump}");
+    assert!(dump.matches("list.length").count() >= 6, "{dump}");
+    assert!(dump.matches("list.get").count() >= 6, "{dump}");
+    assert!(dump.contains("int.successor_below"), "{dump}");
+}
+
+#[test]
+fn recursive_list_backed_structural_equality_remains_one_atomic_fallback() {
+    let outcome = lower_run(
+        r"module recursive_equality
+
+record Node {
+    children List[Node]
+}
+
+pub fn main() Unit {
+    let left = Node { children = [] }
+    let right = Node { children = [] }
+    discard left == right
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("recursive structural equality must not clone an unbounded LCIR CFG")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::NominalValue
+    );
 }
 
 #[test]

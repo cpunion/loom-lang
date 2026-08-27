@@ -958,15 +958,20 @@ const fn is_scalar_type(ty: &Type) -> bool {
     is_direct_scalar(ty)
 }
 
-/// Returns whether equality for one already-concrete direct value can be
-/// expanded into a bounded LCIR CFG. Recursive equality through a managed
-/// List is intentionally admitted by the List-specific lowering slice rather
-/// than treating a coinductive semantic proof as an infinitely inlineable CFG.
-fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> bool {
+/// Returns the extra direct types needed to expand equality for one concrete
+/// value into a bounded LCIR CFG. Lists use a finite loop and canonical
+/// `Option[element]` reads. Re-entering a nominal equality through a List is
+/// rejected here because recursively cloning that element CFG would not be a
+/// finite lowering plan.
+fn direct_structural_equality_dependencies(
+    program: &mir::Program,
+    ty: &Type,
+) -> Option<BTreeSet<Type>> {
     fn visit(
         program: &mir::Program,
         ty: &Type,
         active: &mut BTreeSet<Type>,
+        dependencies: &mut BTreeSet<Type>,
         remaining: &mut usize,
     ) -> bool {
         if *remaining == 0 {
@@ -977,7 +982,14 @@ fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> boo
             Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
             Type::Tuple(elements) => elements
                 .iter()
-                .all(|element| visit(program, element, active, remaining)),
+                .all(|element| visit(program, element, active, dependencies, remaining)),
+            Type::List(element) => {
+                let Some(option) = program.prelude.option else {
+                    return false;
+                };
+                dependencies.insert(Type::Nominal(option, vec![(**element).clone()]));
+                visit(program, element, active, dependencies, remaining)
+            }
             Type::Nominal(_, _) => {
                 if program
                     .prelude
@@ -990,9 +1002,9 @@ fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> boo
                 let result = if let Some(fields) = concrete_any_record_fields(program, ty) {
                     fields
                         .iter()
-                        .all(|field| visit(program, field, active, remaining))
+                        .all(|field| visit(program, field, active, dependencies, remaining))
                 } else if let Some(base) = concrete_refined_base(program, ty) {
-                    visit(program, &base, active, remaining)
+                    visit(program, &base, active, dependencies, remaining)
                 } else if let Some(variants) = closed_enum_variants(program, ty) {
                     let Some(case_cost) = variants.len().checked_mul(variants.len()) else {
                         active.remove(ty);
@@ -1006,7 +1018,7 @@ fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> boo
                     variants.iter().all(|variant| {
                         variant
                             .iter()
-                            .all(|payload| visit(program, payload, active, remaining))
+                            .all(|payload| visit(program, payload, active, dependencies, remaining))
                     })
                 } else {
                     false
@@ -1014,10 +1026,7 @@ fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> boo
                 active.remove(ty);
                 result
             }
-            // Managed List equality is added separately because recursive
-            // lists require a runtime loop rather than recursive CFG cloning.
-            Type::List(_)
-            | Type::Never
+            Type::Never
             | Type::Parameter(_)
             | Type::AssociatedProjection { .. }
             | Type::Task(_)
@@ -1028,7 +1037,15 @@ fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> boo
     }
 
     let mut remaining = DIRECT_EQUALITY_MAX_CFG_NODES;
-    visit(program, ty, &mut BTreeSet::new(), &mut remaining)
+    let mut dependencies = BTreeSet::new();
+    visit(
+        program,
+        ty,
+        &mut BTreeSet::new(),
+        &mut dependencies,
+        &mut remaining,
+    )
+    .then_some(dependencies)
 }
 
 struct Classifier<'program> {
@@ -1108,6 +1125,16 @@ impl<'program> Classifier<'program> {
 
     fn supported_expression_type(&mut self, ty: &Type) -> bool {
         matches!(ty, Type::Never) || self.supported_value_type(ty)
+    }
+
+    fn supported_equality_type(&mut self, ty: &Type) -> bool {
+        let Some(dependencies) = direct_structural_equality_dependencies(self.program, ty) else {
+            return false;
+        };
+        self.supported_value_type(ty)
+            && dependencies
+                .iter()
+                .all(|dependency| self.supported_value_type(dependency))
     }
 
     fn local_type(function: &mir::Function, local: LocalId) -> Option<&Type> {
@@ -1457,10 +1484,7 @@ impl<'program> Classifier<'program> {
                         | BinaryOp::Multiply
                         | BinaryOp::Divide => matches!(left, Type::Int | Type::Float),
                         BinaryOp::And | BinaryOp::Or => left == Type::Bool,
-                        BinaryOp::Equal | BinaryOp::NotEqual => {
-                            self.supported_value_type(&left)
-                                && supports_direct_structural_equality(self.program, &left)
-                        }
+                        BinaryOp::Equal | BinaryOp::NotEqual => self.supported_equality_type(&left),
                         BinaryOp::Less
                         | BinaryOp::LessEqual
                         | BinaryOp::Greater
@@ -1801,8 +1825,7 @@ impl<'program> Classifier<'program> {
                     );
                     let supported = operand_type.is_some_and(|ty| {
                         if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            self.supported_value_type(&ty)
-                                && supports_direct_structural_equality(self.program, &ty)
+                            self.supported_equality_type(&ty)
                         } else {
                             is_scalar_type(&ty)
                         }
@@ -6503,6 +6526,28 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 TerminatorKind::Jump(BlockTarget::new(equal, [])),
                 origin,
             ),
+            crate::Repr::ManagedPointer if matches!(value_type.semantic(), Type::List(_)) => {
+                let Type::List(element) = value_type.semantic() else {
+                    unreachable!("managed List guard establishes its semantic shape")
+                };
+                let option = self.program.prelude.option.ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "managed List equality requires the canonical Option type",
+                    )
+                })?;
+                let option_type =
+                    self.type_id(&Type::Nominal(option, vec![(**element).clone()]))?;
+                self.branch_on_list_equality(
+                    flow,
+                    left,
+                    right,
+                    option_type,
+                    equal,
+                    not_equal,
+                    origin,
+                )
+            }
             crate::Repr::Scalar(_) | crate::Repr::ImmortalText | crate::Repr::ManagedPointer => {
                 let instruction = match value_type.semantic() {
                     Type::Bool => InstructionKind::BoolCompare {
@@ -6671,6 +6716,209 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow.block = next;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the bounded List loop keeps length, proof, checked reads, and equality backedge visibly connected"
+    )]
+    fn branch_on_list_equality(
+        &mut self,
+        flow: Flow,
+        left: ValueId,
+        right: ValueId,
+        option_type: ValueTypeId,
+        equal: BlockId,
+        not_equal: BlockId,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        let integer = self.type_id(&Type::Int)?;
+        let boolean = self.type_id(&Type::Bool)?;
+        let left_length = match self.one_instruction(
+            flow,
+            InstructionKind::ListLength { list: left },
+            integer,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "left List length unexpectedly terminated",
+                ));
+            }
+        };
+        let right_length = match self.one_instruction(
+            flow,
+            InstructionKind::ListLength { list: right },
+            integer,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "right List length unexpectedly terminated",
+                ));
+            }
+        };
+        let same_length = match self.one_instruction(
+            flow,
+            InstructionKind::IntCompare {
+                predicate: IntPredicate::Equal,
+                left: left_length,
+                right: right_length,
+            },
+            boolean,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "List length comparison unexpectedly terminated",
+                ));
+            }
+        };
+        let initialize = self.create_block()?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition: same_length,
+                then_target: BlockTarget::new(initialize, []),
+                else_target: BlockTarget::new(not_equal, []),
+            },
+            origin,
+        )?;
+
+        let zero = match self.constant(
+            Flow {
+                block: initialize,
+                env: flow.env,
+            },
+            Constant::Int(0),
+            &Type::Int,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "List equality zero index unexpectedly terminated",
+                ));
+            }
+        };
+        let header = self.create_block()?;
+        let index = self
+            .builder
+            .append_block_parameter(header, integer)
+            .map_err(LoweringError::from)?;
+        self.terminate(
+            initialize,
+            TerminatorKind::Jump(BlockTarget::new(header, [zero])),
+            origin,
+        )?;
+        let header_flow = Flow {
+            block: header,
+            env: flow.env,
+        };
+        let in_bounds = match self.one_instruction(
+            header_flow,
+            InstructionKind::IntCompare {
+                predicate: IntPredicate::Less,
+                left: index,
+                right: left_length,
+            },
+            boolean,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "List equality bounds comparison unexpectedly terminated",
+                ));
+            }
+        };
+        let compare = self.create_block()?;
+        self.terminate(
+            header,
+            TerminatorKind::Branch {
+                condition: in_bounds,
+                then_target: BlockTarget::new(compare, []),
+                else_target: BlockTarget::new(equal, []),
+            },
+            origin,
+        )?;
+        let compare_flow = Flow {
+            block: compare,
+            env: flow.env,
+        };
+        let left_element = match self.one_instruction(
+            compare_flow,
+            InstructionKind::ListGet { list: left, index },
+            option_type,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "left List equality read unexpectedly terminated",
+                ));
+            }
+        };
+        let right_element = match self.one_instruction(
+            compare_flow,
+            InstructionKind::ListGet { list: right, index },
+            option_type,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "right List equality read unexpectedly terminated",
+                ));
+            }
+        };
+        let advance = self.create_block()?;
+        self.branch_on_structural_equality(
+            compare_flow,
+            left_element,
+            right_element,
+            option_type,
+            advance,
+            not_equal,
+            origin,
+        )?;
+        let next = match self.one_instruction(
+            Flow {
+                block: advance,
+                env: flow.env,
+            },
+            InstructionKind::IntSuccessorBelow {
+                value: index,
+                upper_bound: left_length,
+                proof: in_bounds,
+            },
+            integer,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "List equality successor unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(
+            advance,
+            TerminatorKind::Jump(BlockTarget::new(header, [next])),
+            origin,
+        )
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]

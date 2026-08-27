@@ -71,7 +71,8 @@ pointer-free.
 Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
-or sum payloads. Generic records, runtime-checked constructions, recursive
+or sum payloads. Fully concrete generic records use the same plan.
+Runtime-checked constructions, recursive
 sums, Task, dynamic witnesses, and uninhabited fields are not selected. A
 concrete List breaks by-value aggregate recursion and may contain any already
 registered closed direct scalar, Text, product, sum, or nested List element.
@@ -114,6 +115,34 @@ One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
 one artifact may contain at most 16 MiB in total. Crossing either bound is
 unsupported coverage and selects the complete legacy route. Independent LCIR
 validation repeats both limits before LLVM constructs any constant object.
+
+## Structural equality lowering
+
+Equality is expanded from the checked semantic type and its exact `ValueType`
+plan; LCIR does not add a universal comparison instruction or a runtime type
+switch. `Unit` is always equal. Bool and Int use typed integer comparisons,
+Float uses IEEE ordered equality, and Text uses content-based `TextCompare`.
+Transparent refined values are unrefined only to their declared base. Products
+then compare fields in representation order. Closed sums switch over the left
+and right tags before comparing a matching variant's payload, so generated code
+never reads inactive carrier bytes. Inequality negates the complete equality
+result rather than changing component semantics. The same expansion is used
+for ordinary expressions and checked `requires`/`ensures` expressions.
+
+A concrete `List[T]` first compares lengths, then walks equal-length inputs by
+an Int index. Each iteration uses existing nonallocating `ListGet` operations
+and compares their canonical `Option[T]` results structurally. The loop
+backedge uses `IntSuccessorBelow` with the exact `index < length` true-edge
+proof, so it adds neither a checked-overflow fault nor a runtime helper. Reads
+create no alias-visible mutation and cross no collection safepoint; List value
+semantics and typed GC roots are unchanged.
+
+Planning bounds the expanded equality CFG to 4,096 structural units and
+registers every implicit `Option[T]` before LCIR construction. Re-entering one
+nominal type through a List remains whole-artifact unsupported: inlining that
+coinductive semantic equality would make an unbounded CFG. A future reusable
+recursive comparison-instance plan can close that case without changing the
+source equality rule.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed

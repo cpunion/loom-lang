@@ -274,6 +274,14 @@ old List and managed element even when dead afterward, and reloads both after
 relocation. Length and get do not allocate, and get constructs the canonical
 `Option[T]` sum directly.
 
+List equality is already explicit LCIR control flow when it reaches LLVM. It
+compares lengths, then uses nonallocating `ListGet` operations in a proved Int
+loop and structurally compares the resulting `Option[T]` values. The emitter
+does not call a generic equality runtime, expose an element pointer, or infer
+aliasing from the managed backing. An allocation-pressure fixture crosses the
+moving-heap threshold before these reads and verifies that exact typed roots,
+not stable addresses, preserve the inputs.
+
 ## Direct lexical cleanup
 
 LCIR contains the already expanded control flow for `defer`, `scoped`, and
@@ -315,6 +323,12 @@ payload block parameters. Temporary typed carrier storage is an LLVM lowering
 detail: the release optimization gate requires SROA to remove every such
 `alloca` and forbids `memcpy`, the universal `loom.Value`, runtime/GC/executor
 symbols for pure sums, and indirect calls.
+
+Structural sum equality is a pair of checked `SumSwitch` trees. Each operand's
+payload is decoded only on its active case edge; mismatched tags branch false,
+while matching tags compare their exact payload fields. No comparison reads
+the carrier as raw bytes, so padding and inactive managed-pointer candidates do
+not participate in language equality.
 
 The test harness consumes the checked artifact's `TestOutcomePlan`. `Unit`
 tests pass after a successful call. `Result[Unit, E]` tests compare the physical

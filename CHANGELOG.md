@@ -42,6 +42,21 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now lowers value equality and inequality for concrete tuples,
+  generic and nongeneric records, established refined values, closed sums, and
+  finite List-backed structural graphs. Products compare fields in order;
+  sums dispatch both operands before reading only their active payloads; Lists
+  compare length and then elements through a nonallocating checked-read loop.
+  The same lowering is available in `requires` and `ensures`. Text remains
+  content equality, Float retains IEEE ordered equality/unordered inequality,
+  and no universal value, executor, or new runtime boundary is introduced.
+  Recursive nominal equality reached again through a List remains atomic
+  fallback until LCIR has reusable recursive comparison instances. The new
+  `lcir-structural-equality` fixture closes real `check/build/test/run`, host
+  interpreter/legacy/typed differential execution, allocation-pressure GC
+  evidence, and Linux/MSVC object emission. Existing LCIR, artifact, object,
+  cache, and runtime ABI versions are unchanged because equality expands into
+  already-versioned typed instructions and control flow.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
   representations. Generic field projection, contract evaluation, calls,
