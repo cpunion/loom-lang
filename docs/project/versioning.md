@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `7` |
-| LCIR artifact identity | schema `8` |
-| LCIR native-object domain | `loom-lcir-native-object-v4` |
+| LCIR textual dump | version `8` |
+| LCIR artifact identity | schema `9` |
+| LCIR native-object domain | `loom-lcir-native-object-v5` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v9` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v10` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `8` |
 | Coroutine/Task ABI component | `2` |
@@ -36,6 +36,12 @@ LCIR native-object, and CLI object-cache domains shown above. It reuses the
 existing native text layout descriptor and containment-helper symbols, so the
 native runtime ABI identity and its component versions do not advance for this
 compiler-only coverage change.
+
+The transitive LCIR effect lattice adds explicit runtime, collection,
+executor, and suspension capability identity even though current typed source
+lowering still emits only effect-free or `MAY_FAULT` functions. Its canonical
+encoding advances the four compiler-private LCIR and object-cache boundaries;
+it does not change the runtime ABI.
 
 ## Toolchain releases
 

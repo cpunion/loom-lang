@@ -1,3 +1,5 @@
+use std::fmt;
+
 use loom_core::Span;
 use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId};
 
@@ -52,9 +54,17 @@ pub struct Effects(u8);
 
 impl Effects {
     const MAY_FAULT_BIT: u8 = 1;
+    const NEEDS_RUNTIME_BIT: u8 = 1 << 1;
+    const MAY_COLLECT_BIT: u8 = 1 << 2;
+    const NEEDS_EXECUTOR_BIT: u8 = 1 << 3;
+    const MAY_SUSPEND_BIT: u8 = 1 << 4;
 
     pub const NONE: Self = Self(0);
     pub const MAY_FAULT: Self = Self(Self::MAY_FAULT_BIT);
+    pub const NEEDS_RUNTIME: Self = Self(Self::NEEDS_RUNTIME_BIT);
+    pub const MAY_COLLECT: Self = Self(Self::MAY_COLLECT_BIT);
+    pub const NEEDS_EXECUTOR: Self = Self(Self::NEEDS_EXECUTOR_BIT);
+    pub const MAY_SUSPEND: Self = Self(Self::MAY_SUSPEND_BIT);
 
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
@@ -69,6 +79,59 @@ impl Effects {
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// Returns the least effect set which includes every capability implied by
+    /// this set. Collection requires an active runtime, and suspension requires
+    /// an executor which itself requires an active runtime. Source faults are
+    /// deliberately independent: checked scalar faults need a fault context,
+    /// but do not create a Loom runtime or executor.
+    #[must_use]
+    pub const fn with_implications(self) -> Self {
+        let mut bits = self.0;
+        if bits & Self::MAY_COLLECT_BIT != 0 {
+            bits |= Self::NEEDS_RUNTIME_BIT;
+        }
+        if bits & Self::MAY_SUSPEND_BIT != 0 {
+            bits |= Self::NEEDS_EXECUTOR_BIT;
+        }
+        if bits & Self::NEEDS_EXECUTOR_BIT != 0 {
+            bits |= Self::NEEDS_RUNTIME_BIT;
+        }
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn is_closed(self) -> bool {
+        self.0 == self.with_implications().0
+    }
+
+    #[must_use]
+    pub(crate) const fn without(self, removed: Self) -> Self {
+        Self(self.0 & !removed.0)
+    }
+}
+
+impl fmt::Display for Effects {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return formatter.write_str("none");
+        }
+        let mut separator = "";
+        for (effect, name) in [
+            (Self::MAY_FAULT, "may_fault"),
+            (Self::NEEDS_RUNTIME, "needs_runtime"),
+            (Self::MAY_COLLECT, "may_collect"),
+            (Self::NEEDS_EXECUTOR, "needs_executor"),
+            (Self::MAY_SUSPEND, "may_suspend"),
+        ] {
+            if self.contains(effect) {
+                formatter.write_str(separator)?;
+                formatter.write_str(name)?;
+                separator = "+";
+            }
+        }
+        Ok(())
     }
 }
 

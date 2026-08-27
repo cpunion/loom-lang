@@ -213,6 +213,11 @@ native-object domain to `loom-lcir-native-object-v4`, and the CLI object-cache
 domain to `loom-llvm-object-cache-v9`. The emitted constants use the existing
 native text layout descriptor and containment-helper symbols. The native
 runtime ABI is therefore unchanged.
+The explicit transitive effect lattice then advances the artifact identity to
+schema 9, the dump to `lcir 8`, the LCIR native-object domain to
+`loom-lcir-native-object-v5`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v10`. It changes compiler-private planning identity but
+introduces no runtime ABI symbol or physical value layout.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -261,8 +266,15 @@ mutable inherent call may also borrow an invariant-free record at a projected
 place when the leaf has the exact receiver type. Its leaf writeback is rebuilt
 into the current aggregate root on both exits; unsupported receiver shapes
 select atomic fallback.
-A dense reverse-call worklist computes the least fault-effect fixed
-point in linear time and chooses direct calls versus fallible invokes. Cleanup
+A dense reverse-call worklist computes the least transitive effect fixed point
+in linear time and chooses direct calls versus fallible invokes. The effect
+set has independent `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`,
+`NEEDS_EXECUTOR`, and `MAY_SUSPEND` capabilities. Collection implies an active
+runtime; suspension implies an executor, which implies an active runtime.
+`MAY_FAULT` intentionally implies none of those capabilities because checked
+scalar faults use only the local fault context. Current typed source lowering
+has no collecting, executor, or suspending opcode, so independently checked
+source artifacts remain either effect-free or fault-only. Cleanup
 registration and assertions are conservatively unsupported together until
 their complete normal/return/fault ladders can be emitted.
 
@@ -465,7 +477,8 @@ not repair a malformed program. Current checks include:
   length, containment, and content comparison;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - return types and operation-specific fault-effect requirements;
-- the exact minimal `MAY_FAULT` closure across the complete call graph;
+- the exact minimal transitive effect closure across the complete call graph,
+  including capability implications and active-cleanup fault masking;
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
@@ -502,10 +515,10 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 7` text includes
+text even when the graphs are otherwise equivalent. The `lcir 8` text includes
 canonical representation registrations, the dense instance plan, complete
-instance keys, every function's selected entry block, and the checked value
-type of every block parameter and instruction result. Representation semantic
+instance keys, every function's selected entry block and ordered effect set,
+and the checked value type of every block parameter and instruction result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
 compiler-private and has no compatibility or serialization guarantee.

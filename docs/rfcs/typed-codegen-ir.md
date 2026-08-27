@@ -238,6 +238,15 @@ writebacks. A fault origin reports the fault once and returns status one, a
 zero source result, and the current writebacks; an unwind continuation
 propagates the failure without reporting it again.
 
+Function effects are an exact compiler-private capability set rather than a
+single fallibility flag. `MAY_FAULT` remains independent; checked scalar faults
+do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
+and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
+Lowering and independent validation separately compute the least transitive
+closure over direct and invoke call edges. The current typed operation set has
+no collecting, executor, or suspending opcode, so these flags establish the
+validated vocabulary and identity boundary without starting those services.
+
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
 parameters; non-entry block parameters map to phi nodes. The run or test

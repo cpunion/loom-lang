@@ -52,6 +52,13 @@ artifact, or runtime compatibility.
   select atomic whole-artifact fallback. This advances the LCIR dump to 7,
   artifact identity to schema 8, native-object domain to v4, and CLI object
   cache to v9 without changing the native runtime ABI.
+- Typed LCIR function effects now use one explicit transitive capability set:
+  `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`, `NEEDS_EXECUTOR`, and
+  `MAY_SUSPEND`. Independent validation recomputes the least call-graph fixed
+  point and rejects both missing and invented capabilities. This advances the
+  LCIR dump to 8, artifact identity to schema 9, native-object domain to v5,
+  and CLI object cache to v10; it does not add runtime, GC, executor, or
+  suspension operations.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

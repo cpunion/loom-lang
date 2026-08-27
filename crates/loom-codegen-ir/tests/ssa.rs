@@ -88,7 +88,7 @@ fn branch_merge_is_a_typed_block_parameter_and_dump_is_deterministic() {
     assert_eq!(first_dump, second_dump);
     assert_eq!(
         first_dump,
-        r#"lcir 7
+        r#"lcir 8
 target pointer_bits=64
 
 repr r0 = uninhabited

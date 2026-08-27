@@ -2,10 +2,9 @@ use std::fmt::{self, Write};
 
 use crate::instance::write_type_identity;
 use crate::{
-    BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
-    FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
-    Repr, ResultTarget, ScalarRepr, SumTagRepr, Terminator, TerminatorKind, UnwindTarget,
-    ValueTypeKind,
+    BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, FloatBinaryOp,
+    FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin, Repr,
+    ResultTarget, ScalarRepr, SumTagRepr, Terminator, TerminatorKind, UnwindTarget, ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -53,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 7")?;
+    writeln!(output, "lcir 8")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -114,11 +113,7 @@ pub fn write_program_with_options(
         let entry = function
             .entry()
             .expect("checked LCIR function has an entry block");
-        writeln!(
-            output,
-            " entry={entry} effects={} {{",
-            effects_name(function.effects())
-        )?;
+        writeln!(output, " entry={entry} effects={} {{", function.effects())?;
         if options.include_origins {
             write_origin(output, function.origin(), "  ; function-origin")?;
         }
@@ -567,16 +562,6 @@ const fn sum_tag_name(tag: SumTagRepr) -> &'static str {
         SumTagRepr::I8 => "i8",
         SumTagRepr::I16 => "i16",
         SumTagRepr::I32 => "i32",
-    }
-}
-
-const fn effects_name(effects: Effects) -> &'static str {
-    if effects.is_empty() {
-        "none"
-    } else if effects.contains(Effects::MAY_FAULT) {
-        "may_fault"
-    } else {
-        "unknown"
     }
 }
 
