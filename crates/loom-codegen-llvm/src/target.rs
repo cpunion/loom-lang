@@ -516,6 +516,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "this Windows-only linkage probe calls the audited LLVM C API directly"
+    )]
     fn windows_llvm_c_api_reports_the_linked_version() {
         let (mut major, mut minor, mut patch) = (0, 0, 0);
         // SAFETY: all three outputs are live, aligned integers owned by this
@@ -527,6 +531,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "this Windows-only linkage probe calls the audited LLVM C API directly"
+    )]
     fn windows_llvm_c_api_message_round_trip_is_sound() {
         // SAFETY: the input is a static NUL-terminated string. LLVM owns the
         // returned copy until the matching disposal below.
@@ -541,6 +549,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[expect(
+        unsafe_code,
+        reason = "this Windows-only linkage probe calls the audited LLVM C API directly"
+    )]
     fn windows_llvm_c_api_normalizes_a_static_triple() {
         // SAFETY: the input is a static NUL-terminated target triple. LLVM
         // returns an owned message which is disposed before this test exits.
