@@ -23,7 +23,7 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
 }
 
 #[test]
-fn binary_int_arithmetic_remains_outside_contracts() {
+fn binary_int_arithmetic_is_checked_inside_contracts() {
     let diagnostics = analyze_source(
         r"module sample
 
@@ -35,12 +35,5 @@ fn invalid(value Int) Unit
 ",
     );
 
-    assert_eq!(
-        diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "InvalidContractExpression")
-            .count(),
-        1,
-        "{diagnostics:#?}"
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }

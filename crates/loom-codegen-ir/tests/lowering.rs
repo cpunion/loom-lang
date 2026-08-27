@@ -2627,7 +2627,7 @@ pub fn main() Unit {
 }
 
 #[test]
-fn source_contracts_remain_one_atomic_fallback_until_contract_lowering_exists() {
+fn source_contracts_lower_to_checked_call_boundaries_and_assumed_bodies() {
     let mir = compile(
         r"module contract_fallback
 
@@ -2652,16 +2652,15 @@ pub fn main() Unit {
         TargetLayout::new(64).expect("test target"),
     )
     .expect("classify contracts");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("source contracts must not be partially lowered")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("supported source contracts must lower completely")
     };
+    let dump = dump_program(artifact.program());
     assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::Contracts),
-        "{:#?}",
-        report.items()
+        dump.contains("contract PreconditionFault")
+            && dump.contains("contract PostconditionFault")
+            && dump.contains("invoke i0"),
+        "{dump}"
     );
 }
 

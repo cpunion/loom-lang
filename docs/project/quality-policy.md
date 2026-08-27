@@ -56,6 +56,12 @@ names the boundary and explains the missing coverage. An unexpected route in
 either direction fails the runner, so newly supported coverage requires removal
 of its stale allowance.
 
+Run and test artifacts are judged independently because their exact reachable
+graphs may differ. Core 0.1's main artifact is required to use typed LCIR now
+that its source contracts are direct; its negative test artifact retains a
+named legacy allowance only for deliberate runtime-checked constrained-value
+and invariant construction.
+
 Those time bounds detect gross regressions and runaway behavior on CI; they are
 not user latency service-level objectives. The C3 label in the report means
 “controlled multi-package repository evidence,” not maturity level 3 or

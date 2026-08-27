@@ -44,8 +44,22 @@ impl InstanceWitnessArgument {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceKey {
     source: FunctionId,
+    role: InstanceRole,
     type_arguments: Box<[Type]>,
     witness_arguments: Box<[InstanceWitnessArgument]>,
+}
+
+/// The source-contract boundary represented by one callable instance.
+///
+/// Ordinary closed-world calls target an assumed body after evaluating the
+/// callee's preconditions at their concrete call site. A checked root is a
+/// compiler-generated wrapper used only by an artifact harness, where no
+/// source call expression exists to own precondition blame.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InstanceRole {
+    #[default]
+    AssumedBody,
+    CheckedRoot,
 }
 
 impl InstanceKey {
@@ -57,6 +71,7 @@ impl InstanceKey {
     ) -> Self {
         Self {
             source,
+            role: InstanceRole::AssumedBody,
             type_arguments: type_arguments.into(),
             witness_arguments: witness_arguments.into(),
         }
@@ -66,9 +81,27 @@ impl InstanceKey {
     pub fn monomorphic(source: FunctionId) -> Self {
         Self {
             source,
+            role: InstanceRole::AssumedBody,
             type_arguments: Box::default(),
             witness_arguments: Box::default(),
         }
+    }
+
+    #[must_use]
+    pub fn checked_root(mut body: Self) -> Self {
+        body.role = InstanceRole::CheckedRoot;
+        body
+    }
+
+    #[must_use]
+    pub fn assumed_body(mut self) -> Self {
+        self.role = InstanceRole::AssumedBody;
+        self
+    }
+
+    #[must_use]
+    pub const fn role(&self) -> InstanceRole {
+        self.role
     }
 
     #[must_use]
@@ -203,6 +236,9 @@ pub(crate) enum InstanceKeyStructureError {
 
 impl fmt::Display for InstanceKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.role == InstanceRole::CheckedRoot {
+            formatter.write_str("checked-root ")?;
+        }
         write!(formatter, "source=f{} types=[", self.source.0)?;
         for (index, ty) in self.type_arguments.iter().enumerate() {
             if index != 0 {

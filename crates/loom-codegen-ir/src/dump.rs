@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 15")?;
+    writeln!(output, "lcir 16")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -237,6 +237,14 @@ fn write_instruction(
         } => write!(
             output,
             "product.insert %{aggregate}, field {field}, %{value}"
+        ),
+        InstructionKind::InvariantReceiverInsert {
+            aggregate,
+            field,
+            value,
+        } => write!(
+            output,
+            "invariant_receiver.insert %{aggregate}, field {field}, %{value}"
         ),
         InstructionKind::RefineProven { value } => write!(output, "refine.proven %{value}"),
         InstructionKind::Unrefine { value } => write!(output, "unrefine %{value}"),

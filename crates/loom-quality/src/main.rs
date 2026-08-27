@@ -39,6 +39,18 @@ const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
+const CORE01_TEST_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
+    name: "core01-runtime-construction",
+    reason: "the negative tests intentionally exercise runtime-checked constrained-value and invariant construction outside current typed LCIR coverage",
+};
+const CORE02_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
+    name: "core02-dynamic-concepts",
+    reason: "dyn concept values and dynamic dispatch are not yet represented in typed LCIR",
+};
+const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
+    name: "core03-async-tasks",
+    reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
+};
 const C3_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "c3-runtime-refinement",
     reason: "the C3 graph still contains runtime-checked constrained-value construction outside current typed LCIR coverage",
@@ -59,30 +71,24 @@ const TASKS: &[TaskSpec] = &[
         path: "examples/core01",
         source: "examples/core01/shop.loom",
         sha256: "f3c6b8cad23cf4113e7555ac29d2307d853af10eff4ee89482ef4c8617a77472",
-        native_route: NativeRouteExpectation::LegacyAllowed {
-            name: "core01-source-contracts",
-            reason: "source contracts and checked constrained-value construction are not yet complete in typed LCIR",
-        },
+        main_native_route: NativeRouteExpectation::Lcir,
+        test_native_route: CORE01_TEST_LEGACY_ROUTE,
     },
     TaskSpec {
         name: "concept-polymorphism",
         path: "examples/core02",
         source: "examples/core02/concepts.loom",
         sha256: "60bc7e21bd475ae3fb0f795f25cbae92e4d86c7c48675abad02c9561d2701d4a",
-        native_route: NativeRouteExpectation::LegacyAllowed {
-            name: "core02-dynamic-concepts",
-            reason: "dyn concept values and dynamic dispatch are not yet represented in typed LCIR",
-        },
+        main_native_route: CORE02_LEGACY_ROUTE,
+        test_native_route: CORE02_LEGACY_ROUTE,
     },
     TaskSpec {
         name: "structured-async",
         path: "examples/core03",
         source: "examples/core03/tasks.loom",
         sha256: "4f24a49bdb93d5813ddd0d7d827d88d59af79cfed58635ca91d72c67aa57d50f",
-        native_route: NativeRouteExpectation::LegacyAllowed {
-            name: "core03-async-tasks",
-            reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
-        },
+        main_native_route: CORE03_LEGACY_ROUTE,
+        test_native_route: CORE03_LEGACY_ROUTE,
     },
 ];
 
@@ -91,7 +97,8 @@ struct TaskSpec {
     path: &'static str,
     source: &'static str,
     sha256: &'static str,
-    native_route: NativeRouteExpectation,
+    main_native_route: NativeRouteExpectation,
+    test_native_route: NativeRouteExpectation,
 }
 
 #[derive(Clone, Copy)]
@@ -1165,7 +1172,7 @@ fn run_task(
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.main", task.name),
-        task.native_route,
+        task.main_native_route,
         routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
@@ -1176,7 +1183,7 @@ fn run_task(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.tests", task.name),
-        task.native_route,
+        task.test_native_route,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;

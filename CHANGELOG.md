@@ -42,6 +42,20 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now places source contracts at explicit checked boundaries.
+  Closed-world calls evaluate every argument before checking `requires` with
+  exact call-expression blame, then enter an assumed body whose receiver
+  invariant is checked at entry. Normal tails and explicit returns run lexical
+  cleanup before checking the current receiver invariant and `ensures`, while
+  checked contract arithmetic retains its ordinary runtime faults. Typed
+  `old` snapshots, managed Text/product/sum values, exhaustive contract matches,
+  and concrete static-concept calls remain direct SSA without a universal value
+  or executor. This advances the LCIR dump to 16, artifact identity to schema
+  17, native-object domain to v13, and CLI object cache to v18 without changing
+  native runtime ABI component 14.
+- The controlled Core 0.1 evidence now requires its exact main graph to select
+  typed LCIR. Its negative test graph keeps a named legacy allowance only for
+  deliberate runtime-checked constrained-value and invariant construction.
 - The controlled quality runner now compiles every native scenario through the
   same prepared Automatic route used by production commands. Its version 2
   evidence records the expected and actual route for each object, requires the

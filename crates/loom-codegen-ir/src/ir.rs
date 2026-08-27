@@ -520,6 +520,15 @@ pub enum InstructionKind {
         field: u32,
         value: ValueId,
     },
+    /// Rebuilds a mutable receiver whose declared record invariant is checked
+    /// at the function boundary. This is a checked-MIR-only operation: the
+    /// intermediate SSA value is not an independently established invariant
+    /// proof and may leave the function only after the exit invariant passes.
+    InvariantReceiverInsert {
+        aggregate: ValueId,
+        field: u32,
+        value: ValueId,
+    },
     /// Establishes a transparent refined nominal type from its exact declared
     /// base after a compiler proof. The source and result have the same
     /// physical representation but distinct semantic value-type identities.
@@ -598,6 +607,9 @@ impl InstructionKind {
             }
             Self::ProductExtract { aggregate, .. } => vec![*aggregate],
             Self::ProductInsert {
+                aggregate, value, ..
+            }
+            | Self::InvariantReceiverInsert {
                 aggregate, value, ..
             } => vec![*aggregate, *value],
             Self::RefineProven { value }

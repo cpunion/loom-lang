@@ -21,9 +21,29 @@ impl Dispose for Resource {
 
 impl MustScope for Resource {}
 
-fn requireEqual(actual Int, expected Int) Unit {
-    assert actual == expected
+fn requireEqual(actual Int, expected Int) Unit
+    requires actual == expected
+{
     Unit
+}
+
+record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Counter {
+    method replaceAfterCleanup(mut self, target Int) Unit
+        requires target >= 0
+        ensures old(self.value) == 1
+        ensures self.value == target
+    {
+        self.value = 0
+        defer {
+            self.value = target
+        }
+        return Unit
+    }
 }
 
 fn exercise() Unit {
@@ -50,11 +70,18 @@ fn exercise() Unit {
     }
     requireEqual(order, 34)
 
+    var counter = Counter { value = 1 }
+    counter.replaceAfterCleanup(8)
+    requireEqual(counter.value, 8)
+
     scoped resource = Resource { value = 7 }
     Unit
 }
 
-pub fn main() Unit {
+pub fn main() Unit
+    requires true
+    ensures true
+{
     exercise()
 }
 

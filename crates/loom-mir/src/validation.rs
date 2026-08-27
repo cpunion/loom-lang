@@ -4932,9 +4932,9 @@ impl<'program> Validator<'program> {
         let right = self.contract_base_type(right, span, &format!("{path}.right"))?;
         let result = match operator {
             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide
-                if left == Type::Float && right == Type::Float =>
+                if left == right && matches!(left, Type::Int | Type::Float) =>
             {
-                Some(Type::Float)
+                Some(left.clone())
             }
             BinaryOp::Equal | BinaryOp::NotEqual
                 if left == right
@@ -4956,7 +4956,7 @@ impl<'program> Validator<'program> {
             self.push(
                 MirValidationCode::ContractShape,
                 format!(
-                    "operator {operator:?} is outside the total contract subset for {left:?} and {right:?}"
+                    "operator {operator:?} is outside the checked contract subset for {left:?} and {right:?}"
                 ),
                 span,
                 path,

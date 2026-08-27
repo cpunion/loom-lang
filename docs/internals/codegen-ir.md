@@ -284,6 +284,14 @@ leaving `gc-v9` unchanged. LCIR consumption advances the artifact identity to
 schema 16, the dump to `lcir 15`, the native-object domain to
 `loom-lcir-native-object-v12`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v17`; the runtime boundary does not change again.
+Typed source-contract placement then advances the artifact identity to schema
+17, the dump to `lcir 16`, the LCIR native-object domain to
+`loom-lcir-native-object-v13`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v18`. These domains now encode checked-root versus
+assumed-body identity, call-site preconditions, entry and exit invariant
+checks, post-cleanup postconditions, and the protected-receiver transient
+update form. No runtime symbol, physical value representation, or runtime ABI
+component changes.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -341,11 +349,26 @@ set has independent `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`,
 `NEEDS_EXECUTOR`, and `MAY_SUSPEND` capabilities. Collection implies an active
 runtime; suspension implies an executor, which implies an active runtime.
 `MAY_FAULT` intentionally implies none of those capabilities because checked
-scalar faults use only the local fault context. `TextConcat` and `TextGet` are
-collecting opcodes and contribute `MAY_COLLECT`; typed source lowering still
+scalar faults use only the local fault context. A caller gains `MAY_FAULT`
+when it executes an unknown precondition; the assumed callee body does not gain
+that effect merely because it declares `requires`. `TextConcat` and `TextGet`
+are collecting opcodes and contribute `MAY_COLLECT`; typed source lowering still
 has no executor or suspending opcode. Assertions, deferred blocks, and scoped
-disposal lower into direct lexical CFG. Source contracts remain unsupported
-until their call-site placement is materialized.
+disposal lower into direct lexical CFG.
+
+Supported source contracts also lower directly. Every ordinary closed-world
+call evaluates all arguments and inout reads before it checks `requires` at the
+call-expression span, then targets the callee's assumed body. A root with
+preconditions uses a same-signature checked wrapper; the callable ABI never
+carries a dynamic caller span. An inherent receiver invariant executes at body
+entry. `old` values are entry SSA values, while exit contracts read the current
+receiver writeback and logical result. Normal tails and explicit returns expand
+their cleanup suffix before checking the receiver invariant and `ensures`.
+Contract predicates cover typed constants, values, bindings, fields, unary and
+checked numeric operations, short-circuit Boolean CFG, `is_finite`, and bounded
+exhaustive match DAGs. Managed Text leaves remain live through ordinary typed
+SSA and exact root-state analysis; contracts do not construct a universal
+value or enter an executor.
 
 The lowerer maintains a compiler-only cleanup list while translating one
 lexical block. It registers a `defer` when its statement is reached and a
@@ -372,8 +395,8 @@ effect in the resulting cleanup graph.
 
 When any reachable instance contains `TextConcat`, `TextGet`, or a
 tuple/record/closed-sum containing Text, representation planning selects
-`ManagedPointer` for every `Text` in the
-artifact. `TextLiteral` continues to produce process-lifetime static objects,
+`ManagedPointer` for every `Text` in the artifact. `TextLiteral` continues to
+produce process-lifetime static objects,
 but their pointers share the same callable ABI as dynamically allocated Text.
 `TextConcat` returns one managed leaf and has no source fault edge: allocation
 resource exhaustion is an uncatchable process fault, while malformed runtime
@@ -390,11 +413,14 @@ direct pointer has one empty projection; each live product expands by stable
 depth-first field order to `(ValueId, projection)` slots for all managed leaves.
 Explicit edge arguments are retained only when their corresponding successor
 parameter is live; implicit result and unwind parameters are definitions, not
-incoming roots. Slot order is deterministic by value and lexicographic
-projection, bitmap row zero is empty, and identical rows are deduplicated. A
-function with no managed leaf live across a safepoint has no typed shadow frame.
-The runtime ABI limits are checked during LLVM emission; an excess is
-`ProgramTooLarge`, never legacy fallback.
+incoming roots. A sum leaf candidate also records every enclosing variant and
+is published only while all corresponding tags are active. Reload reconstructs
+only the active payload, including product fields nested inside it. Slot order
+is deterministic by value and lexicographic projection, bitmap row zero is
+empty, and identical rows are deduplicated. A function with no managed leaf
+live across a safepoint has no typed shadow frame. The runtime ABI limits are
+checked during LLVM emission; an excess is `ProgramTooLarge`, never legacy
+fallback.
 
 ## Typed projected places
 
@@ -535,7 +561,9 @@ The current instruction set is deliberately small:
 - explicitly ordered or unordered floating-point comparisons;
 - typed Text literal, concat, Unicode-scalar get, length, containment, and
   content comparison operations;
-- ordinary and invariant-proven product construction, field extraction, and immutable field insertion;
+- ordinary and invariant-proven product construction, field extraction,
+  immutable field insertion, and checked-MIR-only transient protected-receiver
+  insertion before an exit invariant check;
 - closed-sum construction and exhaustive switching, including managed Text
   leaves guarded by active variants;
 - proven refinement and exact unrefinement across one registered transparent boundary;
@@ -561,12 +589,12 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values other than direct Text values in products and closed sums, open
-or recursive enums,
-runtime-checked refined values, dynamic dispatch, source contract placement,
-and coroutine control flow are not implemented. The current CFG
-represents direct products, concrete closed sums, both direct Text modes, and
-the scalar operations and fault-state transitions which later slices use.
+Managed values other than Text leaves in supported products and eligible closed
+sums, open or recursive enums, runtime-checked refined values, dynamic
+dispatch, contracts over unsupported value shapes, and coroutine control flow
+are not implemented. The current CFG represents direct products, concrete
+closed sums, both direct Text modes, and the scalar operations and fault-state
+transitions which later slices use.
 Here “refined values” means runtime-checked or otherwise unproved values;
 statically established monomorphic refinements are represented directly.
 
@@ -641,14 +669,13 @@ distinct-target branches remain direct.
 
 These checks apply both to explicit clients and to the whole-artifact typed
 lowerer. The production automatic route consumes only the resulting checked
-artifact when the complete reachable graph is supported. Source contracts
-remain `Unsupported`: LCIR now has their exact diagnostic vocabulary, but the
-source lowerer does not yet materialize preconditions at closed-world call
-sites. Source assertions are supported and keep their exact assertion span and
-metadata while their fault edge traverses the same lexical cleanup suffix as
-any other fault. Atomic fallback preserves existing interpreter and
-legacy-native contract behavior rather than partially enabling contract
-placement.
+artifact when the complete reachable graph is supported. Supported source
+contracts use the same validated metadata and control flow as explicit LCIR
+clients. Assertions keep their exact source span; preconditions keep their
+contract span plus the concrete closed-world call-expression blame span. Their
+fault edges traverse the same lexical cleanup suffix as any other fault.
+Contracts over an unsupported representation or operation still select one
+atomic legacy artifact rather than mixing the two native routes.
 
 `ContractFaultMetadata` distinguishes assertion, precondition, postcondition,
 and invariant faults. Named contracts carry their source code and the derived
@@ -669,12 +696,14 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 15` text includes
+text even when the graphs are otherwise equivalent. The `lcir 16` text includes
 canonical representation registrations, the dense instance plan, complete
-instance keys, every function's selected entry block and ordered effect set,
+instance keys including their contract-boundary role, every function's
+selected entry block and ordered effect set,
 typed runtime/contract fault identity, managed-pointer representations and
-`text.concat`, `text.get`, typed resource-close edges, and the checked value type of every
-block parameter and instruction result. Representation semantic
+`text.concat`, `text.get`, typed resource-close edges, transient
+protected-receiver updates, and the checked value type of every block parameter
+and instruction result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
 compiler-private and has no compatibility or serialization guarantee.

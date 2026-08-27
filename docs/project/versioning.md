@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `15` |
-| LCIR artifact identity | schema `16` |
-| LCIR native-object domain | `loom-lcir-native-object-v12` |
+| LCIR textual dump | version `16` |
+| LCIR artifact identity | schema `17` |
+| LCIR native-object domain | `loom-lcir-native-object-v13` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v17` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v18` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `14` |
@@ -115,19 +115,20 @@ runtime status without introducing another ABI change.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity. Current typed source lowering
-emits effect-free and `MAY_FAULT` functions, and dynamic Text concat emits the
-exact `MAY_COLLECT | NEEDS_RUNTIME` capability pair. It still emits no executor
-or suspension operation. The lattice's canonical encoding advanced the four
-compiler-private LCIR and object-cache boundaries; concat's runtime boundary
-is versioned separately above.
+emits effect-free and `MAY_FAULT` functions, and dynamic Text concat/get emits
+the exact `MAY_COLLECT | NEEDS_RUNTIME` capability pair. It still emits no
+executor or suspension operation. The lattice's canonical encoding advanced
+the four compiler-private LCIR and object-cache boundaries; the Text runtime
+boundaries are versioned separately above.
 
-Typed LCIR fault metadata adds canonical contract-fault kinds, bounded text,
-and concrete contract/blame spans to dumps and artifact identity. LLVM emits
-the existing contract diagnostic wire schema from that checked data. The four
-compiler-private LCIR/object-cache boundaries advance, while the native runtime
-ABI and source-language behavior remain unchanged. Source assertions now use
-that metadata on direct lexical cleanup paths; source contracts still select
-atomic fallback until their placements are materialized.
+Typed source-contract placement advances the LCIR dump to 16, artifact schema
+to 17, native-object domain to v13, and object-cache domain to v18. The encoded
+meaning now distinguishes checked-root wrappers from assumed bodies, places
+preconditions at concrete calls, checks receiver invariants at body entry, and
+checks current receiver invariants and postconditions only after lexical
+cleanup. Checked contract arithmetic and its original runtime faults use
+existing control flow. This changes no physical value ABI, runtime symbol, or
+native runtime ABI component.
 
 Concrete static-concept resolution adds no physical ABI. The compiler-private
 domains advance because the planner now normalizes associated projections,
