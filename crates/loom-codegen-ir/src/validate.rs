@@ -779,30 +779,27 @@ impl<'a> Validator<'a> {
                         (None, representations.repr(value_type.repr()).copied())
                     }
                 };
-                let aggregate_fields = match aggregate_repr {
-                    Some(Repr::Product(product)) => representations
+                let structural_cost = match (transparent_base, aggregate_repr) {
+                    (Some(_), _) => Some(2),
+                    (None, Some(Repr::Product(product))) => representations
                         .product(product)
-                        .map_or(0, |product| product.fields().len()),
-                    Some(Repr::Sum(sum)) => representations.sum(sum).map_or(0, |sum| {
-                        sum.variants()
-                            .iter()
-                            .map(|variant| variant.fields().len())
-                            .sum()
+                        .and_then(|product| 1_usize.checked_add(product.fields().len())),
+                    (None, Some(Repr::Sum(sum))) => representations.sum(sum).and_then(|sum| {
+                        sum.variants().iter().try_fold(
+                            1_usize.checked_add(sum.variants().len())?,
+                            |nodes, variant| nodes.checked_add(variant.fields().len()),
+                        )
                     }),
-                    Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => 0,
+                    (None, Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None) => None,
                 };
-                let dependency_count =
-                    usize::from(transparent_base.is_some()).saturating_add(aggregate_fields);
-                if dependency_count == 0 {
+                let Some(structural_cost) = structural_cost else {
                     continue;
-                }
+                };
                 if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH {
                     exceeded = true;
                     break;
                 }
-                let Some(next_structural_nodes) = structural_nodes
-                    .checked_add(1)
-                    .and_then(|nodes| nodes.checked_add(dependency_count))
+                let Some(next_structural_nodes) = structural_nodes.checked_add(structural_cost)
                 else {
                     exceeded = true;
                     break;

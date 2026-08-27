@@ -46,11 +46,7 @@ pub(crate) fn closed_enum_variants(
         return None;
     };
     let definition = program.type_def(*id)?;
-    if usize::try_from(definition.type_parameters).ok()? != arguments.len()
-        || arguments
-            .iter()
-            .any(|argument| concrete_type_node_count(argument).is_none())
-    {
+    if usize::try_from(definition.type_parameters).ok()? != arguments.len() {
         return None;
     }
     let mir::TypeDefKind::Enum { variants } = &definition.kind else {
@@ -59,8 +55,26 @@ pub(crate) fn closed_enum_variants(
     if variants.is_empty() {
         return None;
     }
+
+    // Bound the borrowed declaration shape before allocating the result or
+    // cloning/substituting even one payload type. In particular, a very wide
+    // tag-only enum must not allocate one empty Box per variant merely to be
+    // rejected by AggregateShape::structural_cost afterwards.
+    variants.iter().try_fold(
+        DIRECT_AGGREGATE_MAX_TYPE_NODES
+            .checked_sub(1)?
+            .checked_sub(variants.len())?,
+        |remaining, variant| remaining.checked_sub(variant.payload.len()),
+    )?;
+    if arguments
+        .iter()
+        .any(|argument| concrete_type_node_count(argument).is_none())
+    {
+        return None;
+    }
+
     let mut type_nodes = 0_usize;
-    let mut planned = Vec::new();
+    let mut planned = Vec::with_capacity(variants.len());
     for (index, variant) in variants.iter().enumerate() {
         if variant.id.0 as usize != index {
             return None;
@@ -448,6 +462,8 @@ pub(crate) struct AggregatePlanner<'program> {
     program: &'program mir::Program,
     planned: BTreeMap<Type, AggregateShape>,
     rejected_roots: BTreeSet<Type>,
+    acyclic_nominals: BTreeSet<TypeId>,
+    rejected_nominals: BTreeSet<TypeId>,
 }
 
 impl<'program> AggregatePlanner<'program> {
@@ -456,6 +472,24 @@ impl<'program> AggregatePlanner<'program> {
             program,
             planned: BTreeMap::new(),
             rejected_roots: BTreeSet::new(),
+            acyclic_nominals: BTreeSet::new(),
+            rejected_nominals: BTreeSet::new(),
+        }
+    }
+
+    fn supports_nominal_schema(&mut self, id: TypeId) -> bool {
+        if self.acyclic_nominals.contains(&id) {
+            return true;
+        }
+        if self.rejected_nominals.contains(&id) {
+            return false;
+        }
+        if has_by_value_nominal_cycle(self.program, id) == Some(false) {
+            self.acyclic_nominals.insert(id);
+            true
+        } else {
+            self.rejected_nominals.insert(id);
+            false
         }
     }
 
@@ -470,12 +504,6 @@ impl<'program> AggregatePlanner<'program> {
             return false;
         }
 
-        if let Type::Nominal(id, _) = ty
-            && has_by_value_nominal_cycle(self.program, *id) != Some(false)
-        {
-            return false;
-        }
-
         // Do not clone an attacker-controlled semantic tree into planner maps
         // until its complete structure is known to fit the direct-type budget.
         if concrete_type_node_count(ty).is_none() {
@@ -486,25 +514,22 @@ impl<'program> AggregatePlanner<'program> {
         // expanded because validator budgets count occurrences, not identities.
         let mut pending = vec![(ty.clone(), 1_usize, false)];
         let mut visiting = BTreeSet::new();
-        let mut visiting_nominals = BTreeSet::<TypeId>::new();
         let mut discovered = BTreeMap::new();
         let mut structural_nodes = 0_usize;
         let mut supported = true;
         while let Some((semantic, depth, exiting)) = pending.pop() {
             if exiting {
                 visiting.remove(&semantic);
-                if let Type::Nominal(id, _) = semantic {
-                    visiting_nominals.remove(&id);
-                }
                 continue;
             }
-            let nominal = match &semantic {
-                Type::Nominal(id, _) => Some(*id),
-                _ => None,
-            };
             if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
                 || !visiting.insert(semantic.clone())
-                || nominal.is_some_and(|id| !visiting_nominals.insert(id))
+            {
+                supported = false;
+                break;
+            }
+            if let Type::Nominal(id, _) = &semantic
+                && !self.supports_nominal_schema(*id)
             {
                 supported = false;
                 break;
@@ -709,6 +734,10 @@ mod tests {
 
         let mut planner = AggregatePlanner::new(&program);
         assert!(
+            !planner.supports_value_type(&Type::Tuple(vec![root.clone(), Type::Int])),
+            "a tuple root must reject a nested non-regular nominal before substitution growth"
+        );
+        assert!(
             !planner.supports_value_type(&root),
             "a by-value nominal recursion must be rejected by identity before its generic argument doubles repeatedly"
         );
@@ -726,5 +755,75 @@ mod tests {
         let program = Program::default();
         let mut planner = AggregatePlanner::new(&program);
         assert!(!planner.supports_value_type(&oversized));
+    }
+
+    #[test]
+    fn wide_tag_only_sum_is_rejected_before_variant_allocation() {
+        let wide = TypeId(0);
+        let variants = (0..DIRECT_AGGREGATE_MAX_TYPE_NODES)
+            .map(|index| VariantDef {
+                id: VariantId(u32::try_from(index).expect("bounded variant id")),
+                name: format!("V{index}"),
+                payload: Vec::new(),
+                span: Span::default(),
+            })
+            .collect();
+        let program = Program {
+            types: vec![TypeDef {
+                id: wide,
+                name: "Wide".into(),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: TypeDefKind::Enum { variants },
+            }],
+            ..Program::default()
+        };
+        let root = Type::Nominal(wide, Vec::new());
+
+        assert!(closed_enum_variants(&program, &root).is_none());
+        let mut planner = AggregatePlanner::new(&program);
+        assert!(!planner.supports_value_type(&root));
+        assert!(!planner.supports_value_type(&root));
+    }
+
+    #[test]
+    fn repeated_acyclic_generic_nominal_instantiations_are_direct() {
+        let option = TypeId(0);
+        let program = Program {
+            types: vec![TypeDef {
+                id: option,
+                name: "Option".into(),
+                span: Span::default(),
+                type_parameters: 1,
+                kind: TypeDefKind::Enum {
+                    variants: vec![
+                        VariantDef {
+                            id: VariantId(0),
+                            name: "None".into(),
+                            payload: Vec::new(),
+                            span: Span::default(),
+                        },
+                        VariantDef {
+                            id: VariantId(1),
+                            name: "Some".into(),
+                            payload: vec![Type::Parameter(0)],
+                            span: Span::default(),
+                        },
+                    ],
+                },
+            }],
+            ..Program::default()
+        };
+        let inner = Type::Nominal(option, vec![Type::Int]);
+        let outer = Type::Nominal(option, vec![inner]);
+
+        let mut planner = AggregatePlanner::new(&program);
+        assert!(planner.supports_value_type(&outer));
+        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        planner
+            .finish()
+            .register(&mut builder)
+            .unwrap_or_else(|_| panic!("nested Option plan must register"));
+        assert!(builder.type_id(&outer).is_some());
     }
 }
