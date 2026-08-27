@@ -107,6 +107,12 @@ address to `output`. A runtime helper may stage source data, allocate into a
 stable private out-cell, initialize without another safepoint, and publish its
 final language result last.
 
+The typed Text helpers follow that publication rule. Concat stages both
+complete UTF-8 inputs. `loom_runtime_text_get_typed_v1(source, index, output)`
+stages the selected scalar in four bytes of native stack storage before its
+allocation boundary; a negative or out-of-range index returns the missing
+status without collecting. It never constructs a universal `Value`.
+
 `LoomGcRepeatedObjectDescriptor` adds a fixed header followed by elements of a
 constant stride. It carries exact pointer offsets for the header and for one
 element. The repeated allocator derives size from its capacity argument,

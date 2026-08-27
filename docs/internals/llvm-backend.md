@@ -341,6 +341,10 @@ The current runtime bundle also exports the additive
 `loom_gc_typed_repeated_alloc_v1` boundary. It advances the native component to
 13 with `runtime-v7`, `gc-v9`, and `typed-repeated-v1`; existing emitted fixed
 typed allocations remain on their unchanged v1 symbol.
+The bundle also provides `loom_runtime_text_get_typed_v1` for direct
+one-scalar Text results. Its found/missing/invalid status is separate from the
+GC status domain. This advances `text-v3` and native component 14
+(`runtime-v8`) without changing `gc-v9`.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

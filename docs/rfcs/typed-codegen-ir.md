@@ -345,6 +345,12 @@ native component to 13 with `runtime-v7` and the collector identity to
 `gc-v9`. List lowering may consume it directly; fixed typed objects retain the
 existing v1 allocator wire.
 
+A following additive Text helper stages one selected scalar before allocating
+its direct result. `loom_runtime_text_get_typed_v1` advances Text identity to
+`text-v3` and native component 14 (`runtime-v8`) while retaining `gc-v9`.
+Managed `Option[Text]` lowering can consume its found/missing status without a
+universal envelope.
+
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
 one artifact.
