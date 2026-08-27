@@ -3550,6 +3550,12 @@ mod tests {
             descriptor.fixed_pointer_offsets = ptr::null();
             descriptor.element_pointer_count = 0;
             descriptor.element_pointer_offsets = ptr::null();
+            assert_eq!(fixed_offsets, [8]);
+            assert_eq!(element_offsets, [8, 8]);
+            assert_eq!(descriptor.fixed_pointer_count, 0);
+            assert!(descriptor.fixed_pointer_offsets.is_null());
+            assert_eq!(descriptor.element_pointer_count, 0);
+            assert!(descriptor.element_pointer_offsets.is_null());
 
             let old_object = object;
             let old_children = [frame.roots[1], frame.roots[2], frame.roots[3]];
