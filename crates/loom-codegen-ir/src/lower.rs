@@ -5193,30 +5193,57 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         result: Option<ValueId>,
         include_old: bool,
     ) -> Result<ContractContext, LoweringError> {
+        let exit_parameters = if include_old {
+            mir::exit_contract_parameter_locals(
+                &self.source.params,
+                self.source.receiver,
+                &self.source.call_plan,
+            )
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
         let mut parameters = Vec::with_capacity(self.source.params.len());
         for (index, parameter) in self.source.params.iter().enumerate() {
-            let value = self
-                .environments
-                .get(environment, parameter.id)
-                .ok_or_else(|| {
-                    LoweringError::defect(
+            let snapshot = self.old_parameters.get(index).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "contract parameter type snapshot is missing",
+                )
+            })?;
+            let value = match self.environments.get(environment, parameter.id) {
+                Some(value) => value,
+                None if include_old && !exit_parameters.contains(&parameter.id) => snapshot.value,
+                None => {
+                    return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         format!("contract context lost parameter local #{}", parameter.id.0),
-                    )
-                })?;
-            let ty = self
-                .old_parameters
-                .get(index)
-                .ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        "contract parameter type snapshot is missing",
-                    )
-                })?
-                .ty
-                .clone();
-            parameters.push(ContractOperand { value, ty });
+                    ));
+                }
+            };
+            parameters.push(ContractOperand {
+                value,
+                ty: snapshot.ty.clone(),
+            });
         }
+        // Immutable async parameters have the same old/current source value.
+        // Reuse the post-resume SSA values so an exit contract never reaches
+        // back to an entry-block ValueId across a suspension. Mutable async
+        // parameters are outside the current LCIR boundary and retain the
+        // ordinary entry snapshots for the fallback path.
+        let old_parameters = if include_old
+            && self.source.is_async
+            && self
+                .source
+                .params
+                .iter()
+                .all(|parameter| !parameter.mutable)
+        {
+            parameters.clone()
+        } else {
+            self.old_parameters.clone()
+        };
         let (receiver, arguments) = if self.source.receiver.is_some() {
             let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
                 LoweringError::defect(
@@ -5230,7 +5257,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         };
         let (old_receiver, old_arguments) = if include_old {
             if self.source.receiver.is_some() {
-                let (receiver, arguments) = self.old_parameters.split_first().ok_or_else(|| {
+                let (receiver, arguments) = old_parameters.split_first().ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "receiver old-value snapshot is missing",
@@ -5241,10 +5268,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     arguments.iter().cloned().map(Some).collect(),
                 )
             } else {
-                (
-                    None,
-                    self.old_parameters.iter().cloned().map(Some).collect(),
-                )
+                (None, old_parameters.iter().cloned().map(Some).collect())
             }
         } else {
             (None, Vec::new())

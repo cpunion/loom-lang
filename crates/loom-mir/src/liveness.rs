@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::{
-    BinaryOp, Block, CallArgument, ConstructionMode, Expr, ExprKind, LocalId, MatchArm, Place,
-    Statement, StatementKind, Type, UnaryOp,
+    BinaryOp, Block, CallArgument, CallPlan, ConstructionMode, ContractExpr, ContractExprKind,
+    ContractValue, Expr, ExprKind, LocalDecl, LocalId, MatchArm, Place, Receiver, Statement,
+    StatementKind, Type, UnaryOp,
 };
 
 type NodeId = usize;
@@ -229,8 +230,15 @@ struct CfgBuilder<'mir> {
 
 impl<'mir> CfgBuilder<'mir> {
     fn new() -> Self {
+        Self::with_exit_uses([])
+    }
+
+    fn with_exit_uses(uses: impl IntoIterator<Item = LocalId>) -> Self {
         Self {
-            nodes: vec![Node::default()],
+            nodes: vec![Node {
+                uses: uses.into_iter().collect(),
+                ..Node::default()
+            }],
             exit: 0,
             cleanups: Vec::new(),
             unwind_entries: Vec::new(),
@@ -724,14 +732,95 @@ pub fn analyze_suspension_liveness(body: &Block) -> BTreeMap<u32, Vec<LocalId>> 
     solve_liveness(&builder).0
 }
 
+/// Returns the exact parameter locals read by normal-exit contracts.
+///
+/// A receiver, when present, occupies parameter slot zero. Contract argument
+/// indices address only the explicit parameter suffix. Invalid indices are
+/// ignored here and remain the independent MIR validator's responsibility.
+/// The result is strictly sorted and contains no duplicates.
+#[must_use]
+pub fn exit_contract_parameter_locals(
+    params: &[LocalDecl],
+    receiver: Option<Receiver>,
+    call_plan: &CallPlan,
+) -> Vec<LocalId> {
+    let mut pending = Vec::<&ContractExpr>::new();
+    if let Some(invariant) = &call_plan.receiver_invariant {
+        pending.push(&invariant.expression);
+    }
+    pending.extend(
+        call_plan
+            .ensures
+            .iter()
+            .map(|contract| &contract.expression),
+    );
+
+    let receiver_offset = usize::from(receiver.is_some());
+    let mut locals = BTreeSet::new();
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            ContractExprKind::Value(value) => {
+                let parameter = match value {
+                    ContractValue::SelfValue | ContractValue::OldSelf => {
+                        receiver.and_then(|_| params.first())
+                    }
+                    ContractValue::Argument(index) | ContractValue::OldArgument(index) => {
+                        usize::try_from(*index)
+                            .ok()
+                            .and_then(|index| receiver_offset.checked_add(index))
+                            .and_then(|index| params.get(index))
+                    }
+                    ContractValue::Result => None,
+                };
+                if let Some(parameter) = parameter {
+                    locals.insert(parameter.id);
+                }
+            }
+            ContractExprKind::Field(owner, _)
+            | ContractExprKind::Unary(_, owner)
+            | ContractExprKind::IsFinite(owner) => pending.push(owner),
+            ContractExprKind::Binary(_, left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
+            ContractExprKind::Match { scrutinee, arms } => {
+                for arm in arms.iter().rev() {
+                    pending.push(&arm.value);
+                }
+                pending.push(scrutinee);
+            }
+            ContractExprKind::Constant(_) | ContractExprKind::Binding(_) => {}
+        }
+    }
+    locals.into_iter().collect()
+}
+
+/// Computes suspension liveness including only parameters actually referenced
+/// by the receiver invariant or postconditions executed on normal exit.
+///
+/// This is the canonical contract-aware query used both when constructing MIR
+/// suspension metadata and when independently validating serialized MIR.
+#[must_use]
+pub fn analyze_suspension_liveness_with_exit_contracts(
+    body: &Block,
+    params: &[LocalDecl],
+    receiver: Option<Receiver>,
+    call_plan: &CallPlan,
+) -> BTreeMap<u32, Vec<LocalId>> {
+    let exit_uses = exit_contract_parameter_locals(params, receiver, call_plan);
+    let mut builder = CfgBuilder::with_exit_uses(exit_uses);
+    let _entry = builder.build_block(body, builder.exit, None);
+    solve_liveness(&builder).0
+}
+
 #[cfg(test)]
 mod tests {
     use loom_core::Span;
 
     use super::*;
     use crate::{
-        CallTarget, Constant, Expr, ExprKind, FunctionId, Pattern, ScopedDisposal, Statement,
-        TaskJoinMode, TypeId,
+        CallTarget, Constant, Contract, Expr, ExprKind, FunctionId, Pattern, ScopedDisposal,
+        Statement, TaskJoinMode, TypeId,
     };
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
@@ -869,6 +958,75 @@ mod tests {
             ))),
             span: Span::default(),
         }
+    }
+
+    #[test]
+    fn exit_contracts_keep_only_the_parameters_they_reference_live() {
+        let parameter = |id, name: &str| LocalDecl {
+            id: LocalId(id),
+            name: name.to_owned(),
+            ty: Type::Int,
+            mutable: false,
+            span: Span::default(),
+        };
+        let value = |value| ContractExpr {
+            kind: ContractExprKind::Value(value),
+            span: Span::default(),
+        };
+        let contract = |expression| Contract {
+            code: "test.contract".to_owned(),
+            span: Span::default(),
+            expression,
+        };
+        let params = vec![
+            parameter(0, "self"),
+            parameter(1, "unused"),
+            parameter(2, "current"),
+            parameter(3, "old"),
+        ];
+        let call_plan = CallPlan {
+            receiver_invariant: Some(contract(value(ContractValue::SelfValue))),
+            requires: vec![contract(value(ContractValue::Argument(0)))],
+            ensures: vec![contract(ContractExpr {
+                kind: ContractExprKind::Binary(
+                    BinaryOp::And,
+                    Box::new(value(ContractValue::Argument(1))),
+                    Box::new(ContractExpr {
+                        kind: ContractExprKind::Binary(
+                            BinaryOp::And,
+                            Box::new(value(ContractValue::OldSelf)),
+                            Box::new(value(ContractValue::OldArgument(2))),
+                        ),
+                        span: Span::default(),
+                    }),
+                ),
+                span: Span::default(),
+            })],
+        };
+        let body = Block {
+            statements: vec![evaluate(sleep_await(1))],
+            tail: Some(Box::new(expression(
+                ExprKind::Constant(Constant::Unit),
+                Type::Unit,
+            ))),
+            span: Span::default(),
+        };
+
+        let expected = [LocalId(0), LocalId(2), LocalId(3)];
+        assert_eq!(
+            exit_contract_parameter_locals(&params, Some(Receiver::Readonly), &call_plan),
+            expected
+        );
+        let liveness = analyze_suspension_liveness_with_exit_contracts(
+            &body,
+            &params,
+            Some(Receiver::Readonly),
+            &call_plan,
+        );
+        assert_eq!(
+            liveness[&1], expected,
+            "requires-only and unreferenced parameters must not enter the frame"
+        );
     }
 
     #[test]

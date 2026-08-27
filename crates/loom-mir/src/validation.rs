@@ -3337,7 +3337,12 @@ impl<'program> Validator<'program> {
         let expected_liveness = if awaits.is_empty() {
             BTreeMap::new()
         } else {
-            crate::analyze_suspension_liveness(&function.body)
+            crate::analyze_suspension_liveness_with_exit_contracts(
+                &function.body,
+                &function.params,
+                function.receiver,
+                &function.call_plan,
+            )
         };
 
         let declared_states = function

@@ -9483,6 +9483,69 @@ fn checked_mir_accepts_exact_suspension_liveness() {
     .expect("exact suspension liveness validates");
 }
 
+fn exit_contract_suspension_function(live_locals: Vec<LocalId>) -> Function {
+    let mut function = function(
+        0,
+        vec![local(0, Type::Int, false), local(1, Type::Int, false)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(sleep_await(1)),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Int(7), Type::Int))),
+            span: span(),
+        },
+    );
+    function.is_async = true;
+    function.call_plan.ensures.push(Contract {
+        code: "postcondition".to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Binary(
+                BinaryOp::GreaterEqual,
+                Box::new(ContractExpr {
+                    kind: ContractExprKind::Value(ContractValue::Result),
+                    span: span(),
+                }),
+                Box::new(ContractExpr {
+                    kind: ContractExprKind::Value(ContractValue::OldArgument(1)),
+                    span: span(),
+                }),
+            ),
+            span: span(),
+        },
+    });
+    function.suspension_points = vec![SuspensionPoint {
+        state: 1,
+        span: span(),
+        live_locals,
+    }];
+    function
+}
+
+#[test]
+fn checked_mir_recomputes_exact_exit_contract_parameter_liveness() {
+    validate_program(&Program {
+        functions: vec![exit_contract_suspension_function(vec![LocalId(1)])],
+        ..Program::default()
+    })
+    .expect("the one postcondition parameter is exact suspension state");
+
+    let stale = validation_errors(&Program {
+        functions: vec![exit_contract_suspension_function(vec![
+            LocalId(0),
+            LocalId(1),
+        ])],
+        ..Program::default()
+    });
+    assert!(stale.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::SuspensionShape
+            && error.message.contains("live locals must be [LocalId(1)]")
+    }));
+}
+
 #[test]
 fn checked_mir_rejects_stale_or_unstable_suspension_liveness() {
     let stale = validation_errors(&Program {

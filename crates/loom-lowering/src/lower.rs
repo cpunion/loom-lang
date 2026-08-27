@@ -655,13 +655,15 @@ impl<'a> Compiler<'a> {
                 receiver_ty,
             )?;
             let mir_body = builder.lower_root()?;
-            let (params, locals, suspension_points) = builder.finish_locals(&mir_body)?;
-            let type_parameters = builder.parameters.len();
             let receiver = match signature.receiver {
                 Some(ReceiverKind::ReadOnly) => Some(Receiver::Readonly),
                 Some(ReceiverKind::Mutable) => Some(Receiver::Mutable),
                 Some(ReceiverKind::Static) | None => None,
             };
+            let call_plan = self.lower_call_plan(definition)?;
+            let (params, locals, suspension_points) =
+                builder.finish_locals(&mir_body, receiver, &call_plan)?;
+            let type_parameters = builder.parameters.len();
             let name = self.qualified_definition_name(definition)?;
             let span = definition_span(self.hir, definition);
             if id.0 as usize != functions.len() {
@@ -694,7 +696,7 @@ impl<'a> Compiler<'a> {
                 return_ty: self.lower_ty(signature.return_ty, &builder.parameters, span)?,
                 receiver,
                 body: mir_body,
-                call_plan: self.lower_call_plan(definition)?,
+                call_plan,
             };
             function.renumber_expr_ids().map_err(|error| {
                 defect(
@@ -1907,8 +1909,15 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
     fn finish_locals(
         &self,
         body: &Block,
+        receiver: Option<Receiver>,
+        call_plan: &CallPlan,
     ) -> LowerResult<(Vec<LocalDecl>, Vec<LocalDecl>, Vec<SuspensionPoint>)> {
-        let mut liveness = loom_mir::analyze_suspension_liveness(body);
+        let mut liveness = loom_mir::analyze_suspension_liveness_with_exit_contracts(
+            body,
+            &self.params,
+            receiver,
+            call_plan,
+        );
         let suspension_points = self
             .suspension_spans
             .iter()

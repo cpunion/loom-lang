@@ -670,6 +670,37 @@ test async fn generic_async_contracts() {
 }
 
 #[test]
+fn async_exit_contracts_add_only_referenced_parameters_to_suspension_metadata() {
+    let program = compile_and_validate(
+        r"
+module exit_contract_liveness
+
+async fn constrained(ignored Int, required Int, oldRequired Int) Int
+    ensures result >= required && old(oldRequired) == oldRequired
+{
+    Task.sleep(0).await
+    7
+}
+
+test async fn callConstrained() Unit {
+    discard constrained(99, 3, 4).await
+}
+",
+    );
+    let constrained = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "constrained"))
+        .expect("contracted async function");
+
+    assert_eq!(
+        suspension_local_names(constrained, 1),
+        ["required", "oldRequired"],
+        "an unreferenced parameter must not enter the coroutine frame"
+    );
+}
+
+#[test]
 fn async_lowering_computes_path_and_cleanup_sensitive_suspension_liveness() {
     let program = compile_and_validate(
         r"

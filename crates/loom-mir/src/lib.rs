@@ -16,7 +16,10 @@ pub use artifact::{
     LOOM_LANGUAGE_VERSION, decode_interpreted_artifact, decode_interpreted_executable_artifact,
     encode_interpreted_artifact, encode_interpreted_executable_artifact,
 };
-pub use liveness::analyze_suspension_liveness;
+pub use liveness::{
+    analyze_suspension_liveness, analyze_suspension_liveness_with_exit_contracts,
+    exit_contract_parameter_locals,
+};
 pub use validation::{
     CheckedProgram, MirValidationCode, MirValidationError, MirValidationErrors, check_program,
     validate_program,

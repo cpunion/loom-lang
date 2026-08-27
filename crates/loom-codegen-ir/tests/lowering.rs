@@ -862,6 +862,124 @@ pub async fn main() Unit {
 }
 
 #[test]
+fn async_exit_contract_parameters_cross_suspension_without_retaining_unused_inputs() {
+    let source = r"module async_exit_contract_liveness
+
+async fn constrained(ignored Int, required Int, oldRequired Int) Int
+    ensures result >= required && old(oldRequired) == oldRequired
+{
+    Task.sleep(0).await
+    7
+}
+
+pub async fn main() Unit {
+    let observed = constrained(99, 3, 4).await
+    assert observed == 7
+    Unit
+}
+";
+    let mir = compile(source);
+    let constrained = mir
+        .as_program()
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with("constrained"))
+        .expect("contracted async MIR function");
+    let live_names = constrained.suspension_points[0]
+        .live_locals
+        .iter()
+        .map(|local| {
+            constrained
+                .params
+                .iter()
+                .chain(&constrained.locals)
+                .find(|candidate| candidate.id == *local)
+                .expect("live local declaration")
+                .name
+                .as_str()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(live_names, ["required", "oldRequired"]);
+
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact") else {
+        panic!("exit-contract-only async parameters must lower through typed LCIR")
+    };
+    let constrained = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("constrained"))
+        .expect("contracted LCIR instance");
+    assert_eq!(
+        constrained
+            .coroutine()
+            .expect("contracted coroutine plan")
+            .suspensions()[0]
+            .live()
+            .len(),
+        2,
+        "only the two contract-referenced inputs belong in the frame"
+    );
+}
+
+#[test]
+fn async_generic_contract_fixture_has_a_complete_contract_aware_lcir_test_route() {
+    let mir = compile(include_str!(
+        "../../../fixtures/async-generic-contracts/main.loom"
+    ));
+    let violates_postcondition = mir
+        .as_program()
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with("violatesPostcondition"))
+        .expect("postcondition-only parameter fixture");
+    let live_names = violates_postcondition.suspension_points[0]
+        .live_locals
+        .iter()
+        .map(|local| {
+            violates_postcondition
+                .params
+                .iter()
+                .chain(&violates_postcondition.locals)
+                .find(|candidate| candidate.id == *local)
+                .expect("live local declaration")
+                .name
+                .as_str()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(live_names, ["value", "minimum"]);
+
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Tests,
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed test artifact") else {
+        panic!("async generic contract tests must have one complete LCIR route")
+    };
+    let violates_postcondition = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("violatesPostcondition"))
+        .expect("postcondition LCIR instance");
+    assert_eq!(
+        violates_postcondition
+            .coroutine()
+            .expect("postcondition coroutine plan")
+            .suspensions()[0]
+            .live()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn async_root_preconditions_fail_closed_before_checked_wrapper_lowering() {
     let source = r"module async_root_contract
 
