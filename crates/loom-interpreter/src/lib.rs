@@ -1879,6 +1879,10 @@ impl<'program> Interpreter<'program> {
             }
         };
 
+        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
+        {
+            return Ok(result);
+        }
         let current_parameter_values = self.read_parameter_values(frame, function)?;
         let (current_receiver, current_arguments) =
             self.contract_arguments(function, &current_parameter_values)?;
@@ -2017,6 +2021,10 @@ impl<'program> Interpreter<'program> {
                     function.span,
                 )
                 .into());
+        }
+        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
+        {
+            return Ok(());
         }
         let parameter_values = self.read_parameter_values(frame, function)?;
         let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
@@ -5380,16 +5388,8 @@ impl<'program> Interpreter<'program> {
     }
 
     fn take_place(&mut self, location: &Location, span: Span) -> Result<Value, ExecutionFailure> {
-        let (root, projection) = self.resolve_location(location, span)?;
-        if !projection.is_empty() || !location.projection.is_empty() {
-            return Err(self
-                .runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "moving a projected place is not supported by verified MIR",
-                    span,
-                )
-                .into());
-        }
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
         let frame = self
             .frames
             .get_mut(&root.frame)
@@ -5407,7 +5407,7 @@ impl<'program> Interpreter<'program> {
                 span,
             })?;
         match std::mem::replace(slot, Slot::Moved) {
-            Slot::Value(value) => Ok(value),
+            Slot::Value(value) => take_value_projection(value, &projection, span),
             Slot::Empty => Err(RuntimeFault {
                 code: "LOOM_RUNTIME_UNINITIALIZED".into(),
                 message: "local is uninitialized".into(),
@@ -5429,8 +5429,8 @@ impl<'program> Interpreter<'program> {
         location: &Location,
         span: Span,
     ) -> Result<(Location, Vec<u32>), ExecutionFailure> {
-        let mut current = location.clone();
-        let mut prefix = Vec::new();
+        let mut current = Location::local(location.frame, location.local);
+        let mut segments = Vec::new();
         for _ in 0..64 {
             let frame = self.frames.get(&current.frame).ok_or_else(|| {
                 ExecutionFailure::from(self.runtime_fault(
@@ -5447,13 +5447,15 @@ impl<'program> Interpreter<'program> {
                 ))
             })?;
             if let Slot::Alias(alias) = slot {
-                prefix.extend_from_slice(&alias.projection);
+                segments.push(alias.projection.clone());
                 current = Location {
                     frame: alias.frame,
                     local: alias.local,
                     projection: Vec::new(),
                 };
             } else {
+                segments.reverse();
+                let prefix = segments.into_iter().flatten().collect();
                 return Ok((current, prefix));
             }
         }
@@ -6103,6 +6105,33 @@ fn read_value_projection(
     Ok(current.clone())
 }
 
+fn take_value_projection(
+    mut value: Value,
+    projection: &[u32],
+    span: Span,
+) -> Result<Value, ExecutionFailure> {
+    for field in projection {
+        value = unrefined(value);
+        let Value::Record { fields, .. } = value else {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "field projection targets a non-record value".into(),
+                span,
+            }
+            .into());
+        };
+        value = fields
+            .into_iter()
+            .nth(*field as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "field projection is out of bounds".into(),
+                span,
+            })?;
+    }
+    Ok(value)
+}
+
 fn write_value_projection(
     value: &mut Value,
     projection: &[u32],
@@ -6138,6 +6167,62 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod location_projection_tests {
+    use super::*;
+
+    #[test]
+    fn alias_chain_projections_are_resolved_from_root_to_leaf() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        interpreter.frames.insert(
+            1,
+            Frame {
+                slots: vec![Slot::Value(Value::Record {
+                    ty: TypeId(0),
+                    fields: vec![
+                        Value::Int { value: 7 },
+                        Value::Record {
+                            ty: TypeId(1),
+                            fields: vec![Value::Int { value: 11 }, Value::Int { value: 29 }],
+                        },
+                    ],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter.frames.insert(
+            2,
+            Frame {
+                slots: vec![Slot::Alias(Location {
+                    frame: 1,
+                    local: LocalId(0),
+                    projection: vec![1],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter.frames.insert(
+            3,
+            Frame {
+                slots: vec![Slot::Alias(Location {
+                    frame: 2,
+                    local: LocalId(0),
+                    projection: vec![0],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+
+        let value = interpreter
+            .read_place(&Location::local(3, LocalId(0)), Span::default())
+            .expect("resolve nested projected receiver");
+        assert_eq!(value, Value::Int { value: 11 });
     }
 }
 

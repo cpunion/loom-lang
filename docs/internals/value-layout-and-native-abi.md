@@ -95,11 +95,13 @@ compiler-private object ABI, not a native library ABI.
 
 The production automatic route uses this typed ABI for eligible build, run,
 and test artifacts. Tuple construction and `let` destructuring are direct SSA
-construction and extraction; they do not allocate tuple nodes. Generic
-records, managed aggregate elements, runtime-checked
-construction, projected inout arguments, concepts, contracts, cleanup, and
-async operations still select the complete universal route. Typed LCIR does
-not change the legacy runtime ABI or make either object ABI public.
+construction and extraction; they do not allocate tuple nodes. Invariant-free
+record projections and eligible projected mutable receivers use exact typed
+extraction and functional root reconstruction on normal and fault edges.
+Generic records, managed aggregate elements, protected projections,
+runtime-checked construction, concepts, contracts, cleanup, and async
+operations still select the complete universal route. Typed LCIR does not
+change the legacy runtime ABI or make either object ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted

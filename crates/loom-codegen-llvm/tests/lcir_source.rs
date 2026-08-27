@@ -51,13 +51,24 @@ fn lower_source_artifact(
     program: &CheckedProgram,
     request: &SourceArtifactRequest,
 ) -> CheckedArtifact {
-    match lower_typed_artifact(program, request, host_layout()).expect("classify typed LCIR") {
+    lower_source_artifact_with_layout(program, request, host_layout())
+}
+
+fn lower_source_artifact_with_layout(
+    program: &CheckedProgram,
+    request: &SourceArtifactRequest,
+    layout: TargetLayout,
+) -> CheckedArtifact {
+    match lower_typed_artifact(program, request, layout).expect("classify typed LCIR") {
         LoweringOutcome::Complete(artifact) => artifact,
         LoweringOutcome::Unsupported(report) => {
             panic!("source fixture unexpectedly unsupported: {report:?}")
         }
     }
 }
+
+const PROJECTED_PLACE_SOURCE: &str =
+    include_str!("../../../fixtures/lcir-projected-places/main.loom");
 
 fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
     emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())
@@ -1276,6 +1287,173 @@ pub fn main() Unit {
 }
 
 #[test]
+fn projected_places_preserve_sibling_updates_and_loop_product_phis() {
+    let program = compile_source(PROJECTED_PLACE_SOURCE);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare projected-place source");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.matches("product.extract").count() >= 8, "{dump}");
+    assert!(dump.matches("product.insert").count() >= 4, "{dump}");
+    assert!(
+        dump.lines()
+            .any(|line| line.trim_start().starts_with("b1(") && line.contains(": t7")),
+        "the loop must carry a typed product block parameter:\n{dump}"
+    );
+
+    let lcir = emit_and_run_lcir(&artifact, "source-projected-places");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-projected-places");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
+    for forbidden in [
+        "alloca",
+        "memcpy",
+        "loom.Value",
+        "loom_gc_",
+        "loom_executor_",
+    ] {
+        assert!(
+            !lowered_functions.contains(forbidden),
+            "unexpected `{forbidden}` in projected-place LCIR:\n{lowered_functions}"
+        );
+    }
+    assert!(
+        lcir.ir.contains("insertvalue { { { i64 }, { i64 } }, i1 }"),
+        "nested Holder reconstruction must use its exact physical product:\n{}",
+        lcir.ir
+    );
+    assert_fallible_surface(&lcir.ir);
+}
+
+#[test]
+fn nested_receiver_aliases_preserve_root_to_leaf_projection_order() {
+    let source = r"module lcir_nested_receiver_aliases
+
+record Counter { value Int }
+record Pair { left Counter, right Counter }
+record Holder { guard Int, pair Pair }
+
+impl Counter {
+    method add(mut self, amount Int) Unit {
+        self.value = self.value + amount
+    }
+}
+
+impl Pair {
+    method bumpLeft(mut self) Unit {
+        self.left.add(5)
+    }
+}
+
+pub fn main() Unit {
+    var holder = Holder {
+        guard = 7,
+        pair = Pair {
+            left = Counter { value = 11 },
+            right = Counter { value = 29 },
+        },
+    }
+    holder.pair.bumpLeft()
+    let guard = holder.guard
+    let left = holder.pair.left.value
+    let right = holder.pair.right.value
+    if guard == 7 && left == 16 && right == 29 {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare nested projected receivers");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir(&artifact, "source-nested-receiver-aliases");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-nested-receiver-aliases");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+}
+
+#[test]
+fn projected_place_products_emit_exact_i686_and_msvc_objects() {
+    let program = compile_source(PROJECTED_PLACE_SOURCE);
+    let request = SourceArtifactRequest::Run {
+        entry: "crossTarget".into(),
+    };
+    let cases = [
+        (
+            "i686-unknown-linux-gnu",
+            TargetLayout::new(32).expect("i686 layout"),
+            "projected-i686.o",
+            &b"\x7fELF"[..],
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            TargetLayout::new(64).expect("MSVC layout"),
+            "projected-msvc.obj",
+            &b"\x64\x86"[..],
+        ),
+    ];
+    for (triple, layout, filename, magic) in cases {
+        let artifact = lower_source_artifact_with_layout(&program, &request, layout);
+        let directory = tempfile::tempdir().expect("create cross-target directory");
+        let object = directory.path().join(filename);
+        let ir_path = directory.path().join(format!("{filename}.ll"));
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(triple.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                optimization: OptimizationProfile::Development,
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit projected-place object for {triple}: {error}"));
+        let bytes = std::fs::read(&object).expect("read cross-target object");
+        assert!(bytes.starts_with(magic), "wrong object format for {triple}");
+        let ir = std::fs::read_to_string(ir_path).expect("read cross-target IR");
+        assert!(
+            ir.contains(&format!("target triple = \"{triple}\"")),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("insertvalue { { { i64 }, { i64 } }, i1 }"),
+            "{ir}"
+        );
+        assert_pure_surface(&ir);
+    }
+}
+
+#[test]
 fn source_tuples_cross_direct_abi_and_destructure_across_three_backends() {
     let source = r"module lcir_source_tuples
 
@@ -1975,10 +2153,12 @@ test fn faults() Result[Unit, Problem] {
 }
 
 #[test]
-fn source_record_fault_edges_return_the_latest_receiver_writeback() {
+fn nested_projected_fault_edges_reconstruct_each_mutable_receiver() {
     let source = r"module lcir_source_record_fault
 
 record Counter { value Int }
+record Pair { left Counter, right Counter }
+record Holder { pair Pair, guard Int }
 
 impl Counter {
     method mutateThenFail(mut self) Unit {
@@ -1988,9 +2168,22 @@ impl Counter {
     }
 }
 
+impl Holder {
+    method cascade(mut self) Unit {
+        self.pair.left.mutateThenFail()
+        Unit
+    }
+}
+
 pub fn main() Unit {
-    var counter = Counter { value = 1 }
-    counter.mutateThenFail()
+    var holder = Holder {
+        pair = Pair {
+            left = Counter { value = 1 },
+            right = Counter { value = 2 },
+        },
+        guard = 7,
+    }
+    holder.cascade()
     Unit
 }
 ";
@@ -2006,6 +2199,12 @@ pub fn main() Unit {
             entry: "main".into(),
         },
     );
+    let dump = dump_program(artifact.program());
+    assert!(
+        dump.matches("product.insert").count() >= 4,
+        "normal and fault writebacks must reconstruct nested roots:\n{dump}"
+    );
+    assert!(dump.contains("resume_fault writebacks"), "{dump}");
     let lcir = emit_and_run_lcir(&artifact, "source-record-fault");
     let legacy = emit_and_run_legacy(&program, "main", "legacy-record-fault");
 
@@ -2020,7 +2219,19 @@ pub fn main() Unit {
         diagnostic_text(&legacy).contains("IntegerDivisionByZero"),
         "{legacy:?}"
     );
-    assert!(lcir.ir.contains("{ i32, {}, { i64 } }"), "{}", lcir.ir);
-    assert!(lcir.ir.contains("insertvalue { i64 }"), "{}", lcir.ir);
+    assert!(
+        lcir.ir
+            .contains("{ i32, {}, { { { i64 }, { i64 } }, i64 } }"),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir
+            .matches("insertvalue { { { i64 }, { i64 } }, i64 }")
+            .count()
+            >= 2,
+        "{}",
+        lcir.ir
+    );
     assert_fallible_surface(&lcir.ir);
 }

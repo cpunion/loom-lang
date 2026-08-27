@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `19` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
 | LCIR textual dump | version `6` |
@@ -79,6 +79,11 @@ matching `.loomi` or nested `.loomlib` payload replays each serialized proof;
 the local compiler cache instead rebuilds proof-bearing semantic and MIR layers
 from source so a warm build retains the cold build's route and eliminated
 checks.
+
+MIR version `20` defines projected `Move` as an ownership transfer of the
+selected leaf that consumes the complete root local. It deliberately does not
+introduce partially initialized aggregates or a wire-compatible interpretation
+for version `19` artifacts.
 
 ## Reproducibility and rollback
 

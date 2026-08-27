@@ -50,6 +50,74 @@ fn copy(place: Place, ty: Type) -> Expr {
     }
 }
 
+#[test]
+fn projected_move_consumes_the_root_and_returns_the_owned_leaf() {
+    let pair = Type::Nominal(TypeId(0), Vec::new());
+    let program = checked(Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Pair".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![
+                    FieldDef {
+                        name: "left".into(),
+                        ty: Type::Int,
+                        span: span(),
+                    },
+                    FieldDef {
+                        name: "right".into(),
+                        ty: Type::Int,
+                        span: span(),
+                    },
+                ],
+                invariant: None,
+            },
+        }],
+        functions: vec![Function {
+            id: FunctionId(0),
+            name: "takeRight".into(),
+            span: span(),
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![local(0, "pair", pair, false)],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Int,
+            receiver: None,
+            body: Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Move(Place {
+                        local: LocalId(0),
+                        projection: vec![1],
+                    }),
+                    ty: Type::Int,
+                    span: span(),
+                })),
+                span: span(),
+            },
+            call_plan: CallPlan::default(),
+        }],
+        ..Program::default()
+    });
+    let value = Interpreter::new(&program)
+        .invoke(
+            FunctionId(0),
+            vec![Value::Record {
+                ty: TypeId(0),
+                fields: vec![Value::Int { value: 1 }, Value::Int { value: 7 }],
+            }],
+            span(),
+        )
+        .expect("projected move executes");
+    assert_eq!(value, Value::Int { value: 7 });
+}
+
 fn result_type() -> TypeDef {
     TypeDef {
         id: TypeId(0),

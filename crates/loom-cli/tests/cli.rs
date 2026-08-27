@@ -788,6 +788,52 @@ fn generic_native_commands_close_check_build_test_and_run() {
 }
 
 #[test]
+fn projected_places_close_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-projected-places/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check projected-place source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("projected-places.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build projected-place source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read projected-place object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test projected-place source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_projected_places.projectedPlaces"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run projected-place source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
     let check = loomc()

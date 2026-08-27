@@ -15,8 +15,8 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`19`. Portable libraries have format version `1`; their nested checked-MIR
-payload uses version `19`. The compiler does not append
+`20`. Portable libraries have format version `1`; their nested checked-MIR
+payload uses version `20`. The compiler does not append
 the `.loomlib` extension automatically. Both formats also record the Loom
 language version and are fully decoded and MIR-validated before use.
 

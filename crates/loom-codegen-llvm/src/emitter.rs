@@ -6840,6 +6840,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     return Ok(true);
                 }
                 let source = self.place(place)?;
+                if self.publish_pod_record_to_native_output(&expression.ty, source, destination)? {
+                    return Ok(true);
+                }
                 if matches!(expression.ty, Type::Text) {
                     // Text values are immutable handles. Their runtime clone
                     // branch is exactly a slot copy, so keep this typed path
@@ -6859,17 +6862,14 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             ExprKind::Move(place) => {
-                if !place.projection.is_empty() {
-                    return Err(CodegenError::new(
-                        "LlvmAbiDefect",
-                        "checked MIR contains a projected move",
-                    ));
-                }
                 let source = self.place(place)?;
-                self.shallow_copy(destination, source)?;
+                if !self.publish_pod_record_to_native_output(&expression.ty, source, destination)? {
+                    self.shallow_copy(destination, source)?;
+                }
+                let root = self.local(place.local)?;
                 self.backend
                     .builder
-                    .build_store(source, self.backend.value_type.const_zero())
+                    .build_store(root, self.backend.value_type.const_zero())
                     .map_err(builder_error)?;
                 self.deactivate_gc_local(place.local);
                 Ok(true)
@@ -8622,6 +8622,79 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             VALUE_FIELD_DATA,
             head,
         )
+    }
+
+    /// Publishes a record expression into the private POD result storage.
+    ///
+    /// The source may be a projected field in an ordinary managed record, so
+    /// its universal header cannot replace `native.output.value`: the native
+    /// return path packs the dedicated private nodes allocated for that
+    /// output. Copy primitive fields into those nodes and retain their header.
+    fn publish_pod_record_to_native_output(
+        &self,
+        ty: &Type,
+        source: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if destination != self.output {
+            return Ok(false);
+        }
+        let Some((output_layout, output_nodes)) = &self.native_record_output else {
+            return Ok(false);
+        };
+        let Some(NativeLayout::PodRecord(source_layout)) =
+            NativeLayout::classify(self.backend.program, ty)
+        else {
+            return Ok(false);
+        };
+        if source_layout != *output_layout || source_layout.fields().len() != output_nodes.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "native POD result destination does not match its projected source record",
+            ));
+        }
+
+        Self::initialize_private_record_header(
+            self.backend,
+            destination,
+            output_layout,
+            output_nodes,
+        )?;
+        let source_nodes = self.backend.load_pointer_field(
+            self.backend.value_type,
+            source,
+            VALUE_FIELD_DATA,
+            "record.copy.projected.data",
+        )?;
+        for (index, (field, output_node)) in
+            output_layout.fields().iter().zip(output_nodes).enumerate()
+        {
+            let index = u32::try_from(index).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "POD record has too many fields")
+            })?;
+            let source_node = self.value_node_at(source_nodes, index)?;
+            let source_field = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                source_node,
+                VALUE_NODE_FIELD_VALUE,
+                "record.copy.projected.source",
+            )?;
+            let destination_field = self.backend.struct_pointer(
+                self.backend.value_node_type,
+                *output_node,
+                VALUE_NODE_FIELD_VALUE,
+                "record.copy.projected.destination",
+            )?;
+            let layout = NativeLayout::Scalar(*field);
+            let value = self.backend.load_native_value(
+                &layout,
+                source_field,
+                "record.copy.projected.native",
+            )?;
+            self.backend
+                .store_native_value(&layout, destination_field, value)?;
+        }
+        Ok(true)
     }
 
     fn emit_stack_record_initializer(
