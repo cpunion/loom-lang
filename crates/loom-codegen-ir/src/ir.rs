@@ -1078,16 +1078,6 @@ pub enum TerminatorKind {
         success: BlockTarget,
         fault: UnwindTarget,
     },
-    /// Continues through `success` when true or activates one canonical
-    /// source runtime fault and enters `fault` when false. Unlike a terminal
-    /// [`TerminatorKind::Fault`], the explicit unwind edge preserves lexical
-    /// cleanup and primary-fault precedence.
-    RuntimeGuard {
-        condition: ValueId,
-        code: FaultCode,
-        success: BlockTarget,
-        fault: UnwindTarget,
-    },
     /// Originates and reports a source fault at an inactive terminal boundary.
     Fault {
         metadata: FaultMetadata,
@@ -1190,12 +1180,6 @@ impl TerminatorKind {
                 success,
                 fault,
                 ..
-            }
-            | Self::RuntimeGuard {
-                condition,
-                success,
-                fault,
-                ..
             } => {
                 let mut operands =
                     Vec::with_capacity(1 + success.arguments.len() + fault.arguments.len());
@@ -1235,7 +1219,7 @@ impl TerminatorKind {
             Self::Invoke { normal, unwind, .. } => {
                 vec![preserve(normal.block), activate(unwind.block)]
             }
-            Self::Assert { success, fault, .. } | Self::RuntimeGuard { success, fault, .. } => {
+            Self::Assert { success, fault, .. } => {
                 vec![preserve(success.block), activate(fault.block)]
             }
             Self::Return(_) | Self::Fault { .. } | Self::ResumeFault => Vec::new(),

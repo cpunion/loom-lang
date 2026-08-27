@@ -2781,23 +2781,6 @@ impl<'a> Validator<'a> {
                 self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
-            TerminatorKind::RuntimeGuard {
-                condition,
-                success,
-                fault,
-                ..
-            } => {
-                self.require_known_value_type(
-                    function,
-                    *condition,
-                    self.scalar_type(&Type::Bool),
-                    ValidationCode::TypeMismatch,
-                    format!("{path}.condition"),
-                );
-                self.validate_target(function, success, format!("{path}.success"));
-                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
-                self.require_may_fault_effect(function, &path, "runtime guard");
-            }
             TerminatorKind::Fault { metadata } => {
                 self.validate_fault_metadata(metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "fault");
@@ -3930,7 +3913,6 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
                 | TerminatorKind::Assert { .. }
-                | TerminatorKind::RuntimeGuard { .. }
                 | TerminatorKind::Fault { .. }
                     if propagates_fault =>
                 {
@@ -3953,7 +3935,6 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
                 | TerminatorKind::Assert { .. }
-                | TerminatorKind::RuntimeGuard { .. }
                 | TerminatorKind::Fault { .. }
                 | TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
@@ -4357,8 +4338,7 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
         ],
-        TerminatorKind::Assert { success, fault, .. }
-        | TerminatorKind::RuntimeGuard { success, fault, .. } => vec![
+        TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, &success.arguments),
             (fault.block, &fault.arguments),
         ],

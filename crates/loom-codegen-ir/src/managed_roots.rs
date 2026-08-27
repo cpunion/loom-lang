@@ -462,8 +462,7 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
             vec![normal.block, fault.block]
         }
         TerminatorKind::Invoke { normal, unwind, .. } => vec![normal.block, unwind.block],
-        TerminatorKind::Assert { success, fault, .. }
-        | TerminatorKind::RuntimeGuard { success, fault, .. } => {
+        TerminatorKind::Assert { success, fault, .. } => {
             vec![success.block, fault.block]
         }
         TerminatorKind::Return(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
@@ -493,9 +492,7 @@ fn add_terminator_local_uses(
         TerminatorKind::Jump(_) | TerminatorKind::Fault { .. } | TerminatorKind::ResumeFault => {
             Vec::new()
         }
-        TerminatorKind::Branch { condition, .. }
-        | TerminatorKind::Assert { condition, .. }
-        | TerminatorKind::RuntimeGuard { condition, .. } => {
+        TerminatorKind::Branch { condition, .. } | TerminatorKind::Assert { condition, .. } => {
             vec![*condition]
         }
         TerminatorKind::SumSwitch { scrutinee, .. }
@@ -543,8 +540,7 @@ fn edge_live_values(
             (normal.block, normal.arguments.as_ref()),
             (unwind.block, unwind.arguments.as_ref()),
         ],
-        TerminatorKind::Assert { success, fault, .. }
-        | TerminatorKind::RuntimeGuard { success, fault, .. } => vec![
+        TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, success.arguments.as_ref()),
             (fault.block, fault.arguments.as_ref()),
         ],

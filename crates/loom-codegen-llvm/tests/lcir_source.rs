@@ -857,7 +857,7 @@ pub fn main() Unit {
         "parse.float",
         "float.compare.ordered_greater_equal",
         "float.compare.ordered_less_equal",
-        "runtime_guard",
+        "runtime InvalidDuration",
         "product.construct",
         "product.extract",
     ] {
@@ -1083,7 +1083,7 @@ pub fn main() Unit {
         },
     );
     let dump = dump_program(artifact.program());
-    assert!(dump.contains("runtime_guard"), "{dump}");
+    assert!(dump.contains("assert"), "{dump}");
     assert!(dump.contains("InvalidDuration"), "{dump}");
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-negative-duration");
     let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-negative-duration");
@@ -1132,7 +1132,7 @@ pub fn main() Unit {
         },
     );
     let dump = dump_program(artifact.program());
-    assert!(dump.contains("runtime_guard"), "{dump}");
+    assert!(dump.contains("assert"), "{dump}");
     assert!(dump.contains("InvalidDuration"), "{dump}");
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-duration-cleanup-primary");
     let legacy =

@@ -8840,9 +8840,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let fault = self.fault_target(flow)?;
                 self.terminate(
                     flow.block,
-                    TerminatorKind::RuntimeGuard {
+                    TerminatorKind::Assert {
                         condition: nonnegative,
-                        code: crate::FaultCode::InvalidDuration,
+                        metadata: FaultMetadata::runtime(FaultCode::InvalidDuration),
                         success: BlockTarget::new(success, []),
                         fault,
                     },

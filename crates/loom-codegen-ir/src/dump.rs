@@ -485,21 +485,6 @@ fn write_terminator(
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)
         }
-        TerminatorKind::RuntimeGuard {
-            condition,
-            code,
-            success,
-            fault,
-        } => {
-            write!(
-                output,
-                "runtime_guard %{condition}, code {}, success ",
-                fault_code_name(*code)
-            )?;
-            write_target(output, success)?;
-            write!(output, ", fault ")?;
-            write_unwind_target(output, fault, 0)
-        }
         TerminatorKind::Fault { metadata } => {
             write!(output, "fault ")?;
             write_fault_metadata(output, metadata)

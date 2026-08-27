@@ -544,14 +544,14 @@ fn active_cleanup_keeps_the_primary_fault_across_a_secondary_checked_operation()
 }
 
 #[test]
-fn runtime_guard_rejects_a_forged_non_boolean_condition() {
+fn runtime_fault_assert_rejects_a_forged_non_boolean_condition() {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let int_ty = program.type_id(&Type::Int).expect("Int type");
     let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
     let function_id = program
         .declare_function(
             origin(109),
-            "runtime_guard.forged_condition",
+            "runtime_fault_assert.forged_condition",
             Signature::new(vec![int_ty], unit_ty),
             Effects::MAY_FAULT,
         )
@@ -570,15 +570,15 @@ fn runtime_guard_rejects_a_forged_non_boolean_condition() {
                 entry,
                 terminator(
                     109,
-                    TerminatorKind::RuntimeGuard {
+                    TerminatorKind::Assert {
                         condition: forged,
-                        code: FaultCode::InvalidDuration,
+                        metadata: FaultMetadata::runtime(FaultCode::InvalidDuration),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },
                 ),
             )
-            .expect("runtime guard");
+            .expect("runtime fault assert");
         let unit = function
             .append_instruction(
                 success,

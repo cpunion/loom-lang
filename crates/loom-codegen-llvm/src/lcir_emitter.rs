@@ -3772,8 +3772,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(unwind.block);
                     pending.push(normal.block);
                 }
-                TerminatorKind::Assert { success, fault, .. }
-                | TerminatorKind::RuntimeGuard { success, fault, .. } => {
+                TerminatorKind::Assert { success, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(success.block);
                 }
@@ -5802,18 +5801,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 success,
                 fault,
             ),
-            TerminatorKind::RuntimeGuard {
-                condition,
-                code,
-                success,
-                fault,
-            } => self.emit_runtime_guard(
-                self.int(*condition)?,
-                *code,
-                terminator.origin(),
-                success,
-                fault,
-            ),
             TerminatorKind::Fault { metadata } => {
                 match metadata {
                     FaultMetadata::Runtime(code) => {
@@ -6229,29 +6216,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             FaultMetadata::Runtime(code) => self.emit_source_fault(*code, origin)?,
             FaultMetadata::Contract(metadata) => self.emit_contract_fault(metadata)?,
         }
-        self.unwind_branch(fault)
-    }
-
-    fn emit_runtime_guard(
-        &mut self,
-        condition: IntValue<'ctx>,
-        code: FaultCode,
-        origin: Origin,
-        success: &BlockTarget,
-        fault: &UnwindTarget,
-    ) -> Result<(), CodegenError> {
-        let predecessor = self.current_block()?;
-        self.add_target_incoming(success, predecessor)?;
-        let report = self
-            .backend
-            .context
-            .append_basic_block(self.function, "runtime.guard.fault");
-        self.backend
-            .builder
-            .build_conditional_branch(condition, self.block(success.block)?, report)
-            .map_err(builder_error)?;
-        self.backend.builder.position_at_end(report);
-        self.emit_source_fault(code, origin)?;
         self.unwind_branch(fault)
     }
 
