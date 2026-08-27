@@ -77,12 +77,15 @@ allocating LCIR. The plan covers every reachable structural tuple, closed
 record, concrete closed enum, and transparent refined chain, orders
 registrations after their direct-value dependencies, and rejects mixed
 product/sum/transparent by-value cycles. Classification walks each candidate
-aggregate graph iteratively. Before substituting or cloning a
-generic payload, it walks borrowed declaration schemas with a path-local
-nominal `TypeId` set. A repeated by-value nominal type is rejected immediately;
-this prevents non-regular recursive instantiations from expanding during
-substitution. The preflight and concrete walks both enforce a 256-node type
-budget, and the concrete walk also limits nesting depth to 256.
+aggregate graph iteratively. Before substituting or cloning a generic payload,
+it walks borrowed declarations and rejects any reachable by-value nominal
+cycle by `TypeId`; cached acyclic declarations may then appear repeatedly at
+different concrete arguments, such as `Option[Option[Int]]`. Before allocating
+the variant table it also reserves `1 + variants + payload occurrences` from
+the structural budget. These preflights prevent recursive substitution and
+wide tag-only enums from allocating an unbounded intermediate plan. The
+preflight and concrete walks both enforce a 256-node type budget, and the
+concrete walk also limits nesting depth to 256.
 Structural size counts every aggregate occurrence, sum variant, and payload or
 product field occurrence. A wide tuple, record, or enum and repeated nested
 aggregates therefore consume the same finite budget as a deep chain. Crossing
@@ -164,7 +167,7 @@ native-object format is therefore
 `loom-lcir-native-object-v3`, and the CLI cache domain is
 `loom-llvm-object-cache-v8`.
 Concrete generic-instance closure reuses those versions: the existing instance
-plan, canonical dump, and schema-6 identity already encode every exact type and
+plan, canonical dump, and schema-7 identity already encode every exact type and
 witness argument, function body, signature, and call edge. The backend build
 fingerprint invalidates objects when the planner implementation changes. No
 serialized grammar or physical ABI changed, so the text, native-object, and
@@ -203,7 +206,9 @@ which preserves source arm order, evaluates the scrutinee once, compares scalar
 subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
 payload edge parameters at each sum decision. Every selected source arm has
 one shared LCIR block with typed capture parameters, so multiple DAG paths do
-not duplicate its body. Float-pattern equality is IEEE ordered equality:
+not duplicate its body. A generic body's plan is keyed by its exact concrete
+`InstanceKey`, so separate instantiations derive distinct payload and capture
+types. Float-pattern equality is IEEE ordered equality:
 `+0.0` and `-0.0` select the same constant arm, while a NaN pattern can never
 match and is removed from the decision plan. Pattern, decision-node, and
 abstract-value budgets are each 512, planning work is limited to 32,768 units,
