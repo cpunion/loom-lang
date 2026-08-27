@@ -16,6 +16,8 @@ use crate::{
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
+const MAX_PATTERN_ANALYSIS_STEPS: usize = 4_096;
+const MAX_VALIDATION_TYPE_NODES: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MirValidationCode {
@@ -4062,11 +4064,13 @@ impl<'program> Validator<'program> {
     }
 
     fn supports_value_equality(&self, ty: &Type) -> bool {
-        self.supports_value_equality_inner(ty, &mut Vec::new(), 0)
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        self.supports_value_equality_inner(ty, &[], &mut Vec::new(), 0, &mut remaining)
     }
 
     fn reject_obligation_loss(&mut self, ty: &Type, span: Span, path: &str, action: &str) {
-        let obligations = self.value_obligations_inner(ty, &mut Vec::new(), 0);
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        let obligations = self.value_obligations_inner(ty, &[], &mut Vec::new(), 0, &mut remaining);
         if obligations.is_empty() {
             return;
         }
@@ -4095,15 +4099,18 @@ impl<'program> Validator<'program> {
     fn value_obligations_inner(
         &self,
         ty: &Type,
-        active: &mut Vec<Type>,
+        parameters: &[ValueObligations],
+        active: &mut Vec<(crate::TypeId, Vec<ValueObligations>)>,
         depth: u16,
+        remaining: &mut usize,
     ) -> ValueObligations {
-        if depth >= MAX_VALIDATION_DEPTH {
+        if depth >= MAX_VALIDATION_DEPTH || *remaining == 0 {
             return ValueObligations {
                 unresolved: true,
                 ..ValueObligations::default()
             };
         }
+        *remaining -= 1;
         match ty {
             Type::Never
             | Type::Unit
@@ -4113,7 +4120,16 @@ impl<'program> Validator<'program> {
             | Type::Text
             | Type::Error
             | Type::View { .. } => ValueObligations::default(),
-            Type::Parameter(_) | Type::AssociatedProjection { .. } => ValueObligations {
+            Type::Parameter(index) => {
+                parameters
+                    .get(*index as usize)
+                    .copied()
+                    .unwrap_or(ValueObligations {
+                        unresolved: true,
+                        ..ValueObligations::default()
+                    })
+            }
+            Type::AssociatedProjection { .. } => ValueObligations {
                 unresolved: true,
                 ..ValueObligations::default()
             },
@@ -4124,72 +4140,132 @@ impl<'program> Validator<'program> {
             Type::Tuple(elements) => {
                 let mut obligations = ValueObligations::default();
                 for element in elements {
-                    obligations.merge(self.value_obligations_inner(element, active, depth + 1));
+                    obligations.merge(self.value_obligations_inner(
+                        element,
+                        parameters,
+                        active,
+                        depth + 1,
+                        remaining,
+                    ));
                 }
                 obligations
             }
             Type::List(element) | Type::TaskOutcome(element) => {
-                self.value_obligations_inner(element, active, depth + 1)
+                self.value_obligations_inner(element, parameters, active, depth + 1, remaining)
             }
-            Type::Nominal(type_id, arguments) => {
-                if self.program.prelude.file == Some(*type_id)
-                    || self.program.prelude.socket == Some(*type_id)
-                {
-                    return ValueObligations {
-                        resource: true,
-                        ..ValueObligations::default()
-                    };
-                }
-                if active.contains(ty) {
-                    return ValueObligations::default();
-                }
-                let Some(definition) = self.program.type_def(*type_id) else {
-                    // The ordinary type-reference validator owns malformed nominal
-                    // references; obligation hardening only reasons about valid types.
-                    return ValueObligations::default();
-                };
-                if arguments.len() != definition.type_parameters as usize {
-                    return ValueObligations::default();
-                }
-
-                active.push(ty.clone());
-                let mut obligations = ValueObligations::default();
-                match &definition.kind {
-                    TypeDefKind::Record { fields, .. } => {
-                        for field in fields {
-                            let field_ty = substitute_type(&field.ty, arguments);
-                            obligations.merge(self.value_obligations_inner(
-                                &field_ty,
-                                active,
-                                depth + 1,
-                            ));
-                        }
-                    }
-                    TypeDefKind::Enum { variants } => {
-                        for payload in variants.iter().flat_map(|variant| &variant.payload) {
-                            let payload = substitute_type(payload, arguments);
-                            obligations.merge(self.value_obligations_inner(
-                                &payload,
-                                active,
-                                depth + 1,
-                            ));
-                        }
-                    }
-                    TypeDefKind::Refined { base, .. } => {
-                        let base = substitute_type(base, arguments);
-                        obligations.merge(self.value_obligations_inner(&base, active, depth + 1));
-                    }
-                }
-                active.pop();
-                obligations
-            }
+            Type::Nominal(type_id, arguments) => self.value_obligations_nominal(
+                *type_id, arguments, parameters, active, depth, remaining,
+            ),
         }
     }
 
-    fn supports_value_equality_inner(&self, ty: &Type, active: &mut Vec<Type>, depth: u16) -> bool {
-        if depth >= MAX_VALIDATION_DEPTH {
+    fn value_obligations_nominal(
+        &self,
+        type_id: crate::TypeId,
+        arguments: &[Type],
+        parameters: &[ValueObligations],
+        active: &mut Vec<(crate::TypeId, Vec<ValueObligations>)>,
+        depth: u16,
+        remaining: &mut usize,
+    ) -> ValueObligations {
+        if self.program.prelude.file == Some(type_id)
+            || self.program.prelude.socket == Some(type_id)
+        {
+            return ValueObligations {
+                resource: true,
+                ..ValueObligations::default()
+            };
+        }
+        let Some(definition) = self.program.type_def(type_id) else {
+            // The ordinary type-reference validator owns malformed nominal
+            // references; obligation hardening only reasons about valid types.
+            return ValueObligations::default();
+        };
+        if arguments.len() != definition.type_parameters as usize {
+            return ValueObligations::default();
+        }
+        if arguments.len() > *remaining {
+            return ValueObligations {
+                unresolved: true,
+                ..ValueObligations::default()
+            };
+        }
+
+        let mut argument_obligations = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            if *remaining == 0 {
+                return ValueObligations {
+                    unresolved: true,
+                    ..ValueObligations::default()
+                };
+            }
+            argument_obligations.push(self.value_obligations_inner(
+                argument,
+                parameters,
+                active,
+                depth + 1,
+                remaining,
+            ));
+        }
+        let state = (type_id, argument_obligations.clone());
+        if active.contains(&state) {
+            // Resource/task containment is a least fixed point. A repeated
+            // abstract instantiation contributes no new obligation; direct
+            // fields and other variants in the active frames still do.
+            return ValueObligations::default();
+        }
+
+        active.push(state);
+        let mut obligations = ValueObligations::default();
+        match &definition.kind {
+            TypeDefKind::Record { fields, .. } => {
+                for field in fields {
+                    obligations.merge(self.value_obligations_inner(
+                        &field.ty,
+                        &argument_obligations,
+                        active,
+                        depth + 1,
+                        remaining,
+                    ));
+                }
+            }
+            TypeDefKind::Enum { variants } => {
+                for payload in variants.iter().flat_map(|variant| &variant.payload) {
+                    obligations.merge(self.value_obligations_inner(
+                        payload,
+                        &argument_obligations,
+                        active,
+                        depth + 1,
+                        remaining,
+                    ));
+                }
+            }
+            TypeDefKind::Refined { base, .. } => {
+                obligations.merge(self.value_obligations_inner(
+                    base,
+                    &argument_obligations,
+                    active,
+                    depth + 1,
+                    remaining,
+                ));
+            }
+        }
+        active.pop();
+        obligations
+    }
+
+    fn supports_value_equality_inner(
+        &self,
+        ty: &Type,
+        parameters: &[bool],
+        active: &mut Vec<(crate::TypeId, Vec<bool>)>,
+        depth: u16,
+        remaining: &mut usize,
+    ) -> bool {
+        if depth >= MAX_VALIDATION_DEPTH || *remaining == 0 {
             return false;
         }
+        *remaining -= 1;
         match ty {
             Type::Never
             | Type::Error
@@ -4198,16 +4274,24 @@ impl<'program> Validator<'program> {
             | Type::Int
             | Type::Float
             | Type::Text => true,
-            Type::Parameter(_)
-            | Type::AssociatedProjection { .. }
-            | Type::Task(_)
-            | Type::View { .. } => false,
-            Type::Tuple(elements) => elements
-                .iter()
-                .all(|element| self.supports_value_equality_inner(element, active, depth + 1)),
-            Type::List(element) | Type::TaskOutcome(element) => {
-                self.supports_value_equality_inner(element, active, depth + 1)
-            }
+            Type::Parameter(index) => parameters.get(*index as usize).copied().unwrap_or(false),
+            Type::AssociatedProjection { .. } | Type::Task(_) | Type::View { .. } => false,
+            Type::Tuple(elements) => elements.iter().all(|element| {
+                self.supports_value_equality_inner(
+                    element,
+                    parameters,
+                    active,
+                    depth + 1,
+                    remaining,
+                )
+            }),
+            Type::List(element) | Type::TaskOutcome(element) => self.supports_value_equality_inner(
+                element,
+                parameters,
+                active,
+                depth + 1,
+                remaining,
+            ),
             Type::Nominal(type_id, arguments) => {
                 if self.program.prelude.file == Some(*type_id)
                     || self.program.prelude.socket == Some(*type_id)
@@ -4215,32 +4299,67 @@ impl<'program> Validator<'program> {
                 {
                     return false;
                 }
-                if self.program.prelude.text_map == Some(*type_id) {
-                    return arguments.len() == 1
-                        && self.supports_value_equality_inner(&arguments[0], active, depth + 1);
-                }
-                if active.contains(ty) {
-                    return true;
-                }
                 let Some(definition) = self.program.type_def(*type_id) else {
                     return false;
                 };
-                active.push(ty.clone());
+                if arguments.len() != definition.type_parameters as usize {
+                    return false;
+                }
+                if arguments.len() > *remaining {
+                    return false;
+                }
+                let mut argument_support = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    if *remaining == 0 {
+                        return false;
+                    }
+                    argument_support.push(self.supports_value_equality_inner(
+                        argument,
+                        parameters,
+                        active,
+                        depth + 1,
+                        remaining,
+                    ));
+                }
+                if self.program.prelude.text_map == Some(*type_id) {
+                    return argument_support.as_slice() == [true];
+                }
+                let state = (*type_id, argument_support.clone());
+                if active.contains(&state) {
+                    // Value equality is a greatest fixed point: a repeated
+                    // abstract instantiation remains comparable unless another
+                    // reachable field disproves it.
+                    return true;
+                }
+                active.push(state);
                 let result = match &definition.kind {
                     TypeDefKind::Record { fields, .. } => fields.iter().all(|field| {
-                        let field_ty = substitute_type(&field.ty, arguments);
-                        self.supports_value_equality_inner(&field_ty, active, depth + 1)
+                        self.supports_value_equality_inner(
+                            &field.ty,
+                            &argument_support,
+                            active,
+                            depth + 1,
+                            remaining,
+                        )
                     }),
                     TypeDefKind::Enum { variants } => variants.iter().all(|variant| {
                         variant.payload.iter().all(|payload| {
-                            let payload = substitute_type(payload, arguments);
-                            self.supports_value_equality_inner(&payload, active, depth + 1)
+                            self.supports_value_equality_inner(
+                                payload,
+                                &argument_support,
+                                active,
+                                depth + 1,
+                                remaining,
+                            )
                         })
                     }),
-                    TypeDefKind::Refined { base, .. } => {
-                        let base = substitute_type(base, arguments);
-                        self.supports_value_equality_inner(&base, active, depth + 1)
-                    }
+                    TypeDefKind::Refined { base, .. } => self.supports_value_equality_inner(
+                        base,
+                        &argument_support,
+                        active,
+                        depth + 1,
+                        remaining,
+                    ),
                 };
                 active.pop();
                 result
@@ -6316,7 +6435,16 @@ impl<'program> Validator<'program> {
                 }
                 for (index, nested) in payload.iter().enumerate() {
                     if let Some(payload_ty) = definition.payload.get(index) {
-                        let payload_ty = substitute_type(payload_ty, &arguments);
+                        let Some(payload_ty) = substitute_type_bounded(payload_ty, &arguments)
+                        else {
+                            self.push(
+                                MirValidationCode::NestingLimit,
+                                "pattern type substitution exceeds the validation budget",
+                                span,
+                                format!("{path}.payload[{index}]"),
+                            );
+                            continue;
+                        };
                         self.validate_pattern(
                             nested,
                             &payload_ty,
@@ -6583,22 +6711,49 @@ impl<'program> Validator<'program> {
         candidate: &[Pattern],
         depth: u16,
     ) -> bool {
+        let mut remaining = MAX_PATTERN_ANALYSIS_STEPS;
+        self.pattern_vector_useful_inner(expected, rows, candidate, depth, &mut remaining)
+    }
+
+    fn pattern_vector_useful_inner(
+        &self,
+        expected: &[Type],
+        rows: &[Vec<Pattern>],
+        candidate: &[Pattern],
+        depth: u16,
+        remaining: &mut usize,
+    ) -> bool {
         if expected.is_empty() || candidate.is_empty() {
             return rows.is_empty();
         }
-        if depth >= MAX_VALIDATION_DEPTH {
+        if rows.iter().any(|row| {
+            row.len() == expected.len()
+                && row
+                    .iter()
+                    .all(|pattern| matches!(pattern, Pattern::Wildcard | Pattern::Binding))
+        }) {
+            return false;
+        }
+        if depth >= MAX_VALIDATION_DEPTH || *remaining == 0 {
             return true;
         }
+        *remaining -= 1;
 
         let tail = &expected[1..];
         let candidate_tail = &candidate[1..];
         match &candidate[0] {
             Pattern::Wildcard | Pattern::Binding => {
-                self.wildcard_pattern_useful(expected, rows, candidate_tail, depth)
+                self.wildcard_pattern_useful(expected, rows, candidate_tail, depth, remaining)
             }
             Pattern::Constant(constant) => {
                 let specialized = specialize_constant_rows(rows, constant);
-                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+                self.pattern_vector_useful_inner(
+                    tail,
+                    &specialized,
+                    candidate_tail,
+                    depth + 1,
+                    remaining,
+                )
             }
             Pattern::Variant {
                 ty,
@@ -6615,20 +6770,24 @@ impl<'program> Validator<'program> {
                 if payload.len() != definition.payload.len() {
                     return true;
                 }
-                let mut specialized_types = definition
-                    .payload
-                    .iter()
-                    .map(|ty| substitute_type(ty, arguments))
-                    .collect::<Vec<_>>();
+                let mut specialized_types =
+                    Vec::with_capacity(definition.payload.len() + tail.len());
+                for ty in &definition.payload {
+                    let Some(ty) = substitute_type_bounded(ty, arguments) else {
+                        return true;
+                    };
+                    specialized_types.push(ty);
+                }
                 specialized_types.extend_from_slice(tail);
                 let specialized = specialize_variant_rows(rows, *ty, *variant, payload.len());
                 let mut specialized_candidate = payload.clone();
                 specialized_candidate.extend_from_slice(candidate_tail);
-                self.pattern_vector_useful(
+                self.pattern_vector_useful_inner(
                     &specialized_types,
                     &specialized,
                     &specialized_candidate,
                     depth + 1,
+                    remaining,
                 )
             }
         }
@@ -6640,16 +6799,29 @@ impl<'program> Validator<'program> {
         rows: &[Vec<Pattern>],
         candidate_tail: &[Pattern],
         depth: u16,
+        remaining: &mut usize,
     ) -> bool {
         let tail = &expected[1..];
         match &expected[0] {
             Type::Bool => [false, true].into_iter().any(|value| {
                 let specialized = specialize_constant_rows(rows, &Constant::Bool(value));
-                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+                self.pattern_vector_useful_inner(
+                    tail,
+                    &specialized,
+                    candidate_tail,
+                    depth + 1,
+                    remaining,
+                )
             }),
             Type::Unit => {
                 let specialized = specialize_constant_rows(rows, &Constant::Unit);
-                self.pattern_vector_useful(tail, &specialized, candidate_tail, depth + 1)
+                self.pattern_vector_useful_inner(
+                    tail,
+                    &specialized,
+                    candidate_tail,
+                    depth + 1,
+                    remaining,
+                )
             }
             Type::Nominal(type_id, arguments) => {
                 let Some(TypeDef {
@@ -6658,27 +6830,40 @@ impl<'program> Validator<'program> {
                 }) = self.program.type_def(*type_id)
                 else {
                     let default = default_pattern_rows(rows);
-                    return self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1);
+                    return self.pattern_vector_useful_inner(
+                        tail,
+                        &default,
+                        candidate_tail,
+                        depth + 1,
+                        remaining,
+                    );
                 };
-                variants.iter().any(|variant| {
-                    let mut specialized_types = variant
-                        .payload
-                        .iter()
-                        .map(|ty| substitute_type(ty, arguments))
-                        .collect::<Vec<_>>();
+                for variant in variants {
+                    let mut specialized_types =
+                        Vec::with_capacity(variant.payload.len() + tail.len());
+                    for ty in &variant.payload {
+                        let Some(ty) = substitute_type_bounded(ty, arguments) else {
+                            return true;
+                        };
+                        specialized_types.push(ty);
+                    }
                     let payload_arity = specialized_types.len();
                     specialized_types.extend_from_slice(tail);
                     let specialized =
                         specialize_variant_rows(rows, *type_id, variant.id, payload_arity);
                     let mut specialized_candidate = vec![Pattern::Wildcard; payload_arity];
                     specialized_candidate.extend_from_slice(candidate_tail);
-                    self.pattern_vector_useful(
+                    if self.pattern_vector_useful_inner(
                         &specialized_types,
                         &specialized,
                         &specialized_candidate,
                         depth + 1,
-                    )
-                })
+                        remaining,
+                    ) {
+                        return true;
+                    }
+                }
+                false
             }
             Type::Never => false,
             Type::Int
@@ -6693,7 +6878,13 @@ impl<'program> Validator<'program> {
             | Type::View { .. }
             | Type::Error => {
                 let default = default_pattern_rows(rows);
-                self.pattern_vector_useful(tail, &default, candidate_tail, depth + 1)
+                self.pattern_vector_useful_inner(
+                    tail,
+                    &default,
+                    candidate_tail,
+                    depth + 1,
+                    remaining,
+                )
             }
         }
     }
@@ -6703,6 +6894,17 @@ impl<'program> Validator<'program> {
         expected: &[Type],
         rows: &[Vec<Pattern>],
         depth: u16,
+    ) -> bool {
+        let mut remaining = MAX_PATTERN_ANALYSIS_STEPS;
+        self.pattern_matrix_exhaustive_inner(expected, rows, depth, &mut remaining)
+    }
+
+    fn pattern_matrix_exhaustive_inner(
+        &self,
+        expected: &[Type],
+        rows: &[Vec<Pattern>],
+        depth: u16,
+        remaining: &mut usize,
     ) -> bool {
         if expected.is_empty() {
             return !rows.is_empty();
@@ -6715,19 +6917,20 @@ impl<'program> Validator<'program> {
         }) {
             return true;
         }
-        if depth >= MAX_VALIDATION_DEPTH {
+        if depth >= MAX_VALIDATION_DEPTH || *remaining == 0 {
             return false;
         }
+        *remaining -= 1;
 
         let tail = &expected[1..];
         match &expected[0] {
             Type::Bool => [false, true].into_iter().all(|value| {
                 let rows = specialize_constant_rows(rows, &Constant::Bool(value));
-                self.pattern_matrix_exhaustive(tail, &rows, depth + 1)
+                self.pattern_matrix_exhaustive_inner(tail, &rows, depth + 1, remaining)
             }),
             Type::Unit => {
                 let rows = specialize_constant_rows(rows, &Constant::Unit);
-                self.pattern_matrix_exhaustive(tail, &rows, depth + 1)
+                self.pattern_matrix_exhaustive_inner(tail, &rows, depth + 1, remaining)
             }
             Type::Nominal(type_id, arguments) => {
                 let Some(TypeDef {
@@ -6737,17 +6940,28 @@ impl<'program> Validator<'program> {
                 else {
                     return false;
                 };
-                variants.iter().all(|variant| {
-                    let mut specialized_types = variant
-                        .payload
-                        .iter()
-                        .map(|ty| substitute_type(ty, arguments))
-                        .collect::<Vec<_>>();
+                for variant in variants {
+                    let mut specialized_types =
+                        Vec::with_capacity(variant.payload.len() + tail.len());
+                    for ty in &variant.payload {
+                        let Some(ty) = substitute_type_bounded(ty, arguments) else {
+                            return false;
+                        };
+                        specialized_types.push(ty);
+                    }
                     specialized_types.extend_from_slice(tail);
                     let rows =
                         specialize_variant_rows(rows, *type_id, variant.id, variant.payload.len());
-                    self.pattern_matrix_exhaustive(&specialized_types, &rows, depth + 1)
-                })
+                    if !self.pattern_matrix_exhaustive_inner(
+                        &specialized_types,
+                        &rows,
+                        depth + 1,
+                        remaining,
+                    ) {
+                        return false;
+                    }
+                }
+                true
             }
             Type::Never => true,
             Type::Int
@@ -6762,7 +6976,7 @@ impl<'program> Validator<'program> {
             | Type::View { .. }
             | Type::Error => {
                 let rows = default_pattern_rows(rows);
-                self.pattern_matrix_exhaustive(tail, &rows, depth + 1)
+                self.pattern_matrix_exhaustive_inner(tail, &rows, depth + 1, remaining)
             }
         }
     }
@@ -9570,6 +9784,81 @@ fn proof_bindings_satisfy(
     })
 }
 
+fn substitute_type_bounded(ty: &Type, arguments: &[Type]) -> Option<Type> {
+    let mut remaining = MAX_VALIDATION_TYPE_NODES;
+    copy_type_bounded(ty, Some(arguments), &mut remaining, 0)
+}
+
+fn copy_type_bounded(
+    ty: &Type,
+    arguments: Option<&[Type]>,
+    remaining: &mut usize,
+    depth: u16,
+) -> Option<Type> {
+    if depth >= MAX_VALIDATION_DEPTH || *remaining == 0 {
+        return None;
+    }
+    *remaining -= 1;
+
+    Some(match ty {
+        Type::Parameter(index) => {
+            let Some(argument) = arguments.and_then(|values| values.get(*index as usize)) else {
+                return Some(ty.clone());
+            };
+            return copy_type_bounded(argument, None, remaining, depth + 1);
+        }
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| copy_type_bounded(element, arguments, remaining, depth + 1))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Type::List(element) => Type::List(Box::new(copy_type_bounded(
+            element,
+            arguments,
+            remaining,
+            depth + 1,
+        )?)),
+        Type::Task(output) => Type::Task(Box::new(copy_type_bounded(
+            output,
+            arguments,
+            remaining,
+            depth + 1,
+        )?)),
+        Type::TaskOutcome(output) => Type::TaskOutcome(Box::new(copy_type_bounded(
+            output,
+            arguments,
+            remaining,
+            depth + 1,
+        )?)),
+        Type::Nominal(id, nested) => Type::Nominal(
+            *id,
+            nested
+                .iter()
+                .map(|nested| copy_type_bounded(nested, arguments, remaining, depth + 1))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Type::View {
+            mutable,
+            concept,
+            bindings,
+        } => Type::View {
+            mutable: *mutable,
+            concept: *concept,
+            bindings: bindings
+                .iter()
+                .map(|(name, ty)| {
+                    Some((
+                        name.clone(),
+                        copy_type_bounded(ty, arguments, remaining, depth + 1)?,
+                    ))
+                })
+                .collect::<Option<BTreeMap<_, _>>>()?,
+        },
+        _ => ty.clone(),
+    })
+}
+
 fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
     match ty {
         Type::Parameter(index) => arguments
@@ -9613,7 +9902,75 @@ fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExprId;
+    use crate::{ExprId, FieldDef, PreludeIds, TypeId, VariantDef};
+
+    #[test]
+    fn non_regular_nominal_analysis_uses_finite_abstract_argument_states() {
+        let redirect = TypeId(0);
+        let file = TypeId(1);
+        let program = Program {
+            types: vec![
+                TypeDef {
+                    id: redirect,
+                    name: "Redirect".to_owned(),
+                    span: Span::default(),
+                    type_parameters: 1,
+                    kind: TypeDefKind::Enum {
+                        variants: vec![
+                            VariantDef {
+                                id: VariantId(0),
+                                name: "Direct".to_owned(),
+                                payload: vec![Type::Parameter(0)],
+                                span: Span::default(),
+                            },
+                            VariantDef {
+                                id: VariantId(1),
+                                name: "Next".to_owned(),
+                                payload: vec![Type::Nominal(
+                                    redirect,
+                                    vec![Type::Nominal(file, Vec::new())],
+                                )],
+                                span: Span::default(),
+                            },
+                        ],
+                    },
+                },
+                TypeDef {
+                    id: file,
+                    name: "File".to_owned(),
+                    span: Span::default(),
+                    type_parameters: 0,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "raw".to_owned(),
+                            ty: Type::Int,
+                            span: Span::default(),
+                        }],
+                        invariant: None,
+                    },
+                },
+            ],
+            prelude: PreludeIds {
+                file: Some(file),
+                ..PreludeIds::default()
+            },
+            ..Program::default()
+        };
+        let root = Type::Nominal(redirect, vec![Type::Int]);
+        let validator = Validator::new(&program);
+
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        let obligations =
+            validator.value_obligations_inner(&root, &[], &mut Vec::new(), 0, &mut remaining);
+        assert!(
+            obligations.resource,
+            "the recursive argument transition to File must remain observable"
+        );
+        assert!(
+            !validator.supports_value_equality(&root),
+            "the recursive argument transition to File must disable value equality"
+        );
+    }
 
     #[test]
     fn diverging_short_circuit_rhs_does_not_make_the_binary_unconditional() {
