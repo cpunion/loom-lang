@@ -1,5 +1,6 @@
 #![allow(clippy::default_trait_access)]
 
+use loom_codegen_ir::UnsupportedFeature;
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativePreparationErrorKind, NativeRouteKind, NativeRoutePolicy,
     OptimizationProfile, emit_prepared_native_object, prepare_native_object,
@@ -179,7 +180,11 @@ fn empty_tests_are_a_complete_lcir_artifact() {
 #[test]
 fn invalid_roots_are_structured_and_never_fallback() {
     let program = scalar_program();
-    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LegacyOnly] {
+    for policy in [
+        NativeRoutePolicy::Automatic,
+        NativeRoutePolicy::LcirOnly,
+        NativeRoutePolicy::LegacyOnly,
+    ] {
         let error = prepare_native_object(&program, EmitOptions::run("missing"), policy)
             .err()
             .expect("missing root must fail preparation");
@@ -187,6 +192,54 @@ fn invalid_roots_are_structured_and_never_fallback() {
         assert_eq!(error.code(), "NativePreparationUnknownEntry");
         assert!(error.message().contains("missing"));
     }
+}
+
+#[test]
+fn lcir_only_accepts_a_complete_typed_artifact() {
+    let program = scalar_program();
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::LcirOnly,
+    )
+    .expect("prepare required LCIR artifact");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+}
+
+#[test]
+fn lcir_only_preserves_a_deterministic_structured_support_report() {
+    let program = derived_text_program();
+    let prepare = || {
+        prepare_native_object(
+            &program,
+            EmitOptions::run("main"),
+            NativeRoutePolicy::LcirOnly,
+        )
+        .err()
+        .expect("unsupported LCIR must fail instead of selecting legacy")
+    };
+    let first = prepare();
+    let second = prepare();
+
+    assert_eq!(first, second);
+    assert_eq!(first.kind(), NativePreparationErrorKind::Unsupported);
+    assert_eq!(first.code(), "NativePreparationUnsupportedLcir");
+    let report = first
+        .support_report()
+        .expect("unsupported preparation carries its support report");
+    assert!(!report.is_empty());
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::BuiltinCall),
+        "{report:#?}"
+    );
+    assert!(first.message().contains("BuiltinCall"), "{first}");
+    assert!(
+        first.message().contains(report.items()[0].path()),
+        "{first}"
+    );
 }
 
 #[test]
@@ -256,6 +309,11 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
         prepared_native_object_fingerprint(&prepared).expect("fingerprint object")
     };
     let baseline = fingerprint(EmitOptions::run("main"), NativeRoutePolicy::Automatic);
+    assert_eq!(
+        baseline,
+        fingerprint(EmitOptions::run("main"), NativeRoutePolicy::LcirOnly),
+        "route policy must not perturb the selected LCIR object identity"
+    );
     assert_ne!(
         baseline,
         fingerprint(EmitOptions::run("main"), NativeRoutePolicy::LegacyOnly),
@@ -444,6 +502,15 @@ fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
             .expect("read 32-bit object")
             .starts_with(b"\x7fELF")
     );
+
+    let text = allocating_text_program();
+    let options =
+        EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
+    let error = prepare_native_object(&text, options, NativeRoutePolicy::LcirOnly)
+        .err()
+        .expect("LCIR-only must preserve unsupported coverage before legacy ABI validation");
+    assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
+    assert!(error.support_report().is_some());
 
     let text = allocating_text_program();
     let options =

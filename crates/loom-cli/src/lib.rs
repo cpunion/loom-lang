@@ -157,6 +157,7 @@ impl NativePipelineError {
         match self {
             Self::Preparation(error) => match error.kind() {
                 loom_codegen_llvm::NativePreparationErrorKind::InvalidRoot
+                | loom_codegen_llvm::NativePreparationErrorKind::Unsupported
                 | loom_codegen_llvm::NativePreparationErrorKind::Resource => EXIT_FAILURE,
                 loom_codegen_llvm::NativePreparationErrorKind::Target => EXIT_USAGE,
                 loom_codegen_llvm::NativePreparationErrorKind::Defect => EXIT_DEFECT,

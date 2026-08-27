@@ -228,9 +228,7 @@ impl Error for LoweringError {}
 /// A stable coverage category for checked MIR not implemented by this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum UnsupportedFeature {
-    GenericFunction,
     AsyncFunction,
-    WitnessParameters,
     MutableParameter,
     MutableReceiver,
     Contracts,
@@ -244,11 +242,9 @@ pub enum UnsupportedFeature {
     SerializedProofRecheck,
     DynamicDispatch,
     BuiltinCall,
-    GenericCall,
     GenericInstanceBudget,
     NonRegularGenericRecursion,
     UnresolvedGenericInstantiation,
-    WitnessArguments,
     InOutArgument,
     View,
     Suspension,
@@ -260,9 +256,7 @@ impl UnsupportedFeature {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::GenericFunction => "GenericFunction",
             Self::AsyncFunction => "AsyncFunction",
-            Self::WitnessParameters => "WitnessParameters",
             Self::MutableParameter => "MutableParameter",
             Self::MutableReceiver => "MutableReceiver",
             Self::Contracts => "Contracts",
@@ -276,11 +270,9 @@ impl UnsupportedFeature {
             Self::SerializedProofRecheck => "SerializedProofRecheck",
             Self::DynamicDispatch => "DynamicDispatch",
             Self::BuiltinCall => "BuiltinCall",
-            Self::GenericCall => "GenericCall",
             Self::GenericInstanceBudget => "GenericInstanceBudget",
             Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
             Self::UnresolvedGenericInstantiation => "UnresolvedGenericInstantiation",
-            Self::WitnessArguments => "WitnessArguments",
             Self::InOutArgument => "InOutArgument",
             Self::View => "View",
             Self::Suspension => "Suspension",

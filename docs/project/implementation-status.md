@@ -83,6 +83,10 @@ workspace tests and builds, dual-backend fixture loops, standard-library
 differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
 `loom-quality` runner, and three short fuzz targets. The separate macOS job
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
+The controlled runner prepares every native object through the production
+router, requires its typed fixture to select LCIR, and records reviewed named
+legacy allowances for the remaining Core, C3, async, and standard-library
+coverage gaps.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow

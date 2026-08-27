@@ -7,8 +7,8 @@ use std::path::Path;
 
 use loom_codegen_ir::{
     CheckedArtifact, InvalidRootCode, LoweringDefectCode, LoweringError, LoweringOutcome,
-    ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, TargetLayout,
-    analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
+    ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, SupportReport,
+    TargetLayout, analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
 };
 use loom_mir::{CheckedProgram, Type};
 use serde::Serialize;
@@ -31,6 +31,10 @@ pub enum NativeRoutePolicy {
     /// Prefer typed LCIR and use checked-MIR code generation only when the
     /// complete reachable artifact is outside current LCIR coverage.
     Automatic,
+    /// Require complete typed LCIR coverage and reject the complete artifact
+    /// with its deterministic support report instead of selecting legacy code
+    /// generation.
+    LcirOnly,
     /// Use the checked-MIR backend without attempting LCIR lowering.
     LegacyOnly,
 }
@@ -46,18 +50,19 @@ pub enum NativeRouteKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativePreparationErrorKind {
     InvalidRoot,
+    Unsupported,
     Resource,
     Target,
     Defect,
 }
 
-/// Structured preparation failure. Unsupported LCIR is deliberately absent:
-/// it is the sole successful transition to the legacy route.
+/// Structured preparation failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativePreparationError {
     kind: NativePreparationErrorKind,
     code: &'static str,
     message: String,
+    support_report: Option<SupportReport>,
 }
 
 impl NativePreparationError {
@@ -76,6 +81,13 @@ impl NativePreparationError {
         &self.message
     }
 
+    /// Returns the deterministic whole-artifact LCIR coverage report for an
+    /// [`NativePreparationErrorKind::Unsupported`] failure.
+    #[must_use]
+    pub const fn support_report(&self) -> Option<&SupportReport> {
+        self.support_report.as_ref()
+    }
+
     fn new(
         kind: NativePreparationErrorKind,
         code: &'static str,
@@ -85,6 +97,17 @@ impl NativePreparationError {
             kind,
             code,
             message: message.into(),
+            support_report: None,
+        }
+    }
+
+    fn unsupported(report: SupportReport) -> Self {
+        let message = unsupported_message(&report);
+        Self {
+            kind: NativePreparationErrorKind::Unsupported,
+            code: "NativePreparationUnsupportedLcir",
+            message,
+            support_report: Some(report),
         }
     }
 
@@ -132,6 +155,32 @@ impl fmt::Display for NativePreparationError {
 }
 
 impl Error for NativePreparationError {}
+
+fn unsupported_message(report: &SupportReport) -> String {
+    let mut message = format!(
+        "typed LCIR is required, but reachable MIR uses {} unsupported LCIR feature site(s)",
+        report.len()
+    );
+    for item in report.items() {
+        let expression = item.expression().map_or_else(
+            || "none".to_owned(),
+            |expression| format!("#{}", expression.0),
+        );
+        let span = item.span();
+        write!(
+            message,
+            "\n- {}: {} (function #{}, expression {expression}, file #{}, bytes {}..{})",
+            item.feature(),
+            item.path(),
+            item.function().0,
+            span.file.0,
+            span.range.start,
+            span.range.end,
+        )
+        .expect("writing to a String cannot fail");
+    }
+    message
+}
 
 const fn invalid_root_error_code(code: InvalidRootCode) -> &'static str {
     match code {
@@ -190,8 +239,9 @@ impl PreparedNativeObject<'_> {
 ///
 /// # Errors
 ///
-/// Returns a structured invalid-root, resource, target, or compiler-defect
-/// error. Valid but unsupported LCIR always succeeds as one whole legacy plan.
+/// Returns a structured invalid-root, unsupported, resource, target, or
+/// compiler-defect error. Valid but unsupported LCIR selects one whole legacy
+/// plan only under [`NativeRoutePolicy::Automatic`].
 pub fn prepare_native_object(
     mir: &CheckedProgram,
     options: EmitOptions,
@@ -205,7 +255,7 @@ pub fn prepare_native_object(
     let target_identity = target.identity();
     trace_llvm_stage("prepare.identity.end");
     let route = match policy {
-        NativeRoutePolicy::Automatic => {
+        NativeRoutePolicy::Automatic | NativeRoutePolicy::LcirOnly => {
             let llvm_pointer_bits = target
                 .pointer_bits()
                 .map_err(|error| NativePreparationError::target(&error))?;
@@ -235,8 +285,11 @@ pub fn prepare_native_object(
                     trace_llvm_stage("prepare.lcir-lowering.complete");
                     PreparedRoute::Lcir(artifact)
                 }
-                LoweringOutcome::Unsupported(_) => {
+                LoweringOutcome::Unsupported(report) => {
                     trace_llvm_stage("prepare.lcir-lowering.unsupported");
+                    if policy == NativeRoutePolicy::LcirOnly {
+                        return Err(NativePreparationError::unsupported(report));
+                    }
                     target
                         .validate_legacy_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
