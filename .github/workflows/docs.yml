@@ -25,6 +25,9 @@ jobs:
       - name: Test documentation policy checker
         run: node --test .github/scripts/check-docs.test.mjs
 
+      - name: Test release workflow policy
+        run: node --test .github/scripts/check-release-workflow.test.mjs
+
       - name: Check documentation structure, language, and local links
         run: node .github/scripts/check-docs.mjs
 
@@ -48,4 +51,3 @@ jobs:
         uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
         with:
           files: "./**/*.md"
-
