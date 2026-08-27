@@ -193,6 +193,18 @@ no runtime witness, tag, indirect-call surface, or artifact format is added,
 LCIR dump 19, artifact schema 20, native-object domain v16, object-cache domain
 v21, and native runtime ABI component 15 remain unchanged.
 
+Artifact-closed finite dynamic catalogs advance the LCIR dump to 20, artifact
+schema to 21, native-object domain to v17, and LLVM object-cache domain to
+v22. A catalog with two or more exact closed nongeneric conformances records
+its deterministic candidate order in checked LCIR. Each value is one managed
+pointer to a candidate-specific box containing a compiler-private ordinal tag
+and the exact concrete payload. The backend emits one precise fixed-object
+descriptor per candidate and a finite tag switch whose arms make ordinary
+direct calls. Mutable calls return the updated concrete receiver and allocate
+a fresh box on both normal and fault writeback paths. This reuses
+`loom_gc_typed_alloc_v1`; the native runtime ABI component remains 15. The
+catalog is compiler-private and does not define a cross-artifact dynamic ABI.
+
 ## Toolchain releases
 
 The repository uses SemVer-shaped Cargo versions. While the toolchain is below

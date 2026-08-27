@@ -415,7 +415,9 @@ source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
-typed Task creation, suspension edges, and exact frame-root rows.
+typed Task creation, suspension edges, and exact frame-root rows, plus
+artifact-closed finite dynamic catalogs with candidate-specific precise boxes
+and direct tag-switch dispatch.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.
