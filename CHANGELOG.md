@@ -42,6 +42,24 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now lowers the first complete stackless-coroutine slice instead of
+  routing it through the universal emitter. Infallible async functions whose
+  parameters, results, and suspension-live values have direct scalar, product,
+  refined, or Text shapes use a checked `CoroutinePlan`, a non-GC `Task[T]`
+  handle, explicit `task.create`/`task.await` control flow, and target-laid-out
+  frames with immutable exact root descriptors. LLVM resumes those frames
+  through the existing typed-task and structured-join runtime ABI; async run
+  and test roots own a real executor for the root Task lifecycle. The
+  `lcir-typed-async` fixture closes real `check/build/test/run`,
+  interpreter/legacy/typed differential execution, Linux/MSVC object emission,
+  multiple awaits, and forced moving-GC relocation of a parent Text root while
+  its child runs. Fallible async, cleanup across suspension, sleep/readiness,
+  Task joins, sum/List/TextMap frame values, and dynamic concepts remain the
+  reviewed Core03 legacy allowance. Together with the previously deferred
+  typed-TextMap vocabulary, this advances the LCIR dump to 20, artifact
+  identity to schema 21, native-object domain to v17, and LLVM object-cache
+  domain to v22. The existing typed-task v1 and native runtime ABI are
+  unchanged.
 - Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
   `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;

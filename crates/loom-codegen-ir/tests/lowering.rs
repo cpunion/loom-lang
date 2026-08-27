@@ -100,6 +100,10 @@ pub async fn main() Unit {
     assert_eq!(main_plan.suspensions().len(), 1);
     assert_eq!(main_plan.suspensions()[0].state(), 1);
     assert!(main_plan.suspensions()[0].live().is_empty());
+    let dump = dump_program(artifact.program());
+    let encoded_plan = format!("coroutine output={} states=[1()]", main_plan.output());
+    assert!(dump.contains(&encoded_plan), "{dump}");
+    assert!(artifact_identity(&artifact).contains(&encoded_plan));
     assert!(main.instructions().iter().any(|instruction| matches!(
         instruction.kind(),
         InstructionKind::TaskCreate { coroutine, .. } if coroutine == &echo.id()

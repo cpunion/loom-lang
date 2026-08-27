@@ -129,6 +129,8 @@ vocabulary is:
 - `Sum(variants...)` for a concrete closed enum whose substituted payloads are
   direct values. One variant is tagless, an all-empty multi-variant sum is tag
   only, and every other sum has a minimal tag plus an exact aligned carrier.
+- `TaskHandle` for one stable scheduler-owned `Task[T]` pointer in the checked
+  coroutine slice. It is not a moving-GC reference or a universal value.
 
 Products and sums are immutable register aggregates. Tuples and records may
 contain one another and managed Text leaves when the resulting by-value graph is
@@ -138,8 +140,8 @@ Transparent/refined carriers remain pointer-free in this slice. Each
 representation plan has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. General managed,
-dynamic-witness, erased, and coroutine representations are added only with
-complete lowering and validation rules. A generic or dynamic operation
+dynamic-witness, erased, and additional coroutine representations are added
+only with complete lowering and validation rules. A generic or dynamic operation
 elsewhere in an artifact does not make an unrelated direct value carry a
 universal tag.
 
@@ -235,6 +237,11 @@ resource_close kind, resource
     normal target(Unit, resource_writeback; forwarded...)
     fault target(resource_writeback; forwarded...)
 
+task.create coroutine(arguments...) -> Task[T]
+
+task.await state, task
+    normal target(result; exact_live_values...)
+
 fault runtime code | contract metadata
 
 resume_fault
@@ -276,9 +283,10 @@ lexical block expands its suffix newest-first on normal completion, return, and
 fault. A first fault remains primary; faults raised by cleanup are suppressed
 while every older cleanup still runs. Static-concept disposal uses a closed
 typed call with receiver writeback. File and Socket use the typed
-`resource_close` edge form. LCIR has no suspension opcode in this slice, and
-validation rejects any cleanup call graph that invents a suspension effect or
-calls a suspending exact callee.
+`resource_close` edge form. LCIR has an explicit checked suspension edge, but
+the current coroutine slice admits no active cleanup across it. Validation
+rejects a cleanup call graph that invents a suspension effect or calls a
+suspending exact callee.
 
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not
@@ -299,6 +307,7 @@ source function:
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
 | `ImmortalText` or `ManagedPointer` Text | opaque pointer |
+| `TaskHandle` | opaque scheduler-owned pointer |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
 | tagless `Sum` | its sole variant payload struct |
 | tag-only `Sum` | its checked minimal integer tag |
@@ -318,9 +327,9 @@ single fallibility flag. `MAY_FAULT` remains independent; checked scalar faults
 do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
-closure over direct and invoke call edges. `TextConcat` and `TextGet` are the
-current collecting opcodes. The typed operation set still has no executor or suspending
-opcode.
+closure over direct, invoke, and Task-creation edges. `TextConcat` and
+`TextGet` are collecting opcodes. `TaskCreate` and `AwaitTask` are the checked
+executor/suspension operations for the admitted coroutine slice.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -339,7 +348,21 @@ typed capture block per selected source arm, and are rejected before LCIR
 allocation if their bounded pattern, decision, value, work, or CFG-block
 budgets are exceeded.
 The harness creates no runtime for a pure direct root. It creates a runtime,
-but no executor, for a synchronous faulting or collecting root.
+but no executor, for a synchronous faulting or collecting root. An async root
+creates one executor, constructs the root Task, runs it to a terminal state,
+takes its exact typed result, and destroys the executor.
+
+Each admitted async instance has a checked `CoroutinePlan` with an exact output
+type and dense resume states. Every state records the live value types forwarded
+to its continuation. LLVM target data shapes a frame containing state,
+parameters, one child/live row per suspension, and result. An immutable
+typed-task descriptor publishes exact managed-leaf byte offsets and per-state
+bitmaps. The callback dispatches state zero to the LCIR entry, later states
+through the structured join-step ABI, and publishes completion through
+typed-task v1. The current boundary is infallible and non-inout, with direct
+scalar/refined/product/Text frame values; sums, Lists, TextMaps, dynamic
+concepts, cleanup across suspension, sleep/readiness, and Task joins remain
+whole-artifact fallback.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
@@ -448,8 +471,9 @@ Every LCIR slice requires:
 - LLVM structure tests for direct signatures, phi nodes, calls, checked
   operations, and fault propagation;
 - negative IR assertions that a complete direct artifact has no universal
-  value, linked argument nodes, tag operations, GC setup, executor setup, or
-  universal root wrapper;
+  value, linked argument nodes, legacy tag operations, or universal root
+  wrapper; synchronous slices also require no executor, while async slices
+  require only the checked typed-task/executor surface;
 - reachable-unsupported and unreachable-unsupported route tests;
 - tests proving that lowering, validation, and target defects do not fall back;
 - development and release verification on every supported native CI host;

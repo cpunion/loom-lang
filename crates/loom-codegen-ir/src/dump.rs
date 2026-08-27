@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 19")?;
+    writeln!(output, "lcir 20")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -114,7 +114,25 @@ pub fn write_program_with_options(
         let entry = function
             .entry()
             .expect("checked LCIR function has an entry block");
-        writeln!(output, " entry={entry} effects={} {{", function.effects())?;
+        write!(output, " entry={entry} effects={}", function.effects())?;
+        if let Some(coroutine) = function.coroutine() {
+            write!(output, " coroutine output={} states=[", coroutine.output())?;
+            for (index, suspension) in coroutine.suspensions().iter().enumerate() {
+                if index != 0 {
+                    write!(output, ", ")?;
+                }
+                write!(output, "{}(", suspension.state())?;
+                for (live_index, ty) in suspension.live().iter().enumerate() {
+                    if live_index != 0 {
+                        write!(output, ", ")?;
+                    }
+                    write!(output, "{ty}")?;
+                }
+                write!(output, ")")?;
+            }
+            write!(output, "]")?;
+        }
+        writeln!(output, " {{")?;
         if options.include_origins {
             write_origin(output, function.origin(), "  ; function-origin")?;
         }
