@@ -43,10 +43,18 @@ contracts, overflow checks, cleanup, GC roots, or concept proof validation.
 
 ## Controlled quality runner
 
-`loom-quality` runs the frozen Core fixtures, the C3 multi-package project,
-standard-library behavior, parser throughput, artifact decoding, and a
-64-module incremental edit under generous upper bounds. It emits a JSON
-evidence report.
+`loom-quality` runs the frozen Core fixtures, a required typed-LCIR fixture, the
+C3 multi-package project, standard-library behavior, parser throughput,
+artifact decoding, and a 64-module incremental edit under generous upper
+bounds. It emits a versioned JSON evidence report.
+
+Every native object is prepared and emitted through the production prepared
+route. Schema 2 records the scenario, expected route, actual route, and any
+named legacy allowance. A supported fixture must select LCIR. A fixture still
+outside typed coverage may select legacy only through a reviewed allowance that
+names the boundary and explains the missing coverage. An unexpected route in
+either direction fails the runner, so newly supported coverage requires removal
+of its stale allowance.
 
 Those time bounds detect gross regressions and runaway behavior on CI; they are
 not user latency service-level objectives. The C3 label in the report means

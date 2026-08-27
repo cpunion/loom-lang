@@ -20,8 +20,9 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | LCIR native-object domain | `loom-lcir-native-object-v11` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v16` |
+| Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `13` |
+| Native runtime ABI component | `14` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -30,6 +31,12 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
+
+Controlled quality evidence schema 2 adds an ordered native-route record for
+every prepared object. Each record carries the scenario, expected and actual
+route, and the optional named legacy allowance. This changes evidence consumers
+only: route policy does not alter a selected object's LCIR artifact, object
+identity domain, cache key format, or native runtime ABI.
 
 Interpreted MIR version 21 replaces the lossy synthesized `Let` plus `Defer`
 encoding of `scoped` with an atomic scoped-initialization and disposal record.

@@ -10,6 +10,9 @@ artifact, or runtime compatibility.
 
 ### Added
 
+- `NativeRoutePolicy::LcirOnly`, which turns incomplete whole-artifact LCIR
+  coverage into a structured `NativePreparationUnsupportedLcir` error and
+  retains the complete deterministic `SupportReport` for tooling and gates.
 - An English documentation structure for installation, first use, core
   language features, packages, contribution, security, and project direction.
 - A pull-request-only contribution policy and private security-reporting path.
@@ -39,6 +42,13 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- The controlled quality runner now compiles every native scenario through the
+  same prepared Automatic route used by production commands. Its version 2
+  evidence records the expected and actual route for each object, requires the
+  typed fixture to remain LCIR, and permits legacy only through reviewed named
+  allowances for fixtures whose missing typed coverage is explicit. This is an
+  evidence-schema change only; LCIR artifacts, object domains, caches, and the
+  native runtime ABI are unchanged.
 - Checked MIR now carries source-module provenance and a versioned
   compiler-known identity for the canonical `standard.resource.MustScope`
   marker. Artifact and cache validation independently require that qualified

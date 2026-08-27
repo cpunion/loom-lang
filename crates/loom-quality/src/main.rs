@@ -10,8 +10,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use loom_codegen_llvm::{
-    EmitOptions, NativeTargetIdentity, OptimizationProfile, RuntimeBundle, RuntimeLinker,
-    emit_native, target_identity,
+    EmitOptions, NativeArtifactKind, NativeRouteKind, NativeRoutePolicy, NativeTargetIdentity,
+    OptimizationProfile, RuntimeBundle, RuntimeLinker, emit_native_debug_companion,
+    emit_prepared_native_object, link_object_with_runtime_bundle, native_artifact_path,
+    prepare_native_object, prepared_native_target_identity, target_identity,
 };
 use loom_core::{FileId, Span};
 use loom_driver::AnalysisHost;
@@ -34,6 +36,22 @@ const C3_REPOSITORY: &str = "examples/c3/application";
 const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
+const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
+const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
+
+const C3_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
+    name: "c3-runtime-refinement",
+    reason: "the C3 graph still contains runtime-checked constrained-value construction outside current typed LCIR coverage",
+};
+const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
+    name: "async-generic-contract-runtime",
+    reason: "async Task lowering and source contracts are not yet complete in typed LCIR",
+};
+const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
+    NativeRouteExpectation::LegacyAllowed {
+        name: "standard-library-managed-runtime",
+        reason: "dynamic collections, JSON, async I/O, and Task operations are not yet complete in typed LCIR",
+    };
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -41,18 +59,30 @@ const TASKS: &[TaskSpec] = &[
         path: "examples/core01",
         source: "examples/core01/shop.loom",
         sha256: "f3c6b8cad23cf4113e7555ac29d2307d853af10eff4ee89482ef4c8617a77472",
+        native_route: NativeRouteExpectation::LegacyAllowed {
+            name: "core01-source-contracts",
+            reason: "source contracts and checked constrained-value construction are not yet complete in typed LCIR",
+        },
     },
     TaskSpec {
         name: "concept-polymorphism",
         path: "examples/core02",
         source: "examples/core02/concepts.loom",
         sha256: "60bc7e21bd475ae3fb0f795f25cbae92e4d86c7c48675abad02c9561d2701d4a",
+        native_route: NativeRouteExpectation::LegacyAllowed {
+            name: "core02-dynamic-concepts",
+            reason: "dyn concept values and dynamic dispatch are not yet represented in typed LCIR",
+        },
     },
     TaskSpec {
         name: "structured-async",
         path: "examples/core03",
         source: "examples/core03/tasks.loom",
         sha256: "4f24a49bdb93d5813ddd0d7d827d88d59af79cfed58635ca91d72c67aa57d50f",
+        native_route: NativeRouteExpectation::LegacyAllowed {
+            name: "core03-async-tasks",
+            reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
+        },
     },
 ];
 
@@ -61,11 +91,41 @@ struct TaskSpec {
     path: &'static str,
     source: &'static str,
     sha256: &'static str,
+    native_route: NativeRouteExpectation,
+}
+
+#[derive(Clone, Copy)]
+enum NativeRouteExpectation {
+    Lcir,
+    LegacyAllowed {
+        name: &'static str,
+        reason: &'static str,
+    },
+}
+
+impl NativeRouteExpectation {
+    const fn route(self) -> NativeRouteKind {
+        match self {
+            Self::Lcir => NativeRouteKind::Lcir,
+            Self::LegacyAllowed { .. } => NativeRouteKind::Legacy,
+        }
+    }
+
+    const fn legacy_allowlist(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Lcir => None,
+            Self::LegacyAllowed { name, reason } => Some((name, reason)),
+        }
+    }
 }
 
 struct NativeRuntime {
     bundle: RuntimeBundle,
     linker: RuntimeLinker,
+}
+
+struct NativeBuild {
+    functions: usize,
 }
 
 struct StandardLibraryFixture {
@@ -189,8 +249,20 @@ struct EvidenceReport {
     optimization: String,
     tasks: Vec<TaskEvidence>,
     repository: Option<RepositoryEvidence>,
+    native_routes: Vec<NativeRouteEvidence>,
     gates: Vec<GateEvidence>,
     failures: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeRouteEvidence {
+    scenario: String,
+    expected: &'static str,
+    actual: &'static str,
+    legacy_allowlist: Option<&'static str>,
+    legacy_reason: Option<&'static str>,
+    passed: bool,
 }
 
 #[derive(Serialize)]
@@ -242,6 +314,7 @@ struct GateEvidence {
     passed: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let started = Instant::now();
     let workspace = workspace_root();
@@ -260,7 +333,7 @@ fn main() {
         }
     };
     let mut report = EvidenceReport {
-        schema_version: 1,
+        schema_version: QUALITY_EVIDENCE_SCHEMA_VERSION,
         evidence_level: "C3 real multi-package repository",
         status: "running",
         compiler_version: env!("CARGO_PKG_VERSION"),
@@ -270,26 +343,56 @@ fn main() {
         optimization: target.optimization,
         tasks: Vec::new(),
         repository: None,
+        native_routes: Vec::new(),
         gates: Vec::new(),
         failures: Vec::new(),
     };
 
     for task in TASKS {
-        match run_task(&workspace, task, &runtime, &mut report.gates) {
+        match run_task(
+            &workspace,
+            task,
+            &runtime,
+            &mut report.gates,
+            &mut report.native_routes,
+        ) {
             Ok(evidence) => report.tasks.push(evidence),
             Err(error) => report.failures.push(format!("{}: {error}", task.name)),
         }
     }
-    match run_c3_repository(&workspace, &runtime, &mut report.gates) {
+    if let Err(error) = typed_lcir_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
+        report.failures.push(format!("typed-lcir: {error}"));
+    }
+    match run_c3_repository(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
         Ok(evidence) => report.repository = Some(evidence),
         Err(error) => report.failures.push(format!("c3-repository: {error}")),
     }
-    if let Err(error) = async_generic_contract_gate(&workspace, &runtime, &mut report.gates) {
+    if let Err(error) = async_generic_contract_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
         report
             .failures
             .push(format!("async-generic-contracts: {error}"));
     }
-    if let Err(error) = standard_library_gate(&workspace, &runtime, &mut report.gates) {
+    if let Err(error) = standard_library_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
         report.failures.push(format!("standard-library: {error}"));
     }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
@@ -337,10 +440,134 @@ fn load_native_runtime(target: &NativeTargetIdentity) -> Result<NativeRuntime, S
     Ok(NativeRuntime { bundle, linker })
 }
 
+fn native_route_name(route: NativeRouteKind) -> &'static str {
+    match route {
+        NativeRouteKind::Lcir => "lcir",
+        NativeRouteKind::Legacy => "legacy",
+    }
+}
+
+fn emit_routed_native(
+    program: &CheckedProgram,
+    output: &Path,
+    options: EmitOptions,
+    runtime: &NativeRuntime,
+    scenario: impl Into<String>,
+    expectation: NativeRouteExpectation,
+    routes: &mut Vec<NativeRouteEvidence>,
+) -> Result<NativeBuild, String> {
+    let scenario = scenario.into();
+    let has_debug_sources = !options.debug_sources.is_empty();
+    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
+        .map_err(|error| format!("{scenario} native preparation failed: {error}"))?;
+    let actual = prepared.route_kind();
+    let expected = expectation.route();
+    let passed = actual == expected;
+    let allowlist = expectation.legacy_allowlist();
+    routes.push(NativeRouteEvidence {
+        scenario: scenario.clone(),
+        expected: native_route_name(expected),
+        actual: native_route_name(actual),
+        legacy_allowlist: allowlist.map(|(name, _)| name),
+        legacy_reason: allowlist.map(|(_, reason)| reason),
+        passed,
+    });
+    if !passed {
+        return Err(format!(
+            "{scenario} selected native route `{}`, expected `{}`",
+            native_route_name(actual),
+            native_route_name(expected),
+        ));
+    }
+
+    let target = prepared_native_target_identity(&prepared);
+    if runtime.bundle.target_triple() != target.triple
+        || runtime.bundle.data_layout() != target.data_layout
+    {
+        return Err(format!(
+            "{scenario} runtime bundle target does not match the prepared native object"
+        ));
+    }
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let object = native_artifact_path(
+        directory.path().join("loom-quality"),
+        Some(&target.triple),
+        NativeArtifactKind::Object,
+    );
+    let emitted = emit_prepared_native_object(&prepared, &object)
+        .map_err(|error| format!("{scenario} object emission failed: {error}"))?;
+    link_object_with_runtime_bundle(&object, output, &runtime.bundle, &runtime.linker)
+        .map_err(|error| format!("{scenario} native link failed: {error}"))?;
+    if has_debug_sources {
+        emit_native_debug_companion(output)
+            .map_err(|error| format!("{scenario} debug companion failed: {error}"))?;
+    }
+    Ok(NativeBuild {
+        functions: emitted.functions,
+    })
+}
+
+fn typed_lcir_gate(
+    workspace: &Path,
+    runtime: &NativeRuntime,
+    gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
+) -> Result<(), String> {
+    let project = workspace.join(TYPED_LCIR_FIXTURE);
+    let snapshot = AnalysisHost::new(&project)
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory.path().join("main");
+    let build_started = Instant::now();
+    emit_routed_native(
+        program,
+        &executable,
+        EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
+        runtime,
+        "typed-lcir.main",
+        NativeRouteExpectation::Lcir,
+        routes,
+    )?;
+    upper_gate(
+        gates,
+        "typed-lcir.native-build",
+        build_started.elapsed(),
+        NATIVE_BUILD_BUDGET,
+    );
+
+    let run_started = Instant::now();
+    let output = Command::new(&executable)
+        .current_dir(project)
+        .output()
+        .map_err(|error| format!("execute typed LCIR fixture: {error}"))?;
+    if !output.status.success() || output.stdout != b"Unit\n" {
+        return Err(format!(
+            "native main mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    upper_gate(
+        gates,
+        "typed-lcir.native-execution",
+        run_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+    Ok(())
+}
+
 fn standard_library_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let interpreter_project = tempfile::tempdir().map_err(|error| error.to_string())?;
     let interpreter_fixture =
@@ -389,6 +616,7 @@ fn standard_library_gate(
         native_fixture,
         runtime,
         gates,
+        routes,
     )
 }
 
@@ -440,15 +668,18 @@ fn run_standard_library_native(
     fixture: StandardLibraryFixture,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let executable = project.join("native-tests");
     let native_build_started = Instant::now();
-    emit_native(
+    emit_routed_native(
         program,
         &executable,
-        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        "standard-library.tests",
+        STANDARD_LIBRARY_LEGACY_ROUTE,
+        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -605,6 +836,7 @@ fn async_generic_contract_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let snapshot = AnalysisHost::new(workspace.join(ASYNC_GENERIC_FIXTURE))
         .map_err(|error| error.to_string())?
@@ -636,12 +868,14 @@ fn async_generic_contract_gate(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory.path().join("tests");
     let native_build_started = Instant::now();
-    emit_native(
+    emit_routed_native(
         program,
         &executable,
-        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        "async-generic-contracts.tests",
+        ASYNC_GENERIC_LEGACY_ROUTE,
+        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -681,6 +915,7 @@ fn run_c3_repository(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<RepositoryEvidence, String> {
     let analysis_started = Instant::now();
     let snapshot = AnalysisHost::new(workspace.join(C3_REPOSITORY))
@@ -744,21 +979,25 @@ fn run_c3_repository(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let native_build_started = Instant::now();
     let executable = directory.path().join("main");
-    let main_artifact = emit_native(
+    let main_artifact = emit_routed_native(
         program,
         &executable,
-        &EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
+        runtime,
+        "c3-repository.main",
+        C3_LEGACY_ROUTE,
+        routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
-    let test_artifact = emit_native(
+    let test_artifact = emit_routed_native(
         program,
         &test_executable,
-        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        "c3-repository.tests",
+        C3_LEGACY_ROUTE,
+        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();
@@ -853,6 +1092,7 @@ fn run_task(
     task: &'static TaskSpec,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<TaskEvidence, String> {
     let source = std::fs::read_to_string(workspace.join(task.source))
         .map_err(|error| format!("read {}: {error}", task.source))?;
@@ -919,21 +1159,25 @@ fn run_task(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let native_build_started = Instant::now();
     let executable = directory.path().join("main");
-    let main_artifact = emit_native(
+    let main_artifact = emit_routed_native(
         program,
         &executable,
-        &EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
+        runtime,
+        format!("{}.main", task.name),
+        task.native_route,
+        routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
-    let test_artifact = emit_native(
+    let test_artifact = emit_routed_native(
         program,
         &test_executable,
-        &EmitOptions::tests().with_optimization(OptimizationProfile::Release),
-        &runtime.bundle,
-        &runtime.linker,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        format!("{}.tests", task.name),
+        task.native_route,
+        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();

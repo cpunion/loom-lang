@@ -49,6 +49,13 @@ code cannot change the route; one unsupported reachable test changes the
 whole ordered-test artifact. Invalid roots, resource limits, compiler defects,
 and LCIR emitter failures never fall back.
 
+`NativeRoutePolicy::LcirOnly` uses the same target, roots, reachability, and
+whole-artifact classification, but an `Unsupported` result is a structured
+`NativePreparationUnsupportedLcir` error. The error owns the ordered
+`SupportReport`, including stable feature, function, expression, span, and path
+facts for every unsupported reachable site. `LegacyOnly` skips LCIR
+classification and exists for focused backend validation.
+
 Source contracts remain outside that routing slice. Hand-built LCIR now carries
 canonical assertion, precondition, postcondition, and invariant fault metadata,
 including bounded user code, message, contract span, and concrete blame span.
@@ -83,10 +90,11 @@ legacy and LCIR emitters retain low-level direct APIs for focused tests and
 library clients, but each is a thin create-target-then-emit wrapper. Production
 CLI paths use only the prepared facade.
 
-Preparation failures have four structured classes: invalid root, resource,
-target/configuration, and compiler defect. The CLI maps them respectively to
-failure, failure, usage, and defect exits. Classification never depends on
-matching diagnostic strings.
+Preparation failures have five structured classes: invalid root, unsupported
+LCIR under a strict policy, resource, target/configuration, and compiler defect.
+Unsupported errors and ordinary invalid/resource failures use the failure exit;
+target errors use the usage exit and defects use the defect exit.
+Classification never depends on matching diagnostic strings.
 
 ## Target-machine policy
 
@@ -108,6 +116,10 @@ selects atomic legacy fallback during 32-bit direct classification, and that
 legacy route then reports its existing unsupported-target boundary. None of
 these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
 target availability proves only object emission.
+
+Under `LcirOnly`, the same unsupported 32-bit Text artifact returns its
+coverage report before any legacy ABI validation. A complete width-independent
+LCIR artifact remains eligible for 32-bit object emission.
 
 ## Verification and optimization
 

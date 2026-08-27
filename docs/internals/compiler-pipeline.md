@@ -20,7 +20,9 @@ project input
        -> whole-artifact direct classification/lowering
           -> complete checked LCIR -> typed LLVM emitter
           or
-          -> unsupported -> checked-MIR reachability -> legacy LLVM emitter
+          -> unsupported
+             -> Automatic -> checked-MIR reachability -> legacy LLVM emitter
+             -> LcirOnly -> structured support-report error
        -> object cache -> linker
 ```
 
@@ -119,6 +121,13 @@ and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
 legacy source graph and universal-value emitter for the complete artifact.
 Invalid roots, resource exhaustion, compiler defects, and LCIR emission
 failures never select fallback.
+
+Tooling can select `NativeRoutePolicy::LcirOnly` at the same preparation
+boundary. It performs the identical whole-artifact classification but returns
+`NativePreparationUnsupportedLcir` with the ordered `SupportReport` instead of
+constructing a legacy plan. `LegacyOnly` remains available for focused legacy
+backend validation. Route policy never changes the identity of an otherwise
+identical selected object.
 
 The prepared plan owns its `EmitOptions` and exact target machine. Cache
 identity, runtime-bundle validation, optimization, and object emission reuse
