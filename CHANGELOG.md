@@ -28,6 +28,9 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Failed native links now retain bounded diagnostics written to both standard
+  output and standard error. This preserves MSVC `LINK` errors that Clang
+  otherwise followed with only a generic failure summary.
 - Windows host codegen now uses LLVM's deterministic generic x86-64 policy
   instead of entering LLVM 19's host-feature probe. This
   also aligns compiler and runtime-bundle CPU policy during `runtime pack`.
