@@ -42,6 +42,18 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
+  `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
+  universal value or executor. Parse results use their exact closed sums;
+  Duration is a direct product whose negative check uses canonical
+  `Assert + FaultMetadata::Runtime`, preserving lexical cleanup and the first
+  active fault. Float formatting publishes a direct managed Text pointer
+  through exact live-after roots and remains correct under forced relocation.
+  This advances the LCIR dump to 19, artifact identity to schema 20,
+  native-object domain to v16, and LLVM object-cache domain to v21. The new
+  `loom_runtime_format_float_typed_v1` boundary advances the native runtime ABI
+  to component 15 with `format-float-v1` and `runtime-v9`; `text-v3` and
+  `gc-v9` are unchanged.
 - Typed LCIR now lowers value equality and inequality for concrete tuples,
   generic and nongeneric records, established refined values, closed sums, and
   finite List-backed structural graphs. Products compare fields in order;
@@ -89,6 +101,11 @@ artifact, or runtime compatibility.
   fault edge. This advances the LCIR dump to 18, artifact identity to schema
   19, LCIR native-object domain to v15, and LLVM object-cache domain to v20;
   the runtime ABI is unchanged.
+- Nongeneric refined and invariant runtime construction now remains on typed
+  LCIR and returns the exact `Result[..., ConstraintError]`. Rejection builds
+  the validated six-field, disclosure-safe error value; acceptance publishes
+  the nominal value only after its predicate succeeds. Generic or
+  unsupported-shape runtime construction remains atomic fallback.
 - Typed LCIR now places source contracts at explicit checked boundaries.
   Closed-world calls evaluate every argument before checking `requires` with
   exact call-expression blame, then enter an assumed body whose receiver
@@ -100,9 +117,9 @@ artifact, or runtime compatibility.
   or executor. This advances the LCIR dump to 16, artifact identity to schema
   17, native-object domain to v13, and CLI object cache to v18 without changing
   native runtime ABI component 14.
-- The controlled Core 0.1 evidence now requires its exact main graph to select
-  typed LCIR. Its negative test graph keeps a named legacy allowance only for
-  deliberate runtime-checked constrained-value and invariant construction.
+- The controlled Core 0.1 evidence now requires both its main and negative-test
+  graphs to select typed LCIR; the runtime-construction legacy allowance has
+  been removed.
 - The controlled quality runner now compiles every native scenario through the
   same prepared Automatic route used by production commands. Its version 2
   evidence records the expected and actual route for each object, requires the

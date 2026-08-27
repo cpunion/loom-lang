@@ -178,8 +178,10 @@ product. Its returned leaf is inserted through the statically typed field path
 on the normal edge and before fault propagation on the unwind edge. LLVM sees
 only `extractvalue`, `insertvalue`, direct aggregate values, and the existing
 functional return ABI; no proxy allocation, universal value, or runtime
-writeback helper is introduced. Protected/managed projections, contracts, and
-runtime-checked construction still select atomic whole-artifact fallback.
+writeback helper is introduced. Protected or managed projections still select
+atomic whole-artifact fallback. Nongeneric refined and invariant runtime
+construction instead returns the exact typed `Result[..., ConstraintError]`;
+generic or unsupported-shape construction remains fallback.
 
 Fresh-source proven record invariants and refined predicates do not add an LLVM
 wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
@@ -365,7 +367,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v15` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v16` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -377,7 +379,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v20` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v21` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -401,6 +403,10 @@ The bundle also provides `loom_runtime_text_get_typed_v1` for direct
 one-scalar Text results. Its found/missing/invalid status is separate from the
 GC status domain. This advances `text-v3` and native component 14
 (`runtime-v8`) without changing `gc-v9`.
+The additive `loom_runtime_format_float_typed_v1(value, out_cell)` boundary
+publishes canonical Float text through a direct managed pointer. It advances
+the native component to 15 with `format-float-v1` and `runtime-v9`; the
+existing `text-v3` layout, `gc-v9`, and typed allocation wires do not change.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

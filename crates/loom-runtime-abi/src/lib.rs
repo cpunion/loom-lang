@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 14;
+pub const RUNTIME_ABI_VERSION: u32 = 15;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -15,7 +15,7 @@ pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v8/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/format-float-v1/runtime-v9/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -67,7 +67,8 @@ pub const TEXT_GET_TYPED_MISSING: i32 = 0;
 pub const TEXT_GET_TYPED_FOUND: i32 = 1;
 /// Existing scalar parse boundaries shared by both native backends. These
 /// symbols predate the typed LCIR route; naming them here prevents either
-/// emitter from inventing an ABI spelling while keeping runtime ABI v14.
+/// emitter from inventing an ABI spelling. These pre-existing symbols do not
+/// account for the component-15 bump, which belongs to typed float formatting.
 pub const PARSE_INT_SYMBOL: &str = "loom_runtime_parse_int";
 pub const PARSE_FLOAT_SYMBOL: &str = "loom_runtime_parse_float";
 pub const PARSE_STATUS_OK: i32 = 0;
@@ -467,7 +468,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 14);
+        assert_eq!(RUNTIME_ABI_VERSION, 15);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -508,7 +509,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v8/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/format-float-v1/runtime-v9/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 

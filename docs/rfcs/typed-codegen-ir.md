@@ -381,6 +381,13 @@ universal envelope. Missing selection constructs a zero carrier and performs
 no allocation; found selection uses the staged direct Text pointer, and an
 invalid status traps as an ABI defect.
 
+Typed Float formatting adds
+`loom_runtime_format_float_typed_v1(value, out_cell)`. The helper publishes a
+canonical direct Text pointer only after initialization and uses one closed
+status domain. It advances native component 15 with `format-float-v1` and
+`runtime-v9` while retaining `text-v3`, `gc-v9`, and both typed allocation
+wires.
+
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
 one artifact.
