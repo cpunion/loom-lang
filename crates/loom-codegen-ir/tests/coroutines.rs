@@ -374,7 +374,6 @@ fn task_join_all_program(
             )
             .expect("return");
     }
-
     let root = builder
         .declare_function(origin, "join.root", Signature::new([], unit), effects)
         .expect("root");
@@ -1018,6 +1017,7 @@ fn await_tasks_program(
     let origin = Origin::synthetic(FunctionId(0));
     let int_origin = Origin::synthetic(FunctionId(1));
     let bool_origin = Origin::synthetic(FunctionId(2));
+    let fallible_origin = Origin::synthetic(FunctionId(3));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
@@ -1100,6 +1100,37 @@ fn await_tasks_program(
                 Terminator::new(TerminatorKind::Return(value), bool_origin),
             )
             .expect("return");
+    }
+    let fallible_child = builder
+        .declare_function(
+            fallible_origin,
+            "await.fallible_child",
+            Signature::new([], unit),
+            Effects::MAY_FAULT
+                .union(Effects::NEEDS_EXECUTOR)
+                .with_implications(),
+        )
+        .expect("fallible child");
+    {
+        let mut function = builder
+            .function(fallible_child)
+            .expect("fallible child builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(unit, []))
+            .expect("fallible child coroutine");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Fault {
+                        metadata: FaultMetadata::runtime(FaultCode::IntegerOverflow),
+                    },
+                    fallible_origin,
+                ),
+            )
+            .expect("fault");
     }
 
     let root = builder
@@ -1403,6 +1434,56 @@ fn await_tasks_program(
                     Terminator::new(TerminatorKind::ResumeFault, origin),
                 )
                 .expect("propagate invalid Task.sleep fault");
+        } else if matches!(exit_case, AwaitExitCase::CancelDirectCallsExecutor) {
+            function
+                .append_instruction(
+                    cancel,
+                    InstructionKind::DirectCall {
+                        callee: int_child,
+                        arguments: Box::new([]),
+                    },
+                    &[integer],
+                    origin,
+                )
+                .expect("invalid executor-dependent call");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid executor-dependent call");
+        } else if matches!(exit_case, AwaitExitCase::CancelInvokesExecutor) {
+            let invoke_normal = function.create_block().expect("cancel invoke normal");
+            let invoke_unwind = function.create_block().expect("cancel invoke unwind");
+            function
+                .append_block_parameter(invoke_normal, unit)
+                .expect("cancel invoke Unit");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(
+                        TerminatorKind::Invoke {
+                            callee: fallible_child,
+                            arguments: Box::new([]),
+                            normal: ResultTarget::new(invoke_normal, []),
+                            unwind: UnwindTarget::new(invoke_unwind, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("invalid executor-dependent invoke");
+            function
+                .terminate(
+                    invoke_normal,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid executor-dependent invoke");
+            function
+                .terminate(
+                    invoke_unwind,
+                    Terminator::new(TerminatorKind::ResumeFault, origin),
+                )
+                .expect("propagate invalid executor-dependent invoke fault");
         } else if matches!(exit_case, AwaitExitCase::CancelReturns) {
             let result = function
                 .append_instruction(
@@ -1461,6 +1542,8 @@ enum AwaitExitCase {
     CancelSuspends,
     CancelMutatesTopology,
     CancelSleeps,
+    CancelDirectCallsExecutor,
+    CancelInvokesExecutor,
     FaultSuspends,
 }
 
@@ -1536,10 +1619,29 @@ fn cancellation_cleanup_cannot_suspend_again() {
     .expect_err("a cancellation cleanup continuation cannot await another Task");
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InvalidCoroutinePlan
-            && error
-                .message()
-                .contains("must remain scheduler-topology neutral")
+            && error.message()
+                == "cancellation cleanup cannot create or await a Task; it must remain scheduler-topology neutral"
     }));
+}
+
+#[test]
+fn cancellation_cleanup_cannot_call_or_invoke_executor_dependent_functions() {
+    for (exit_case, diagnostic) in [
+        (
+            AwaitExitCase::CancelDirectCallsExecutor,
+            "cancellation cleanup cannot call an executor-dependent function; it must remain scheduler-topology neutral",
+        ),
+        (
+            AwaitExitCase::CancelInvokesExecutor,
+            "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
+        ),
+    ] {
+        let errors = validate_program(&await_tasks_program(false, false, exit_case))
+            .expect_err("cancellation cleanup cannot enter executor-dependent code");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidCoroutinePlan && error.message() == diagnostic
+        }));
+    }
 }
 
 #[test]
