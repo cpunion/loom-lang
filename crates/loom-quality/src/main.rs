@@ -39,12 +39,13 @@ const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
+const TYPED_TASK_ALL_FIXTURE: &str = "fixtures/lcir-typed-task-all";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
-    reason: "static/dynamic joins, async cleanup, and dynamic concept frames are not yet represented in typed LCIR",
+    reason: "dynamic joins, non-all join modes, async cleanup, and dynamic concept frames are not yet represented in typed LCIR",
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
@@ -397,6 +398,16 @@ fn main() {
         "typed-sleep",
     ) {
         report.failures.push(format!("typed-sleep: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        TYPED_TASK_ALL_FIXTURE,
+        "typed-task-all",
+    ) {
+        report.failures.push(format!("typed-task-all: {error}"));
     }
     match run_c3_repository(
         &workspace,

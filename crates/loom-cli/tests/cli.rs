@@ -814,6 +814,78 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_task_all_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-typed-task-all/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check typed Task.all source through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("typed-task-all.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build typed Task.all source through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read typed Task.all object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_typed_task_publish_adopting_v1",
+        b"loom_task_prepare_join",
+        b"loom_task_add_join_child",
+        b"loom_task_suspend_join",
+        b"loom_typed_task_take_result_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "typed Task.all object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_join_create",
+        b"loom_join_add_task",
+        b"loom_task_write_join_result",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "typed Task.all object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test typed Task.all source through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_typed_task_all.staticTaskAllUsesDirectAndFirstClassPaths"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run typed Task.all source through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn generic_native_commands_close_check_build_test_and_run() {
     let project = TestProject::new(include_str!("../../../fixtures/lcir-generics/main.loom"));
 
