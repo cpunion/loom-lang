@@ -91,9 +91,10 @@ converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
 Selected async roots with `requires`, explicit mutable coroutine parameters,
-raw readiness, dynamically sized Task joins, `Task.settled`, `Task.any`,
-`Task.race`, List/TextMap frame values, and finite-catalog or open
-dynamic-concept frame values still select the complete legacy route.
+raw readiness, dynamically sized Task joins, `Task.settled`, `Task.any` whose
+result is stored or otherwise used first-class, `Task.race`, List/TextMap frame
+values, and finite-catalog or open dynamic-concept frame values still select the
+complete legacy route.
 
 ## Runtime and executor
 
@@ -167,7 +168,7 @@ The additive factory advances the native runtime ABI to component 16 and adds
 wait wires remain version 1; the timer carries no universal value, moving-GC
 root, or new scheduler protocol.
 
-## Typed fixed `Task.all`
+## Typed fixed Task joins
 
 Inside an admitted async function, a nonempty fixed argument list preserves its
 heterogeneous child outputs as `Task[(T0, ..., Tn)]`. Children are evaluated
@@ -197,6 +198,33 @@ This additive adoption boundary advances the native runtime ABI to component
 17 and adds `typed-task-adopt-v1` plus `runtime-v11` to the exact identity.
 `typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
 
+A nonempty, immediately awaited, fixed-arity `Task.any` is also direct when
+every child has the same exact output type `T`. Its `AwaitTasks` plan retains one
+output entry and one frame child field for every source child, while the normal
+continuation receives only the successful winner's `T`. No first-class
+composite Task or universal join-result buffer is created.
+
+The ordinary scheduler selects the first successful child, requests
+cancellation of unfinished losers, and drains the complete child set. When the
+source callback consumes the resulting completion token through
+`loom_task_join_step`, the typed runtime finalizes the join exactly once. It
+disposes completed loser results and retires every loser in static reverse-input
+order. A loser-disposal fault changes the await outcome to fault before the
+coroutine enters its static LIFO cleanup. If every child fails or is cancelled,
+generated code records the canonical `TaskAnyFailed` fault at the await's source
+origin before entering the same fault cleanup. Cancellation of the source
+coroutine bypasses normal join finalization, preserves cancellation as primary,
+and relies on ordinary terminal child retirement; an established cancellation
+continues to suppress a cleanup fault.
+
+The winner keeps its original input ordinal and remains attached until generated
+code switches over the coroutine frame's original child fields and performs the
+exact typed result take. Loser retirement may therefore shrink the runtime join
+list without changing result selection. This changes the semantics of the
+existing join-step entry rather than adding a symbol, so the exact native runtime
+identity advances to component 18 with `typed-task-any-finalize-v1` and
+`runtime-v12`. Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+
 ## Blocking I/O
 
 Operations that cannot use readiness directly are submitted to a process-wide
@@ -224,10 +252,12 @@ while a task drains. The first fault recorded for a Task remains the primary
 fault; a later cleanup fault does not overwrite it.
 
 Runtime faults do not become ordinary source `Result` values. Direct calls,
-`.await`, and `Task.all` propagate a child fault. `Task.settled` and
-`Task.race`, whose purpose is to observe terminal child states, represent the
-same fault as `TaskFault`; this includes an artifact construction-proof replay
-failure. OOM alone remains process-level and is not a Task terminal value.
+`.await`, and `Task.all` propagate a child fault. A `Task.any` with no successful
+child raises `TaskAnyFailed`; a fault raised while disposing a completed loser
+instead remains primary. `Task.settled` and `Task.race`, whose purpose is to
+observe terminal child states, represent the same fault as `TaskFault`; this
+includes an artifact construction-proof replay failure. OOM alone remains
+process-level and is not a Task terminal value.
 
 Current join modes implement the language's tuple and list forms of:
 
@@ -241,9 +271,11 @@ number of homogeneous tasks. Join-result resources are transferred to the
 parent before retired children are reclaimed.
 
 The complete runtime and legacy compiler route implement all of those source
-forms. The current typed-LCIR route admits only nonempty fixed-arity
-heterogeneous `Task.all`; list-sized `Task.all` and every `Task.settled`,
-`Task.any`, or `Task.race` form remain atomic whole-artifact fallback.
+forms. The current typed-LCIR route admits nonempty fixed-arity heterogeneous
+`Task.all` and a nonempty, immediately awaited, fixed-arity homogeneous
+`Task.any`. List-sized `Task.all`, every `Task.settled` and `Task.race`, and
+List-sized `Task.any` or one whose result is stored or otherwise used first-class
+remain atomic whole-artifact fallback.
 
 ## Current limits
 

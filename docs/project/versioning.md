@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `27` |
-| LCIR artifact identity | schema `28` |
-| LCIR native-object domain | `loom-lcir-native-object-v24` |
+| LCIR textual dump | version `28` |
+| LCIR artifact identity | schema `29` |
+| LCIR native-object domain | `loom-lcir-native-object-v25` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v29` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v30` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `17` |
+| Native runtime ABI component | `18` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -234,7 +234,19 @@ coroutine-only `TaskCancelled` terminal. Source coroutine descriptors reuse the
 generated resume callback as their cancel callback and dispatch by cancellation
 request plus frame state. Cleanup remains compiler-expanded LIFO CFG; no runtime
 cleanup stack or new runtime entry point is added. Native runtime component 17
-and `runtime-v11` therefore remain current.
+and `runtime-v11` therefore remain unchanged for that slice.
+
+Nonempty, immediately awaited, fixed-arity homogeneous `Task.any` advances the
+LCIR dump to 28, artifact schema to 29, native-object domain to v25, and LLVM
+object-cache domain to v30. Each suspension records an explicit join mode and
+the complete exact child-output row even though `any` has one normal result. The
+runtime keeps the original winner ordinal while generated code selects the
+corresponding static coroutine-frame field. Consuming the existing join-step
+entry now finalizes typed losers exactly once before exposing the step, so no new
+symbol or descriptor wire is required. That semantic boundary advances the
+native runtime component to 18 and adds `typed-task-any-finalize-v1` plus
+`runtime-v12` to the exact identity. Coroutine v2, typed-task v1, wait v1, and GC
+v9 remain unchanged.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

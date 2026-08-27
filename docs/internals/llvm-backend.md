@@ -370,20 +370,22 @@ matching, and exact moving-GC roots are direct. Json equality, parsing, and
 formatting are separate coverage boundaries and still select whole-artifact
 fallback when reachable.
 
-## Direct typed Tasks and fixed `Task.all`
+## Direct typed Tasks and fixed joins
 
 On the currently pinned 64-bit typed-task ABI, each `AwaitTasks` terminator
 carries one or more ordered canonical Task handles. Its checked coroutine-plan
-row records the exact output type for every child, followed by the exact live
-values forwarded across suspension. LLVM stores all child handles and live
-values in the target-laid-out suspension row, prepares one structured `all`
-join, and adds each child in source order. The terminator has explicit normal,
-fault, and cancellation targets with one identical exact live row. On normal
-completion LLVM takes each result using that child's exact size/alignment,
-reloads the live row, and enters the normal target with the child results first.
-A child fault activates the source fault before entering its target; a cancel
-path forwards only the same live row and preserves inactive source-fault state.
-A normal one-child await is this same path with an arity of one.
+row records the join mode and exact output type for every child, followed by the
+exact live values forwarded across suspension. LLVM stores all child handles and
+live values in the target-laid-out suspension row, prepares one structured
+mode-specific join, and adds each child in source order. The terminator has
+explicit normal, fault, and cancellation targets with one identical exact live
+row. On normal `all` completion LLVM takes every result using that child's exact
+size and alignment. On normal `any` completion it takes only the selected
+winner. Both reload the live row and enter the normal target with the
+mode-derived results first. A child fault activates the source fault before
+entering its target; a cancel path forwards only the same live row and preserves
+inactive source-fault state. A normal one-child await is the `all` path with an
+arity of one.
 
 The generated source-coroutine resume callback is also the descriptor's cancel
 callback. Its prologue checks the Task cancel-request bit before dispatching by
@@ -412,9 +414,23 @@ topology unchanged; generated code aborts the unpublished frame and traps rather
 than entering a partially adopted graph. Neither direct nor stored fixed joins
 call the universal join constructor or universal join-result helpers.
 
-This direct slice is deliberately static and nonempty. A list-sized `Task.all`
-and every `Task.settled`, `Task.any`, or `Task.race` remain reachable
-`Unsupported` input and select the complete legacy object.
+A nonempty, immediately awaited, fixed-arity `Task.any` is direct when all child
+outputs have one exact type. The scheduler retains the original winner ordinal,
+cancels unfinished losers, and drains every child. Consuming the valid join
+completion through `loom_task_join_step` then disposes completed loser results
+and retires all losers exactly once in reverse-input order. Generated code
+switches on that original ordinal and loads the winner pointer from the
+coroutine frame's corresponding static child field, so shrinking the runtime
+join list cannot change the selection. A loser-disposal fault changes the join
+step to faulted before coroutine cleanup; with no winner, LLVM raises
+`TaskAnyFailed` at the `AwaitTasks` source origin before entering that cleanup.
+Source-coroutine cancellation dispatch bypasses this ordinary resume operation
+and cannot manufacture `TaskAnyFailed`.
+
+This direct slice is deliberately static and nonempty. A list-sized `Task.all`,
+every `Task.settled` and `Task.race`, and List-sized `Task.any` or one whose
+result is stored or otherwise used first-class remain reachable `Unsupported`
+input and select the complete legacy object.
 
 ## Direct lexical cleanup
 
@@ -505,10 +521,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 27`, and the checked artifact identity uses
-schema 28. Object identities are route-separated:
+The canonical textual dump is `lcir 28`, and the checked artifact identity uses
+schema 29. Object identities are route-separated:
 
-- `loom-lcir-native-object-v24` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v25` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -520,7 +536,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v29` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v30` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -531,9 +547,9 @@ monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, fallible timer construction, ordered multi-child
-suspension edges, exact stored `Task.all` composites, and exact frame-root rows,
-including explicit normal/fault/cancel await targets and static cleanup across
-suspension, plus
+suspension edges, exact stored `Task.all` composites, direct homogeneous fixed
+`Task.any`, and exact frame-root rows, including explicit join modes,
+normal/fault/cancel await targets, and static cleanup across suspension, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -582,7 +598,13 @@ one allocation-free commit. It advances the native component to 17 with
 `typed-task-adopt-v1` and `runtime-v11`; `typed-task-v1`, `typed-timer-v1`,
 `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
 Static coroutine cleanup/cancellation CFG reuses those boundaries, so the
-runtime remains native component 17 with `runtime-v11`.
+runtime remained at native component 17 with `runtime-v11` for that slice.
+
+Direct fixed `Task.any` adds no new runtime symbol, but it makes the existing
+join-step entry finalize typed losers before returning the observable step. That
+semantic boundary advances the native component to 18 with
+`typed-task-any-finalize-v1` and `runtime-v12`; `typed-task-v1`, coroutine v2,
+`typed-timer-v1`, `wait-v1`, `text-v3`, and `gc-v9` remain unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives
