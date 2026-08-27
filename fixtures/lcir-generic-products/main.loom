@@ -1,0 +1,44 @@
+module lcir_generic_products
+
+record Boxed[T] {
+    value T
+}
+
+record Guarded[T] {
+    value T
+    marker Int
+    invariant self.marker >= 0
+}
+
+type PositiveBox = Boxed[Int] where self.value >= 0
+
+fn swap[T](left Boxed[T], right Boxed[T]) (Boxed[T], Boxed[T]) {
+    (right, left)
+}
+
+fn unwrap(value PositiveBox) Boxed[Int] {
+    value
+}
+
+fn verify() Unit {
+    let first, second = swap(Boxed { value = 1 }, Boxed { value = 2 })
+    let text = Boxed { value = "lo".concat("om") }
+    let pressure = "x".concat("y")
+    let guarded = Guarded { value = text, marker = 0 }
+    let positive = PositiveBox(Boxed { value = 7 })
+    let unwrapped = unwrap(positive)
+    if first.value == 2 && second.value == 1 && guarded.value.value == "loom" && guarded.marker == 0 && pressure == "xy" && unwrapped.value == 7 {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn genericProducts() Unit {
+    verify()
+}

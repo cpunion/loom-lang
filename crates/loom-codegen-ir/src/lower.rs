@@ -9,7 +9,8 @@ use loom_mir::{
 };
 
 use crate::aggregate_plan::{
-    AggregatePlanner, AggregateRegistrationError, closed_record_fields, is_direct_scalar,
+    AggregatePlanner, AggregateRegistrationError, concrete_any_record_fields,
+    concrete_record_fields, concrete_refined_base, is_direct_scalar,
 };
 use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
@@ -837,43 +838,23 @@ fn contract_type_value(value: ContractValue, context: &ContractTypeContext) -> O
 fn contract_base_type(program: &mir::Program, ty: &Type) -> Option<Type> {
     let mut current = ty.clone();
     for _ in 0..64 {
-        let Type::Nominal(id, arguments) = &current else {
+        let Type::Nominal(id, _) = &current else {
             return Some(current);
         };
         let definition = program.type_def(*id)?;
-        let mir::TypeDefKind::Refined { base, .. } = &definition.kind else {
+        let mir::TypeDefKind::Refined { .. } = &definition.kind else {
             return Some(current);
         };
-        if !arguments.is_empty() || definition.type_parameters != 0 {
-            return None;
-        }
-        current = base.clone();
+        current = concrete_refined_base(program, &current)?;
     }
     None
 }
 
 fn contract_projected_type(program: &mir::Program, owner: &Type, field: u32) -> Option<Type> {
     let owner = contract_base_type(program, owner)?;
-    contract_record_fields(program, &owner)?
+    concrete_any_record_fields(program, &owner)?
         .get(usize::try_from(field).ok()?)
-        .map(|field| field.ty.clone())
-}
-
-fn contract_record_fields<'program>(
-    program: &'program mir::Program,
-    ty: &Type,
-) -> Option<&'program [mir::FieldDef]> {
-    let Type::Nominal(id, arguments) = ty else {
-        return None;
-    };
-    let definition = program.type_def(*id)?;
-    if !arguments.is_empty() || definition.type_parameters != 0 {
-        return None;
-    }
-    let mir::TypeDefKind::Record { fields, .. } = &definition.kind else {
-        return None;
-    };
-    Some(fields)
+        .cloned()
 }
 
 fn is_invariant_record_type(program: &mir::Program, ty: &Type) -> bool {
@@ -881,8 +862,8 @@ fn is_invariant_record_type(program: &mir::Program, ty: &Type) -> bool {
         return false;
     };
     program.type_def(*id).is_some_and(|definition| {
-        arguments.is_empty()
-            && definition.type_parameters == 0
+        program.prelude.text_map != Some(*id)
+            && usize::try_from(definition.type_parameters).ok() == Some(arguments.len())
             && matches!(
                 &definition.kind,
                 mir::TypeDefKind::Record {
@@ -1047,7 +1028,8 @@ impl<'program> Classifier<'program> {
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
-        closed_record_fields(self.program, ty).is_some() && self.aggregates.supports_value_type(ty)
+        concrete_record_fields(self.program, ty).is_some()
+            && self.aggregates.supports_value_type(ty)
     }
 
     fn supported_expression_type(&mut self, ty: &Type) -> bool {
@@ -1113,14 +1095,14 @@ impl<'program> Classifier<'program> {
                 && is_invariant_record_type(self.program, &ty));
         for (depth, field) in place.projection.iter().enumerate() {
             let fields = if invariant_root_access && depth == 0 {
-                contract_record_fields(self.program, &ty)?
+                concrete_any_record_fields(self.program, &ty)?
             } else {
-                closed_record_fields(self.program, &ty)?
+                concrete_record_fields(self.program, &ty)?
             };
             let next = usize::try_from(*field)
                 .ok()
                 .and_then(|index| fields.get(index))
-                .map(|field| field.ty.clone())?;
+                .cloned()?;
             ty = next;
         }
         self.supported_value_type(&ty).then_some(ty)
@@ -1865,32 +1847,33 @@ impl<'program> Classifier<'program> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let instantiated_arguments =
-                    InstanceSubstitution::new(self.program, key).instantiate_types(type_arguments);
-                let direct_product = instantiated_arguments
-                    .is_ok_and(|arguments| arguments.is_empty())
-                    && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
+                let semantic = InstanceSubstitution::new(self.program, key)
+                    .instantiate_types(type_arguments)
+                    .ok()
+                    .map(|arguments| Type::Nominal(*ty, arguments));
+                let direct_product = expression_ty == semantic
                     && expression_ty
                         .as_ref()
                         .is_some_and(|ty| self.supported_value_type(ty))
                     && self.program.type_def(*ty).is_some_and(|definition| {
-                        definition.type_parameters == 0
-                            && matches!(
-                                (&definition.kind, construction),
-                                (
-                                    mir::TypeDefKind::Record {
-                                        invariant: None,
-                                        ..
-                                    },
-                                    mir::ConstructionMode::Plain
-                                ) | (
-                                    mir::TypeDefKind::Record {
-                                        invariant: Some(_),
-                                        ..
-                                    },
-                                    mir::ConstructionMode::Proven
-                                )
+                        semantic.as_ref().is_some_and(|semantic| {
+                            concrete_any_record_fields(self.program, semantic).is_some()
+                        }) && matches!(
+                            (&definition.kind, construction),
+                            (
+                                mir::TypeDefKind::Record {
+                                    invariant: None,
+                                    ..
+                                },
+                                mir::ConstructionMode::Plain
+                            ) | (
+                                mir::TypeDefKind::Record {
+                                    invariant: Some(_),
+                                    ..
+                                },
+                                mir::ConstructionMode::Proven
                             )
+                        )
                     });
                 if !direct_product {
                     self.expression_item(
@@ -1971,17 +1954,12 @@ impl<'program> Classifier<'program> {
                     &format!("{path}.value.ty"),
                 );
                 let proven = *construction == mir::ConstructionMode::Proven
-                    && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
+                    && matches!(expression_ty.as_ref(), Some(Type::Nominal(id, _)) if id == ty)
                     && expression_ty
                         .as_ref()
                         .is_some_and(|ty| self.supported_value_type(ty))
-                    && self.program.type_def(*ty).is_some_and(|definition| {
-                        definition.type_parameters == 0
-                            && matches!(
-                                &definition.kind,
-                                mir::TypeDefKind::Refined { base, .. }
-                                    if value_ty.as_ref() == Some(base)
-                            )
+                    && expression_ty.as_ref().is_some_and(|refined| {
+                        concrete_refined_base(self.program, refined).as_ref() == value_ty.as_ref()
                     });
                 if !proven {
                     self.expression_item(
@@ -2013,22 +1991,14 @@ impl<'program> Classifier<'program> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let supported = match value_ty.as_ref() {
-                    Some(Type::Nominal(ty, arguments)) if arguments.is_empty() => {
-                        self.program.type_def(*ty).is_some_and(|definition| {
-                            definition.type_parameters == 0
-                                && matches!(
-                                    &definition.kind,
-                                    mir::TypeDefKind::Refined { base, .. }
-                                        if expression_ty.as_ref() == Some(base)
-                                )
-                        }) && self.supported_value_type(value_ty.as_ref().expect("matched"))
-                            && expression_ty
-                                .as_ref()
-                                .is_some_and(|ty| self.supported_value_type(ty))
-                    }
-                    _ => false,
-                };
+                let supported = value_ty.as_ref().is_some_and(|refined| {
+                    concrete_refined_base(self.program, refined).as_ref() == expression_ty.as_ref()
+                }) && value_ty
+                    .as_ref()
+                    .is_some_and(|ty| self.supported_value_type(ty))
+                    && expression_ty
+                        .as_ref()
+                        .is_some_and(|ty| self.supported_value_type(ty));
                 if !supported {
                     self.expression_item(
                         UnsupportedFeature::RefinedValue,
@@ -3959,7 +3929,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         origin: Origin,
     ) -> Result<(Flow, ContractOperand), LoweringError> {
         for _ in 0..64 {
-            let Type::Nominal(id, arguments) = &operand.ty else {
+            let Type::Nominal(id, _) = &operand.ty else {
                 return Ok((flow, operand));
             };
             let definition = self.program.type_def(*id).ok_or_else(|| {
@@ -3968,13 +3938,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     format!("contract operand references missing type #{}", id.0),
                 )
             })?;
-            let mir::TypeDefKind::Refined { base, .. } = &definition.kind else {
+            let mir::TypeDefKind::Refined { .. } = &definition.kind else {
                 return Ok((flow, operand));
             };
-            if !arguments.is_empty() || definition.type_parameters != 0 {
-                return Err(self.unsupported_reached("generic refined contract operand"));
-            }
-            let base = base.clone();
+            let base = concrete_refined_base(self.program, &operand.ty)
+                .ok_or_else(|| self.unsupported_reached("open refined contract operand"))?;
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,

@@ -1663,6 +1663,63 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
     assert_pure_surface(&msvc_ir);
 }
 
+#[test]
+fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
+    let source = include_str!("../../../fixtures/lcir-generic-products/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for expected in [
+        "Nominal#",
+        "[Int]",
+        "[Text]",
+        "product.construct",
+        "invariant_record.proven",
+        "refine.proven",
+        "unrefine",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-generic-products",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-generic-products");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(!native.ir.contains("%loom.Value"), "{}", native.ir);
+    assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create generic-product target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "generic-products.obj"
+        } else {
+            "generic-products.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit generic products for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+    }
+}
+
 fn static_concepts_test_artifact() -> CheckedArtifact {
     let source = include_str!("../../../fixtures/lcir-static-concepts/main.loom");
     let program = compile_source(source);
