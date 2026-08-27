@@ -2741,6 +2741,7 @@ pub fn main() Unit {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn checked_projected_move_extracts_the_leaf_and_consumes_its_root() {
     use loom_core::Span;
     use loom_mir::{
