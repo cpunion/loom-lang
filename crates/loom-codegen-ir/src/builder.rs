@@ -571,7 +571,7 @@ impl FunctionBuilder<'_> {
 
     /// Marks this function as a compiler-shaped stackless coroutine before
     /// its CFG is finished. Independent validation matches every suspension
-    /// row against the eventual `AwaitTask` terminator and signature.
+    /// row against the eventual `AwaitTasks` terminator and signature.
     ///
     /// # Errors
     ///

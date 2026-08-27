@@ -407,6 +407,13 @@ object-cache v27. Its explicit fallible terminator and normalized millisecond
 operand participate in the checked artifact identity. The narrow typed timer
 factory advances the runtime ABI to component 16 with `typed-timer-v1` and
 `runtime-v10`; typed-task v1 and wait v1 remain unchanged.
+Static heterogeneous joins then advance the artifact identity to schema 27,
+the dump to `lcir 26`, the LCIR native-object domain to
+`loom-lcir-native-object-v23`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v28`. Direct joins use one variadic `AwaitTasks`
+terminator; first-class stored joins use `TaskJoinAll` with an exact tuple
+result. The atomic child-adoption boundary advances the runtime ABI to
+component 17 with `typed-task-adopt-v1` and `runtime-v11`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -483,7 +490,8 @@ scalar faults use only the local fault context. A caller gains `MAY_FAULT`
 when it executes an unknown precondition; the assumed callee body does not gain
 that effect merely because it declares `requires`. `TextConcat` and `TextGet`
 are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
-`NEEDS_EXECUTOR`, while the `AwaitTask` terminator contributes `MAY_SUSPEND`.
+`NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_SUSPEND`.
+`TaskJoinAll` contributes `NEEDS_EXECUTOR` but does not itself suspend.
 `TaskSleep` contributes `MAY_FAULT` and `NEEDS_EXECUTOR`, but neither
 `MAY_SUSPEND` nor `MAY_COLLECT`: it constructs a first-class Task and does not
 wait for it. Assertions, deferred blocks, and scoped disposal lower into direct
@@ -593,19 +601,21 @@ global layout registry.
 
 An admitted async function carries a checked `CoroutinePlan` in addition to its
 ordinary LCIR signature and CFG. The plan fixes the output type and the dense
-resume-state sequence `1..n`. Each row records, in deterministic MIR-local
-order, the exact LCIR types forwarded across that suspension. Independent
-validation matches every row to exactly one `AwaitTask` terminator, checks the
-continuation parameters and forwarded values, and rejects a Task edge without
-an active coroutine plan. The canonical dump includes the complete plan, so it
-is also an artifact-identity and object-cache input.
+resume-state sequence `1..n`. Each row records the ordered exact child-result
+types followed by, in deterministic MIR-local order, the exact LCIR types
+forwarded across that suspension. Independent validation matches every row to
+exactly one `AwaitTasks` terminator, checks all child Tasks, continuation
+parameters, and forwarded values, rejects duplicate child handles, and rejects
+a Task edge without an active coroutine plan. The canonical dump includes the
+complete plan, so it is also an artifact-identity and object-cache input.
 
 `TaskCreate` constructs a scheduler-owned `Task[T]` for one exact coroutine
 instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. The hidden executor comes only from the active
-coroutine callback or the async root harness. `AwaitTask` stores the child and
-the row's live values, prepares a structured one-child `all` join, publishes
-the frame/root state, and makes the child result exist only on the resume edge.
+coroutine callback or the async root harness. `AwaitTasks` stores all ordered
+children and the row's live values, prepares one structured `all` join,
+publishes the frame/root state, and makes the exact child results exist only on
+the resume edge. A single-child await is the same operation with one child.
 A join-suspend status of one returns `pending`; zero means the child was already
 terminal, so the runtime removes the redundant wake-up, keeps the active parent
 `Running`, and enters the same checked result/reload edge in the current
@@ -620,15 +630,28 @@ origin. LLVM rejects a negative duration, checks the signed conversion from
 milliseconds to nanoseconds, reads the monotonic clock, checks the unsigned
 deadline addition, and then calls
 `loom_typed_timer_task_create_v1(executor, deadline_ns)`. Task creation itself
-does not suspend; a later `AwaitTask` does.
+does not suspend; a later `AwaitTasks` does.
 
-LLVM derives a target-laid-out frame containing state, parameters, one
-child/live row per suspension, and the typed result. It emits one immutable
-typed-task descriptor with exact managed-leaf byte offsets and a bitmap for
-each resume state plus completed-result state. The resume callback dispatches
-state zero to the LCIR entry and nonzero states through the existing join-step
-ABI, takes the exact child result, reloads the row, and enters the LCIR
-continuation. Normal return publishes the exact typed result and completion.
+An immediately awaited fixed tuple and an immediately awaited `Task.all`
+evaluate children left to right and lower directly to `AwaitTasks`, avoiding
+an intermediate composite. A first-class stored `Task.all` lowers to
+`TaskJoinAll` and returns `Task[(A, B, ...)]`, including a one-field tuple for
+one child. LLVM generates one exact typed composite frame and result tuple for
+that static shape. Runtime adoption validates the complete ordered child set
+before transferring it from the current parent and publishing the composite;
+the legacy universal join-result path is never called.
+
+LLVM derives a target-laid-out frame containing state, parameters, one ordered
+child-pointer row plus one live-value row per suspension, and the typed result.
+The coroutine result must use the semantic type's canonical LCIR
+representation: `Task[T]` intentionally carries no second hidden layout ID, so
+producer and consumer cannot disagree about the result ABI. LLVM emits one
+immutable typed-task descriptor with exact managed-leaf byte offsets and a
+bitmap for each resume state plus completed-result state. The resume callback
+dispatches state zero to the LCIR entry and nonzero states through the existing
+join-step ABI, takes every exact child result in source order, reloads the live
+row, and enters the LCIR continuation. Normal return publishes the exact typed
+result and completion.
 The run/test harness creates an executor for the root Task, runs it to a
 terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
@@ -638,7 +661,8 @@ coroutines have no inout parameters or cleanup crossing suspension; parameter,
 result, and live frame values are limited to direct scalar/refined/product/Text
 shapes and admitted closed sums, with Task handles additionally allowed only in
 suspension-live rows. List, TextMap, dynamic-concept frame values, raw readiness,
-Task joins, and cancellation sources remain atomic whole-artifact fallback.
+dynamic Task collections, non-`all` join modes, and cancellation sources remain
+atomic whole-artifact fallback.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from

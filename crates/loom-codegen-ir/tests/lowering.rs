@@ -79,6 +79,8 @@ pub async fn main() Unit {
 }
 ";
 
+const TYPED_TASK_ALL_SOURCE: &str = include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
+
 #[test]
 fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
     let outcome = lower_run(TYPED_ASYNC_SOURCE);
@@ -101,7 +103,11 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
     assert_eq!(main_plan.suspensions()[0].state(), 1);
     assert!(main_plan.suspensions()[0].live().is_empty());
     let dump = dump_program(artifact.program());
-    let encoded_plan = format!("coroutine output={} states=[1()]", main_plan.output());
+    let encoded_plan = format!(
+        "coroutine output={} states=[1 awaited=({}) live=()]",
+        main_plan.output(),
+        main_plan.suspensions()[0].awaited()[0]
+    );
     assert!(dump.contains(&encoded_plan), "{dump}");
     assert!(artifact_identity(&artifact).contains(&encoded_plan));
     assert!(main.instructions().iter().any(|instruction| matches!(
@@ -110,7 +116,7 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
     )));
     assert!(main.blocks().iter().any(|block| matches!(
         block.terminator().map(loom_codegen_ir::Terminator::kind),
-        Some(TerminatorKind::AwaitTask { state: 1, .. })
+        Some(TerminatorKind::AwaitTasks { state: 1, .. })
     )));
     let task = artifact
         .representations()
@@ -123,6 +129,153 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
             .and_then(|task| artifact.representations().repr(task.repr())),
         Some(&loom_codegen_ir::Repr::TaskHandle)
     );
+}
+
+#[test]
+fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
+    let outcome = lower_run(TYPED_TASK_ALL_SOURCE);
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("fixed heterogeneous Task.all must lower through typed LCIR")
+    };
+    let exercise = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("exerciseJoins"))
+        .expect("exerciseJoins instance");
+
+    let joins = exercise
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::TaskJoinAll { tasks } => Some((instruction, tasks.as_ref())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(joins.len(), 2, "only stored composites need allocation");
+    for (instruction, tasks) in &joins {
+        assert_eq!(tasks.len(), 3);
+        assert!(
+            tasks
+                .windows(2)
+                .all(|pair| pair[0].index() < pair[1].index()),
+            "child Task values must preserve left-to-right source evaluation order"
+        );
+        let join_result = exercise
+            .value(instruction.results()[0])
+            .expect("join result");
+        assert_eq!(
+            artifact
+                .representations()
+                .value_type(join_result.ty())
+                .map(loom_codegen_ir::ValueType::semantic),
+            Some(&Type::Task(Box::new(Type::Tuple(vec![
+                Type::Text,
+                Type::Int,
+                Type::Unit,
+            ]))))
+        );
+    }
+
+    let await_widths = exercise
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::AwaitTasks { tasks, .. }) => Some(tasks.len()),
+                _ => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(await_widths, [2, 2, 1, 1, 1, 1]);
+    assert_eq!(
+        exercise
+            .coroutine()
+            .expect("exercise coroutine")
+            .suspensions()
+            .iter()
+            .map(|suspension| suspension.awaited().len())
+            .collect::<Vec<_>>(),
+        await_widths,
+        "coroutine rows must encode every implicit heterogeneous result slot"
+    );
+    assert!(
+        exercise.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::ProductConstruct { fields } if fields.len() == 1
+            )
+        }),
+        "one-element Task.all must construct the canonical one-field tuple"
+    );
+
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("task.join_all("), "{dump}");
+    assert!(dump.contains("await_tasks state 1, ("), "{dump}");
+    assert!(dump.contains("awaited=("), "{dump}");
+    assert!(artifact_identity(&artifact).contains("task.join_all("));
+}
+
+#[test]
+fn dynamic_and_non_all_task_joins_remain_atomic_unsupported() {
+    let dynamic = r"module dynamic_task_all
+
+async fn child(value Int) Int { value }
+
+pub async fn main() Unit {
+    let tasks = [child(1), child(2)]
+    discard Task.all(tasks).await
+}
+";
+    let LoweringOutcome::Unsupported(dynamic) = lower_run(dynamic) else {
+        panic!("dynamic List Task.all must remain one whole-artifact fallback")
+    };
+    assert!(
+        dynamic
+            .items()
+            .iter()
+            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+    );
+
+    let settled = r"module settled_task_join
+
+async fn child(value Int) Int { value }
+
+pub async fn main() Unit {
+    discard Task.settled(child(1), child(2)).await
+}
+";
+    let LoweringOutcome::Unsupported(settled) = lower_run(settled) else {
+        panic!("Task.settled must remain one whole-artifact fallback")
+    };
+    assert!(
+        settled
+            .items()
+            .iter()
+            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+    );
+}
+
+#[test]
+fn task_all_in_a_sync_helper_does_not_receive_a_hidden_executor() {
+    let source = r"module sync_task_all
+
+async fn child(value Int) Int { value }
+
+fn combined() Task[(Int, Int)] {
+    Task.all(child(1), child(2))
+}
+
+pub async fn main() Unit {
+    discard combined().await
+}
+";
+    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+        panic!("a sync Task.all helper must fail closed")
+    };
+    assert!(report.items().iter().any(|item| {
+        item.feature() == UnsupportedFeature::TaskOperation
+            || item.feature() == UnsupportedFeature::AsyncFunction
+    }));
 }
 
 #[test]
@@ -171,7 +324,7 @@ pub async fn main() Unit {
     let dump = dump_program(artifact.program());
     let extract = dump.find("product.extract").expect("Duration extraction");
     let sleep = dump.find("task.sleep").expect("typed timer terminator");
-    let await_task = dump.find("task.await").expect("later first-class await");
+    let await_task = dump.find("await_tasks").expect("later first-class await");
     assert!(extract < sleep && sleep < await_task, "{dump}");
     let identity = artifact_identity(&artifact);
     assert!(identity.contains("task.sleep"), "{identity}");
@@ -262,7 +415,7 @@ pub async fn main() Unit {
     let dump = dump_program(artifact.program());
     for required in [
         "task.create",
-        "task.await",
+        "await_tasks",
         "invoke",
         "contract PreconditionFault",
         "contract PostconditionFault",

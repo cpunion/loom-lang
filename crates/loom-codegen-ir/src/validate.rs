@@ -43,6 +43,39 @@ fn representation_pointer_kinds(
     Some((immortal, managed))
 }
 
+fn representation_contains_task_handle(
+    representations: &RepresentationPlan,
+    root: ValueTypeId,
+) -> Option<bool> {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(value) = pending.pop() {
+        if !visited.insert(value) {
+            continue;
+        }
+        let value = representations.value_type(value)?;
+        match representations.repr(value.repr())? {
+            Repr::TaskHandle => return Some(true),
+            Repr::Product(product) => {
+                pending.extend(representations.product(*product)?.fields().iter().copied());
+            }
+            Repr::Sum(sum) => pending.extend(
+                representations
+                    .sum(*sum)?
+                    .variants()
+                    .iter()
+                    .flat_map(|variant| variant.fields().iter().copied()),
+            ),
+            Repr::Uninhabited
+            | Repr::Zst
+            | Repr::Scalar(_)
+            | Repr::ImmortalText
+            | Repr::ManagedPointer => {}
+        }
+    }
+    Some(false)
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
     RepresentationPlan,
@@ -78,6 +111,7 @@ pub enum ValidationCode {
     Dominance,
     InvalidIntegerProof,
     InvalidListUniqueness,
+    InvalidTaskOwnership,
     InvalidCoroutinePlan,
 }
 
@@ -118,6 +152,7 @@ impl ValidationCode {
             Self::Dominance => "LcirDominance",
             Self::InvalidIntegerProof => "LcirInvalidIntegerProof",
             Self::InvalidListUniqueness => "LcirInvalidListUniqueness",
+            Self::InvalidTaskOwnership => "LcirInvalidTaskOwnership",
             Self::InvalidCoroutinePlan => "LcirInvalidCoroutinePlan",
         }
     }
@@ -731,6 +766,10 @@ impl<'a> Validator<'a> {
                     }
                 }
                 Some(Repr::TaskHandle) => {
+                    let canonical =
+                        ValueTypeId::from_index(self.program.brand, index).is_some_and(|ty| {
+                            representations.type_id(value_type.semantic()) == Some(ty)
+                        });
                     let valid_semantic = match value_type.semantic() {
                         Type::Task(output) => {
                             representations.type_id(output).is_some_and(|output_id| {
@@ -742,7 +781,8 @@ impl<'a> Validator<'a> {
                         }
                         _ => false,
                     };
-                    if !valid_semantic
+                    if !canonical
+                        || !valid_semantic
                         || value_type.kind() != ValueTypeKind::Direct
                         || representations.target().pointer_bits() != 64
                     {
@@ -807,6 +847,8 @@ impl<'a> Validator<'a> {
                                     representations.repr(candidate_type.repr()),
                                     Some(Repr::Uninhabited)
                                 )
+                                && representation_contains_task_handle(&representations, candidate)
+                                    == Some(false)
                                 && representation_pointer_kinds(&representations, candidate)
                                     .is_some_and(|(immortal, _)| !immortal)
                         });
@@ -814,7 +856,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.dynamic[{index}].candidate[{candidate_index}]"),
-                        "dynamic candidate must be distinct, inhabited, registered, and contain no immortal-only pointer leaf",
+                        "dynamic candidate must be distinct, inhabited, registered, and contain neither Task handles nor immortal-only pointer leaves",
                     );
                 }
             }
@@ -886,7 +928,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
-                        "product fields must reference inhabited direct values; Text leaves require ManagedPointer",
+                        "product fields must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
                     );
                 }
                 if let Some(nested) = aggregate_index(field) {
@@ -941,7 +983,7 @@ impl<'a> Validator<'a> {
                             format!(
                                 "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
                             ),
-                            "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer",
+                            "sum payloads must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
                         );
                     }
                     if let Some(nested) = aggregate_index(field) {
@@ -1306,6 +1348,104 @@ impl<'a> Validator<'a> {
         self.validate_dominance(function, &base, &schedule, &reachable, &dominators);
         self.validate_integer_proofs(function, &base, &reachable, &predecessors, &dominators);
         self.validate_list_uniqueness(function, &base, &reachable);
+        self.validate_task_ownership(function, &base, &reachable);
+    }
+
+    fn validate_task_ownership(&mut self, function: &Function, base: &str, reachable: &[bool]) {
+        let task_values = function
+            .values()
+            .iter()
+            .map(|value| {
+                self.program
+                    .representations
+                    .value_type(value.ty())
+                    .is_some_and(|ty| {
+                        self.program.representations.repr(ty.repr()) == Some(&Repr::TaskHandle)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if !task_values.iter().any(|is_task| *is_task) {
+            return;
+        }
+
+        let empty = vec![TaskAvailability::NONE; function.values().len()];
+        let mut inputs = vec![empty.clone(); function.blocks().len()];
+        let Some(entry) = function.entry() else {
+            return;
+        };
+        for parameter in function
+            .block(entry)
+            .into_iter()
+            .flat_map(crate::Block::params)
+            .copied()
+            .filter(|value| task_values.get(value.index()).copied().unwrap_or(false))
+        {
+            inputs[entry.index()][parameter.index()] = TaskAvailability::AVAILABLE;
+        }
+
+        loop {
+            let mut next = vec![empty.clone(); function.blocks().len()];
+            let mut seen = vec![false; function.blocks().len()];
+            next[entry.index()].clone_from(&inputs[entry.index()]);
+            seen[entry.index()] = true;
+            for (block_index, block) in function.blocks().iter().enumerate() {
+                if !reachable.get(block_index).copied().unwrap_or(false) {
+                    continue;
+                }
+                for edge in transfer_task_ownership(
+                    function,
+                    block,
+                    &inputs[block_index],
+                    &task_values,
+                    false,
+                )
+                .edges
+                {
+                    if edge.target == entry.index()
+                        || !reachable.get(edge.target).copied().unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    if seen[edge.target] {
+                        for (current, incoming) in next[edge.target]
+                            .iter_mut()
+                            .zip(edge.states.iter().copied())
+                        {
+                            *current = current.union(incoming);
+                        }
+                    } else {
+                        next[edge.target] = edge.states;
+                        seen[edge.target] = true;
+                    }
+                }
+            }
+            if next == inputs {
+                break;
+            }
+            inputs = next;
+        }
+
+        let mut reported = BTreeSet::new();
+        for (block_index, block) in function.blocks().iter().enumerate() {
+            if !reachable.get(block_index).copied().unwrap_or(false) {
+                continue;
+            }
+            let transfer =
+                transfer_task_ownership(function, block, &inputs[block_index], &task_values, true);
+            for issue in transfer.issues {
+                if reported.insert((issue.site, issue.value, issue.message)) {
+                    let path = match issue.site {
+                        TaskOwnershipSite::Instruction(instruction) => {
+                            format!("{base}.instruction[{}].task", instruction.index())
+                        }
+                        TaskOwnershipSite::Terminator(block) => {
+                            format!("{base}.block[{}].terminator.task", block.index())
+                        }
+                    };
+                    self.error(ValidationCode::InvalidTaskOwnership, path, issue.message);
+                }
+            }
+        }
     }
 
     fn validate_list_uniqueness(&mut self, function: &Function, base: &str, reachable: &[bool]) {
@@ -1471,13 +1611,13 @@ impl<'a> Validator<'a> {
             if function.blocks().iter().any(|block| {
                 matches!(
                     block.terminator().map(crate::Terminator::kind),
-                    Some(TerminatorKind::AwaitTask { .. })
+                    Some(TerminatorKind::AwaitTasks { .. })
                 )
             }) {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine"),
-                    "await_task is only valid in a function with a checked coroutine plan",
+                    "await_tasks is only valid in a function with a checked coroutine plan",
                 );
             }
             return;
@@ -1488,6 +1628,18 @@ impl<'a> Validator<'a> {
                 ValidationCode::InvalidCoroutinePlan,
                 format!("{base}.coroutine.output"),
                 "coroutine output must exactly match the function result type",
+            );
+        }
+        let canonical_output = self
+            .program
+            .representations
+            .value_type(plan.output())
+            .and_then(|output| self.program.representations.type_id(output.semantic()));
+        if canonical_output != Some(plan.output()) {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.output"),
+                "coroutine output must use its canonical value representation at the Task ABI boundary",
             );
         }
         if !function.signature().inout_params().is_empty() {
@@ -1522,19 +1674,19 @@ impl<'a> Validator<'a> {
             }
         }
 
-        let mut await_states = BTreeMap::<u32, (&ResultTarget, ValueId)>::new();
+        let mut await_states = BTreeMap::<u32, (&ResultTarget, &[ValueId])>::new();
         for block in function.blocks() {
-            if let Some(TerminatorKind::AwaitTask {
+            if let Some(TerminatorKind::AwaitTasks {
                 state,
-                task,
+                tasks,
                 normal,
             }) = block.terminator().map(crate::Terminator::kind)
-                && await_states.insert(*state, (normal, *task)).is_some()
+                && await_states.insert(*state, (normal, tasks)).is_some()
             {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.state[{state}]"),
-                    "each coroutine resume state must have exactly one await_task terminator",
+                    "each coroutine resume state must have exactly one await_tasks terminator",
                 );
             }
         }
@@ -1555,6 +1707,24 @@ impl<'a> Validator<'a> {
                 );
             }
             previous = suspension.state();
+            if suspension.awaited().is_empty() {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].awaited"),
+                    "a coroutine suspension must await at least one child result",
+                );
+            }
+            for (awaited_index, ty) in suspension.awaited().iter().copied().enumerate() {
+                if !self.coroutine_frame_type_supported(ty, false) {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!(
+                            "{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"
+                        ),
+                        "typed coroutine awaited-result slots require closed direct values without task handles",
+                    );
+                }
+            }
             for (live_index, ty) in suspension.live().iter().copied().enumerate() {
                 if !self.coroutine_frame_type_supported(ty, true) {
                     self.error(
@@ -1564,20 +1734,46 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            let Some((normal, _)) = await_states.remove(&suspension.state()) else {
+            let Some((normal, tasks)) = await_states.remove(&suspension.state()) else {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.suspension[{index}]"),
-                    "coroutine plan row has no matching await_task terminator",
+                    "coroutine plan row has no matching await_tasks terminator",
                 );
                 continue;
             };
+            if tasks.len() != suspension.awaited().len() {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].awaited"),
+                    format!(
+                        "coroutine plan has {} awaited result slot(s), await_tasks consumes {} task(s)",
+                        suspension.awaited().len(),
+                        tasks.len()
+                    ),
+                );
+            }
+            for (awaited_index, (task, expected)) in tasks
+                .iter()
+                .copied()
+                .zip(suspension.awaited().iter().copied())
+                .enumerate()
+            {
+                let actual = self.task_output_type(function, task);
+                if actual != Some(expected) {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!("{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"),
+                        "coroutine awaited-result type does not match its child Task output",
+                    );
+                }
+            }
             if normal.arguments.len() != suspension.live().len() {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.suspension[{index}].live"),
                     format!(
-                        "coroutine plan has {} live slot(s), await_task forwards {}",
+                        "coroutine plan has {} live slot(s), await_tasks forwards {}",
                         suspension.live().len(),
                         normal.arguments.len()
                     ),
@@ -1603,9 +1799,25 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InvalidCoroutinePlan,
                 format!("{base}.coroutine.state[{state}]"),
-                "await_task terminator has no matching coroutine-plan row",
+                "await_tasks terminator has no matching coroutine-plan row",
             );
         }
+    }
+
+    fn task_output_type(&self, function: &Function, task: ValueId) -> Option<ValueTypeId> {
+        function
+            .value(task)
+            .map(crate::Value::ty)
+            .and_then(|task_id| {
+                let task = self.program.representations.value_type(task_id)?;
+                (self.program.representations.repr(task.repr()) == Some(&Repr::TaskHandle)
+                    && self.program.representations.type_id(task.semantic()) == Some(task_id))
+                .then_some(task.semantic())
+            })
+            .and_then(|semantic| match semantic {
+                Type::Task(output) => self.program.representations.type_id(output),
+                _ => None,
+            })
     }
 
     fn coroutine_frame_type_supported(&self, root: ValueTypeId, allow_task_handle: bool) -> bool {
@@ -2951,13 +3163,37 @@ impl<'a> Validator<'a> {
                     &format!("{path}.argument"),
                 );
                 self.require_results(function, instruction, &[None], &path);
-                let result = instruction
+                let result_type = instruction
                     .results()
                     .first()
                     .and_then(|result| function.value(*result))
-                    .and_then(|result| self.program.representations.value_type(result.ty()));
-                let valid_result = result.is_some_and(|result| {
+                    .map(crate::Value::ty);
+                let result =
+                    result_type.and_then(|result| self.program.representations.value_type(result));
+                let coroutine_output = callee.signature().result();
+                let canonical_output = self
+                    .program
+                    .representations
+                    .value_type(coroutine_output)
+                    .and_then(|output| self.program.representations.type_id(output.semantic()));
+                if self
+                    .program
+                    .representations
+                    .value_type(coroutine_output)
+                    .is_some()
+                    && canonical_output != Some(coroutine_output)
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.coroutine.result"),
+                        "task.create coroutine output must use its canonical value representation",
+                    );
+                }
+                let valid_result = result_type.zip(result).is_some_and(|(result_type, result)| {
                     self.program.representations.repr(result.repr()) == Some(&Repr::TaskHandle)
+                        && self.program.representations.type_id(result.semantic())
+                            == Some(result_type)
+                        && canonical_output == Some(coroutine_output)
                         && matches!(
                             result.semantic(),
                             Type::Task(output)
@@ -2979,6 +3215,76 @@ impl<'a> Validator<'a> {
                         ValidationCode::EffectMismatch,
                         &path,
                         "task.create requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
+            InstructionKind::TaskJoinAll { tasks } => {
+                if tasks.is_empty() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.tasks"),
+                        "task.join_all requires at least one child Task",
+                    );
+                }
+                if tasks.iter().copied().collect::<BTreeSet<_>>().len() != tasks.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.tasks"),
+                        "task.join_all cannot consume the same child Task more than once",
+                    );
+                }
+                let mut outputs = Vec::with_capacity(tasks.len());
+                let mut valid = true;
+                for (index, task) in tasks.iter().copied().enumerate() {
+                    let output = self.task_output_type(function, task);
+                    if function.value(task).is_some() && output.is_none() {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.task[{index}]"),
+                            "task.join_all operand must be a canonical concrete Task handle",
+                        );
+                    }
+                    let Some(output) = output else {
+                        valid = false;
+                        continue;
+                    };
+                    let Some(semantic) = self
+                        .program
+                        .representations
+                        .value_type(output)
+                        .map(crate::ValueType::semantic)
+                        .cloned()
+                    else {
+                        valid = false;
+                        continue;
+                    };
+                    outputs.push(semantic);
+                }
+                let expected = valid.then(|| {
+                    self.program
+                        .representations
+                        .type_id(&Type::Task(Box::new(Type::Tuple(outputs))))
+                });
+                if valid && expected.is_some_and(|expected| expected.is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "task.join_all requires the canonical Task of its exact result tuple",
+                    );
+                }
+                self.require_results(function, instruction, &[expected.flatten()], &path);
+                if function.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "task.join_all requires an active typed-coroutine executor context",
+                    );
+                }
+                if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "task.join_all requires the function's NEEDS_EXECUTOR effect",
                     );
                 }
             }
@@ -3318,49 +3624,62 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            TerminatorKind::AwaitTask {
+            TerminatorKind::AwaitTasks {
                 state,
-                task,
+                tasks,
                 normal,
             } => {
                 if *state == 0 {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
                         format!("{path}.state"),
-                        "await_task resume state must be nonzero",
+                        "await_tasks resume state must be nonzero",
                     );
                 }
-                let task_type = function.value(*task).map(crate::Value::ty);
-                let output = task_type
-                    .and_then(|task| self.program.representations.value_type(task))
-                    .and_then(|task| {
-                        (self.program.representations.repr(task.repr()) == Some(&Repr::TaskHandle))
-                            .then_some(task.semantic())
-                    })
-                    .and_then(|semantic| match semantic {
-                        Type::Task(output) => self.program.representations.type_id(output),
-                        _ => None,
-                    });
-                if task_type.is_some() && output.is_none() {
+                if tasks.is_empty() {
                     self.error(
-                        ValidationCode::TypeMismatch,
-                        format!("{path}.task"),
-                        "task.await operand must be a canonical concrete Task handle",
+                        ValidationCode::InstructionShape,
+                        format!("{path}.tasks"),
+                        "await_tasks requires at least one child Task",
                     );
                 }
-                self.validate_result_target(function, normal, &[output], &format!("{path}.normal"));
+                if tasks.iter().copied().collect::<BTreeSet<_>>().len() != tasks.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.tasks"),
+                        "await_tasks cannot consume the same child Task more than once",
+                    );
+                }
+                let outputs = tasks
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, task)| {
+                        let task_type = function.value(task).map(crate::Value::ty);
+                        let output = self.task_output_type(function, task);
+                        if task_type.is_some() && output.is_none() {
+                            self.error(
+                                ValidationCode::TypeMismatch,
+                                format!("{path}.task[{index}]"),
+                                "await_tasks operand must be a canonical concrete Task handle",
+                            );
+                        }
+                        output
+                    })
+                    .collect::<Vec<_>>();
+                self.validate_result_target(function, normal, &outputs, &format!("{path}.normal"));
                 if function.coroutine().is_none() {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
                         &path,
-                        "task.await is only valid in a checked coroutine",
+                        "await_tasks is only valid in a checked coroutine",
                     );
                 }
                 if !function.effects().contains(Effects::MAY_SUSPEND) {
                     self.error(
                         ValidationCode::EffectMismatch,
                         &path,
-                        "task.await requires the function's MAY_SUSPEND effect",
+                        "await_tasks requires the function's MAY_SUSPEND effect",
                     );
                 }
             }
@@ -4654,6 +4973,31 @@ fn compute_program_fault_states(program: &Program) -> Vec<Vec<FaultStateSet>> {
         .collect()
 }
 
+fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
+    let mut effects = Effects::NONE;
+    if matches!(
+        kind,
+        InstructionKind::TextConcat { .. }
+            | InstructionKind::TextGet { .. }
+            | InstructionKind::FormatFloat { .. }
+            | InstructionKind::ListAppend { .. }
+            | InstructionKind::ListAppendUnique { .. }
+            | InstructionKind::TextMapInsert { .. }
+            | InstructionKind::TextMapRemove { .. }
+            | InstructionKind::DynConstruct { .. }
+    ) || matches!(kind, InstructionKind::ListConstruct { elements } if !elements.is_empty())
+    {
+        effects = effects.union(Effects::MAY_COLLECT);
+    }
+    if matches!(
+        kind,
+        InstructionKind::TaskCreate { .. } | InstructionKind::TaskJoinAll { .. }
+    ) {
+        effects = effects.union(Effects::NEEDS_EXECUTOR);
+    }
+    effects
+}
+
 /// Computes the least transitive function effects from operation and call
 /// edges. Operations in active cleanup can only preserve the primary fault or
 /// suppress a secondary one, so those paths strip only `MAY_FAULT`; runtime,
@@ -4682,25 +5026,8 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 let Some(instruction) = function.instruction(instruction_id) else {
                     continue;
                 };
-                if matches!(
-                    instruction.kind(),
-                    InstructionKind::TextConcat { .. }
-                        | InstructionKind::TextGet { .. }
-                        | InstructionKind::FormatFloat { .. }
-                        | InstructionKind::ListAppend { .. }
-                        | InstructionKind::ListAppendUnique { .. }
-                        | InstructionKind::TextMapInsert { .. }
-                        | InstructionKind::TextMapRemove { .. }
-                ) || matches!(
-                    instruction.kind(),
-                    InstructionKind::ListConstruct { elements } if !elements.is_empty()
-                ) || matches!(instruction.kind(), InstructionKind::DynConstruct { .. })
-                {
-                    effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
-                }
-                if let InstructionKind::TaskCreate { .. } = instruction.kind() {
-                    effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
-                }
+                effects[caller] =
+                    effects[caller].union(instruction_direct_effects(instruction.kind()));
                 if let InstructionKind::DirectCall { callee, .. }
                 | InstructionKind::TaskCreate {
                     coroutine: callee, ..
@@ -4745,7 +5072,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                         });
                     }
                 }
-                TerminatorKind::AwaitTask { .. } => {
+                TerminatorKind::AwaitTasks { .. } => {
                     effects[caller] = effects[caller].union(Effects::MAY_SUSPEND);
                 }
                 TerminatorKind::CheckedIntNegate { .. }
@@ -4871,6 +5198,194 @@ fn compute_fault_states(entry: usize, edges: &[Vec<FaultEdge>]) -> Vec<FaultStat
         }
     }
     states
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TaskAvailability(u8);
+
+impl TaskAvailability {
+    const NONE: Self = Self(0);
+    const AVAILABLE: Self = Self(1);
+    const CONSUMED: Self = Self(2);
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum TaskOwnershipSite {
+    Instruction(InstructionId),
+    Terminator(BlockId),
+}
+
+#[derive(Clone, Copy)]
+struct TaskOwnershipIssue {
+    site: TaskOwnershipSite,
+    value: ValueId,
+    message: &'static str,
+}
+
+struct TaskOwnershipEdge {
+    target: usize,
+    states: Vec<TaskAvailability>,
+}
+
+struct TaskOwnershipTransfer {
+    edges: Vec<TaskOwnershipEdge>,
+    issues: Vec<TaskOwnershipIssue>,
+}
+
+fn consume_task_handle(
+    value: ValueId,
+    site: TaskOwnershipSite,
+    states: &mut [TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+    issues: &mut Vec<TaskOwnershipIssue>,
+) {
+    if !task_values.get(value.index()).copied().unwrap_or(false) {
+        return;
+    }
+    let Some(state) = states.get_mut(value.index()) else {
+        return;
+    };
+    if collect_issues && *state != TaskAvailability::AVAILABLE {
+        issues.push(TaskOwnershipIssue {
+            site,
+            value,
+            message: "a Task handle is consumed more than once or is unavailable on an incoming control-flow path",
+        });
+    }
+    *state = TaskAvailability::CONSUMED;
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the affine Task transfer keeps instruction uses, implicit results, and edge moves in one auditable fixed-point operation"
+)]
+fn transfer_task_ownership(
+    function: &Function,
+    block: &crate::Block,
+    input: &[TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+) -> TaskOwnershipTransfer {
+    let mut states = input.to_vec();
+    let mut issues = Vec::new();
+    for instruction_id in block.instructions().iter().copied() {
+        let Some(instruction) = function.instruction(instruction_id) else {
+            continue;
+        };
+        let site = TaskOwnershipSite::Instruction(instruction_id);
+        for operand in instruction.kind().operands() {
+            consume_task_handle(
+                operand,
+                site,
+                &mut states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            );
+        }
+        for result in instruction.results().iter().copied() {
+            if task_values.get(result.index()).copied().unwrap_or(false) {
+                states[result.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+    }
+
+    let Some(terminator) = block.terminator() else {
+        return TaskOwnershipTransfer {
+            edges: Vec::new(),
+            issues,
+        };
+    };
+    let site = TaskOwnershipSite::Terminator(block.id());
+    match terminator.kind() {
+        TerminatorKind::Invoke { arguments, .. } => {
+            for argument in arguments.iter().copied() {
+                consume_task_handle(
+                    argument,
+                    site,
+                    &mut states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                );
+            }
+        }
+        TerminatorKind::AwaitTasks { tasks, .. } => {
+            for task in tasks.iter().copied() {
+                consume_task_handle(
+                    task,
+                    site,
+                    &mut states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                );
+            }
+        }
+        TerminatorKind::Return(value) => consume_task_handle(
+            *value,
+            site,
+            &mut states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        ),
+        _ => {}
+    }
+    for writeback in terminator.writebacks().iter().copied() {
+        consume_task_handle(
+            writeback,
+            site,
+            &mut states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        );
+    }
+
+    let mut edges = Vec::new();
+    for (target, arguments) in forwarded_list_edges(terminator.kind()) {
+        let Some(target_block) = function.block(target) else {
+            continue;
+        };
+        let mut edge_states = states.clone();
+        let implicit = target_block.params().len().saturating_sub(arguments.len());
+
+        // Consume every source before defining any destination. This ordering
+        // is essential for self-loop phis: forwarding one handle into two
+        // parameters must not let the first parameter definition resurrect it
+        // before the duplicate second move is checked.
+        for argument in arguments.iter().copied() {
+            consume_task_handle(
+                argument,
+                site,
+                &mut edge_states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            );
+        }
+        for parameter in target_block.params().iter().copied().take(implicit) {
+            if task_values.get(parameter.index()).copied().unwrap_or(false) {
+                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+        for parameter in target_block.params().iter().copied().skip(implicit) {
+            if task_values.get(parameter.index()).copied().unwrap_or(false) {
+                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+        edges.push(TaskOwnershipEdge {
+            target: target.index(),
+            states: edge_states,
+        });
+    }
+    TaskOwnershipTransfer { edges, issues }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5156,7 +5671,7 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
         ],
-        TerminatorKind::AwaitTask { normal, .. } => {
+        TerminatorKind::AwaitTasks { normal, .. } => {
             vec![(normal.block, &normal.arguments)]
         }
         TerminatorKind::Assert { success, fault, .. } => vec![

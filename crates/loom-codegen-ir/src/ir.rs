@@ -283,10 +283,11 @@ impl Function {
 /// Target-typed logical frame contract for one stackless coroutine instance.
 ///
 /// Parameter and result slots are implied by the function signature. Each
-/// suspension row lists, in deterministic local-id order, the exact values
-/// forwarded to its continuation. The LLVM backend derives byte offsets and
-/// precise managed-pointer projections from these checked value types; no
-/// universal value envelope or interpreter frame is involved.
+/// suspension row lists the child results injected in task order followed by,
+/// in deterministic local-id order, the exact live values forwarded to its
+/// continuation. The LLVM backend derives byte offsets and precise
+/// managed-pointer projections from these checked value types; no universal
+/// value envelope or interpreter frame is involved.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoroutinePlan {
     output: ValueTypeId,
@@ -313,18 +314,25 @@ impl CoroutinePlan {
     }
 }
 
-/// One nonzero MIR resume state and its exact forwarded live-value types.
+/// One nonzero MIR resume state, its exact awaited result types, and its
+/// forwarded live-value types.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoroutineSuspension {
     state: u32,
+    awaited: Box<[ValueTypeId]>,
     live: Box<[ValueTypeId]>,
 }
 
 impl CoroutineSuspension {
     #[must_use]
-    pub fn new(state: u32, live: impl Into<Box<[ValueTypeId]>>) -> Self {
+    pub fn new(
+        state: u32,
+        awaited: impl Into<Box<[ValueTypeId]>>,
+        live: impl Into<Box<[ValueTypeId]>>,
+    ) -> Self {
         Self {
             state,
+            awaited: awaited.into(),
             live: live.into(),
         }
     }
@@ -332,6 +340,11 @@ impl CoroutineSuspension {
     #[must_use]
     pub const fn state(&self) -> u32 {
         self.state
+    }
+
+    #[must_use]
+    pub const fn awaited(&self) -> &[ValueTypeId] {
+        &self.awaited
     }
 
     #[must_use]
@@ -738,6 +751,12 @@ pub enum InstructionKind {
         coroutine: InstanceId,
         arguments: Box<[ValueId]>,
     },
+    /// Allocates one exact heterogeneous composite Task. The child tasks are
+    /// consumed in source order and the result is the canonical
+    /// `Task[(T0, ..., Tn)]` handle for their exact output types.
+    TaskJoinAll {
+        tasks: Box<[ValueId]>,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -833,6 +852,7 @@ impl InstructionKind {
             Self::TaskCreate { arguments, .. } | Self::DirectCall { arguments, .. } => {
                 arguments.to_vec()
             }
+            Self::TaskJoinAll { tasks } => tasks.to_vec(),
             Self::IntSuccessorBelow {
                 value,
                 upper_bound,
@@ -882,12 +902,13 @@ impl SumCase {
     }
 }
 
-/// A normal edge which defines an operation result only in its destination.
+/// A normal edge which defines one or more operation results only in its
+/// destination.
 ///
-/// The implicit result is injected into destination parameter zero. Explicit
-/// `arguments` are forwarded to the remaining destination parameters. There
-/// is intentionally no result [`ValueId`] in the source block which could be
-/// used by a fault edge.
+/// Implicit results are injected into the leading destination parameters.
+/// Explicit `arguments` are forwarded to the remaining destination
+/// parameters. There is intentionally no result [`ValueId`] in the source
+/// block which could be used by a fault edge.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResultTarget {
     pub block: BlockId,
@@ -1190,15 +1211,15 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         fault: UnwindTarget,
     },
-    /// Consumes one structured child Task. The initial callback invocation
-    /// stores `normal.arguments`, attaches the child to an `all` join, and
-    /// returns pending when needed. Resume state `state` takes the exact child
-    /// result and injects it as normal parameter zero before the forwarded
-    /// values. A child fault or cancellation terminates the current Task with
-    /// the scheduler-propagated outcome.
-    AwaitTask {
+    /// Consumes one or more structured child Tasks. The initial callback
+    /// invocation stores `normal.arguments`, attaches all children to one
+    /// exact `all` join, and returns pending when needed. Resume state `state`
+    /// injects each exact child result into the leading normal parameters in
+    /// task order before the forwarded values. A child fault or cancellation
+    /// terminates the current Task with the scheduler-propagated outcome.
+    AwaitTasks {
         state: u32,
-        task: ValueId,
+        tasks: Box<[ValueId]>,
         normal: ResultTarget,
     },
     /// Negates a signed integer, producing its value only on `normal` and
@@ -1294,9 +1315,9 @@ impl TerminatorKind {
                 operands.extend_from_slice(&fault.arguments);
                 operands
             }
-            Self::AwaitTask { task, normal, .. } => {
-                let mut operands = Vec::with_capacity(1 + normal.arguments.len());
-                operands.push(*task);
+            Self::AwaitTasks { tasks, normal, .. } => {
+                let mut operands = Vec::with_capacity(tasks.len() + normal.arguments.len());
+                operands.extend_from_slice(tasks);
                 operands.extend_from_slice(&normal.arguments);
                 operands
             }
@@ -1390,7 +1411,7 @@ impl TerminatorKind {
             Self::SumSwitch { cases, .. } | Self::DynSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
-            Self::AwaitTask { normal, .. } => vec![preserve(normal.block)],
+            Self::AwaitTasks { normal, .. } => vec![preserve(normal.block)],
             Self::TaskSleep { normal, fault, .. }
             | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }

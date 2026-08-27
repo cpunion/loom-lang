@@ -63,7 +63,8 @@ use loom_runtime_abi::{
     TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
     TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
     TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
+    TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -81,6 +82,7 @@ const TYPED_TASK_PUBLISH_SYMBOL: &str = "loom_typed_task_publish_v1";
 const TYPED_TASK_SET_ROOT_STATE_SYMBOL: &str = "loom_typed_task_set_root_state_v1";
 const TYPED_TASK_PUBLISH_RESULT_SYMBOL: &str = "loom_typed_task_publish_result_v1";
 const TYPED_TASK_TAKE_RESULT_SYMBOL: &str = "loom_typed_task_take_result_v1";
+const TYPED_TASK_ABORT_UNPUBLISHED_SYMBOL: &str = "loom_typed_task_abort_unpublished_v1";
 
 impl LcirEmitter {
     pub(crate) fn emit_object(
@@ -1602,7 +1604,7 @@ struct TextMapLayout<'ctx> {
 #[derive(Clone)]
 struct CoroutineSuspensionLayout {
     state: u32,
-    child_field: u32,
+    child_fields: Vec<u32>,
     live_fields: Vec<u32>,
 }
 
@@ -1613,6 +1615,23 @@ struct CoroutineLayout<'ctx> {
     suspensions: Vec<CoroutineSuspensionLayout>,
     result_field: u32,
     descriptor: PointerValue<'ctx>,
+}
+
+#[derive(Clone)]
+struct TaskJoinAllLayout<'ctx> {
+    frame: StructType<'ctx>,
+    child_fields: Vec<u32>,
+    result_field: u32,
+    output_types: Vec<ValueTypeId>,
+    result_type: ValueTypeId,
+    callback: FunctionValue<'ctx>,
+    descriptor: PointerValue<'ctx>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct TaskJoinAllShape {
+    output_types: Vec<ValueTypeId>,
+    result_type: ValueTypeId,
 }
 
 #[derive(Clone)]
@@ -1638,6 +1657,8 @@ struct Backend<'ctx, 'artifact> {
     coroutine_callbacks: Vec<Option<FunctionValue<'ctx>>>,
     coroutine_layouts: Vec<Option<CoroutineLayout<'ctx>>>,
     coroutine_cancel: Option<FunctionValue<'ctx>>,
+    task_join_all_layouts: BTreeMap<TaskJoinAllShape, TaskJoinAllLayout<'ctx>>,
+    task_join_all_shapes: BTreeMap<InstructionId, TaskJoinAllShape>,
     debug: Option<DebugState<'ctx>>,
     names: Cell<u64>,
     sum_layout_cache: RefCell<BTreeMap<u32, SumLayout<'ctx>>>,
@@ -1765,6 +1786,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             coroutine_callbacks: Vec::with_capacity(artifact.functions().len()),
             coroutine_layouts: Vec::with_capacity(artifact.functions().len()),
             coroutine_cancel: None,
+            task_join_all_layouts: BTreeMap::new(),
+            task_join_all_shapes: BTreeMap::new(),
             debug,
             names: Cell::new(0),
             sum_layout_cache: RefCell::new(BTreeMap::new()),
@@ -1877,7 +1900,331 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             self.coroutine_callbacks.push(None);
             self.coroutine_layouts.push(None);
         }
+        self.declare_task_join_all_layouts()
+    }
+
+    fn declare_task_join_all_layouts(&mut self) -> Result<(), CodegenError> {
+        let joins = self
+            .artifact
+            .functions()
+            .iter()
+            .flat_map(|source| {
+                source.instructions().iter().filter_map(move |instruction| {
+                    matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. })
+                        .then_some((source, instruction))
+                })
+            })
+            .collect::<Vec<_>>();
+        for (source, instruction) in joins {
+            let shape = self.task_join_all_shape(source, instruction)?;
+            if self.task_join_all_shapes.contains_key(&instruction.id()) {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("duplicate typed Task.all instruction {}", instruction.id()),
+                ));
+            }
+            if !self.task_join_all_layouts.contains_key(&shape) {
+                let shape_index = self.task_join_all_layouts.len();
+                let cancel = self.coroutine_cancel.ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed Task.all descriptor has no cancellation callback",
+                    )
+                })?;
+                let callback = self.module.add_function(
+                    &format!("loom.lcir.task_join_all.resume.{shape_index}"),
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                        ],
+                        false,
+                    ),
+                    Some(Linkage::Internal),
+                );
+                let layout =
+                    self.build_task_join_all_layout(&shape, shape_index, callback, cancel)?;
+                self.task_join_all_layouts.insert(shape.clone(), layout);
+            }
+            self.task_join_all_shapes.insert(instruction.id(), shape);
+        }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exact Task.all shape validation keeps child semantics, canonical output identities, and tuple agreement in one audit boundary"
+    )]
+    fn task_join_all_shape(
+        &self,
+        source: &Function,
+        instruction: &Instruction,
+    ) -> Result<TaskJoinAllShape, CodegenError> {
+        let InstructionKind::TaskJoinAll { tasks } = instruction.kind() else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} is not a typed Task.all instruction", instruction.id()),
+            ));
+        };
+        if tasks.is_empty() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task.all cannot have an empty exact shape",
+            ));
+        }
+        let output_types = tasks
+            .iter()
+            .copied()
+            .map(|task| {
+                let semantic = source
+                    .value(task)
+                    .and_then(|value| self.artifact.representations().value_type(value.ty()))
+                    .map(loom_codegen_ir::ValueType::semantic)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("typed Task.all child {task} has no semantic type"),
+                        )
+                    })?;
+                let Type::Task(output) = semantic else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("typed Task.all child {task} is not a Task"),
+                    ));
+                };
+                self.artifact
+                    .representations()
+                    .type_id(output)
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("typed Task.all child {task} output has no LCIR type"),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = instruction
+            .results()
+            .first()
+            .and_then(|result| source.value(*result))
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed Task.all has no result value")
+            })?;
+        let result_semantic = self
+            .artifact
+            .representations()
+            .value_type(result.ty())
+            .map(loom_codegen_ir::ValueType::semantic)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed Task.all result type is missing")
+            })?;
+        let Type::Task(result_type) = result_semantic else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task.all result is not a Task",
+            ));
+        };
+        let result_type = self
+            .artifact
+            .representations()
+            .type_id(result_type)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    "typed Task.all tuple output has no LCIR type",
+                )
+            })?;
+        let tuple = self
+            .artifact
+            .representations()
+            .value_type(result_type)
+            .map(loom_codegen_ir::ValueType::semantic)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed Task.all tuple type is missing")
+            })?;
+        if tuple
+            != &Type::Tuple(
+                output_types
+                    .iter()
+                    .map(|ty| {
+                        self.artifact
+                            .representations()
+                            .value_type(*ty)
+                            .map(|value| value.semantic().clone())
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "typed Task.all output type disappeared",
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task.all result tuple does not match its child outputs",
+            ));
+        }
+        Ok(TaskJoinAllShape {
+            output_types,
+            result_type,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one target-data proof constructs the exact heterogeneous Task.all frame, completed roots, and immutable descriptor"
+    )]
+    fn build_task_join_all_layout(
+        &self,
+        shape: &TaskJoinAllShape,
+        shape_index: usize,
+        callback: FunctionValue<'ctx>,
+        cancel: FunctionValue<'ctx>,
+    ) -> Result<TaskJoinAllLayout<'ctx>, CodegenError> {
+        let TaskJoinAllShape {
+            output_types,
+            result_type,
+        } = shape;
+
+        let mut fields = vec![self.context.i64_type().into()];
+        let mut child_fields = Vec::with_capacity(output_types.len());
+        let mut next_field = 1_u32;
+        for _ in output_types {
+            child_fields.push(next_field);
+            next_field = next_field.checked_add(1).ok_or_else(|| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "typed Task.all frame has too many fields",
+                )
+            })?;
+            fields.push(self.ptr_type.into());
+        }
+        let result_field = next_field;
+        fields.push(self.llvm_type(*result_type)?);
+        let frame = self.context.struct_type(&fields, false);
+        let frame_size = self.target_data.get_abi_size(&frame);
+        let frame_align = u64::from(self.target_data.get_abi_alignment(&frame));
+        if frame_size == 0
+            || frame_size > GC_MAX_OBJECT_BYTES
+            || frame_align == 0
+            || !frame_align.is_power_of_two()
+            || frame_align > GC_MAX_OBJECT_ALIGNMENT
+        {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!(
+                    "typed Task.all has unsupported frame size/alignment {frame_size}/{frame_align}"
+                ),
+            ));
+        }
+        let result_offset = self.coroutine_field_offset(frame, result_field)?;
+        let mut completed_roots = BTreeSet::new();
+        self.collect_coroutine_root_offsets(*result_type, result_offset, &mut completed_roots)?;
+        if u64::try_from(completed_roots.len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                "typed Task.all result has too many exact managed roots",
+            ));
+        }
+        let offsets = completed_roots.into_iter().collect::<Vec<_>>();
+        let bitmap_words = offsets.len().div_ceil(64);
+        let state_count = 3_usize;
+        let total_bitmap_words = state_count.checked_mul(bitmap_words).ok_or_else(|| {
+            CodegenError::new("ProgramTooLarge", "typed Task.all root bitmap overflowed")
+        })?;
+        if u64::try_from(total_bitmap_words).unwrap_or(u64::MAX) > GC_MAX_ROOT_BITMAP_WORDS {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                "typed Task.all root bitmap exceeds the runtime ABI limit",
+            ));
+        }
+        let mut bitmaps = vec![0_u64; total_bitmap_words];
+        for slot in 0..offsets.len() {
+            bitmaps[2 * bitmap_words + slot / 64] |= 1_u64 << (slot % 64);
+        }
+        let stem = format!("loom.lcir.task_join_all.{shape_index}");
+        let offsets_pointer = self.emit_i64_array(&format!("{stem}.root_offsets"), &offsets)?;
+        let bitmaps_pointer = self.emit_i64_array(&format!("{stem}.live_bitmaps"), &bitmaps)?;
+        let result_physical = self.llvm_type(*result_type)?;
+        let result_size = self.target_data.get_abi_size(&result_physical);
+        let result_align = u64::from(self.target_data.get_abi_alignment(&result_physical));
+        let descriptor_type = self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
+        let descriptor =
+            self.module
+                .add_global(descriptor_type, None, &format!("{stem}.descriptor"));
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_TASK_ABI_VERSION), false)
+                    .into(),
+                self.context.i32_type().const_zero().into(),
+                callback.as_global_value().as_pointer_value().into(),
+                cancel.as_global_value().as_pointer_value().into(),
+                self.ptr_type.const_null().into(),
+                self.context.i64_type().const_int(frame_size, false).into(),
+                self.context.i64_type().const_int(frame_align, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(result_offset, false)
+                    .into(),
+                self.context.i64_type().const_int(result_size, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(result_align, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(offsets.len() as u64, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(state_count as u64, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(bitmap_words as u64, false)
+                    .into(),
+                offsets_pointer.into(),
+                bitmaps_pointer.into(),
+                self.context.i64_type().const_int(2, false).into(),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(TaskJoinAllLayout {
+            frame,
+            child_fields,
+            result_field,
+            output_types: output_types.clone(),
+            result_type: *result_type,
+            callback,
+            descriptor: descriptor.as_pointer_value(),
+        })
     }
 
     #[expect(
@@ -1911,14 +2258,17 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         }
         let mut suspensions = Vec::with_capacity(plan.suspensions().len());
         for suspension in plan.suspensions() {
-            let child_field = next_field;
-            next_field = next_field.checked_add(1).ok_or_else(|| {
-                CodegenError::new(
-                    "ProgramTooLarge",
-                    "typed coroutine frame has too many fields",
-                )
-            })?;
-            fields.push(self.ptr_type.into());
+            let mut child_fields = Vec::with_capacity(suspension.awaited().len());
+            for _ in suspension.awaited() {
+                child_fields.push(next_field);
+                next_field = next_field.checked_add(1).ok_or_else(|| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "typed coroutine frame has too many fields",
+                    )
+                })?;
+                fields.push(self.ptr_type.into());
+            }
             let mut live_fields = Vec::with_capacity(suspension.live().len());
             for live in suspension.live() {
                 live_fields.push(next_field);
@@ -1932,7 +2282,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             }
             suspensions.push(CoroutineSuspensionLayout {
                 state: suspension.state(),
-                child_field,
+                child_fields,
                 live_fields,
             });
         }
@@ -2260,6 +2610,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     fn compile(&self) -> Result<(), CodegenError> {
         self.emit_coroutine_cancel()?;
+        for layout in self.task_join_all_layouts.values() {
+            self.emit_task_join_all_callback(layout)?;
+        }
         for source in self
             .artifact
             .functions()
@@ -2272,6 +2625,267 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             FunctionEmitter::new(self, source)?.compile()?;
         }
         self.emit_main()
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one generated callback owns the complete pointer-only Task.all join protocol and exact tuple publication"
+    )]
+    fn emit_task_join_all_callback(
+        &self,
+        layout: &TaskJoinAllLayout<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let task = layout
+            .callback
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no task"))?
+            .into_pointer_value();
+        let executor = layout
+            .callback
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no executor"))?
+            .into_pointer_value();
+        let frame = layout
+            .callback
+            .get_nth_param(2)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no frame"))?
+            .into_pointer_value();
+        let entry = self.context.append_basic_block(layout.callback, "entry");
+        let start = self
+            .context
+            .append_basic_block(layout.callback, "join.start");
+        let resume = self
+            .context
+            .append_basic_block(layout.callback, "join.resume");
+        let pending = self
+            .context
+            .append_basic_block(layout.callback, "join.pending");
+        let completed = self
+            .context
+            .append_basic_block(layout.callback, "join.completed");
+        let faulted = self
+            .context
+            .append_basic_block(layout.callback, "join.faulted");
+        let cancelled = self
+            .context
+            .append_basic_block(layout.callback, "join.cancelled");
+        let invalid = self
+            .context
+            .append_basic_block(layout.callback, "join.invalid");
+
+        self.builder.position_at_end(entry);
+        let state_pointer = self
+            .builder
+            .build_struct_gep(layout.frame, frame, 0, "task.all.state.pointer")
+            .map_err(builder_error)?;
+        let state = self
+            .builder
+            .build_load(self.context.i64_type(), state_pointer, "task.all.state")
+            .map_err(builder_error)?
+            .into_int_value();
+        self.builder
+            .build_switch(
+                state,
+                invalid,
+                &[
+                    (self.context.i64_type().const_zero(), start),
+                    (self.context.i64_type().const_int(1, false), resume),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(start);
+        let prepared = call_int(
+            &self.builder,
+            self.task_prepare_join(),
+            &[
+                executor.into(),
+                task.into(),
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TASK_JOIN_ALL), false)
+                    .into(),
+            ],
+            "task.all.prepare",
+        )?;
+        self.require_zero_status(prepared, "task.all.prepare")?;
+        for (index, field) in layout.child_fields.iter().copied().enumerate() {
+            let pointer = self
+                .builder
+                .build_struct_gep(
+                    layout.frame,
+                    frame,
+                    field,
+                    &format!("task.all.child.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .builder
+                .build_load(self.ptr_type, pointer, &format!("task.all.child.{index}"))
+                .map_err(builder_error)?
+                .into_pointer_value();
+            let name = format!("task.all.add_child.{index}");
+            let added = call_int(
+                &self.builder,
+                self.task_add_join_child(),
+                &[executor.into(), task.into(), child.into()],
+                &name,
+            )?;
+            self.require_zero_status(added, &name)?;
+        }
+        self.builder
+            .build_store(state_pointer, self.context.i64_type().const_int(1, false))
+            .map_err(builder_error)?;
+        let rooted = call_int(
+            &self.builder,
+            self.typed_task_set_root_state(),
+            &[
+                task.into(),
+                self.context.i64_type().const_int(1, false).into(),
+            ],
+            "task.all.root_state",
+        )?;
+        self.require_zero_status(rooted, "task.all.root_state")?;
+        let suspended = call_int(
+            &self.builder,
+            self.task_suspend_join(),
+            &[executor.into(), task.into()],
+            "task.all.suspend",
+        )?;
+        self.builder
+            .build_switch(
+                suspended,
+                invalid,
+                &[
+                    (self.context.i32_type().const_zero(), resume),
+                    (self.context.i32_type().const_int(1, false), pending),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(pending);
+        self.emit_task_step_return(TASK_PENDING)?;
+
+        self.builder.position_at_end(resume);
+        let step = call_int(
+            &self.builder,
+            self.task_join_step(),
+            &[task.into()],
+            "task.all.join_step",
+        )?;
+        self.builder
+            .build_switch(
+                step,
+                invalid,
+                &[
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_COMPLETED as u64, false),
+                        completed,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_FAULTED as u64, false),
+                        faulted,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_CANCELLED as u64, false),
+                        cancelled,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(completed);
+        let mut tuple = self
+            .llvm_type(layout.result_type)?
+            .into_struct_type()
+            .get_undef();
+        for (index, (field, output)) in layout
+            .child_fields
+            .iter()
+            .copied()
+            .zip(layout.output_types.iter().copied())
+            .enumerate()
+        {
+            let child_pointer = self
+                .builder
+                .build_struct_gep(
+                    layout.frame,
+                    frame,
+                    field,
+                    &format!("task.all.result.child.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .builder
+                .build_load(
+                    self.ptr_type,
+                    child_pointer,
+                    &format!("task.all.result.child.{index}"),
+                )
+                .map_err(builder_error)?
+                .into_pointer_value();
+            let value = self.take_typed_task_result_exact(
+                child,
+                output,
+                &format!("task.all.result.{index}"),
+            )?;
+            let index = u32::try_from(index).map_err(|_| {
+                CodegenError::new(
+                    "ProgramTooLarge",
+                    "typed Task.all tuple has too many fields",
+                )
+            })?;
+            tuple = self
+                .builder
+                .build_insert_value(tuple, value, index, "task.all.tuple")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        let result_pointer = self
+            .builder
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                layout.result_field,
+                "task.all.result.pointer",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(result_pointer, tuple)
+            .map_err(builder_error)?;
+        let published = call_int(
+            &self.builder,
+            self.typed_task_publish_result(),
+            &[task.into()],
+            "task.all.publish_result",
+        )?;
+        self.require_zero_status(published, "task.all.publish_result")?;
+        self.emit_task_step_return(TASK_COMPLETED)?;
+
+        self.builder.position_at_end(faulted);
+        self.emit_task_step_return(TASK_FAULTED)?;
+        self.builder.position_at_end(cancelled);
+        self.emit_task_step_return(TASK_CANCELLED)?;
+        self.builder.position_at_end(invalid);
+        self.emit_task_step_return(TASK_FAULTED)
+    }
+
+    fn emit_task_step_return(&self, step: i32) -> Result<(), CodegenError> {
+        self.builder
+            .build_return(Some(
+                &self
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(step.cast_unsigned()), false),
+            ))
+            .map_err(builder_error)?;
+        Ok(())
     }
 
     fn emit_coroutine_cancel(&self) -> Result<(), CodegenError> {
@@ -3504,6 +4118,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn task_join_all_layout(
+        &self,
+        id: InstructionId,
+    ) -> Result<&TaskJoinAllLayout<'ctx>, CodegenError> {
+        let shape = self.task_join_all_shapes.get(&id).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed Task.all instruction {id} has no exact shape"),
+            )
+        })?;
+        self.task_join_all_layouts.get(shape).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed Task.all instruction {id} has no generated descriptor"),
+            )
+        })
+    }
+
     fn unique(&self, prefix: &str) -> String {
         let index = self.names.get();
         self.names.set(index.saturating_add(1));
@@ -3863,6 +4495,67 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 );
                 self.module
                     .add_function(TYPED_TASK_TAKE_RESULT_SYMBOL, function_type, None)
+            })
+    }
+
+    fn take_typed_task_result_exact(
+        &self,
+        child: PointerValue<'ctx>,
+        output: ValueTypeId,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let physical = self.llvm_type(output)?;
+        let size = self.target_data.get_abi_size(&physical);
+        let alignment = u64::from(self.target_data.get_abi_alignment(&physical));
+        let storage = (size != 0)
+            .then(|| {
+                self.builder
+                    .build_alloca(physical, &format!("{name}.storage"))
+                    .map_err(builder_error)
+            })
+            .transpose()?;
+        let status = call_int(
+            &self.builder,
+            self.typed_task_take_result(),
+            &[
+                child.into(),
+                storage.unwrap_or_else(|| self.ptr_type.const_null()).into(),
+                self.context.i64_type().const_int(size, false).into(),
+                self.context.i64_type().const_int(alignment, false).into(),
+            ],
+            &format!("{name}.take"),
+        )?;
+        self.require_zero_status(status, &format!("{name}.take"))?;
+        if let Some(storage) = storage {
+            self.builder
+                .build_load(physical, storage, &format!("{name}.value"))
+                .map_err(builder_error)
+        } else {
+            self.zero(output)
+        }
+    }
+
+    fn typed_task_abort_unpublished(&self) -> FunctionValue<'ctx> {
+        self.executor_task_status_function(TYPED_TASK_ABORT_UNPUBLISHED_SYMBOL)
+    }
+
+    fn typed_task_publish_adopting(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_TASK_PUBLISH_ADOPTING_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.context.i64_type().into(),
+                        ],
+                        false,
+                    ),
+                    None,
+                )
             })
     }
 
@@ -5713,8 +6406,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .zip(&coroutine.layout.suspensions)
             .zip(&coroutine.resume_blocks)
         {
-            let (_task, normal) = self.await_for_state(plan_row.state())?;
+            let (_tasks, normal) = self.await_for_state(plan_row.state())?;
             if layout_row.state != plan_row.state()
+                || layout_row.child_fields.len() != plan_row.awaited().len()
                 || layout_row.live_fields.len() != plan_row.live().len()
             {
                 return Err(CodegenError::new(
@@ -5749,6 +6443,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             CodegenError::new("LlvmAbiDefect", "coroutine resume has no active frame")
         })?;
         if layout_row.state != plan_row.state()
+            || layout_row.child_fields.len() != plan_row.awaited().len()
             || layout_row.live_fields.len() != plan_row.live().len()
         {
             return Err(CodegenError::new(
@@ -5820,25 +6515,45 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.emit_coroutine_step_return(TASK_FAULTED)?;
 
         self.backend.builder.position_at_end(completed);
-        let child_pointer = self
-            .backend
-            .builder
-            .build_struct_gep(
-                coroutine.layout.frame,
-                coroutine.frame,
-                layout_row.child_field,
-                "task.await.child.pointer",
-            )
-            .map_err(builder_error)?;
-        let child = self
-            .backend
-            .builder
-            .build_load(self.backend.ptr_type, child_pointer, "task.await.child")
-            .map_err(builder_error)?
-            .into_pointer_value();
-        let output = self.take_typed_task_result(child, normal.block)?;
-        let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
-        values.push(output);
+        let mut values = Vec::with_capacity(
+            layout_row
+                .child_fields
+                .len()
+                .saturating_add(layout_row.live_fields.len()),
+        );
+        for ((field, output), index) in layout_row
+            .child_fields
+            .iter()
+            .copied()
+            .zip(plan_row.awaited().iter().copied())
+            .zip(0_u32..)
+        {
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    &format!("task.await.child.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .backend
+                .builder
+                .build_load(
+                    self.backend.ptr_type,
+                    child_pointer,
+                    &format!("task.await.child.{index}"),
+                )
+                .map_err(builder_error)?
+                .into_pointer_value();
+            values.push(self.take_typed_task_result(
+                child,
+                output,
+                &format!("task.await.result.{index}"),
+            )?);
+        }
         for ((ty, field), index) in plan_row
             .live()
             .iter()
@@ -5876,16 +6591,16 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn await_for_state(&self, state: u32) -> Result<(ValueId, ResultTarget), CodegenError> {
+    fn await_for_state(&self, state: u32) -> Result<(Box<[ValueId]>, ResultTarget), CodegenError> {
         self.source
             .blocks()
             .iter()
             .find_map(|block| match block.terminator().map(Terminator::kind) {
-                Some(TerminatorKind::AwaitTask {
+                Some(TerminatorKind::AwaitTasks {
                     state: candidate,
-                    task,
+                    tasks,
                     normal,
-                }) if *candidate == state => Some((*task, normal.clone())),
+                }) if *candidate == state => Some((tasks.clone(), normal.clone())),
                 _ => None,
             })
             .ok_or_else(|| {
@@ -5899,20 +6614,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn take_typed_task_result(
         &self,
         child: PointerValue<'ctx>,
-        destination: BlockId,
+        output: ValueTypeId,
+        name: &str,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let output = self
-            .source
-            .block(destination)
-            .and_then(|block| block.params().first())
-            .and_then(|value| self.source.value(*value))
-            .ok_or_else(|| {
-                CodegenError::new(
-                    "LlvmAbiDefect",
-                    format!("await destination {destination} has no result parameter"),
-                )
-            })?
-            .ty();
         let physical = self.backend.llvm_type(output)?;
         let size = self.backend.target_data.get_abi_size(&physical);
         let alignment = u64::from(self.backend.target_data.get_abi_alignment(&physical));
@@ -5920,7 +6624,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .then(|| {
                 self.backend
                     .builder
-                    .build_alloca(physical, "task.await.result")
+                    .build_alloca(physical, &format!("{name}.storage"))
                     .map_err(builder_error)
             })
             .transpose()?;
@@ -5943,14 +6647,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .const_int(alignment, false)
                     .into(),
             ],
-            "task.await.take",
+            &format!("{name}.take"),
         )?;
         self.backend
-            .require_zero_status(status, "task.await.take")?;
+            .require_zero_status(status, &format!("{name}.take"))?;
         if let Some(storage) = storage {
             self.backend
                 .builder
-                .build_load(physical, storage, "task.await.result.value")
+                .build_load(physical, storage, &format!("{name}.value"))
                 .map_err(builder_error)
         } else {
             self.backend.zero(output)
@@ -6047,7 +6751,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(fault.block);
                     pending.push(success.block);
                 }
-                TerminatorKind::AwaitTask { normal, .. } => pending.push(normal.block),
+                TerminatorKind::AwaitTasks { normal, .. } => pending.push(normal.block),
                 TerminatorKind::Return(_)
                 | TerminatorKind::Fault { .. }
                 | TerminatorKind::ResumeFault => {}
@@ -6093,6 +6797,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     "task.create.child",
                 )?
                 .into())
+            }
+            InstructionKind::TaskJoinAll { tasks } => {
+                one(self.emit_task_join_all(instruction, tasks)?.into())
             }
             InstructionKind::TextConcat { left, right } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
@@ -9095,11 +9802,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 normal,
                 fault,
             } => self.emit_task_sleep(*milliseconds, terminator.origin(), normal, fault),
-            TerminatorKind::AwaitTask {
+            TerminatorKind::AwaitTasks {
                 state,
-                task,
+                tasks,
                 normal,
-            } => self.emit_await_task(*state, *task, normal),
+            } => self.emit_await_tasks(*state, tasks, normal),
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal,
@@ -9363,12 +10070,205 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
+        reason = "one exact Task.all construction edge initializes its generated frame and atomically adopts every child before publishing the handle"
+    )]
+    fn emit_task_join_all(
+        &self,
+        instruction: &Instruction,
+        tasks: &[ValueId],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task.all construction has no active coroutine executor",
+            )
+        })?;
+        let layout = self.backend.task_join_all_layout(instruction.id())?;
+        if tasks.is_empty()
+            || tasks.len() != layout.child_fields.len()
+            || tasks.len() != layout.output_types.len()
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "typed Task.all {} disagrees with its generated shape",
+                    instruction.id()
+                ),
+            ));
+        }
+        let children = tasks
+            .iter()
+            .copied()
+            .map(|task| self.value(task).map(BasicValueEnum::into_pointer_value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let composite = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_task_create(),
+            &[coroutine.executor.into(), layout.descriptor.into()],
+            "task.all.create",
+        )?;
+        self.backend.require_nonnull(composite, "task.all.create")?;
+        let frame = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_task_frame(),
+            &[composite.into()],
+            "task.all.frame",
+        )?;
+        self.backend.require_nonnull(frame, "task.all.frame")?;
+        let state = self
+            .backend
+            .builder
+            .build_struct_gep(layout.frame, frame, 0, "task.all.frame.state")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(state, self.backend.context.i64_type().const_zero())
+            .map_err(builder_error)?;
+        for ((child, field), index) in children
+            .iter()
+            .copied()
+            .zip(layout.child_fields.iter().copied())
+            .zip(0_u32..)
+        {
+            let pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    layout.frame,
+                    frame,
+                    field,
+                    &format!("task.all.frame.child.{index}"),
+                )
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(pointer, child)
+                .map_err(builder_error)?;
+        }
+        let initialized = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_initialize(),
+            &[
+                composite.into(),
+                self.backend.context.i64_type().const_zero().into(),
+            ],
+            "task.all.initialize",
+        )?;
+        self.backend
+            .require_zero_status(initialized, "task.all.initialize")?;
+
+        let count = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(children.len() as u64, false);
+        let child_array = self
+            .backend
+            .builder
+            .build_array_alloca(self.backend.ptr_type, count, "task.all.children")
+            .map_err(builder_error)?;
+        for (index, child) in children.iter().copied().enumerate() {
+            let pointer = self.task_pointer_array_element(
+                child_array,
+                u64::try_from(index).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "typed Task.all has too many children")
+                })?,
+                &format!("task.all.children.{index}"),
+            )?;
+            self.backend
+                .builder
+                .build_store(pointer, child)
+                .map_err(builder_error)?;
+        }
+        let published = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_publish_adopting(),
+            &[
+                coroutine.executor.into(),
+                composite.into(),
+                child_array.into(),
+                count.into(),
+            ],
+            "task.all.publish_adopting",
+        )?;
+        let success = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.all.publish_adopting.ok");
+        let failure = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.all.publish_adopting.failed");
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                published,
+                self.backend.context.i32_type().const_zero(),
+                "task.all.publish_adopting.status.ok",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(failure);
+        let _aborted = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_abort_unpublished(),
+            &[coroutine.executor.into(), composite.into()],
+            "task.all.abort_unpublished",
+        )?;
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], "task.all.publish_adopting.trap")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(success);
+        Ok(composite)
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "Inkwell requires an audited pointee/index proof for the temporary contiguous child-pointer array"
+    )]
+    fn task_pointer_array_element(
+        &self,
+        array: PointerValue<'ctx>,
+        index: u64,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        // SAFETY: `array` is the base returned by `build_array_alloca(ptr, N)`
+        // in `emit_task_join_all`, and every caller proves `index < N` by
+        // iterating the same checked nonempty child slice.
+        unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    self.backend.ptr_type,
+                    array,
+                    &[self.backend.context.i64_type().const_int(index, false)],
+                    name,
+                )
+                .map_err(builder_error)
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
         reason = "one await edge atomically stores its child and exact live row, registers the structured join, publishes the frame state, and returns pending"
     )]
-    fn emit_await_task(
+    fn emit_await_tasks(
         &self,
         state: u32,
-        task: ValueId,
+        tasks: &[ValueId],
         normal: &ResultTarget,
     ) -> Result<(), CodegenError> {
         let coroutine = self.coroutine.as_ref().ok_or_else(|| {
@@ -9400,28 +10300,42 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("await state {state} has no checked coroutine row"),
                 )
             })?;
-        if suspension.live_fields.len() != normal.arguments.len() {
+        if suspension.child_fields.len() != tasks.len()
+            || suspension.child_fields.len() != plan_row.awaited().len()
+            || suspension.live_fields.len() != normal.arguments.len()
+        {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                format!("await state {state} disagrees with its live frame row"),
+                format!("await state {state} disagrees with its physical frame row"),
             ));
         }
 
-        let child = self.value(task)?.into_pointer_value();
-        let child_pointer = self
-            .backend
-            .builder
-            .build_struct_gep(
-                coroutine.layout.frame,
-                coroutine.frame,
-                suspension.child_field,
-                "task.await.child.pointer",
-            )
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_store(child_pointer, child)
-            .map_err(builder_error)?;
+        let children = tasks
+            .iter()
+            .copied()
+            .map(|task| self.value(task).map(BasicValueEnum::into_pointer_value))
+            .collect::<Result<Vec<_>, _>>()?;
+        for ((child, field), index) in children
+            .iter()
+            .copied()
+            .zip(suspension.child_fields.iter().copied())
+            .zip(0_u32..)
+        {
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    &format!("task.await.child.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            self.backend
+                .builder
+                .build_store(child_pointer, child)
+                .map_err(builder_error)?;
+        }
         for ((argument, field), index) in normal
             .arguments
             .iter()
@@ -9461,18 +10375,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         )?;
         self.backend
             .require_zero_status(prepared, "task.await.prepare")?;
-        let added = call_int(
-            &self.backend.builder,
-            self.backend.task_add_join_child(),
-            &[
-                coroutine.executor.into(),
-                coroutine.task.into(),
-                child.into(),
-            ],
-            "task.await.add_child",
-        )?;
-        self.backend
-            .require_zero_status(added, "task.await.add_child")?;
+        for (index, child) in children.iter().copied().enumerate() {
+            let name = format!("task.await.add_child.{index}");
+            let added = call_int(
+                &self.backend.builder,
+                self.backend.task_add_join_child(),
+                &[
+                    coroutine.executor.into(),
+                    coroutine.task.into(),
+                    child.into(),
+                ],
+                &name,
+            )?;
+            self.backend.require_zero_status(added, &name)?;
+        }
 
         let state_pointer = self
             .backend

@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `25` |
-| LCIR artifact identity | schema `26` |
-| LCIR native-object domain | `loom-lcir-native-object-v22` |
+| LCIR textual dump | version `26` |
+| LCIR artifact identity | schema `27` |
+| LCIR native-object domain | `loom-lcir-native-object-v23` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v27` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v28` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `16` |
+| Native runtime ABI component | `17` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -215,6 +215,16 @@ factory creates a zero-root typed `Task[Unit]` over the established reactor and
 advances the native runtime ABI component to 16 with `typed-timer-v1` and
 `runtime-v10`. The existing `typed-task-v1`, `wait-v1`, `text-v3`, and `gc-v9`
 components remain unchanged.
+
+Static heterogeneous `Task.all` advances the LCIR dump to 26, artifact schema
+to 27, native-object domain to v23, and LLVM object-cache domain to v28. A
+directly awaited fixed tuple or `Task.all` carries all exact child types in one
+`AwaitTasks` suspension. A stored `Task.all` value uses an exact typed
+composite task and advances the native runtime ABI component to 17 with
+`typed-task-adopt-v1` and `runtime-v11`. The adoption operation validates the
+complete transfer before atomically moving the ordered children from their
+active parent to the composite. It adds no universal result slot, runtime type
+tag, or change to `typed-task-v1`, `wait-v1`, `gc-v9`, or `typed-timer-v1`.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

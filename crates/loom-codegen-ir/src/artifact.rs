@@ -725,19 +725,21 @@ impl ArtifactValidator<'_> {
                             implicit_writebacks,
                         );
                     }
-                    TerminatorKind::AwaitTask { task, normal, .. } => {
-                        let output_is_text = function
-                            .value(*task)
-                            .and_then(|task| program.representations().value_type(task.ty()))
-                            .is_some_and(|task| {
-                                matches!(task.semantic(), Type::Task(output) if output.as_ref() == &Type::Text)
-                            });
-                        if output_is_text
-                            && let Some(parameter) = function
-                                .block(normal.block)
-                                .and_then(|block| block.params().first())
-                        {
-                            mark_text_value(&mut supplied, *parameter);
+                    TerminatorKind::AwaitTasks { tasks, normal, .. } => {
+                        for (index, task) in tasks.iter().enumerate() {
+                            let output_is_text = function
+                                .value(*task)
+                                .and_then(|task| program.representations().value_type(task.ty()))
+                                .is_some_and(|task| {
+                                    matches!(task.semantic(), Type::Task(output) if output.as_ref() == &Type::Text)
+                                });
+                            if output_is_text
+                                && let Some(parameter) = function
+                                    .block(normal.block)
+                                    .and_then(|block| block.params().get(index))
+                            {
+                                mark_text_value(&mut supplied, *parameter);
+                            }
                         }
                         mark_text_target(
                             function,
@@ -745,7 +747,7 @@ impl ArtifactValidator<'_> {
                             &mut supplied,
                             normal.block,
                             &normal.arguments,
-                            1,
+                            tasks.len(),
                         );
                     }
                     TerminatorKind::ResourceClose { normal, fault, .. } => {

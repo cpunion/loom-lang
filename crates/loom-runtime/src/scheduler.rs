@@ -2457,6 +2457,262 @@ pub unsafe extern "C" fn typed_task_publish_v1(
     TYPED_TASK_OK
 }
 
+/// Atomically publishes an initialized typed composite after transferring
+/// typed children from the currently running structured parent.
+///
+/// Every pointer and ownership edge is validated before storage is reserved.
+/// All fallible reservations then finish before the first topology mutation,
+/// so any error leaves Task fields, the ready queue, and executor Task order
+/// unchanged. The source array is copied and never retained.
+#[unsafe(export_name = "loom_typed_task_publish_adopting_v1")]
+#[allow(clippy::too_many_lines)]
+pub unsafe extern "C" fn typed_task_publish_adopting_v1(
+    executor: *mut LoomExecutor,
+    composite: *mut LoomTask,
+    children: *const *mut LoomTask,
+    count: u64,
+) -> i32 {
+    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let executor_ref = unsafe { &mut *executor };
+    let Ok(count) = usize::try_from(count) else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if count == 0
+        || count > executor_ref.tasks.len()
+        || !is_aligned_for(children)
+        || !executor_owns(executor_ref, composite)
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+
+    let parent = executor_ref.active_task;
+    if parent.is_null()
+        || parent == composite
+        || !executor_owns(executor_ref, parent)
+        || unsafe { (*parent).executor } != executor
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    let parent_ref = unsafe { &*parent };
+    let Some(parent_typed) = parent_ref.typed.as_ref() else {
+        // This ABI is deliberately unavailable to the universal Task path.
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if parent_ref.status != TaskStatus::Running
+        || parent_ref.cancel_requested
+        || !parent_ref.pending_owner.is_null()
+        || parent_ref.join_active
+        || !parent_ref.join_children.is_empty()
+        || !parent_typed.initialized
+        || !parent_typed.published
+        || parent_typed.join_completion_pending
+        || parent_typed.join_cancel_authorized
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+
+    let composite_ref = unsafe { &*composite };
+    let Some(composite_typed) = composite_ref.typed.as_ref() else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    if composite_ref.executor != executor
+        || composite_ref.status != TaskStatus::Unpublished
+        || !composite_ref.owner.is_null()
+        || composite_ref.pending_owner != parent
+        || composite_ref.queued
+        || composite_ref.cancel_requested
+        || composite_ref.join_active
+        || !composite_ref.owned_children.is_empty()
+        || !composite_ref.join_children.is_empty()
+        || !composite_ref.waits.is_empty()
+        || executor_ref
+            .runnable
+            .iter()
+            .any(|candidate| *candidate == composite)
+        || executor_ref.retired_tasks.contains(&composite)
+        || !composite_typed.initialized
+        || composite_typed.published
+        || composite_typed.result_initialized
+        || composite_typed.result_taken
+        || composite_typed.result_disposed
+        || composite_typed.cancel_invoked
+        || composite_typed.dispose_invoked
+        || composite_typed.join_completion_pending
+        || composite_typed.join_cancel_authorized
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+
+    // SAFETY: this unsafe ABI requires the bounded, aligned pointer array to
+    // remain readable for the call. Count is additionally bounded by the
+    // executor's live Task count above.
+    let source_children = unsafe { slice::from_raw_parts(children, count) };
+    if count > parent_ref.owned_children.len() {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+    for (index, child) in source_children.iter().copied().enumerate() {
+        if child.is_null()
+            || child == parent
+            || child == composite
+            || source_children[..index].contains(&child)
+            || !executor_owns(executor_ref, child)
+        {
+            return TYPED_TASK_INVALID_ARGUMENT;
+        }
+        let child_ref = unsafe { &*child };
+        let Some(child_typed) = child_ref.typed.as_ref() else {
+            return TYPED_TASK_INVALID_ARGUMENT;
+        };
+        let owned_memberships = parent_ref
+            .owned_children
+            .iter()
+            .filter(|candidate| **candidate == child)
+            .count();
+        if child_ref.executor != executor
+            || child_ref.owner != parent
+            || !child_ref.pending_owner.is_null()
+            || matches!(
+                child_ref.status,
+                TaskStatus::Unpublished | TaskStatus::Running
+            )
+            || owned_memberships != 1
+            || !child_typed.initialized
+            || !child_typed.published
+            || child_typed.result_taken
+            || child_typed.result_disposed
+            || child_typed.dispose_invoked
+            || (child_ref.status == TaskStatus::Completed && !child_typed.result_initialized)
+        {
+            return TYPED_TASK_INVALID_ARGUMENT;
+        }
+    }
+
+    let Some(parent_count) = parent_ref
+        .owned_children
+        .len()
+        .checked_sub(count)
+        .and_then(|remaining| remaining.checked_add(1))
+    else {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    };
+    let mut next_parent_children = Vec::new();
+    if next_parent_children
+        .try_reserve_exact(parent_count)
+        .is_err()
+    {
+        return TYPED_TASK_NO_MEMORY;
+    }
+    for child in parent_ref.owned_children.iter().copied() {
+        if !source_children.contains(&child) {
+            next_parent_children.push(child);
+        }
+    }
+    next_parent_children.push(composite);
+
+    let mut adopted_children = Vec::new();
+    if adopted_children.try_reserve_exact(count).is_err() {
+        return TYPED_TASK_NO_MEMORY;
+    }
+    adopted_children.extend_from_slice(source_children);
+
+    // Stage the complete transferred subtrees in input order. The Box handles
+    // are reordered during commit so shutdown's reverse walk agrees with the
+    // structured reverse-input cleanup order even when callers reorder Task
+    // values relative to their original creation order.
+    let mut adopted_subtree = Vec::new();
+    if adopted_subtree
+        .try_reserve_exact(executor_ref.tasks.len())
+        .is_err()
+    {
+        return TYPED_TASK_NO_MEMORY;
+    }
+    for child in &adopted_children {
+        for candidate in &executor_ref.tasks {
+            let pointer = (&raw const **candidate).cast_mut();
+            let mut ancestor = pointer;
+            let mut belongs = false;
+            for _ in 0..executor_ref.tasks.len() {
+                if ancestor == *child {
+                    belongs = true;
+                    break;
+                }
+                if ancestor.is_null() || !executor_owns(executor_ref, ancestor) {
+                    break;
+                }
+                ancestor = unsafe { (*ancestor).owner };
+            }
+            if belongs {
+                adopted_subtree.push(pointer);
+            }
+        }
+    }
+    let mut next_task_order = Vec::new();
+    if next_task_order
+        .try_reserve_exact(executor_ref.tasks.len())
+        .is_err()
+        || executor_ref.runnable.try_reserve(1).is_err()
+    {
+        return TYPED_TASK_NO_MEMORY;
+    }
+    for task in &executor_ref.tasks {
+        let pointer = (&raw const **task).cast_mut();
+        if pointer != composite && !adopted_subtree.contains(&pointer) {
+            next_task_order.push(pointer);
+        }
+    }
+    next_task_order.push(composite);
+    next_task_order.extend_from_slice(&adopted_subtree);
+    if next_task_order.len() != executor_ref.tasks.len()
+        || executor_ref.tasks.iter().any(|task| {
+            let pointer = (&raw const **task).cast_mut();
+            next_task_order
+                .iter()
+                .filter(|candidate| **candidate == pointer)
+                .count()
+                != 1
+        })
+    {
+        return TYPED_TASK_INVALID_ARGUMENT;
+    }
+
+    // Commit begins here. Every remaining operation is allocation-free and
+    // infallible. Preserve the supplied child order in the new structured
+    // owner, while replacing all selected parent edges with one composite.
+    unsafe {
+        (*parent).owned_children = next_parent_children;
+        (*composite).owned_children = adopted_children;
+        for child in &(*composite).owned_children {
+            (**child).owner = composite;
+        }
+        (*composite).pending_owner = ptr::null_mut();
+        (*composite).owner = parent;
+        if let Some(typed) = (*composite).typed.as_mut() {
+            typed.published = true;
+        }
+        (*composite).status = TaskStatus::Runnable;
+    }
+
+    // Task frames normally appear before their children in `tasks`, so the
+    // shutdown reverse walk destroys children first. A first-class composite
+    // is constructed after its operands. Keep unrelated Tasks in their stable
+    // order, then place the composite before complete adopted subtrees grouped
+    // in caller-supplied order. Moving Box handles never moves LoomTask frames.
+    for (target, pointer) in next_task_order.into_iter().enumerate() {
+        let mut source = target;
+        for index in target..executor_ref.tasks.len() {
+            if ptr::eq::<LoomTask>(&raw const *executor_ref.tasks[index], pointer) {
+                source = index;
+                break;
+            }
+        }
+        executor_ref.tasks.swap(target, source);
+    }
+    unsafe { enqueue_task(executor_ref, composite) };
+    TYPED_TASK_OK
+}
+
 /// Retires and removes an unpublished frame. An initialized frame first runs
 /// its non-suspending cancellation cleanup exactly once; cleanup failure is
 /// reported as `TYPED_TASK_CLEANUP_FAULTED`, but the frame is still removed.
@@ -5926,6 +6182,201 @@ mod typed_task_tests {
         child
     }
 
+    unsafe fn create_initialized_typed_task(
+        executor: *mut LoomExecutor,
+        descriptor: &LoomTypedCoroutineDescriptor,
+    ) -> *mut LoomTask {
+        let task = unsafe { typed_task_create_v1(executor, descriptor) };
+        assert!(!task.is_null());
+        assert_eq!(unsafe { typed_task_initialize_v1(task, 0) }, TYPED_TASK_OK);
+        task
+    }
+
+    unsafe fn executor_task_order(executor: *const LoomExecutor) -> Vec<*mut LoomTask> {
+        unsafe {
+            (*executor)
+                .tasks
+                .iter()
+                .map(|task| (&raw const **task).cast_mut())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn typed_adopting_publish_preserves_input_order_and_reorders_stable_task_handles() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+
+            let left = create_typed_u64_child(executor, &descriptor);
+            let untouched = create_typed_u64_child(executor, &descriptor);
+            let right = create_typed_u64_child(executor, &descriptor);
+            let composite = create_initialized_typed_task(executor, &descriptor);
+            let children = [right, left];
+
+            assert_eq!(
+                typed_task_publish_adopting_v1(
+                    executor,
+                    composite,
+                    children.as_ptr(),
+                    children.len() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!((*parent).owned_children, vec![untouched, composite]);
+            assert_eq!((*composite).owned_children, children);
+            assert_eq!((*right).owner, composite);
+            assert_eq!((*left).owner, composite);
+            assert_eq!((*untouched).owner, parent);
+            assert_eq!((*composite).owner, parent);
+            assert!((*composite).pending_owner.is_null());
+            assert!((*composite).status == TaskStatus::Runnable);
+            assert!((*composite).queued);
+            assert!((*composite).typed.as_ref().unwrap().published);
+            assert_eq!(
+                (*executor)
+                    .runnable
+                    .iter()
+                    .filter(|candidate| **candidate == composite)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                executor_task_order(executor),
+                vec![parent, untouched, composite, right, left]
+            );
+
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn invalid_empty_and_duplicate_adoption_leave_all_topology_unchanged() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let child = create_typed_u64_child(executor, &descriptor);
+            let composite = create_initialized_typed_task(executor, &descriptor);
+
+            let task_order = executor_task_order(executor);
+            let runnable = (*executor).runnable.clone();
+            let parent_children = (*parent).owned_children.clone();
+            let child_owner = (*child).owner;
+            let composite_frame = typed_task_frame_v1(composite);
+            let assert_unchanged = || {
+                assert_eq!(executor_task_order(executor), task_order);
+                assert_eq!((*executor).runnable, runnable);
+                assert_eq!((*parent).owned_children, parent_children);
+                assert_eq!((*child).owner, child_owner);
+                assert!((*composite).owner.is_null());
+                assert_eq!((*composite).pending_owner, parent);
+                assert!((*composite).owned_children.is_empty());
+                assert!((*composite).status == TaskStatus::Unpublished);
+                assert!(!(*composite).queued);
+                assert!(!(*composite).typed.as_ref().unwrap().published);
+                assert_eq!(typed_task_frame_v1(composite), composite_frame);
+            };
+
+            assert_eq!(
+                typed_task_publish_adopting_v1(executor, composite, ptr::null(), 0),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_unchanged();
+
+            let duplicate = [child, child];
+            assert_eq!(
+                typed_task_publish_adopting_v1(
+                    executor,
+                    composite,
+                    duplicate.as_ptr(),
+                    duplicate.len() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_unchanged();
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn foreign_owner_and_cross_executor_adoption_fail_atomically() {
+        let (runtime, executor) = runtime_and_executor();
+        let (other_runtime, other_executor) = runtime_and_executor();
+        let descriptor = descriptor(remain_pending, cancel_noop);
+        unsafe {
+            let parent = create_initialized_typed_task(executor, &descriptor);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            let valid = create_typed_u64_child(executor, &descriptor);
+            let foreign_owner = create_typed_u64_child(executor, &descriptor);
+
+            (*parent).status = TaskStatus::Waiting;
+            activate_test_task(executor, foreign_owner);
+            let foreign_child = create_typed_u64_child(executor, &descriptor);
+            (*foreign_owner).status = TaskStatus::Waiting;
+            (*executor).active_task = parent;
+            (*parent).status = TaskStatus::Running;
+
+            let composite = create_initialized_typed_task(executor, &descriptor);
+            let cross_executor = create_initialized_typed_task(other_executor, &descriptor);
+            assert_eq!(
+                typed_task_publish_v1(other_executor, cross_executor),
+                TYPED_TASK_OK
+            );
+
+            let task_order = executor_task_order(executor);
+            let runnable = (*executor).runnable.clone();
+            let parent_children = (*parent).owned_children.clone();
+            let foreign_children = (*foreign_owner).owned_children.clone();
+            let assert_unchanged = || {
+                assert_eq!(executor_task_order(executor), task_order);
+                assert_eq!((*executor).runnable, runnable);
+                assert_eq!((*parent).owned_children, parent_children);
+                assert_eq!((*foreign_owner).owned_children, foreign_children);
+                assert_eq!((*valid).owner, parent);
+                assert_eq!((*foreign_child).owner, foreign_owner);
+                assert!((*composite).owner.is_null());
+                assert_eq!((*composite).pending_owner, parent);
+                assert!((*composite).owned_children.is_empty());
+                assert!((*composite).status == TaskStatus::Unpublished);
+                assert!(!(*composite).typed.as_ref().unwrap().published);
+            };
+
+            let foreign = [valid, foreign_child];
+            assert_eq!(
+                typed_task_publish_adopting_v1(
+                    executor,
+                    composite,
+                    foreign.as_ptr(),
+                    foreign.len() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_unchanged();
+
+            let cross = [valid, cross_executor];
+            assert_eq!(
+                typed_task_publish_adopting_v1(
+                    executor,
+                    composite,
+                    cross.as_ptr(),
+                    cross.len() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_unchanged();
+
+            destroy(other_runtime, other_executor);
+            destroy(runtime, executor);
+        }
+    }
+
     unsafe extern "C" fn legacy_complete(
         _task: *mut LoomTask,
         _executor: *mut LoomExecutor,
@@ -7478,6 +7929,87 @@ mod typed_task_tests {
         let marker = unsafe { frame.cast::<u64>().read() };
         RETIRE_ORDER.lock().unwrap().push(marker);
         TASK_CANCELLED
+    }
+
+    unsafe fn create_marked_initialized_task(
+        executor: *mut LoomExecutor,
+        descriptor: &LoomTypedCoroutineDescriptor,
+        marker: u64,
+    ) -> *mut LoomTask {
+        let task = unsafe { create_initialized_typed_task(executor, descriptor) };
+        unsafe { typed_task_frame_v1(task).cast::<u64>().write(marker) };
+        task
+    }
+
+    unsafe fn adopted_cancel_tree(executor: *mut LoomExecutor) -> (*mut LoomTask, *mut LoomTask) {
+        let descriptor = descriptor(remain_pending, log_retirement);
+        let parent = unsafe { create_marked_initialized_task(executor, &descriptor, 0) };
+        assert_eq!(
+            unsafe { typed_task_publish_v1(executor, parent) },
+            TYPED_TASK_OK
+        );
+        unsafe { activate_test_task(executor, parent) };
+
+        let mut children = Vec::new();
+        for marker in 1_u64..=3 {
+            let child = unsafe { create_marked_initialized_task(executor, &descriptor, marker) };
+            assert_eq!(
+                unsafe { typed_task_publish_v1(executor, child) },
+                TYPED_TASK_OK
+            );
+            children.push(child);
+        }
+        let composite = unsafe { create_marked_initialized_task(executor, &descriptor, 9) };
+        assert_eq!(
+            unsafe {
+                typed_task_publish_adopting_v1(
+                    executor,
+                    composite,
+                    children.as_ptr(),
+                    children.len() as u64,
+                )
+            },
+            TYPED_TASK_OK
+        );
+        (parent, composite)
+    }
+
+    #[test]
+    fn adopted_composite_cancellation_propagates_in_reverse_input_order() {
+        let _serial = RETIRE_TEST_LOCK.lock().unwrap();
+        RETIRE_ORDER.lock().unwrap().clear();
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let (parent, composite) = adopted_cancel_tree(executor);
+            assert_eq!((*composite).owned_children.len(), 3);
+            (*parent).status = TaskStatus::Waiting;
+            (*executor).active_task = ptr::null_mut();
+
+            assert_eq!(
+                typed_task_request_cancel_v1(executor, parent),
+                TYPED_TASK_OK
+            );
+            assert_eq!(executor_run(executor, parent), TASK_CANCELLED);
+            assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[3, 2, 1, 9, 0]);
+            destroy(runtime, executor);
+        }
+        assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[3, 2, 1, 9, 0]);
+        RETIRE_ORDER.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn adopted_subtrees_shutdown_before_their_composite_and_parent() {
+        let _serial = RETIRE_TEST_LOCK.lock().unwrap();
+        RETIRE_ORDER.lock().unwrap().clear();
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let (parent, _composite) = adopted_cancel_tree(executor);
+            (*parent).status = TaskStatus::Waiting;
+            (*executor).active_task = ptr::null_mut();
+            destroy(runtime, executor);
+        }
+        assert_eq!(&*RETIRE_ORDER.lock().unwrap(), &[3, 2, 1, 9, 0]);
+        RETIRE_ORDER.lock().unwrap().clear();
     }
 
     #[repr(C)]

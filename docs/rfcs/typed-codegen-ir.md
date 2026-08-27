@@ -21,8 +21,10 @@ primitive, direct literal/concat/get Text, structural-tuple, closed-record, and
 compile-time-established refined artifacts, plus bounded concrete direct
 generic instances over those representations and eligible concrete
 closed-enum artifacts including managed Text payloads, lexical cleanup, and
-the supported source-contract subset into typed LCIR and falls back atomically
-for reachable unsupported features. The broader
+the supported source-contract subset, plus checked stackless coroutines with
+typed Task handles, `Task.sleep`, and nonempty fixed-arity heterogeneous
+`Task.all`, into typed LCIR and falls back atomically for reachable unsupported
+features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
 
@@ -34,8 +36,8 @@ native specializations. Managed values other than direct Text values and
 Text-bearing products/sums,
 unsupported or recursive enums,
 runtime-checked constraints and dynamic concepts,
-cleanup shapes outside the direct lexical slice, async, and private-list paths
-still repeat representation, proof,
+cleanup shapes outside the direct lexical slice, async shapes outside the
+checked coroutine slice, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
 emitter. Some legacy functions may acquire universal, checked-native, and
 assumption-specialized bodies.
@@ -213,10 +215,11 @@ identity. The backend build fingerprint includes the LCIR implementation.
 ## Edge-result control flow
 
 A fallible or suspending operation is a terminator, not an ordinary instruction
-that returns a value beside an ignorable status. Its source result exists only
-on the normal or resume edge. Ordered functional inout writebacks follow that
-result on the normal edge and are also injected on the fault edge. Forwarded
-edge arguments are modeled separately from implicit results.
+that returns a value beside an ignorable status. Its source result, or its
+ordered child results for a multi-child suspension, exists only on the normal or
+resume edge. Ordered functional inout writebacks follow a fallible result on the
+normal edge and are also injected on the fault edge. Forwarded edge arguments
+are modeled separately from implicit results.
 
 The scalar fault slice adds forms equivalent to:
 
@@ -239,8 +242,10 @@ resource_close kind, resource
 
 task.create coroutine(arguments...) -> Task[T]
 
-task.await state, task
-    normal target(result; exact_live_values...)
+task.join_all(tasks...) -> Task[(T0, ..., Tn)]
+
+await_tasks state, (task0, ..., taskN)
+    normal target(result0, ..., resultN; exact_live_values...)
 
 fault runtime code | contract metadata
 
@@ -328,10 +333,11 @@ do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
 closure over direct, invoke, and Task-creation edges. `TextConcat` and
-`TextGet` are collecting opcodes. `TaskCreate` requires an executor and
-`AwaitTask` suspends the active coroutine. The explicit fallible `TaskSleep`
-terminator requires `MAY_FAULT` and `NEEDS_EXECUTOR`, but does not itself add
-`MAY_SUSPEND` or `MAY_COLLECT`.
+`TextGet` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
+executor; neither operation itself suspends. `AwaitTasks` suspends the active
+coroutine and accepts one or more ordered children. The explicit fallible
+`TaskSleep` terminator requires `MAY_FAULT` and `NEEDS_EXECUTOR`, but does not
+itself add `MAY_SUSPEND` or `MAY_COLLECT`.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -355,19 +361,34 @@ creates one executor, constructs the root Task, runs it to a terminal state,
 takes its exact typed result, and destroys the executor.
 
 Each admitted async instance has a checked `CoroutinePlan` with an exact output
-type and dense resume states. Every state records the live value types forwarded
-to its continuation. LLVM target data shapes a frame containing state,
-parameters, one child/live row per suspension, and result. An immutable
-typed-task descriptor publishes exact managed-leaf byte offsets and per-state
-bitmaps. The callback dispatches state zero to the LCIR entry, later states
-through the structured join-step ABI, and publishes completion through
-typed-task v1. `TaskSleep` accepts normalized `Int` milliseconds only inside
-that checked coroutine boundary, returns a first-class typed `Task[Unit]` on
-its normal edge, and preserves canonical negative-duration or overflow faults
-on its fault edge. A source `Duration` is normalized through product extraction
-before this terminator. The remaining fallback boundary includes async inout,
-Lists, TextMaps, dynamic-concept frame values, cleanup across suspension, raw
-readiness, and Task joins.
+type and dense resume states. Every state records the exact child-result types
+in task order followed by the live value types forwarded to its continuation.
+LLVM target data shapes a frame containing state, parameters, one ordered
+child/live row per suspension, and result. An immutable typed-task descriptor
+publishes exact managed-leaf byte offsets and per-state bitmaps. The callback
+dispatches state zero to the LCIR entry, later states through the structured
+join-step ABI, takes each typed child result into the leading continuation
+parameters, and publishes completion through typed-task v1. `TaskSleep` accepts
+normalized `Int` milliseconds only inside that checked coroutine boundary,
+returns a first-class typed `Task[Unit]` on its normal edge, and preserves
+canonical negative-duration or overflow faults on its fault edge. A source
+`Duration` is normalized through product extraction before this terminator.
+
+An immediately awaited fixed tuple or fixed-argument `Task.all` evaluates its
+children left to right and lowers directly to one multi-child `AwaitTasks`, with
+no intermediate composite. Its continuation constructs the exact heterogeneous
+tuple from the ordered implicit results. A first-class stored fixed
+`Task.all` lowers to `TaskJoinAll`, which creates an exact
+`Task[(T0, ..., Tn)]`; a one-child join retains its canonical one-field tuple.
+LLVM generates one target-laid-out composite frame, completed-result root map,
+immutable descriptor, and callback per distinct static result shape. The
+callback uses the existing structured `all` join-step protocol, takes exact
+child results in order, and publishes the tuple without a universal envelope.
+
+The remaining fallback boundary includes async inout, Lists, TextMaps,
+dynamic-concept frame values, cleanup across suspension, raw readiness,
+dynamically sized Task joins, and every `Task.settled`, `Task.any`, or
+`Task.race` form.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
@@ -424,6 +445,22 @@ the existing one-shot timer `WaitSource`, publishes Unit after readiness, and
 removes the registration on cancellation. This advances native component 16
 with `typed-timer-v1` and `runtime-v10`; typed-task v1 and wait v1 remain
 unchanged.
+
+Stored fixed `Task.all` adds
+`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`.
+Generated code first initializes an unpublished exact composite and supplies a
+temporary ordered child-pointer array. The runtime validates every ownership
+edge and completes all fallible reservations before one allocation-free commit
+transfers the children from the active parent, publishes the composite, and
+queues it. Failure leaves ownership and queue topology unchanged; generated
+code aborts the unpublished composite and fails closed. This advances native
+component 17 with `typed-task-adopt-v1` and `runtime-v11`, while
+`typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
+
+The semantic and physical changes advance the canonical dump to `lcir 26`, the
+artifact identity to schema 27, the LCIR native-object domain to
+`loom-lcir-native-object-v23`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v28`.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

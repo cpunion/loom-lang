@@ -21,38 +21,44 @@ arena.
 
 The first typed-LCIR coroutine slice uses the existing `typed-task-v1` runtime
 wire with a different, exact compiler-shaped descriptor. LLVM target data lays
-out one frame containing state, parameters, the child and live values for each
-suspension, and the result. The descriptor publishes frame size/alignment,
-resume/cancel callbacks, result size/alignment, exact managed-leaf byte
-offsets, and one live bitmap per resume state plus completed-result state.
+out one frame containing state, parameters, the ordered children and live values
+for each suspension, and the result. The descriptor publishes frame
+size/alignment, resume/cancel callbacks, result size/alignment, exact
+managed-leaf byte offsets, and one live bitmap per resume state plus
+completed-result state.
 `Task[T]` itself is a stable scheduler-owned handle and is never a moving-GC
 root. No universal value slot, witness arena, runtime type tag, or synchronous
 expression executor is introduced by this route.
 
-LCIR has explicit `task.create`, `task.sleep`, and `task.await` control flow.
-Await stores the checked live row, registers a structured one-child join,
-publishes its state, and returns pending. A completion notification puts the
-parent back in the ready queue; the callback takes the child's exact typed
-result, reloads live values, and enters the checked continuation. Typed async
-run/test harnesses create one executor for the root Task, drive it to a terminal
-state, take the exact result, and destroy the executor.
+LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoinAll`, and `AwaitTasks`
+operations. `AwaitTasks` stores its checked ordered child row and live row,
+registers one structured `all` join, and publishes its state. An already
+terminal join enters the resume path immediately; otherwise the callback returns
+pending and a completion notification puts the parent back in the ready queue.
+The resume path takes every child's exact typed result in task order, reloads
+live values, and enters the checked continuation. A one-child await uses the
+same terminator with one operand. Typed async run/test harnesses create one
+executor for the root Task, drive it to a terminal state, take the exact result,
+and destroy the executor.
 
 Current typed coverage includes cleanup-free, non-inout coroutines with direct
-scalar/refined/product/Text parameters, results, and live values, plus
-closed sums whose payload graph uses those shapes. The collision-free carrier
-gives managed sums one static union of exact pointer offsets, and pack leaves
-inactive pointer lanes zero. This applies equally to coroutine parameters,
-suspension rows, and completed Task results without changing typed-task v1. A
-fallible callback creates one activation-local fault context attached to its
-executor. Checked arithmetic, assertions, ordinary fallible invokes,
-caller-side preconditions, and callee-side postconditions record only the first
-fault on the active Task. Await propagates the child's `Faulted` or `Cancelled`
-state; it never converts either state into a source `Result`. Task handles may
-be live only as suspension bookkeeping.
+scalar/refined/product/Text parameters, results, and live values, plus closed
+sums whose payload graph uses those shapes and nonempty fixed-arity
+heterogeneous `Task.all`. The collision-free carrier gives managed sums one
+static union of exact pointer offsets, and pack leaves inactive pointer lanes
+zero. This applies equally to coroutine parameters, suspension rows, completed
+Task results, and exact stored-join tuple results without changing
+typed-task v1. A fallible callback creates one activation-local fault context
+attached to its executor. Checked arithmetic, assertions, ordinary fallible
+invokes, caller-side preconditions, and callee-side postconditions record only
+the first fault on the active Task. Await propagates a child's `Faulted` or
+`Cancelled` state; it never converts either state into a source `Result`. Task
+handles may be live only as suspension bookkeeping.
 
 Selected async roots with `requires`, async inout/writeback, lexical cleanup
-across suspension, raw readiness, Task combinators, List/TextMap frame values,
-and dynamic concepts still select the complete legacy route.
+across suspension, raw readiness, dynamically sized Task joins,
+`Task.settled`, `Task.any`, `Task.race`, List/TextMap frame values, and dynamic
+concepts still select the complete legacy route.
 
 ## Runtime and executor
 
@@ -126,6 +132,36 @@ The additive factory advances the native runtime ABI to component 16 and adds
 wait wires remain version 1; the timer carries no universal value, moving-GC
 root, or new scheduler protocol.
 
+## Typed fixed `Task.all`
+
+Inside an admitted async function, a nonempty fixed argument list preserves its
+heterogeneous child outputs as `Task[(T0, ..., Tn)]`. Children are evaluated
+left to right. An immediately awaited fixed tuple or `Task.all` lowers directly
+to one multi-child `AwaitTasks`; no intermediate composite Task is allocated.
+The resume edge receives one exact result per child in task order and constructs
+the source tuple, including the canonical one-field tuple for one child.
+
+A first-class stored fixed `Task.all` instead lowers to `TaskJoinAll`. LLVM
+generates an exact composite frame holding state, the ordered child handles, and
+the target-laid-out result tuple. Its immutable typed-task descriptor traces
+only the managed leaves of the completed tuple. Identical static result shapes
+share one generated descriptor and resume callback. That callback uses the
+ordinary structured `all` protocol, takes each exact child result, builds the
+tuple, and publishes it without a universal join-result buffer or runtime type
+tag.
+
+Construction initializes the composite while it is unpublished, then calls
+`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`.
+The runtime validates the complete ordered transfer and completes every
+fallible reservation before changing ownership or queue topology. Success moves
+the selected children from the active parent under the composite and publishes
+the composite atomically; failure leaves the original topology unchanged, so
+generated code can abort the unpublished frame and fail closed.
+
+This additive adoption boundary advances the native runtime ABI to component
+17 and adds `typed-task-adopt-v1` plus `runtime-v11` to the exact identity.
+`typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
+
 ## Blocking I/O
 
 Operations that cannot use readiness directly are submitted to a process-wide
@@ -168,6 +204,11 @@ Current join modes implement the language's tuple and list forms of:
 Tuple inputs preserve heterogeneous result types. List inputs support a dynamic
 number of homogeneous tasks. Join-result resources are transferred to the
 parent before retired children are reclaimed.
+
+The complete runtime and legacy compiler route implement all of those source
+forms. The current typed-LCIR route admits only nonempty fixed-arity
+heterogeneous `Task.all`; list-sized `Task.all` and every `Task.settled`,
+`Task.any`, or `Task.race` form remain atomic whole-artifact fallback.
 
 ## Current limits
 

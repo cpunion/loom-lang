@@ -6487,6 +6487,234 @@ pub async fn overflowMain() Unit {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one differential gate keeps direct and first-class heterogeneous Task.all lowering, exact moving-GC roots, shape reuse, failure propagation, and cross-target objects together"
+)]
+fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
+    let source = include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic typed Task.all route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let unsupported = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed Task.all for a 32-bit target");
+    assert!(
+        matches!(unsupported, LoweringOutcome::Unsupported(_)),
+        "typed Task handles must fail closed outside the pinned 64-bit ABI: {unsupported:?}"
+    );
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("await_tasks"), "{dump}");
+    assert!(dump.contains("task.join_all"), "{dump}");
+    let exercise = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("exerciseJoins"))
+        .expect("typed Task.all exercise coroutine");
+    let plan = exercise
+        .coroutine()
+        .expect("typed Task.all exercise coroutine plan");
+    assert!(
+        plan.suspensions()
+            .iter()
+            .any(|suspension| suspension.awaited().len() >= 2),
+        "direct heterogeneous await did not retain its exact child-result row: {dump}"
+    );
+    assert!(
+        exercise.effects().contains(Effects::NEEDS_EXECUTOR)
+            && exercise.effects().contains(Effects::MAY_COLLECT),
+        "typed Task.all did not preserve executor/GC effects: {dump}"
+    );
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-task-all-release",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
+    for required in [
+        "loom.lcir.task_join_all.resume.",
+        "loom.lcir.task_join_all.0.descriptor",
+        "loom_typed_task_publish_adopting_v1",
+        "loom_typed_task_abort_unpublished_v1",
+        "loom_task_prepare_join",
+        "loom_task_add_join_child",
+        "loom_task_suspend_join",
+        "task.await.child.1.pointer",
+        "task.await.result.1.take",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}` from typed Task.all release IR:\n{}",
+            lcir.ir
+        );
+    }
+    assert_eq!(
+        lcir.ir
+            .lines()
+            .filter(|line| {
+                line.starts_with("@loom.lcir.task_join_all.") && line.contains(".descriptor =")
+            })
+            .count(),
+        2,
+        "two identical sites must share one descriptor while a distinct shape gets another:\n{}",
+        lcir.ir
+    );
+    assert_eq!(
+        lcir.ir
+            .lines()
+            .filter(|line| {
+                line.starts_with("define internal")
+                    && line.contains(" i32 @loom.lcir.task_join_all.resume.")
+            })
+            .count(),
+        2,
+        "two identical sites must share one callback while a distinct shape gets another:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(
+            "@loom.lcir.task_join_all.0.root_offsets = private unnamed_addr constant [1 x i64] [i64 32]"
+        ),
+        "the Text-bearing composite must expose its exact completed-result root offset:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(
+            "@loom.lcir.task_join_all.0.live_bitmaps = private unnamed_addr constant [3 x i64] [i64 0, i64 0, i64 1]"
+        ),
+        "only the completed composite state may root its initialized Text result:\n{}",
+        lcir.ir
+    );
+    for forbidden in [
+        "%loom.Value",
+        "loom.Value",
+        "loom_join_create",
+        "loom_task_write_join_result",
+        "loom_task_join_result",
+    ] {
+        assert!(
+            !lcir.ir.contains(forbidden),
+            "unexpected `{forbidden}` in typed Task.all release IR:\n{}",
+            lcir.ir
+        );
+    }
+
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-typed-task-all-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(
+        native_tests.output.stderr.is_empty(),
+        "{:?}",
+        native_tests.output
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create typed Task.all target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-task-all.obj"
+        } else {
+            "typed-task-all.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed Task.all object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing typed Task.all object for {target}"
+        );
+    }
+}
+
+#[test]
+fn typed_first_class_task_all_propagates_fault_and_cancels_siblings() {
+    let source = r#"module typed_task_all_fault
+
+fn increment(value Int) Int { value + 1 }
+
+async fn overflowChild() Int { increment(9223372036854775807) }
+
+async fn linger(depth Int) Text {
+    if depth > 0 {
+        linger(depth - 1).await
+    } else {
+        "finished"
+    }
+}
+
+pub async fn main() Unit {
+    let combined = Task.all(overflowChild(), linger(8))
+    let failed, lingered = combined.await
+    discard failed
+    discard lingered
+    Unit
+}
+"#;
+    let program = compile_source(source);
+    let expected = serde_json::to_value(
+        interpret_run(&program, "main").expect_err("Task.all child must fault"),
+    )
+    .expect("serialize interpreter Task.all fault");
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-task-all-fault");
+    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-task-all-fault");
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!legacy.status.success(), "{legacy:?}");
+    assert_eq!(machine_fault(&lcir.output), expected, "LCIR Task.all fault");
+    assert_eq!(machine_fault(&legacy), expected, "legacy Task.all fault");
+    assert!(lcir.ir.contains("ret i32 2"), "{}", lcir.ir);
+    assert!(lcir.ir.contains("ret i32 3"), "{}", lcir.ir);
+    assert!(
+        !diagnostic_text(&lcir.output).contains("LOOM_RUNTIME_TYPED_CANCEL_UNREQUESTED"),
+        "Task.all sibling cancellation was classified as a callback defect: {:?}",
+        lcir.output
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one differential gate keeps fallible coroutine effects, ordinary Result values, exact child-fault inheritance, root lifecycles, and cross-target objects together"
 )]
 fn fallible_typed_async_results_and_faults_close_the_native_route() {
@@ -6589,7 +6817,7 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
         "contract PreconditionFault",
         "contract PostconditionFault",
         "resume_fault",
-        "task.await state",
+        "await_tasks state",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }

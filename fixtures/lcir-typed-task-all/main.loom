@@ -1,0 +1,72 @@
+module lcir_typed_task_all
+
+async fn textChild(prefix Text) Text {
+    Task.sleep(1).await
+    prefix.concat(" child")
+}
+
+async fn numberChild(value Int) Int {
+    Task.sleep(1).await
+    value * 2
+}
+
+async fn unitChild() Unit {
+    Task.sleep(1).await
+}
+
+async fn immediateNumber(value Int) Int {
+    value + 1
+}
+
+async fn immediateFlag() Bool {
+    true
+}
+
+async fn allocationPressure() Bool {
+    Task.sleep(2).await
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
+}
+
+async fn exerciseJoins() Unit {
+    let tupleText, tupleNumber = (textChild("tuple"), numberChild(20)).await
+    assert tupleText == "tuple child"
+    assert tupleNumber == 40
+
+    let directText, directNumber = Task.all(textChild("direct"), numberChild(21)).await
+    assert directText == "direct child"
+    assert directNumber == 42
+
+    discard Task.all(numberChild(5)).await
+
+    let combined = Task.all(textChild("stored"), numberChild(22), unitChild())
+    let repeated = Task.all(textChild("reused"), numberChild(23), unitChild())
+    let alreadyReady = Task.all(immediateNumber(46), immediateFlag())
+    let pressure = allocationPressure()
+    let survived = pressure.await
+    let storedText, storedNumber, storedUnit = combined.await
+    assert survived
+    assert storedText == "stored child"
+    assert storedNumber == 44
+    discard storedUnit
+    let repeatedText, repeatedNumber, repeatedUnit = repeated.await
+    assert repeatedText == "reused child"
+    assert repeatedNumber == 46
+    discard repeatedUnit
+    let readyNumber, readyFlag = alreadyReady.await
+    assert readyNumber == 47
+    assert readyFlag
+    Unit
+}
+
+pub async fn main() Unit {
+    exerciseJoins().await
+}
+
+test async fn staticTaskAllUsesDirectAndFirstClassPaths() Unit {
+    exerciseJoins().await
+}

@@ -516,6 +516,35 @@ impl RepresentationPlan {
         Some((immortal, managed))
     }
 
+    fn contains_task_handle(&self, root: ValueTypeId) -> Option<bool> {
+        let mut pending = vec![root];
+        let mut visited = BTreeSet::new();
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            let value = self.value_type(value)?;
+            match self.repr(value.repr())? {
+                Repr::TaskHandle => return Some(true),
+                Repr::Product(product) => {
+                    pending.extend(self.product(*product)?.fields().iter().copied());
+                }
+                Repr::Sum(sum) => pending.extend(
+                    self.sum(*sum)?
+                        .variants()
+                        .iter()
+                        .flat_map(|variant| variant.fields().iter().copied()),
+                ),
+                Repr::Uninhabited
+                | Repr::Zst
+                | Repr::Scalar(_)
+                | Repr::ImmortalText
+                | Repr::ManagedPointer => {}
+            }
+        }
+        Some(false)
+    }
+
     fn add_product(
         &mut self,
         semantic: Type,
@@ -538,10 +567,10 @@ impl RepresentationPlan {
         // Products may contain managed pointers, but never immortal-only Text.
         // Source classification selects one artifact-wide managed-capable Text
         // representation before registering a Text-bearing product.
-        if fields
-            .iter()
-            .any(|field| self.pointer_kinds(*field).is_none_or(|kinds| kinds.0))
-        {
+        if fields.iter().any(|field| {
+            self.pointer_kinds(*field).is_none_or(|kinds| kinds.0)
+                || self.contains_task_handle(*field) != Some(false)
+        }) {
             return None;
         }
         let product = ProductReprId::from_index(self.brand, self.products.len())?;
@@ -685,6 +714,7 @@ impl RepresentationPlan {
                 self.value_type(*candidate).is_none_or(|value_type| {
                     value_type.semantic() == &Type::Never
                         || matches!(self.repr(value_type.repr()), Some(Repr::Uninhabited))
+                        || self.contains_task_handle(*candidate) != Some(false)
                         || self
                             .pointer_kinds(*candidate)
                             .is_none_or(|(immortal, _)| immortal)
@@ -811,6 +841,7 @@ impl RepresentationPlan {
             variant.fields.iter().any(|field| {
                 self.pointer_kinds(*field)
                     .is_none_or(|(immortal, _)| immortal)
+                    || self.contains_task_handle(*field) != Some(false)
             })
         }) {
             return None;
@@ -839,12 +870,12 @@ impl RepresentationPlan {
 
 #[cfg(test)]
 mod tests {
-    use loom_mir::{FunctionId as MirFunctionId, TypeId};
+    use loom_mir::{ConceptId, FunctionId as MirFunctionId, TypeId};
 
     use super::*;
     use crate::{
-        Constant, Effects, InstructionKind, Origin, ProgramBuilder, Signature, Terminator,
-        TerminatorKind, ValidationCode, validate_program,
+        Constant, CoroutinePlan, Effects, InstructionKind, Origin, ProgramBuilder, Signature,
+        Terminator, TerminatorKind, ValidationCode, ValueDefinition, validate_program,
     };
 
     #[test]
@@ -968,7 +999,43 @@ mod tests {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path() == "representations.product[0].field[0]"
                 && error.message()
-                    == "product fields must reference inhabited direct values; Text leaves require ManagedPointer"
+                    == "product fields must reference inhabited non-Task direct values; Text leaves require ManagedPointer"
+        }));
+
+        let mut task_aggregate = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let task = task_aggregate
+            .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+            .expect("Task[Int]");
+        let tuple = task_aggregate
+            .add_tuple_type(&[Type::Int])
+            .expect("pointer-free product");
+        task_aggregate
+            .add_sum_type(
+                Type::Nominal(TypeId(5_001), Vec::new()),
+                &[Box::from([Type::Int])],
+            )
+            .expect("pointer-free sum");
+        let mut task_aggregate = task_aggregate.finish();
+        let Repr::Product(product) = task_aggregate.representations.reprs[task_aggregate
+            .representations
+            .types[tuple.index()]
+        .repr
+        .index()] else {
+            panic!("tuple must use a product")
+        };
+        task_aggregate.representations.products[product.index()].fields[0] = task;
+        task_aggregate.representations.sums[0].variants[0].fields[0] = task;
+        let errors = validate_program(&task_aggregate)
+            .expect_err("Task handles cannot hide in copyable product or sum values");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.product[0].field[0]"
+                && error.message().contains("non-Task")
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.sum[0].variant[0].field[0]"
+                && error.message().contains("non-Task")
         }));
 
         let mut immortal_sum = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
@@ -989,7 +1056,7 @@ mod tests {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path() == "representations.sum[0].variant[0].field[0]"
                 && error.message()
-                    == "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer"
+                    == "sum payloads must reference inhabited non-Task direct values; Text leaves require ManagedPointer"
         }));
 
         let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
@@ -1014,6 +1081,39 @@ mod tests {
                     )
                 && error.message()
                     == "transparent values must retain a pointer-free base representation"
+        }));
+    }
+
+    #[test]
+    fn dynamic_catalogs_cannot_hide_task_obligations() {
+        let view = Type::View {
+            mutable: false,
+            concept: ConceptId(77),
+            bindings: BTreeMap::new(),
+        };
+        let mut rejected = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        rejected
+            .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+            .expect("Task[Int]");
+        rejected
+            .add_managed_dynamic_type(view.clone(), &[Type::Task(Box::new(Type::Int)), Type::Bool])
+            .expect_err("a managed dynamic catalog cannot accept a Task candidate");
+
+        let mut forged = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let task = forged
+            .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+            .expect("Task[Int]");
+        forged
+            .add_managed_dynamic_type(view, &[Type::Int, Type::Bool])
+            .expect("ordinary closed dynamic catalog");
+        let mut forged = forged.finish();
+        forged.representations.dynamics[0].candidates[0] = task;
+        let errors = validate_program(&forged)
+            .expect_err("independent validation must reject a forged Task candidate");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.dynamic[0].candidate[0]"
+                && error.message().contains("Task handles")
         }));
     }
 
@@ -1083,6 +1183,167 @@ mod tests {
             "the explicit registration must keep selecting the canonical representation"
         );
         assert_ne!(canonical, alternative_type);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn task_creation_rejects_a_noncanonical_coroutine_output_representation() {
+        let semantic = Type::Nominal(TypeId(71), Vec::new());
+        let child_origin = Origin::synthetic(MirFunctionId(93));
+        let root_origin = Origin::synthetic(MirFunctionId(94));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let boolean = builder.type_id(&Type::Bool).expect("Bool");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let canonical = builder
+            .add_pod_record_type(semantic.clone(), &[Type::Int])
+            .expect("canonical record");
+        let task = builder
+            .add_task_handle_type(Type::Task(Box::new(semantic.clone())))
+            .expect("Task[record]");
+
+        let child = builder
+            .declare_function(
+                child_origin,
+                "alternative_task.child",
+                Signature::new([], canonical),
+                Effects::NEEDS_EXECUTOR.with_implications(),
+            )
+            .expect("child");
+        let (integer_value, boolean_value, record_value) = {
+            let mut function = builder.function(child).expect("child builder");
+            function
+                .set_coroutine_plan(CoroutinePlan::new(canonical, []))
+                .expect("child coroutine");
+            let entry = function.create_block().expect("child entry");
+            function.set_entry(entry).expect("set child entry");
+            let integer_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Int(1)),
+                    &[integer],
+                    child_origin,
+                )
+                .expect("Int")[0];
+            let boolean_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Bool(true)),
+                    &[boolean],
+                    child_origin,
+                )
+                .expect("Bool")[0];
+            let record_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ProductConstruct {
+                        fields: Box::from([integer_value]),
+                    },
+                    &[canonical],
+                    child_origin,
+                )
+                .expect("record")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(record_value), child_origin),
+                )
+                .expect("child return");
+            (integer_value, boolean_value, record_value)
+        };
+
+        let root = builder
+            .declare_function(
+                root_origin,
+                "alternative_task.root",
+                Signature::new([], unit),
+                Effects::NEEDS_EXECUTOR.with_implications(),
+            )
+            .expect("root");
+        {
+            let mut function = builder.function(root).expect("root builder");
+            function
+                .set_coroutine_plan(CoroutinePlan::new(unit, []))
+                .expect("root coroutine");
+            let entry = function.create_block().expect("root entry");
+            function.set_entry(entry).expect("set root entry");
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TaskCreate {
+                        coroutine: child,
+                        arguments: Box::new([]),
+                    },
+                    &[task],
+                    root_origin,
+                )
+                .expect("Task[record]");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    root_origin,
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), root_origin),
+                )
+                .expect("root return");
+        }
+
+        let mut program = builder.finish();
+        validate_program(&program).expect("canonical Task ABI must validate");
+        let alternative_product =
+            ProductReprId::from_index(program.brand, program.representations.products.len())
+                .expect("alternative product identity");
+        let alternative_repr =
+            ReprId::from_index(program.brand, program.representations.reprs.len())
+                .expect("alternative representation identity");
+        let alternative_type =
+            ValueTypeId::from_index(program.brand, program.representations.types.len())
+                .expect("alternative value type identity");
+        program.representations.products.push(ProductRepr {
+            fields: Box::from([integer, boolean]),
+        });
+        program
+            .representations
+            .reprs
+            .push(Repr::Product(alternative_product));
+        program.representations.types.push(ValueType {
+            semantic,
+            repr: alternative_repr,
+            kind: ValueTypeKind::Direct,
+        });
+
+        let child_index = child.index();
+        let child = &mut program.functions[child_index];
+        child.signature = Signature::new([], alternative_type);
+        child.coroutine = Some(CoroutinePlan::new(alternative_type, []));
+        child.values[record_value.index()].ty = alternative_type;
+        let ValueDefinition::InstructionResult { instruction, .. } =
+            child.values[record_value.index()].definition
+        else {
+            panic!("record result must name its construction instruction")
+        };
+        child.instructions[instruction.index()].kind = InstructionKind::ProductConstruct {
+            fields: Box::from([integer_value, boolean_value]),
+        };
+
+        let errors = validate_program(&program)
+            .expect_err("Task handles must not erase a coroutine's exact result representation");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidCoroutinePlan
+                && error.path() == format!("function[{child_index}].coroutine.output")
+                && error.message().contains("canonical value representation")
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::TypeMismatch
+                && error.path().ends_with(".coroutine.result")
+                && error.message().contains("canonical value representation")
+        }));
     }
 
     #[test]
