@@ -76,6 +76,27 @@ pub async fn main() Unit {
     )
 }
 
+fn sync_task_creation_program(nested: bool) -> CheckedProgram {
+    let helper = if nested {
+        "fn inner() Task[Int] { child() }\n\nfn helper() Task[Int] { inner() }"
+    } else {
+        "fn helper() Task[Int] { child() }"
+    };
+    compile_source(&format!(
+        r"module prepared_sync_task_create
+
+async fn child() Int {{ 1 }}
+
+{helper}
+
+pub async fn main() Unit {{
+    discard helper().await
+    Unit
+}}
+"
+    ))
+}
+
 #[test]
 fn automatic_route_is_atomic_over_the_reachable_artifact() {
     let scalar = scalar_program();
@@ -181,6 +202,46 @@ test async fn timer() Unit {
         prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
             .expect("prepare complete test artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+}
+
+#[test]
+fn sync_task_creation_selects_legacy_before_the_emitter_is_committed() {
+    let directory = tempfile::tempdir().expect("create sync-task output directory");
+    for (name, program) in [
+        ("direct", sync_task_creation_program(false)),
+        ("nested", sync_task_creation_program(true)),
+    ] {
+        let ir = directory.path().join(format!("sync-task-{name}.ll"));
+        let object = directory.path().join(format!("sync-task-{name}.o"));
+        let mut options = EmitOptions::run("main");
+        options.emit_ir = Some(ir.clone());
+        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
+            .expect("prepare atomic legacy fallback");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+        emit_prepared_native_object(&prepared, &object).expect("emit selected legacy artifact");
+        assert!(object.is_file());
+        let ir = std::fs::read_to_string(ir).expect("read selected legacy IR");
+        assert!(ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom.lcir"), "{ir}");
+
+        let error = prepare_native_object(
+            &program,
+            EmitOptions::run("main"),
+            NativeRoutePolicy::LcirOnly,
+        )
+        .err()
+        .expect("forced LCIR must reject missing sync executor threading");
+        assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
+        assert!(
+            error
+                .support_report()
+                .expect("structured unsupported report")
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::AsyncFunction),
+            "{error}"
+        );
+    }
 }
 
 #[test]

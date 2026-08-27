@@ -37,7 +37,7 @@ fn representation_pointer_kinds(
                     .iter()
                     .flat_map(|variant| variant.fields().iter().copied()),
             ),
-            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
+            Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::TaskHandle => {}
         }
     }
     Some((immortal, managed))
@@ -78,6 +78,7 @@ pub enum ValidationCode {
     Dominance,
     InvalidIntegerProof,
     InvalidListUniqueness,
+    InvalidCoroutinePlan,
 }
 
 impl ValidationCode {
@@ -117,6 +118,7 @@ impl ValidationCode {
             Self::Dominance => "LcirDominance",
             Self::InvalidIntegerProof => "LcirInvalidIntegerProof",
             Self::InvalidListUniqueness => "LcirInvalidListUniqueness",
+            Self::InvalidCoroutinePlan => "LcirInvalidCoroutinePlan",
         }
     }
 }
@@ -481,7 +483,8 @@ impl<'a> Validator<'a> {
                 | Repr::Zst
                 | Repr::Scalar(_)
                 | Repr::ImmortalText
-                | Repr::ManagedPointer => {}
+                | Repr::ManagedPointer
+                | Repr::TaskHandle => {}
             }
         }
         let mut product_value_uses = vec![0_usize; product_count];
@@ -711,15 +714,39 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
+                Some(Repr::TaskHandle) => {
+                    let valid_semantic = match value_type.semantic() {
+                        Type::Task(output) => {
+                            representations.type_id(output).is_some_and(|output_id| {
+                                representations.value_type(output_id).is_some_and(|output| {
+                                    output.semantic() != &Type::Never
+                                        && !matches!(output.semantic(), Type::Task(_))
+                                })
+                            })
+                        }
+                        _ => false,
+                    };
+                    if !valid_semantic
+                        || value_type.kind() != ValueTypeKind::Direct
+                        || representations.target().pointer_bits() != 64
+                    {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}].task_handle"),
+                            "Task handles must be direct Task[output] values with a registered inhabited non-Task output on a 64-bit target",
+                        );
+                    }
+                }
                 Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
                     if value_type.semantic() == &Type::Text
                         || matches!(value_type.semantic(), Type::List(_))
                         || value_type.kind() == ValueTypeKind::ManagedTextMap
+                        || matches!(value_type.semantic(), Type::Task(_))
                     {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}]"),
-                            "Text and List semantic values must use their canonical pointer representations",
+                            "Text, List, Task, and managed TextMap values must use their canonical pointer representations",
                         );
                     }
                 }
@@ -745,6 +772,7 @@ impl<'a> Validator<'a> {
                     | Repr::Scalar(_)
                     | Repr::ImmortalText
                     | Repr::ManagedPointer
+                    | Repr::TaskHandle
                     | Repr::Product(_)
                     | Repr::Sum(_) => None,
                 })
@@ -971,7 +999,8 @@ impl<'a> Validator<'a> {
                             | Repr::Zst
                             | Repr::Scalar(_)
                             | Repr::ImmortalText
-                            | Repr::ManagedPointer,
+                            | Repr::ManagedPointer
+                            | Repr::TaskHandle,
                         )
                         | None,
                     ) => None,
@@ -1034,7 +1063,8 @@ impl<'a> Validator<'a> {
                         | Repr::Zst
                         | Repr::Scalar(_)
                         | Repr::ImmortalText
-                        | Repr::ManagedPointer,
+                        | Repr::ManagedPointer
+                        | Repr::TaskHandle,
                     )
                     | None => {}
                 }
@@ -1081,6 +1111,7 @@ impl<'a> Validator<'a> {
     fn validate_function(&mut self, function: &Function, function_index: usize) {
         let base = format!("function[{function_index}]");
         self.validate_signature(function, &base);
+        self.validate_coroutine_plan(function, &base);
         let exact_effects = self
             .exact_effects
             .get(function_index)
@@ -1361,6 +1392,190 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_coroutine_plan(&mut self, function: &Function, base: &str) {
+        let Some(plan) = function.coroutine() else {
+            if function.blocks().iter().any(|block| {
+                matches!(
+                    block.terminator().map(crate::Terminator::kind),
+                    Some(TerminatorKind::AwaitTask { .. })
+                )
+            }) {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine"),
+                    "await_task is only valid in a function with a checked coroutine plan",
+                );
+            }
+            return;
+        };
+
+        if plan.output() != function.signature().result() {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.output"),
+                "coroutine output must exactly match the function result type",
+            );
+        }
+        if !function.signature().inout_params().is_empty() {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.signature.inout"),
+                "the first typed-coroutine slice does not admit inout parameters",
+            );
+        }
+        if function.effects().contains(Effects::MAY_FAULT) {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.effects"),
+                "the first typed-coroutine slice requires an infallible coroutine body",
+            );
+        }
+        if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.effects"),
+                "a coroutine requires the executor capability",
+            );
+        }
+
+        for (index, ty) in function
+            .signature()
+            .params()
+            .iter()
+            .copied()
+            .chain(std::iter::once(plan.output()))
+            .enumerate()
+        {
+            if !self.coroutine_frame_type_supported(ty, false) {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.frame_type[{index}]"),
+                    "typed coroutine parameter/result slots are limited to direct scalar, product, and Text values",
+                );
+            }
+        }
+
+        let mut await_states = BTreeMap::<u32, (&ResultTarget, ValueId)>::new();
+        for block in function.blocks() {
+            if let Some(TerminatorKind::AwaitTask {
+                state,
+                task,
+                normal,
+            }) = block.terminator().map(crate::Terminator::kind)
+                && await_states.insert(*state, (normal, *task)).is_some()
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.state[{state}]"),
+                    "each coroutine resume state must have exactly one await_task terminator",
+                );
+            }
+        }
+
+        let mut previous = 0_u32;
+        for (index, suspension) in plan.suspensions().iter().enumerate() {
+            let expected_state = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1));
+            if suspension.state() == 0
+                || suspension.state() <= previous
+                || Some(suspension.state()) != expected_state
+            {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].state"),
+                    "coroutine resume states must be the dense ordered sequence 1..n",
+                );
+            }
+            previous = suspension.state();
+            for (live_index, ty) in suspension.live().iter().copied().enumerate() {
+                if !self.coroutine_frame_type_supported(ty, true) {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!("{base}.coroutine.suspension[{index}].live[{live_index}]"),
+                        "typed coroutine live slots are limited to direct scalar, product, Text, and Task-handle values",
+                    );
+                }
+            }
+            let Some((normal, _)) = await_states.remove(&suspension.state()) else {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}]"),
+                    "coroutine plan row has no matching await_task terminator",
+                );
+                continue;
+            };
+            if normal.arguments.len() != suspension.live().len() {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].live"),
+                    format!(
+                        "coroutine plan has {} live slot(s), await_task forwards {}",
+                        suspension.live().len(),
+                        normal.arguments.len()
+                    ),
+                );
+            }
+            for (live_index, (argument, expected)) in normal
+                .arguments
+                .iter()
+                .copied()
+                .zip(suspension.live().iter().copied())
+                .enumerate()
+            {
+                self.require_value_type(
+                    function,
+                    argument,
+                    expected,
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].live[{live_index}]"),
+                );
+            }
+        }
+        for state in await_states.keys() {
+            self.error(
+                ValidationCode::InvalidCoroutinePlan,
+                format!("{base}.coroutine.state[{state}]"),
+                "await_task terminator has no matching coroutine-plan row",
+            );
+        }
+    }
+
+    fn coroutine_frame_type_supported(&self, root: ValueTypeId, allow_task_handle: bool) -> bool {
+        let mut pending = vec![root];
+        let mut seen = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            let Some(value_type) = self.program.representations.value_type(ty) else {
+                return false;
+            };
+            match self.program.representations.repr(value_type.repr()) {
+                Some(Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText) => {}
+                Some(Repr::ManagedPointer) => {
+                    if value_type.semantic() != &Type::Text {
+                        return false;
+                    }
+                }
+                Some(Repr::TaskHandle) => {
+                    if !allow_task_handle {
+                        return false;
+                    }
+                }
+                Some(Repr::Product(product)) => {
+                    let Some(product) = self.program.representations.product(*product) else {
+                        return false;
+                    };
+                    pending.extend(product.fields().iter().copied());
+                }
+                Some(Repr::Uninhabited | Repr::Sum(_)) | None => return false,
+            }
+        }
+        true
     }
 
     fn validate_schedule(
@@ -2509,6 +2724,89 @@ impl<'a> Validator<'a> {
                 );
                 self.require_results(function, instruction, &[boolean], &path);
             }
+            InstructionKind::TaskCreate {
+                coroutine,
+                arguments,
+            } => {
+                let coroutine_id = *coroutine;
+                let Some(callee) = self.program.function(coroutine_id) else {
+                    self.error(
+                        ValidationCode::InvalidFunctionReference,
+                        format!("{path}.coroutine"),
+                        format!("coroutine {coroutine_id} does not exist"),
+                    );
+                    self.require_results(function, instruction, &[None], &path);
+                    return;
+                };
+                if callee.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.coroutine"),
+                        "task.create requires a checked coroutine instance",
+                    );
+                }
+                if !callee.signature().inout_params().is_empty() {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.coroutine"),
+                        "task.create does not admit an inout coroutine signature",
+                    );
+                }
+                if self
+                    .exact_effect(coroutine_id)
+                    .is_some_and(|effects| effects.contains(Effects::MAY_FAULT))
+                {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.coroutine"),
+                        "the first typed task.create slice requires an infallible coroutine",
+                    );
+                }
+                if function.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "task.create requires an active typed-coroutine executor context",
+                    );
+                }
+                self.validate_call_arguments(
+                    function,
+                    arguments,
+                    callee,
+                    &format!("{path}.argument"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+                let result = instruction
+                    .results()
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .and_then(|result| self.program.representations.value_type(result.ty()));
+                let valid_result = result.is_some_and(|result| {
+                    self.program.representations.repr(result.repr()) == Some(&Repr::TaskHandle)
+                        && matches!(
+                            result.semantic(),
+                            Type::Task(output)
+                                if self.program
+                                    .representations
+                                    .value_type(callee.signature().result())
+                                    .is_some_and(|expected| expected.semantic() == output.as_ref())
+                        )
+                });
+                if result.is_some() && !valid_result {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "task.create result must be the canonical Task[coroutine output] handle",
+                    );
+                }
+                if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "task.create requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
             InstructionKind::DirectCall { callee, arguments } => {
                 let callee_id = *callee;
                 let Some(callee) = self.program.function(callee_id) else {
@@ -2728,6 +3026,52 @@ impl<'a> Validator<'a> {
                     ValidationCode::ReturnType,
                     format!("{path}.value"),
                 );
+            }
+            TerminatorKind::AwaitTask {
+                state,
+                task,
+                normal,
+            } => {
+                if *state == 0 {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        format!("{path}.state"),
+                        "await_task resume state must be nonzero",
+                    );
+                }
+                let task_type = function.value(*task).map(crate::Value::ty);
+                let output = task_type
+                    .and_then(|task| self.program.representations.value_type(task))
+                    .and_then(|task| {
+                        (self.program.representations.repr(task.repr()) == Some(&Repr::TaskHandle))
+                            .then_some(task.semantic())
+                    })
+                    .and_then(|semantic| match semantic {
+                        Type::Task(output) => self.program.representations.type_id(output),
+                        _ => None,
+                    });
+                if task_type.is_some() && output.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.task"),
+                        "task.await operand must be a canonical concrete Task handle",
+                    );
+                }
+                self.validate_result_target(function, normal, &[output], &format!("{path}.normal"));
+                if function.coroutine().is_none() {
+                    self.error(
+                        ValidationCode::InvalidCoroutinePlan,
+                        &path,
+                        "task.await is only valid in a checked coroutine",
+                    );
+                }
+                if !function.effects().contains(Effects::MAY_SUSPEND) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "task.await requires the function's MAY_SUSPEND effect",
+                    );
+                }
             }
             TerminatorKind::CheckedIntNegate {
                 value,
@@ -4021,6 +4365,9 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
     let mut effects = vec![Effects::NONE; function_count];
 
     for (caller, function) in program.functions.iter().enumerate() {
+        if function.coroutine().is_some() {
+            effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
+        }
         for (block_index, block) in function.blocks.iter().enumerate() {
             let state = fault_states
                 .get(caller)
@@ -4050,7 +4397,13 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 ) {
                     effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
                 }
-                if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
+                if let InstructionKind::TaskCreate { .. } = instruction.kind() {
+                    effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
+                }
+                if let InstructionKind::DirectCall { callee, .. }
+                | InstructionKind::TaskCreate {
+                    coroutine: callee, ..
+                } = instruction.kind()
                     && let Some(callee) = canonical_function_index(program, *callee)
                 {
                     reverse_calls[callee].push(EffectCaller {
@@ -4085,6 +4438,9 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                             propagates_fault,
                         });
                     }
+                }
+                TerminatorKind::AwaitTask { .. } => {
+                    effects[caller] = effects[caller].union(Effects::MAY_SUSPEND);
                 }
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
@@ -4409,10 +4765,10 @@ fn transfer_list_ownership(
                 }
             }
         }
-        TerminatorKind::Return(value) => {
-            if list_values.get(value.index()).copied().unwrap_or(false) {
-                states[value.index()] = ListOwnership::Shared;
-            }
+        TerminatorKind::Return(value)
+            if list_values.get(value.index()).copied().unwrap_or(false) =>
+        {
+            states[value.index()] = ListOwnership::Shared;
         }
         _ => {}
     }
@@ -4492,6 +4848,9 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
         ],
+        TerminatorKind::AwaitTask { normal, .. } => {
+            vec![(normal.block, &normal.arguments)]
+        }
         TerminatorKind::Assert { success, fault, .. } => vec![
             (success.block, &success.arguments),
             (fault.block, &fault.arguments),

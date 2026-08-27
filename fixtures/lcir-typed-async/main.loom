@@ -1,0 +1,65 @@
+module lcir_typed_async
+
+record Envelope {
+    text Text
+    flag Bool
+}
+
+fn impossible() {
+    impossible()
+}
+
+async fn allocationPressure() Bool {
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
+}
+
+async fn echoText(value Text) Text {
+    value
+}
+
+async fn echoEnvelope(value Envelope) Envelope {
+    value
+}
+
+async fn echoInt(value Int) Int {
+    value
+}
+
+async fn precreatedChildren() Bool {
+    let first = echoInt(20)
+    let second = echoInt(22)
+    let left = first.await
+    let right = second.await
+    left == 20 && right == 22
+}
+
+pub async fn main() {
+    let marker = "typed ".concat("root")
+    let observed = allocationPressure().await
+    let immediateReady = precreatedChildren().await
+    let echoed = echoText(marker).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
+    if envelope.flag && envelope.text == "typed root" {
+        Unit
+    } else {
+        impossible()
+    }
+}
+
+test async fn awaitsScalar() {
+    let marker = "typed ".concat("root")
+    let observed = allocationPressure().await
+    let immediateReady = precreatedChildren().await
+    let echoed = echoText(marker).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
+    if envelope.flag && envelope.text == "typed root" {
+        Unit
+    } else {
+        impossible()
+    }
+}

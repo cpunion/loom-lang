@@ -139,6 +139,11 @@ pub enum Repr {
     /// One exact object-base pointer understood by the typed moving collector.
     /// Static immortal objects are valid values of this representation too.
     ManagedPointer,
+    /// One scheduler-owned structured Task handle. The pointee is stable and
+    /// never belongs to the moving heap, so this representation is excluded
+    /// from typed GC root maps. Values can be created only by `TaskCreate` and
+    /// are consumed by an async suspension terminator.
+    TaskHandle,
     /// An immutable register aggregate whose ordered fields are independently
     /// typed LCIR values. Closed products may contain other products and exact
     /// managed-pointer leaves; validation rejects immortal-only Text leaves,
@@ -470,7 +475,7 @@ impl RepresentationPlan {
                             .flat_map(|variant| variant.fields().iter().copied()),
                     );
                 }
-                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) => {}
+                Repr::Uninhabited | Repr::Zst | Repr::Scalar(_) | Repr::TaskHandle => {}
             }
         }
         Some((immortal, managed))
@@ -615,6 +620,29 @@ impl RepresentationPlan {
             semantic: semantic.clone(),
             repr,
             kind: ValueTypeKind::ManagedTextMap,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
+        Some(ty)
+    }
+
+    pub(crate) fn add_task_handle(&mut self, semantic: Type) -> Option<ValueTypeId> {
+        if self.target.pointer_bits() != 64
+            || self.type_id(&semantic).is_some()
+            || !matches!(&semantic, Type::Task(output) if self.type_id(output).is_some())
+        {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::TaskHandle);
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::Direct,
         });
         self.registrations.push(TypeRegistration {
             semantic: semantic.clone(),

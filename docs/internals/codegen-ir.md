@@ -4,14 +4,16 @@
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar, direct Text, closed-product, closed-sum,
-transparent nominal, managed List, and compiler-private typed TextMap
+transparent nominal, managed List, compiler-private typed TextMap, and typed
+Task-handle
 representations, whole-artifact
 checked-MIR lowering, typed SSA data structures, builders, independent program
 and artifact-root validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
-its typed functions and run/test harness without the universal value ABI or
-an executor. Its production prepared router attempts that whole-artifact
+its typed functions and run/test harness without the universal value ABI.
+Synchronous artifacts do not construct an executor; a typed async root owns one
+executor for its Task lifecycle. Its production prepared router attempts that whole-artifact
 lowering once. `Complete` selects only typed LCIR; only `Unsupported` stores a
 source reachability graph and selects the complete legacy emitter. Both routes
 have independent object identities. The remaining LCIR coverage and deletion
@@ -63,6 +65,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | other closed concrete enum | `{ minimal integer tag, exact aligned payload carrier }` |
 | concrete closed `List[T]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated storage |
 | concrete closed `TextMap[V]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated entry storage |
+| concrete `Task[T]` in the checked async slice | `TaskHandle`, one stable scheduler-owned opaque pointer excluded from moving-GC maps |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. Products and sums are immutable register aggregates.
@@ -74,8 +77,8 @@ Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
-Runtime-checked constructions, recursive
-sums, Task, dynamic witnesses, and uninhabited fields are not selected. A
+Runtime-checked constructions, recursive sums, general Task storage, dynamic
+witnesses, and uninhabited fields are not selected. A
 concrete List or TextMap breaks by-value aggregate recursion and may contain any
 registered closed direct scalar, Text, product, sum, List, or TextMap value.
 Every TextMap also has managed Text keys. Managed Text is admitted through
@@ -348,6 +351,14 @@ negative Duration construction uses the canonical runtime-fault `Assert`
 path. `FormatFloat` adds `loom_runtime_format_float_typed_v1`, advancing the
 native runtime component to 15 with `format-float-v1` and `runtime-v9` while
 retaining `text-v3`, `gc-v9`, and the existing typed allocation wires.
+Compiler-private typed TextMap operations and the first checked stackless
+coroutine slice then advance the artifact identity to schema 21, the dump to
+`lcir 20`, the LCIR native-object domain to `loom-lcir-native-object-v17`, and
+the CLI object-cache domain to `loom-llvm-object-cache-v22`. The coroutine plan,
+Task handle/creation, suspension edge, and exact frame-root rows are encoded
+directly in the dump. TextMap reuses `typed-repeated-v1`; coroutines reuse
+typed-task v1 and the existing scheduler/join ABI. Native runtime component 15,
+`runtime-v9`, `text-v3`, and `gc-v9` therefore remain unchanged.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -359,12 +370,14 @@ either one complete independently checked
 Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
-The current lowering coverage is synchronous scalar, direct `Text`,
+The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
-signatures, including bounded direct generic calls whose concrete types use
-those representations. Concrete static concept calls use the selected witness
-method directly, including conditional proof applications and normalized
-associated bindings. Dynamic dispatch remains a whole-artifact fallback. It
+signatures, plus infallible async signatures and suspension frames limited to
+direct scalar/refined/product/Text shapes. It includes bounded direct generic
+calls whose concrete types use those representations. Concrete static concept
+calls use the selected witness method directly, including conditional proof
+applications and normalized associated bindings. Dynamic dispatch remains a
+whole-artifact fallback. It
 covers constants, locals and assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
@@ -412,9 +425,10 @@ runtime; suspension implies an executor, which implies an active runtime.
 scalar faults use only the local fault context. A caller gains `MAY_FAULT`
 when it executes an unknown precondition; the assumed callee body does not gain
 that effect merely because it declares `requires`. `TextConcat` and `TextGet`
-are collecting opcodes and contribute `MAY_COLLECT`; typed source lowering still
-has no executor or suspending opcode. Assertions, deferred blocks, and scoped
-disposal lower into direct lexical CFG.
+are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` and the
+`AwaitTask` terminator contribute the checked executor and suspension
+capabilities for the admitted async slice. Assertions, deferred blocks, and
+scoped disposal lower into direct lexical CFG.
 
 Supported source contracts also lower directly. Every ordinary closed-world
 call evaluates all arguments and inout reads before it checks `requires` at the
@@ -503,6 +517,54 @@ reloads the old map, Text key, and every managed leaf of `V`. Length and lookup
 do not allocate. The compiler emits no universal map value, runtime type tag,
 executor, or global layout registry.
 
+## Typed stackless coroutines
+
+An admitted async function carries a checked `CoroutinePlan` in addition to its
+ordinary LCIR signature and CFG. The plan fixes the output type and the dense
+resume-state sequence `1..n`. Each row records, in deterministic MIR-local
+order, the exact LCIR types forwarded across that suspension. Independent
+validation matches every row to exactly one `AwaitTask` terminator, checks the
+continuation parameters and forwarded values, and rejects a Task edge without
+an active coroutine plan. The canonical dump includes the complete plan, so it
+is also an artifact-identity and object-cache input.
+
+`TaskCreate` constructs a scheduler-owned `Task[T]` for one exact coroutine
+instance. The handle is a stable opaque pointer, not a moving object and not a
+Promise or universal value. The hidden executor comes only from the active
+coroutine callback or the async root harness. `AwaitTask` stores the child and
+the row's live values, prepares a structured one-child `all` join, publishes
+the frame/root state, and makes the child result exist only on the resume edge.
+A join-suspend status of one returns `pending`; zero means the child was already
+terminal, so the runtime removes the redundant wake-up, keeps the active parent
+`Running`, and enters the same checked result/reload edge in the current
+callback. Any other status is a runtime/compiler defect. Ordinary expression
+evaluation never creates or runs a synchronous executor.
+
+LLVM derives a target-laid-out frame containing state, parameters, one
+child/live row per suspension, and the typed result. It emits one immutable
+typed-task descriptor with exact managed-leaf byte offsets and a bitmap for
+each resume state plus completed-result state. The resume callback dispatches
+state zero to the LCIR entry and nonzero states through the existing join-step
+ABI, takes the exact child result, reloads the row, and enters the LCIR
+continuation. Normal return publishes the exact typed result and completion.
+The run/test harness creates an executor for the root Task, runs it to a
+terminal state, takes the exact result, reports a root fault if one is exposed
+by a later slice, and destroys the executor.
+
+The current source boundary is deliberately smaller than the runtime ABI:
+coroutines must be infallible and have no inout parameters; parameter, result,
+and live frame values are limited to direct scalar/refined/product/Text shapes,
+with Task handles additionally allowed only in suspension-live rows. Sum,
+List, TextMap, dynamic-concept, sleep/readiness, Task-join, cancellation-source,
+and cleanup-crossing suspension forms remain atomic whole-artifact fallback.
+Because this slice does not add a hidden executor to synchronous function ABIs,
+any reachable synchronous function that calls an async callee also selects that
+fallback before emitter selection, including a synchronous helper reached from
+an async caller.
+The callback already forwards child fault/cancel terminal states without
+turning them into source `Result` values, but source programs cannot reach
+those paths until the corresponding checked control-flow slice exists.
+
 ## Typed projected places
 
 Lowering turns each admitted MIR `Place` into a `PlacePlan`. The plan records
@@ -563,6 +625,7 @@ A function contains:
   `Effects` value;
 - explicit basic blocks with typed block parameters;
 - a dense instruction table and typed SSA values;
+- an optional checked coroutine plan with exact suspension-live types;
 - exactly one terminator per completed block.
 
 `InstancePlan` is the single source of callable identity. It is a dense,
@@ -651,11 +714,13 @@ The current instruction set is deliberately small:
 - closed-sum construction and exhaustive switching, including managed Text
   leaves guarded by active variants;
 - proven refinement and exact unrefinement across one registered transparent boundary;
+- typed coroutine Task construction;
 - direct calls to infallible typed functions.
 
 The current terminators include jump, conditional branch, return, terminal
 fault, checked integer negate/add/subtract/multiply/divide, assertion,
-fallible `invoke`, typed File/Socket `resource.close`, and `resume_fault`. A
+fallible `invoke`, typed File/Socket `resource.close`, `task.await`, and
+`resume_fault`. A
 checked operation or invoke has a
 `ResultTarget`: the source result exists only on the normal edge, followed by
 ordered inout writebacks and separately forwarded arguments. An invoke's
@@ -675,8 +740,9 @@ the language's deterministic cleanup policy, not a choice left to LLVM.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
 recursive enums, generic or unsupported-shape runtime
-construction and proof replay, dynamic dispatch, contracts over unsupported
-value shapes, and coroutine control flow are not implemented. Nongeneric
+construction and proof replay, unsupported dynamic dispatch, contracts over
+unsupported value shapes, and coroutine forms outside the bounded typed slice
+are not implemented. Nongeneric
 refined and invariant runtime construction is direct typed CFG returning the
 exact `Result[..., ConstraintError]`; portable nongeneric proof replay uses a
 canonical runtime-fault assertion before nominal publication. The current CFG
@@ -730,6 +796,9 @@ not repair a malformed program. Current checks include:
 - exact concrete closed `List[T]` and compiler-private `TextMap[V]`
   registrations, including repeated-storage pointer leaves, matching operation
   operands, canonical `Option[T]`/`Option[V]` results, and allocation effects;
+- canonical concrete `Task[T]` handles, exact coroutine output/frame types,
+  dense unique resume states, matching `task.create`/`task.await` edges,
+  continuation arguments, and executor/suspension effects;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - exact nominal one-handle File/Socket resource shape, typed close
   result/writeback edges, and required runtime/fault capabilities;
@@ -737,7 +806,7 @@ not repair a malformed program. Current checks include:
 - the exact minimal transitive effect closure across the complete call graph,
   including capability implications and active-cleanup fault masking;
 - no suspending exact callee in a synchronous cleanup graph and no invented
-  suspension capability without an LCIR suspension operation;
+  suspension capability without checked coroutine control flow;
 - consistent inactive or active fault state at every block, including
   `resume_fault` and terminal-boundary rules;
 - function ownership for local identities and source origins;
@@ -787,12 +856,13 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 19` text includes
+text even when the graphs are otherwise equivalent. The `lcir 20` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
-typed runtime/contract fault identity including proof-replay and Duration
-guards, closed parse operations, and managed Float formatting,
+typed coroutine plans and Task control flow, typed runtime/contract fault
+identity including proof-replay and Duration guards, closed parse operations,
+and managed Float formatting,
 managed-pointer representations and
 `text.concat`, `text.get`, typed resource-close edges, transient
 protected-receiver updates, and the checked value type of every block parameter
@@ -830,6 +900,13 @@ cleanup-crossing returns under forced relocation, pointer-free product frame
 omission, host execution, Linux/MSVC object
 emission, and atomic fallback for unsupported dynamic Text producers or
 transparent/refined managed carriers.
+Coroutine regressions cover malformed plan rows, canonical plan identity,
+typed Task construction, four ordered root suspension states, a nested
+two-state coroutine with a live Task handle and deterministic immediate-ready
+second child, scalar/Text/product results, exact managed frame bitmaps, parent
+Text relocation while a child allocates beyond the initial 64 KiB collection
+threshold, run/test root lifecycle, interpreter/legacy/typed differential
+execution, and Linux/MSVC objects.
 Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.

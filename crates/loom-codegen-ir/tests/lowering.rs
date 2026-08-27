@@ -63,6 +63,126 @@ fn complete_dump(source: &str) -> String {
     dump_program(artifact.program())
 }
 
+const TYPED_ASYNC_SOURCE: &str = r"module lcir_typed_async
+
+async fn echo(value Bool) Bool {
+    value
+}
+
+pub async fn main() Unit {
+    let observed = echo(true).await
+    if observed {
+        Unit
+    } else {
+        Unit
+    }
+}
+";
+
+#[test]
+fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
+    let outcome = lower_run(TYPED_ASYNC_SOURCE);
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("direct scalar async fixture must lower through typed LCIR")
+    };
+    let echo = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("echo"))
+        .expect("echo instance");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(echo.coroutine().expect("echo coroutine").suspensions(), []);
+    let main_plan = main.coroutine().expect("main coroutine");
+    assert_eq!(main_plan.suspensions().len(), 1);
+    assert_eq!(main_plan.suspensions()[0].state(), 1);
+    assert!(main_plan.suspensions()[0].live().is_empty());
+    let dump = dump_program(artifact.program());
+    let encoded_plan = format!("coroutine output={} states=[1()]", main_plan.output());
+    assert!(dump.contains(&encoded_plan), "{dump}");
+    assert!(artifact_identity(&artifact).contains(&encoded_plan));
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskCreate { coroutine, .. } if coroutine == &echo.id()
+    )));
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::AwaitTask { state: 1, .. })
+    )));
+    let task = artifact
+        .representations()
+        .type_id(&Type::Task(Box::new(Type::Bool)))
+        .expect("Task[Bool] type");
+    assert_eq!(
+        artifact
+            .representations()
+            .value_type(task)
+            .and_then(|task| artifact.representations().repr(task.repr())),
+        Some(&loom_codegen_ir::Repr::TaskHandle)
+    );
+}
+
+#[test]
+fn typed_task_handles_fail_closed_on_a_32_bit_target() {
+    let mir = compile(TYPED_ASYNC_SOURCE);
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed async on 32-bit target");
+    assert!(
+        matches!(outcome, LoweringOutcome::Unsupported(_)),
+        "Task handles require the pinned 64-bit runtime ABI: {outcome:?}"
+    );
+}
+
+#[test]
+fn task_creation_in_sync_functions_fails_closed_before_emission() {
+    for source in [
+        r"module sync_task_create
+
+async fn child() Int { 1 }
+
+fn helper() Task[Int] { child() }
+
+pub async fn main() Unit {
+    discard helper().await
+    Unit
+}
+",
+        r"module nested_sync_task_create
+
+async fn child() Int { 1 }
+
+fn inner() Task[Int] { child() }
+
+fn helper() Task[Int] { inner() }
+
+pub async fn main() Unit {
+    discard helper().await
+    Unit
+}
+",
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("a sync function cannot receive an implicit coroutine executor")
+        };
+        assert!(
+            report
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::AsyncFunction),
+            "{report:#?}"
+        );
+    }
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,

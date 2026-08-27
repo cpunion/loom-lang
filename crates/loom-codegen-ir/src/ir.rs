@@ -193,6 +193,7 @@ pub struct Function {
     pub(crate) name: String,
     pub(crate) signature: Signature,
     pub(crate) effects: Effects,
+    pub(crate) coroutine: Option<CoroutinePlan>,
     pub(crate) entry: Option<BlockId>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) instructions: Vec<Instruction>,
@@ -228,6 +229,13 @@ impl Function {
     #[must_use]
     pub const fn effects(&self) -> Effects {
         self.effects
+    }
+
+    /// Returns the checked stackless-coroutine frame contract for an async
+    /// function. Synchronous functions have no coroutine plan.
+    #[must_use]
+    pub const fn coroutine(&self) -> Option<&CoroutinePlan> {
+        self.coroutine.as_ref()
     }
 
     #[must_use]
@@ -269,6 +277,66 @@ impl Function {
         (id.owner() == self.id)
             .then(|| self.values.get(id.index()))
             .flatten()
+    }
+}
+
+/// Target-typed logical frame contract for one stackless coroutine instance.
+///
+/// Parameter and result slots are implied by the function signature. Each
+/// suspension row lists, in deterministic local-id order, the exact values
+/// forwarded to its continuation. The LLVM backend derives byte offsets and
+/// precise managed-pointer projections from these checked value types; no
+/// universal value envelope or interpreter frame is involved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoroutinePlan {
+    output: ValueTypeId,
+    suspensions: Box<[CoroutineSuspension]>,
+}
+
+impl CoroutinePlan {
+    #[must_use]
+    pub fn new(output: ValueTypeId, suspensions: impl Into<Box<[CoroutineSuspension]>>) -> Self {
+        Self {
+            output,
+            suspensions: suspensions.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn output(&self) -> ValueTypeId {
+        self.output
+    }
+
+    #[must_use]
+    pub const fn suspensions(&self) -> &[CoroutineSuspension] {
+        &self.suspensions
+    }
+}
+
+/// One nonzero MIR resume state and its exact forwarded live-value types.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoroutineSuspension {
+    state: u32,
+    live: Box<[ValueTypeId]>,
+}
+
+impl CoroutineSuspension {
+    #[must_use]
+    pub fn new(state: u32, live: impl Into<Box<[ValueTypeId]>>) -> Self {
+        Self {
+            state,
+            live: live.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> u32 {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn live(&self) -> &[ValueTypeId] {
+        &self.live
     }
 }
 
@@ -636,6 +704,13 @@ pub enum InstructionKind {
         map: ValueId,
         key: ValueId,
     },
+    /// Allocates, initializes, and publishes one structured typed Task for a
+    /// checked coroutine instance. The hidden executor comes from the active
+    /// coroutine callback or executable async-root harness.
+    TaskCreate {
+        coroutine: InstanceId,
+        arguments: Box<[ValueId]>,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -724,12 +799,14 @@ impl InstructionKind {
             Self::TextMapInsert { map, key, value } => vec![*map, *key, *value],
             Self::TextMapLength { map } => vec![*map],
             Self::TextMapGet { map, key } => vec![*map, *key],
+            Self::TaskCreate { arguments, .. } | Self::DirectCall { arguments, .. } => {
+                arguments.to_vec()
+            }
             Self::IntSuccessorBelow {
                 value,
                 upper_bound,
                 proof,
             } => vec![*value, *upper_bound, *proof],
-            Self::DirectCall { arguments, .. } => arguments.to_vec(),
         }
     }
 }
@@ -1063,6 +1140,17 @@ pub enum TerminatorKind {
         cases: Box<[SumCase]>,
     },
     Return(ValueId),
+    /// Consumes one structured child Task. The initial callback invocation
+    /// stores `normal.arguments`, attaches the child to an `all` join, and
+    /// returns pending when needed. Resume state `state` takes the exact child
+    /// result and injects it as normal parameter zero before the forwarded
+    /// values. A child fault or cancellation terminates the current Task with
+    /// the scheduler-propagated outcome.
+    AwaitTask {
+        state: u32,
+        task: ValueId,
+        normal: ResultTarget,
+    },
     /// Negates a signed integer, producing its value only on `normal` and
     /// activating [`FaultCode::IntegerOverflow`] on `fault`.
     CheckedIntNegate {
@@ -1116,6 +1204,7 @@ pub enum TerminatorKind {
 }
 
 impl TerminatorKind {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Jump(target) => target.arguments.to_vec(),
@@ -1143,6 +1232,12 @@ impl TerminatorKind {
                 operands
             }
             Self::Return(value) => vec![*value],
+            Self::AwaitTask { task, normal, .. } => {
+                let mut operands = Vec::with_capacity(1 + normal.arguments.len());
+                operands.push(*task);
+                operands.extend_from_slice(&normal.arguments);
+                operands
+            }
             Self::CheckedIntNegate {
                 value,
                 normal,
@@ -1233,6 +1328,7 @@ impl TerminatorKind {
             Self::SumSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
+            Self::AwaitTask { normal, .. } => vec![preserve(normal.block)],
             Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
             | Self::ResourceClose { normal, fault, .. } => {

@@ -37,15 +37,16 @@ const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
+const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
-    reason: "async Task, suspension, and dynamic concept lowering are not yet represented in typed LCIR",
+    reason: "Task.sleep, static/dynamic joins, async fault/cleanup, and dynamic concept frames are not yet represented in typed LCIR",
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
-    reason: "async Task lowering and source contracts are not yet complete in typed LCIR",
+    reason: "Task.sleep, joins/cancellation, generic async contracts, and fault propagation are not yet complete in typed LCIR",
 };
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
@@ -363,6 +364,14 @@ fn main() {
     ) {
         report.failures.push(format!("typed-lcir: {error}"));
     }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
+        report.failures.push(format!("typed-async: {error}"));
+    }
     match run_c3_repository(
         &workspace,
         &runtime,
@@ -561,6 +570,88 @@ fn typed_lcir_gate(
     upper_gate(
         gates,
         "typed-lcir.native-execution",
+        run_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+    Ok(())
+}
+
+fn typed_async_gate(
+    workspace: &Path,
+    runtime: &NativeRuntime,
+    gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
+) -> Result<(), String> {
+    let project = workspace.join(TYPED_ASYNC_FIXTURE);
+    let snapshot = AnalysisHost::new(&project)
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory.path().join("main");
+    let tests = directory.path().join("tests");
+    let build_started = Instant::now();
+    emit_routed_native(
+        program,
+        &executable,
+        EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
+        runtime,
+        "typed-async.main",
+        NativeRouteExpectation::Lcir,
+        routes,
+    )?;
+    emit_routed_native(
+        program,
+        &tests,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        "typed-async.tests",
+        NativeRouteExpectation::Lcir,
+        routes,
+    )?;
+    upper_gate(
+        gates,
+        "typed-async.native-build",
+        build_started.elapsed(),
+        NATIVE_BUILD_BUDGET,
+    );
+
+    let run_started = Instant::now();
+    let output = Command::new(&executable)
+        .current_dir(&project)
+        .output()
+        .map_err(|error| format!("execute typed async fixture: {error}"))?;
+    if !output.status.success() || output.stdout != b"Unit\n" {
+        return Err(format!(
+            "native main mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    let output = Command::new(&tests)
+        .current_dir(&project)
+        .output()
+        .map_err(|error| format!("execute typed async tests: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || stdout.lines().count() != program.tests.len()
+        || !stdout.lines().all(|line| line.starts_with("passed "))
+    {
+        return Err(format!(
+            "native test mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            stdout,
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    upper_gate(
+        gates,
+        "typed-async.native-execution",
         run_started.elapsed(),
         EXECUTION_BUDGET,
     );

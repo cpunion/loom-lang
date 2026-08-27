@@ -5417,3 +5417,168 @@ pub fn main() Unit {
     );
     assert_fallible_surface(&lcir.ir);
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps typed coroutine planning, forced parent-root relocation, run/test harnesses, ABI shape, and cross-target object emission together"
+)]
+fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
+    let source = include_str!("../../../fixtures/lcir-typed-async/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic typed-async route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let unsupported = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed async for 32-bit target");
+    assert!(
+        matches!(unsupported, LoweringOutcome::Unsupported(_)),
+        "Task handles must fail closed outside the pinned 64-bit runtime ABI: {unsupported:?}"
+    );
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("typed async main instance");
+    let pressure = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("allocationPressure"))
+        .expect("typed allocation-pressure child instance");
+    let precreated = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("precreatedChildren"))
+        .expect("typed pre-created-child coroutine instance");
+    assert!(pressure.coroutine().is_some());
+    assert!(pressure.effects().contains(Effects::MAY_COLLECT));
+    let plan = main.coroutine().expect("typed async main coroutine plan");
+    assert_eq!(
+        plan.suspensions()
+            .iter()
+            .map(loom_codegen_ir::CoroutineSuspension::state)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    assert!(plan.suspensions()[0].live().iter().any(|ty| {
+        artifact
+            .representations()
+            .value_type(*ty)
+            .and_then(|value| artifact.representations().repr(value.repr()))
+            == Some(&loom_codegen_ir::Repr::ManagedPointer)
+    }));
+    let precreated_plan = precreated
+        .coroutine()
+        .expect("pre-created children use a checked coroutine plan");
+    assert_eq!(
+        precreated_plan
+            .suspensions()
+            .iter()
+            .map(loom_codegen_ir::CoroutineSuspension::state)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(precreated_plan.suspensions()[0].live().iter().any(|ty| {
+        artifact
+            .representations()
+            .value_type(*ty)
+            .and_then(|value| artifact.representations().repr(value.repr()))
+            == Some(&loom_codegen_ir::Repr::TaskHandle)
+    }));
+
+    let lcir = emit_and_run_lcir(&artifact, "source-typed-async");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-typed-async");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    for required in [
+        "loom.lcir.coroutine.resume.",
+        "loom.lcir.coroutine.descriptor.",
+        "loom_typed_task_create_v1",
+        "loom_typed_task_set_root_state_v1",
+        "loom_typed_task_publish_result_v1",
+        "loom_typed_task_take_result_v1",
+        "loom_task_prepare_join",
+        "loom_task_add_join_child",
+        "loom_task_suspend_join",
+        "loom_executor_run",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}`:\n{}",
+            lcir.ir
+        );
+    }
+    assert!(
+        lcir.ir.contains("task.await.immediate.ready"),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.matches("task.await.state.pointer").count() >= 6,
+        "{}",
+        lcir.ir
+    );
+    assert!(lcir.ir.contains("task.await.live.0.pointer"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("%loom.Value"), "{}", lcir.ir);
+    assert!(!lcir.ir.contains("@loom.fn."), "{}", lcir.ir);
+
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-typed-async-tests");
+    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-typed-async-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
+    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
+    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create typed-async target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-async.obj"
+        } else {
+            "typed-async.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed async object for {target}: {error}"));
+        assert!(object.is_file(), "missing typed async object for {target}");
+    }
+}

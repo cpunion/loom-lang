@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 19")?;
+    writeln!(output, "lcir 20")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -114,7 +114,25 @@ pub fn write_program_with_options(
         let entry = function
             .entry()
             .expect("checked LCIR function has an entry block");
-        writeln!(output, " entry={entry} effects={} {{", function.effects())?;
+        write!(output, " entry={entry} effects={}", function.effects())?;
+        if let Some(coroutine) = function.coroutine() {
+            write!(output, " coroutine output={} states=[", coroutine.output())?;
+            for (index, suspension) in coroutine.suspensions().iter().enumerate() {
+                if index != 0 {
+                    write!(output, ", ")?;
+                }
+                write!(output, "{}(", suspension.state())?;
+                for (live_index, ty) in suspension.live().iter().enumerate() {
+                    if live_index != 0 {
+                        write!(output, ", ")?;
+                    }
+                    write!(output, "{ty}")?;
+                }
+                write!(output, ")")?;
+            }
+            write!(output, "]")?;
+        }
+        writeln!(output, " {{")?;
         if options.include_origins {
             write_origin(output, function.origin(), "  ; function-origin")?;
         }
@@ -348,6 +366,14 @@ fn write_instruction(
             }
             write!(output, ")")
         }
+        InstructionKind::TaskCreate {
+            coroutine,
+            arguments,
+        } => {
+            write!(output, "task.create {coroutine}(")?;
+            write_arguments(output, arguments)?;
+            write!(output, ")")
+        }
     }
 }
 
@@ -399,6 +425,7 @@ fn write_terminator(
                     | Repr::Scalar(_)
                     | Repr::ImmortalText
                     | Repr::ManagedPointer
+                    | Repr::TaskHandle
                     | Repr::Product(_) => None,
                 })
                 .map(crate::SumRepr::variants);
@@ -423,6 +450,14 @@ fn write_terminator(
             Ok(())
         }
         TerminatorKind::Return(value) => write!(output, "return %{value}"),
+        TerminatorKind::AwaitTask {
+            state,
+            task,
+            normal,
+        } => {
+            write!(output, "task.await state {state}, %{task}, normal ")?;
+            write_result_target(output, normal, 0)
+        }
         TerminatorKind::CheckedIntNegate {
             value,
             normal,
@@ -602,6 +637,7 @@ fn write_repr(
         Repr::Scalar(ScalarRepr::F64) => output.write_str("f64"),
         Repr::ImmortalText => output.write_str("immortal_text_ptr"),
         Repr::ManagedPointer => output.write_str("managed_ptr"),
+        Repr::TaskHandle => output.write_str("task_handle"),
         Repr::Product(product) => {
             write!(output, "product {product}(")?;
             let fields = representations

@@ -7,7 +7,7 @@ future.
 
 ## Coroutine descriptor
 
-Each lowered async function has a compiler-private descriptor containing:
+The complete legacy route uses a compiler-private descriptor containing:
 
 - resume, cancel, and trace functions;
 - value-slot and witness-slot counts;
@@ -18,6 +18,31 @@ Locals that survive a suspension are stored in the Task frame. The MIR
 validator recomputes suspension liveness, and the GC traces only slots live in
 the current state. Captured witnesses have separate slots and an owned proof
 arena.
+
+The first typed-LCIR coroutine slice uses the existing `typed-task-v1` runtime
+wire with a different, exact compiler-shaped descriptor. LLVM target data lays
+out one frame containing state, parameters, the child and live values for each
+suspension, and the result. The descriptor publishes frame size/alignment,
+resume/cancel callbacks, result size/alignment, exact managed-leaf byte
+offsets, and one live bitmap per resume state plus completed-result state.
+`Task[T]` itself is a stable scheduler-owned handle and is never a moving-GC
+root. No universal value slot, witness arena, runtime type tag, or synchronous
+expression executor is introduced by this route.
+
+LCIR has explicit `task.create` and `task.await` control flow. Await stores the
+checked live row, registers a structured one-child join, publishes its state,
+and returns pending. A completion notification puts the parent back in the
+ready queue; the callback takes the child's exact typed result, reloads live
+values, and enters the checked continuation. Typed async run/test harnesses
+create one executor for the root Task, drive it to a terminal state, take the
+exact result, and destroy the executor.
+
+Current typed coverage is limited to infallible, non-inout coroutines with
+direct scalar/refined/product/Text parameters, results, and live values. Task
+handles may be live only as suspension bookkeeping. The full Core03 forms for
+fallible async, lexical cleanup across suspension, timers/readiness, tuple/list
+joins, sum/List/TextMap frame values, and dynamic concepts still select the
+complete legacy route.
 
 ## Runtime and executor
 
