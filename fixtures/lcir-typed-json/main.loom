@@ -1,0 +1,91 @@
+module lcir_typed_json
+
+enum Problem { WrongValue }
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn verdict(condition Bool) Result[Unit, Problem] {
+    if condition { Ok(Unit) } else { Err(Problem.WrongValue) }
+}
+
+fn array_head(value Json) Text {
+    match value {
+        Array(items) => match items.get(0) {
+            Some(Json.Text(text)) => text
+            _ => "missing"
+        }
+        _ => "missing"
+    }
+}
+
+fn object_number(value Json, key Text) Float {
+    match value {
+        Object(fields) => match fields.get(key) {
+            Some(Json.Number(number)) => number
+            _ => -1.0
+        }
+        _ => -1.0
+    }
+}
+
+fn verify() Result[Unit, Problem] {
+    let null = Json.Null
+    let boolean = Json.Bool(true)
+    let number = Json.Number(42.5)
+    let text = Json.Text(join("Ty", "ped"))
+    let array = Json.Array([text, null, boolean])
+    let fields = TextMap[Json]().insert("z", Json.Number(9.0)).insert(
+    "a",
+    Json.Array([Json.Text(join("Ne", "sted")), number])
+    )
+    let object = Json.Object(fields)
+    let alias = object
+    let replaced = Json.Object(fields.insert("z", Json.Number(10.0)))
+
+    var moving = TextMap[Json]().insert("value", Json.Null)
+    for index in 0..2048 {
+        moving = moving.insert("value", Json.Text(join("Mo", "ved")))
+        Unit
+    }
+    let moved = Json.Object(moving)
+
+    verdict(
+    match null { Json.Null => true, _ => false }
+    && match boolean { Json.Bool(value) => value, _ => false }
+    && match number { Json.Number(value) => value == 42.5, _ => false }
+    && match text { Json.Text(value) => value == "Typed", _ => false }
+    && array_head(array) == "Typed"
+    && object_number(object, "z") == 9.0
+    && object_number(alias, "z") == 9.0
+    && object_number(replaced, "z") == 10.0
+    && match object {
+        Json.Object(values) => match values.get("a") {
+            Some(Json.Array(items)) => match items.get(0) {
+                Some(Json.Text(value)) => value == "Nested",
+                _ => false,
+            },
+            _ => false,
+        },
+        _ => false
+    }
+    && match moved {
+        Json.Object(values) => match values.get("value") {
+            Some(Json.Text(value)) => value == "Moved",
+            _ => false,
+        },
+        _ => false
+    }
+    )
+}
+
+pub fn main() Unit {
+    match verify() {
+        Ok(_) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn typedJson() Result[Unit, Problem] { verify() }

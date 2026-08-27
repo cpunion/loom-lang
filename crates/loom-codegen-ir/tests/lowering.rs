@@ -3118,6 +3118,32 @@ pub fn main() Unit {
 }
 
 #[test]
+fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
+    let dump = complete_dump(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
+    for required in [
+        "managed_text_map",
+        "sum.construct variant 0",
+        "sum.construct variant 1",
+        "sum.construct variant 2",
+        "sum.construct variant 3",
+        "sum.construct variant 4",
+        "sum.construct variant 5",
+        "list.construct",
+        "list.get",
+        "text_map.construct",
+        "text_map.insert",
+        "text_map.get",
+        "sum.switch",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(
+        dump.lines().count() < 10_000,
+        "recursive Json lowering must remain finite"
+    );
+}
+
+#[test]
 fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
     let dump = complete_dump(
         r"module closed_sums
