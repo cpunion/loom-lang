@@ -5244,7 +5244,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(else_target.block);
                     pending.push(then_target.block);
                 }
-                TerminatorKind::SumSwitch { cases, .. } => {
+                TerminatorKind::SumSwitch { cases, .. }
+                | TerminatorKind::DynSwitch { cases, .. } => {
                     for case in cases.iter().rev() {
                         pending.push(case.block);
                     }
@@ -5621,6 +5622,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     })?
                     .ty();
                 one(self.emit_sum_construct(ty, *variant, payload)?)
+            }
+            InstructionKind::DynConstruct { .. } => {
+                return Err(CodegenError::new(
+                    "LcirDynamicEmissionPending",
+                    "managed dynamic construction reached the LLVM skeleton before its emitter",
+                ));
             }
             InstructionKind::ListConstruct { elements } => {
                 one(self.emit_list_construct(instruction, elements)?.into())
@@ -7937,6 +7944,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             TerminatorKind::SumSwitch { scrutinee, cases } => {
                 self.emit_sum_switch(*scrutinee, cases)
             }
+            TerminatorKind::DynSwitch { .. } => Err(CodegenError::new(
+                "LcirDynamicEmissionPending",
+                "managed dynamic switch reached the LLVM skeleton before its emitter",
+            )),
             TerminatorKind::Return(value) => {
                 self.emit_return(self.value(*value)?, terminator.writebacks())
             }

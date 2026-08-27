@@ -649,6 +649,13 @@ pub enum InstructionKind {
         variant: u32,
         payload: Box<[ValueId]>,
     },
+    /// Allocates one candidate payload in the result View's closed managed
+    /// dynamic representation. `variant` is the compiler-private candidate
+    /// ordinal, not a source-observable runtime type identity.
+    DynConstruct {
+        variant: u32,
+        value: ValueId,
+    },
     /// Constructs one immutable concrete List. Empty construction yields the
     /// canonical null value and does not collect; nonempty construction is a
     /// typed repeated-allocation safepoint.
@@ -786,6 +793,7 @@ impl InstructionKind {
             | Self::FloatNegate { value }
             | Self::FormatFloat { value } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
+            Self::DynConstruct { value, .. } => vec![*value],
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }
             | Self::BoolCompare { left, right, .. }
@@ -1139,6 +1147,13 @@ pub enum TerminatorKind {
         scrutinee: ValueId,
         cases: Box<[SumCase]>,
     },
+    /// Exhaustively switches over one artifact-closed dynamic candidate set.
+    /// Each edge injects the selected concrete payload as its leading block
+    /// parameter, then forwards the explicit case arguments.
+    DynSwitch {
+        scrutinee: ValueId,
+        cases: Box<[SumCase]>,
+    },
     Return(ValueId),
     /// Consumes one structured child Task. The initial callback invocation
     /// stores `normal.arguments`, attaches the child to an `all` join, and
@@ -1221,7 +1236,7 @@ impl TerminatorKind {
                 operands.extend_from_slice(&else_target.arguments);
                 operands
             }
-            Self::SumSwitch { scrutinee, cases } => {
+            Self::SumSwitch { scrutinee, cases } | Self::DynSwitch { scrutinee, cases } => {
                 let mut operands = Vec::with_capacity(
                     1 + cases.iter().map(|case| case.arguments.len()).sum::<usize>(),
                 );
@@ -1325,7 +1340,7 @@ impl TerminatorKind {
                 else_target,
                 ..
             } => vec![preserve(then_target.block), preserve(else_target.block)],
-            Self::SumSwitch { cases, .. } => {
+            Self::SumSwitch { cases, .. } | Self::DynSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
             Self::AwaitTask { normal, .. } => vec![preserve(normal.block)],

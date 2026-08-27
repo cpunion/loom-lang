@@ -201,6 +201,29 @@ impl ProgramBuilder {
             })
     }
 
+    /// Registers one closed first-class dynamic concept as a single managed
+    /// pointer with an ordered, artifact-private concrete payload catalog.
+    pub fn add_managed_dynamic_type(
+        &mut self,
+        semantic: Type,
+        candidates: &[Type],
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidValueType,
+                "LCIR managed dynamic types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_managed_dynamic(semantic, candidates)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidValueType,
+                    "LCIR managed dynamic type requires a unique closed View, at least two distinct registered concrete candidates, and a 64-bit target",
+                )
+            })
+    }
+
     /// Registers one concrete scheduler-owned `Task[T]` handle. The output
     /// type must already have a canonical direct representation and Task
     /// handles are available only on the native 64-bit runtime ABI.
