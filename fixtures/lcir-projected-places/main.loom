@@ -24,16 +24,23 @@ impl Cell {
     }
 }
 
+impl Holder {
+    method setEnabled(mut self, next Bool) Unit {
+        self.enabled = next
+    }
+}
+
 fn nestedSibling() Holder {
     var holder = Holder {
         pair = Pair {
             left = Cell { value = 1 },
             right = Cell { value = 2 },
         },
-        enabled = true,
+        enabled = false,
     }
     discard holder.pair.left.set(holder.pair.right.set(12))
-    discard holder.pair.right.setAndKeep(12, true)
+    let kept = holder.pair.right.setAndKeep(17, true)
+    holder.setEnabled(kept)
     holder
 }
 
@@ -55,7 +62,7 @@ fn looped(size Int) Holder {
 pub fn projectedResult() Int {
     let nested = nestedSibling()
     let loopResult = looped(4)
-    if nested.pair.left.value == 12 && nested.pair.right.value == 12 && nested.enabled && loopResult.pair.left.value == 3 && loopResult.pair.right.value == 20 && loopResult.enabled {
+    if nested.pair.left.value == 12 && nested.pair.right.value == 17 && nested.enabled && loopResult.pair.left.value == 3 && loopResult.pair.right.value == 20 && loopResult.enabled {
         42
     } else {
         0
