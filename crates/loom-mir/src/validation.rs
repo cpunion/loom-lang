@@ -1341,12 +1341,28 @@ impl<'program> Validator<'program> {
             .prelude
             .constraint_error
             .and_then(|id| self.program.type_def(id))
-            && (!matches!(definition.kind, TypeDefKind::Record { .. })
-                || definition.type_parameters != 0)
+            && (definition.type_parameters != 0
+                || !matches!(
+                    &definition.kind,
+                    TypeDefKind::Record { fields, invariant: None }
+                        if fields.len() == 6
+                            && fields[0].name == "target_type"
+                            && fields[0].ty == Type::Text
+                            && fields[1].name == "code"
+                            && fields[1].ty == Type::Text
+                            && fields[2].name == "predicate"
+                            && fields[2].ty == Type::Text
+                            && fields[3].name == "path"
+                            && fields[3].ty == Type::List(Box::new(Type::Text))
+                            && fields[4].name == "value_summary"
+                            && fields[4].ty == Type::Text
+                            && fields[5].name == "contract_span"
+                            && fields[5].ty == Type::Tuple(vec![Type::Int, Type::Int, Type::Int])
+                ))
         {
             self.push(
                 MirValidationCode::RecordShape,
-                "prelude ConstraintError must be a non-generic record",
+                "prelude ConstraintError must be the canonical non-generic six-field record",
                 definition.span,
                 "prelude.constraint_error",
             );

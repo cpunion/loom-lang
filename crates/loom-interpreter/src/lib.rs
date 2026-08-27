@@ -19,8 +19,8 @@ use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
     FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId,
-    ScopedDisposal, Statement, StatementKind, TaskJoinMode, TypeDefKind, TypeId, UnaryOp,
-    VariantId, WitnessId, WitnessRef,
+    ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp,
+    VariantId, WitnessId, WitnessRef, disclosure_type_summary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -171,74 +171,23 @@ impl Value {
         }
     }
 
-    fn write_summary(&self, output: &mut String, depth: u8) {
-        if depth >= 6 {
-            output.push_str("...");
-            return;
-        }
+    fn write_summary(&self, output: &mut String, _depth: u8) {
         match self {
             Self::Unit => output.push_str("Unit"),
-            Self::Tuple { elements } => {
-                output.push('(');
-                for (index, element) in elements.iter().enumerate() {
-                    if index > 0 {
-                        output.push_str(", ");
-                    }
-                    element.write_summary(output, depth + 1);
-                }
-                if elements.len() == 1 {
-                    output.push(',');
-                }
-                output.push(')');
-            }
-            Self::List { elements } => {
-                output.push('[');
-                for (index, element) in elements.iter().enumerate() {
-                    if index > 0 {
-                        output.push_str(", ");
-                    }
-                    element.write_summary(output, depth + 1);
-                }
-                output.push(']');
-            }
-            Self::Bool { value } => output.push_str(if *value { "true" } else { "false" }),
-            Self::Int { value } => {
-                let _ = write!(output, "{value}");
-            }
-            Self::Float { value } => {
-                output.push_str(&format_float(*value));
-            }
-            Self::Text { value } => {
-                let _ = write!(output, "Text(bytes={})", value.len());
-            }
-            Self::Bytes { value } => {
-                let _ = write!(output, "Bytes(length={})", value.len());
-            }
-            Self::Record { ty, .. } => {
+            Self::Tuple { .. } => output.push_str("Tuple"),
+            Self::List { .. } => output.push_str("List"),
+            Self::Bool { .. } => output.push_str("Bool"),
+            Self::Int { .. } => output.push_str("Int"),
+            Self::Float { .. } => output.push_str("Float"),
+            Self::Text { .. } => output.push_str("Text"),
+            Self::Bytes { .. } => output.push_str("Bytes"),
+            Self::Record { ty, .. } | Self::Enum { ty, .. } | Self::Refined { ty, .. } => {
                 let _ = write!(output, "type#{}", ty.0);
             }
-            Self::Enum { ty, variant, .. } => {
-                let _ = write!(output, "type#{}::variant#{}", ty.0, variant.0);
-            }
-            Self::Refined { ty, value } => {
-                let _ = write!(output, "type#{}(", ty.0);
-                value.write_summary(output, depth + 1);
-                output.push(')');
-            }
-            Self::ConstraintError { value } => {
-                let _ = write!(output, "ConstraintError({})", value.code);
-            }
-            Self::DynView { .. } => output.push_str("<dyn interface>"),
-            Self::Task { .. } | Self::TaskJoin { .. } => output.push_str("<task>"),
-            Self::TaskOutcome { outcome } => match outcome {
-                TaskOutcomeValue::Completed(value) => {
-                    output.push_str("Completed(");
-                    value.write_summary(output, depth + 1);
-                    output.push(')');
-                }
-                TaskOutcomeValue::Faulted => output.push_str("Faulted"),
-                TaskOutcomeValue::Cancelled => output.push_str("Cancelled"),
-            },
+            Self::ConstraintError { .. } => output.push_str("ConstraintError"),
+            Self::DynView { .. } => output.push_str("dyn"),
+            Self::Task { .. } | Self::TaskJoin { .. } => output.push_str("Task"),
+            Self::TaskOutcome { .. } => output.push_str("TaskOutcome"),
         }
     }
 }
@@ -4864,7 +4813,7 @@ impl<'program> Interpreter<'program> {
                 span,
             ))
         })?;
-        let TypeDefKind::Refined { predicate, .. } = &definition.kind else {
+        let TypeDefKind::Refined { base, predicate } = &definition.kind else {
             return Err(self
                 .runtime_fault(
                     "LOOM_RUNTIME_INVALID_MIR",
@@ -4898,7 +4847,7 @@ impl<'program> Interpreter<'program> {
                 code: "ConstraintViolation".into(),
                 predicate: predicate.code.clone(),
                 path: Vec::new(),
-                value_summary: value.summary(),
+                value_summary: disclosure_type_summary(self.program, base),
                 contract_span: predicate.span,
             };
             self.result_value(
@@ -5001,7 +4950,10 @@ impl<'program> Interpreter<'program> {
                 code: "InvariantViolation".into(),
                 predicate: invariant.code.clone(),
                 path: Vec::new(),
-                value_summary: value.summary(),
+                value_summary: disclosure_type_summary(
+                    self.program,
+                    &Type::Nominal(ty, Vec::new()),
+                ),
                 contract_span: invariant.span,
             };
             self.result_value(

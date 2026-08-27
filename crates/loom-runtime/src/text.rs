@@ -329,6 +329,7 @@ unsafe fn byte_sequence_bytes<'object>(object: *const c_void) -> Option<&'object
     Some(bytes)
 }
 
+#[cfg(test)]
 pub(crate) unsafe fn value_bytes(value: &ValueSlot) -> Option<&[u8]> {
     unsafe { bytes(object(value)?) }
 }

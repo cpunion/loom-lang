@@ -190,7 +190,10 @@ effect or termination system while preserving ordinary arithmetic faults.
 
 `ConstraintError` is a concrete prelude failure value used only when a
 constrained value or record invariant cannot be established dynamically. It is
-not a universal error superclass.
+not a universal error superclass. It carries the target, code, predicate,
+logical path, type-only value summary, and exact contract span. The summary is
+safe to report across trust boundaries because it excludes runtime values,
+contents, lengths, collection counts, variants, and nested data.
 
 A failed `requires`, `ensures`, invariant boundary, or `assert` produces an
 uncatchable `ContractFault` with an appropriate diagnostic category. It is not

@@ -89,9 +89,21 @@ fault.
 
 `ConstraintError` is also ordinary Result data returned when an unproven
 constrained type or record invariant fails during construction. Its structured
-runtime value records the target type, constraint code and predicate, logical
-path, disclosure-limited value summary, and contract span. Text and Bytes
-contents are summarized by size rather than copied into the value summary.
+runtime value has this exact compiler-private shape:
+
+```text
+target_type   Text
+code          Text
+predicate     Text
+path          List[Text]
+value_summary Text
+contract_span (Int, Int, Int)
+```
+
+`value_summary` is a stable type-only category or nominal type name. It never
+contains scalar values, text or byte contents, lengths, collection counts,
+enum variants, or nested business data. This non-disclosure rule is identical
+in interpreted and native execution.
 
 ## Contract faults
 

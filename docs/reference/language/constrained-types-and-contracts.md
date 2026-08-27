@@ -46,7 +46,11 @@ fn checked(raw Float) Result[Money, ConstraintError] {
 At runtime, an unknown construction produces `Ok(value)` when the predicate is
 true and `Err(ConstraintError)` when it is false. `ConstraintError` is a
 specific, structured validation value, not a universal `Error` supertype and
-not a `ContractFault`.
+not a `ContractFault`. Its fields are `target_type Text`, `code Text`,
+`predicate Text`, `path List[Text]`, `value_summary Text`, and
+`contract_span (Int, Int, Int)`. The value summary identifies only the rejected
+value's type; it never includes the value, contents, size, variant, or nested
+data.
 
 ## Conversion rules
 

@@ -76,6 +76,12 @@ artifact, or runtime compatibility.
   aliases. This advances the LCIR dump to 17, artifact identity to schema 18,
   native-object domain to v14, and CLI object cache to v19 while reusing native
   runtime ABI component 14 and `typed-repeated-v1`.
+- `ConstraintError` now has one validated compiler-private six-field MIR shape,
+  and its `value_summary` is type-only in interpreted and native execution. It
+  cannot disclose scalar values, text or byte contents, sizes, enum variants,
+  collection counts, or nested business data. This advances interpreted MIR to
+  version 23; persistent-cache schema 3 remains valid because checked-MIR cache
+  envelopes independently carry the artifact version.
 - Typed LCIR now places source contracts at explicit checked boundaries.
   Closed-world calls evaluate every argument before checking `requires` with
   exact call-expression blame, then enter an assumed body whose receiver

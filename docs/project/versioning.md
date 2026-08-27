@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `22` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
 | LCIR textual dump | version `17` |
@@ -53,6 +53,13 @@ analysis rederives from the current HIR. The portable-library envelope remains
 version 1 because its nested checked-MIR payload has its own version boundary.
 No source syntax, resource lifetime rule, LCIR, native ABI, or runtime boundary
 changes in version 22.
+
+Interpreted MIR version 23 makes the compiler-private `ConstraintError` record
+shape explicit and validator-enforced. Older artifacts are rejected because
+their synthetic prelude record could omit the six structured fields. The
+persistent cache schema remains 3: cached checked-MIR envelopes already carry
+and validate the interpreted-artifact version, while semantic cache payloads
+do not encode this synthetic lowering shape.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC

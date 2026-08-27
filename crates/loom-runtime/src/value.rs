@@ -9,95 +9,24 @@ use loom_runtime_abi::{
     VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_TAG_UNIT,
 };
 
-use crate::float::canonical_text;
-use crate::scheduler::{ValueNode, ValueSlot};
-use crate::text;
+use crate::scheduler::ValueSlot;
 use crate::{WAIT_INVALID_ARGUMENT, WAIT_OK};
 
-fn write_nodes(mut node: *const ValueNode, count: u64, output: &mut String, depth: u8) {
-    for index in 0..count {
-        if index > 0 {
-            output.push_str(", ");
-        }
-        if node.is_null() {
-            output.push_str("<invalid>");
-            return;
-        }
-        // SAFETY: native aggregate counts and chains are created by checked
-        // generated code and remain live throughout this helper call.
-        unsafe {
-            write_summary(&(*node).value, output, depth);
-            node = (*node).next;
-        }
-    }
-}
-
-fn write_summary(value: &ValueSlot, output: &mut String, depth: u8) {
-    if depth >= 6 {
-        output.push_str("...");
-        return;
-    }
+fn write_summary(value: &ValueSlot, output: &mut String) {
     match value.words[0] {
         VALUE_TAG_UNIT => output.push_str("Unit"),
-        VALUE_TAG_BOOL => output.push_str(if value.words[3] == 0 { "false" } else { "true" }),
-        VALUE_TAG_INT => {
-            let _ = write!(output, "{}", value.words[3].cast_signed());
-        }
-        VALUE_TAG_FLOAT => output.push_str(&canonical_text(f64::from_bits(value.words[3]))),
-        VALUE_TAG_TEXT => {
-            let Some(length) = (unsafe { text::value_bytes(value) }).map(<[u8]>::len) else {
-                output.push_str("<invalid>");
-                return;
-            };
-            let _ = write!(output, "Text(bytes={length})");
-        }
-        VALUE_TAG_RECORD => {
+        VALUE_TAG_BOOL => output.push_str("Bool"),
+        VALUE_TAG_INT => output.push_str("Int"),
+        VALUE_TAG_FLOAT => output.push_str("Float"),
+        VALUE_TAG_TEXT => output.push_str("Text"),
+        VALUE_TAG_RECORD | VALUE_TAG_ENUM | VALUE_TAG_REFINED => {
             let _ = write!(output, "type#{}", value.words[1]);
         }
-        VALUE_TAG_ENUM => {
-            let _ = write!(
-                output,
-                "type#{}::variant#{}",
-                value.words[1], value.words[2]
-            );
-        }
-        VALUE_TAG_REFINED => {
-            let _ = write!(output, "type#{}(", value.words[1]);
-            let inner = value.words[4] as *const ValueSlot;
-            if inner.is_null() {
-                output.push_str("<invalid>");
-            } else {
-                // SAFETY: refined payloads are runtime-managed Value pointers.
-                write_summary(unsafe { &*inner }, output, depth + 1);
-            }
-            output.push(')');
-        }
         VALUE_TAG_CONSTRAINT_ERROR => output.push_str("ConstraintError"),
-        VALUE_TAG_DYN => output.push_str("<dyn interface>"),
-        VALUE_TAG_TASK => output.push_str("<task>"),
-        VALUE_TAG_TUPLE => {
-            output.push('(');
-            write_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[2],
-                output,
-                depth + 1,
-            );
-            if value.words[2] == 1 {
-                output.push(',');
-            }
-            output.push(')');
-        }
-        VALUE_TAG_LIST => {
-            output.push('[');
-            write_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[2],
-                output,
-                depth + 1,
-            );
-            output.push(']');
-        }
+        VALUE_TAG_DYN => output.push_str("dyn"),
+        VALUE_TAG_TASK => output.push_str("Task"),
+        VALUE_TAG_TUPLE => output.push_str("Tuple"),
+        VALUE_TAG_LIST => output.push_str("List"),
         _ => output.push_str("<invalid>"),
     }
 }
@@ -110,7 +39,7 @@ pub unsafe extern "C" fn value_summary(value: *const c_void, output: *mut c_void
     }
     let mut summary = String::new();
     // SAFETY: generated code passes aligned live Value slots.
-    write_summary(unsafe { &*value.cast::<ValueSlot>() }, &mut summary, 0);
+    write_summary(unsafe { &*value.cast::<ValueSlot>() }, &mut summary);
     if summary.chars().count() > 256 {
         summary = summary.chars().take(253).collect::<String>() + "...";
     }
@@ -119,4 +48,55 @@ pub unsafe extern "C" fn value_summary(value: *const c_void, output: *mut c_void
     };
     unsafe { output.cast::<ValueSlot>().write(result) };
     WAIT_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summaries_are_type_only_and_do_not_disclose_scalar_or_aggregate_data() {
+        for (value, expected) in [
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_BOOL, 0, 0, 1, 0, 0],
+                },
+                "Bool",
+            ),
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_INT, 0, 0, 0x5e_c0_e7_u64, 0, 0],
+                },
+                "Int",
+            ),
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_FLOAT, 0, 0, 42.5_f64.to_bits(), 0, 0],
+                },
+                "Float",
+            ),
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_TEXT, 0, 4_294_967_295, 0, 0, 0],
+                },
+                "Text",
+            ),
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_LIST, 0, 9_876_543_210, 0, 0, 0],
+                },
+                "List",
+            ),
+            (
+                ValueSlot {
+                    words: [VALUE_TAG_ENUM, 27, 9_876_543_210, 0, 0, 0],
+                },
+                "type#27",
+            ),
+        ] {
+            let mut summary = String::new();
+            write_summary(&value, &mut summary);
+            assert_eq!(summary, expected);
+        }
+    }
 }

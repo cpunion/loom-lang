@@ -134,6 +134,13 @@ child fault. Only OOM is a process-level exception. Typed LCIR currently
 rejects `Recheck` and atomically selects the legacy route for the whole
 artifact.
 
+The canonical prelude `ConstraintError` is a non-generic record with exactly
+six fields, in order: `target_type Text`, `code Text`, `predicate Text`, `path
+List[Text]`, `value_summary Text`, and `contract_span (Int, Int, Int)`. Checked
+MIR validation rejects any different name, order, type, arity, type-parameter
+count, or invariant. Its value summary is type-only and cannot reveal a scalar,
+content, length, variant, collection count, or nested value.
+
 The persistent compiler cache does not turn a cache hit into a replay build.
 Proof-bearing checked MIR and typed semantic state are not published, and a
 forged cached proof disposition is rejected as a miss. A later process rebuilds
@@ -177,7 +184,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `22`;
+- artifact version `23`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
@@ -186,7 +193,7 @@ numeric encodings, the entry, and the complete MIR program.
 
 Portable library artifacts use a separate versioned envelope (`.loomlib`
 version `1`) around checked MIR and package/public-interface metadata. Its
-nested checked-MIR envelope is version `22` and uses the construction
+nested checked-MIR envelope is version `23` and uses the construction
 proof rule above.
 
 Neither serialization is a public extension API. Tools must use the project

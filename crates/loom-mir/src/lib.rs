@@ -199,6 +199,34 @@ pub enum Type {
     Error,
 }
 
+/// Returns the stable, disclosure-safe type category used when a constraint
+/// failure describes the rejected value. The summary deliberately excludes
+/// runtime values, collection sizes, text/byte lengths, enum variants, and
+/// nested business data.
+#[must_use]
+pub fn disclosure_type_summary(program: &Program, ty: &Type) -> String {
+    match ty {
+        Type::Never => "Never".into(),
+        Type::Unit => "Unit".into(),
+        Type::Bool => "Bool".into(),
+        Type::Int => "Int".into(),
+        Type::Float => "Float".into(),
+        Type::Text => "Text".into(),
+        Type::Tuple(_) => "Tuple".into(),
+        Type::List(_) => "List".into(),
+        Type::Nominal(id, _) => program.type_def(*id).map_or_else(
+            || format!("type#{}", id.0),
+            |definition| definition.name.clone(),
+        ),
+        Type::Parameter(_) => "TypeParameter".into(),
+        Type::AssociatedProjection { .. } => "AssociatedType".into(),
+        Type::Task(_) => "Task".into(),
+        Type::TaskOutcome(_) => "TaskOutcome".into(),
+        Type::View { .. } => "dyn".into(),
+        Type::Error => "Error".into(),
+    }
+}
+
 /// A concept requirement's compiler-private type schema.
 ///
 /// `SelfType` and `Associated` are substituted by a witness before a call can

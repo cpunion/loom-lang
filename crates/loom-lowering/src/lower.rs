@@ -3924,7 +3924,38 @@ fn synthetic_types() -> Vec<TypeDef> {
             span,
             type_parameters: 0,
             kind: TypeDefKind::Record {
-                fields: Vec::new(),
+                fields: vec![
+                    FieldDef {
+                        name: "target_type".into(),
+                        ty: Type::Text,
+                        span,
+                    },
+                    FieldDef {
+                        name: "code".into(),
+                        ty: Type::Text,
+                        span,
+                    },
+                    FieldDef {
+                        name: "predicate".into(),
+                        ty: Type::Text,
+                        span,
+                    },
+                    FieldDef {
+                        name: "path".into(),
+                        ty: Type::List(Box::new(Type::Text)),
+                        span,
+                    },
+                    FieldDef {
+                        name: "value_summary".into(),
+                        ty: Type::Text,
+                        span,
+                    },
+                    FieldDef {
+                        name: "contract_span".into(),
+                        ty: Type::Tuple(vec![Type::Int, Type::Int, Type::Int]),
+                        span,
+                    },
+                ],
                 invariant: None,
             },
         },

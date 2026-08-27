@@ -3265,10 +3265,10 @@ fn checked(raw Float) Result[Money, ConstraintError] {
 pub fn main() Unit {
     let money = direct()
     assert money == 10.0
-    match checked(-1.0) {
-        Err(first) => match checked(-2.0) {
+    match checked(-97531.125) {
+        Err(first) => match checked(-86420.5) {
             Err(second) => {
-                assert first != second
+                assert first == second
                 Unit
             }
             Ok(_) => {
@@ -3307,6 +3307,7 @@ pub fn main() Unit {
     assert!(!direct.contains("assert.fail"), "{direct}");
     assert!(checked.contains("constraint.ok"), "{checked}");
     assert!(checked.contains("constraint.error"), "{checked}");
+    assert!(!checked.contains("loom_runtime_value_summary"), "{checked}");
     let result_branch = checked
         .lines()
         .find(|line| {

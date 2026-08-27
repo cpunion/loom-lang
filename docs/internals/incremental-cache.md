@@ -70,6 +70,11 @@ current HIR. Checked-MIR cache entries carry the resulting concept module and
 identity under artifact version 22 and cross the ordinary MIR validator before
 reuse; inconsistent identity metadata is a cache miss.
 
+Checked-MIR cache envelopes use artifact version 23 for the canonical
+six-field `ConstraintError` shape. This does not advance the cache schema:
+artifact-version validation invalidates older checked-MIR entries, and typed
+semantic cache payloads do not contain the synthetic prelude record.
+
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
 and contract mode. A checked-MIR cache hit still runs the artifact decoder and
