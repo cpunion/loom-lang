@@ -706,9 +706,12 @@ Parameters, results, and live frame values are limited to direct
 scalar/refined/product/Text shapes and admitted closed sums, with Task handles
 additionally allowed only in suspension-live rows. A unique closed dynamic
 witness is recursively physicalized to its concrete representation in those
-locations. List, TextMap, finite-catalog or open dynamic-concept frame values,
-raw readiness, dynamic Task collections, non-`all` join modes, and cancellation
-sources remain atomic whole-artifact fallback.
+locations. The recursive frame walk consumes one shared bounded structural
+budget, so cyclic or non-regular generic expansion fails closed instead of
+growing the compiler stack. List, TextMap, finite-catalog or open
+dynamic-concept frame values, raw readiness, dynamic Task collections,
+non-`all` join modes, and cancellation sources remain atomic whole-artifact
+fallback.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
