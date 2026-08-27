@@ -33,8 +33,11 @@ the compiler version needed to reproduce important artifacts.
 
 ## Host-native builds
 
-With no `--target-triple`, LLVM creates a host target machine using the actual
-host CPU and feature set. The emitted PIC object is linked only through a
+With no `--target-triple`, LLVM creates a host target machine. Linux and macOS
+use the actual host CPU and feature set. Windows uses the x86-64 generic CPU
+baseline and no extra features: this avoids LLVM 19's unsafe static-MSVC host
+feature probe, matches the portable runtime archive, and gives compiler caches
+a deterministic identity. The emitted PIC object is linked only through a
 validated runtime bundle. The compiler resolves that bundle in this order:
 
 1. `--runtime-bundle DIR`;

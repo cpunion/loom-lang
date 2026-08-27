@@ -29,6 +29,9 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Windows host codegen now uses LLVM's deterministic generic x86-64 policy
+  instead of entering the statically linked LLVM 19 host-feature probe. This
+  also aligns compiler and runtime-bundle CPU policy during `runtime pack`.
 - Native `build`, `run`, `test`, and `debug` no longer obtain a runtime archive
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.

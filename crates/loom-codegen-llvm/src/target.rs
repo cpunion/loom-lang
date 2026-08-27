@@ -285,10 +285,7 @@ pub(crate) fn create_llvm_target_machine(
         requested.unwrap_or(COMPILER_TARGET),
     ));
     let (cpu, features) = if host_native {
-        (
-            TargetMachine::get_host_cpu_name().to_string(),
-            TargetMachine::get_host_cpu_features().to_string(),
-        )
+        implicit_host_cpu_policy()
     } else {
         (PORTABLE_CPU.to_owned(), PORTABLE_CPU_FEATURES.to_owned())
     };
@@ -317,6 +314,23 @@ pub(crate) fn create_llvm_target_machine(
         optimization,
         explicit: requested.is_some(),
     })
+}
+
+#[cfg(target_os = "windows")]
+fn implicit_host_cpu_policy() -> (String, String) {
+    // LLVM 19's statically linked MSVC distribution can fault while probing
+    // host CPU strings, before it creates the target machine. A generic
+    // x86-64 machine is the platform baseline, matches the separately built
+    // runtime archive, and gives Windows a deterministic cache identity.
+    (PORTABLE_CPU.to_owned(), PORTABLE_CPU_FEATURES.to_owned())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn implicit_host_cpu_policy() -> (String, String) {
+    (
+        TargetMachine::get_host_cpu_name().to_string(),
+        TargetMachine::get_host_cpu_features().to_string(),
+    )
 }
 
 #[cfg(loom_llvm_complete_target_set)]
@@ -363,6 +377,15 @@ mod tests {
         let identity = native_target_identity().expect("native target identity");
 
         assert_eq!(identity.triple, expected.as_str().to_string_lossy());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn implicit_windows_identity_does_not_probe_unstable_host_cpu_strings() {
+        let identity = native_target_identity().expect("Windows host target identity");
+
+        assert_eq!(identity.cpu_policy, PORTABLE_CPU);
+        assert_eq!(identity.cpu_features, PORTABLE_CPU_FEATURES);
     }
 
     #[test]
