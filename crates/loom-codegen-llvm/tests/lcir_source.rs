@@ -67,78 +67,8 @@ fn lower_source_artifact_with_layout(
     }
 }
 
-const PROJECTED_PLACE_SOURCE: &str = r"module lcir_projected_places
-
-record Cell { value Int }
-
-record Pair {
-    left Cell
-    right Cell
-}
-
-record Holder {
-    pair Pair
-    enabled Bool
-}
-
-impl Cell {
-    method set(mut self, next Int) Int {
-        self.value = next
-        self.value
-    }
-}
-
-fn nestedSibling() Holder {
-    var holder = Holder {
-        pair = Pair {
-            left = Cell { value = 1 },
-            right = Cell { value = 2 },
-        },
-        enabled = true,
-    }
-    discard holder.pair.left.set(holder.pair.right.set(12))
-    holder
-}
-
-fn looped(size Int) Holder {
-    var holder = Holder {
-        pair = Pair {
-            left = Cell { value = 9 },
-            right = Cell { value = 20 },
-        },
-        enabled = true,
-    }
-    for index in 0..size {
-        discard holder.pair.left.set(index)
-        Unit
-    }
-    holder
-}
-
-pub fn projectedResult() Int {
-    let nested = nestedSibling()
-    let loopResult = looped(4)
-    if nested.pair.left.value == 12 && nested.pair.right.value == 12 && nested.enabled && loopResult.pair.left.value == 3 && loopResult.pair.right.value == 20 && loopResult.enabled {
-        42
-    } else {
-        0
-    }
-}
-
-pub fn crossTarget() Unit {
-    discard projectedResult()
-    Unit
-}
-
-pub fn main() Unit {
-    if projectedResult() == 42 {
-        Unit
-    } else {
-        discard 1 / 0
-        Unit
-    }
-}
-";
+const PROJECTED_PLACE_SOURCE: &str =
+    include_str!("../../../fixtures/lcir-projected-places/main.loom");
 
 fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
     emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())

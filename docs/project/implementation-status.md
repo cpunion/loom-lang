@@ -42,6 +42,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/typed-lcir` | complete typed direct route, native execution, Linux DWARF inspection, and macOS dSYM inspection |
 | `fixtures/lcir-debug-fallible` | target-laid-out fallible debug ABI, visible and artificial formal parameters, return-only parameter locations, and macOS LLDB parameter/step-out inspection |
 | `fixtures/lcir-generics` | bounded concrete generic instances with exact type/proof identity, direct host execution, and direct MSVC object ABI inspection |
+| `fixtures/lcir-projected-places` | exact nested projected receiver writeback, sibling evaluation order, aggregate loop phis, and real `check/build/test/run` commands |
 | `fixtures/standard-library` | differential interpreter/native checks for structured values, text, maps, JSON, typed file/socket I/O, logging, GC, and async behavior |
 
 The workspace also has focused parser, semantic, MIR-validator, interpreter,
