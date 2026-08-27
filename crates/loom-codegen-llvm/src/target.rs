@@ -175,14 +175,14 @@ pub fn native_target_identity() -> Result<NativeTargetIdentity, CodegenError> {
         // The compiler target and LLVM 19 data layout are build invariants.
         // Runtime packaging needs this identity, not a target machine, so keep
         // the static-MSVC filesystem path independent of LLVM process state.
-        return Ok(NativeTargetIdentity {
+        Ok(NativeTargetIdentity {
             triple: COMPILER_TARGET.to_owned(),
             data_layout: WINDOWS_X86_64_DATA_LAYOUT.to_owned(),
             cpu_policy: PORTABLE_CPU.to_owned(),
             cpu_features: PORTABLE_CPU_FEATURES.to_owned(),
             optimization: DEVELOPMENT_OPTIMIZATION_PIPELINE.to_owned(),
             relocation: RELOCATION_MODE.to_owned(),
-        });
+        })
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")))]
     target_identity(None, OptimizationProfile::Development)
