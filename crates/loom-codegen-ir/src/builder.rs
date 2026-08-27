@@ -5,8 +5,8 @@ use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
 use crate::{
-    Block, BlockId, CheckedProgram, Effects, Function, InstanceId, InstanceKey, InstancePlan,
-    Instruction, InstructionId, InstructionKind, Origin, PlannedInstance, Program,
+    Block, BlockId, CheckedProgram, CoroutinePlan, Effects, Function, InstanceId, InstanceKey,
+    InstancePlan, Instruction, InstructionId, InstructionKind, Origin, PlannedInstance, Program,
     RepresentationPlan, Signature, TargetLayout, Terminator, Value, ValueDefinition, ValueId,
     ValueTypeId, check_program,
 };
@@ -24,6 +24,7 @@ pub enum BuildErrorCode {
     InvalidTextType,
     InvalidListType,
     InvalidTextMapType,
+    InvalidTaskType,
     InvalidProductType,
     InvalidSumType,
     DuplicateEntry,
@@ -196,6 +197,31 @@ impl ProgramBuilder {
                 BuildError::new(
                     BuildErrorCode::InvalidTextMapType,
                     "LCIR managed TextMap requires one unique closed unary nominal type on a 64-bit target",
+                )
+            })
+    }
+
+    /// Registers one concrete scheduler-owned `Task[T]` handle. The output
+    /// type must already have a canonical direct representation and Task
+    /// handles are available only on the native 64-bit runtime ABI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a duplicate/open Task
+    /// type, for an unregistered output, or on a non-64-bit target.
+    pub fn add_task_handle_type(&mut self, semantic: Type) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidTaskType,
+                "LCIR Task types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_task_handle(semantic)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidTaskType,
+                    "LCIR Task requires one unique concrete Task whose output already has a direct representation on a 64-bit target",
                 )
             })
     }
@@ -432,6 +458,7 @@ impl ProgramBuilder {
             name: name.into(),
             signature,
             effects,
+            coroutine: None,
             entry: None,
             blocks: Vec::new(),
             instructions: Vec::new(),
@@ -512,6 +539,34 @@ impl FunctionBuilder<'_> {
 
     pub(crate) fn value_type(&self, value: ValueId) -> Option<ValueTypeId> {
         self.function.value(value).map(|value| value.ty)
+    }
+
+    /// Marks this function as a compiler-shaped stackless coroutine before
+    /// its CFG is finished. Independent validation matches every suspension
+    /// row against the eventual `AwaitTask` terminator and signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a coroutine plan was already installed or it names
+    /// a type outside this program.
+    pub fn set_coroutine_plan(&mut self, plan: CoroutinePlan) -> Result<(), BuildError> {
+        self.require_type(plan.output())?;
+        for suspension in plan.suspensions() {
+            for ty in suspension.live() {
+                self.require_type(*ty)?;
+            }
+        }
+        if self.function.coroutine.is_some() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidFunction,
+                format!(
+                    "LCIR function {} already has a coroutine plan",
+                    self.function.id
+                ),
+            ));
+        }
+        self.function.coroutine = Some(plan);
+        Ok(())
     }
 
     /// Appends a block. Blocks and values use independent dense identity

@@ -348,6 +348,14 @@ fn write_instruction(
             }
             write!(output, ")")
         }
+        InstructionKind::TaskCreate {
+            coroutine,
+            arguments,
+        } => {
+            write!(output, "task.create {coroutine}(")?;
+            write_arguments(output, arguments)?;
+            write!(output, ")")
+        }
     }
 }
 
@@ -399,6 +407,7 @@ fn write_terminator(
                     | Repr::Scalar(_)
                     | Repr::ImmortalText
                     | Repr::ManagedPointer
+                    | Repr::TaskHandle
                     | Repr::Product(_) => None,
                 })
                 .map(crate::SumRepr::variants);
@@ -423,6 +432,14 @@ fn write_terminator(
             Ok(())
         }
         TerminatorKind::Return(value) => write!(output, "return %{value}"),
+        TerminatorKind::AwaitTask {
+            state,
+            task,
+            normal,
+        } => {
+            write!(output, "task.await state {state}, %{task}, normal ")?;
+            write_result_target(output, normal, 0)
+        }
         TerminatorKind::CheckedIntNegate {
             value,
             normal,
@@ -602,6 +619,7 @@ fn write_repr(
         Repr::Scalar(ScalarRepr::F64) => output.write_str("f64"),
         Repr::ImmortalText => output.write_str("immortal_text_ptr"),
         Repr::ManagedPointer => output.write_str("managed_ptr"),
+        Repr::TaskHandle => output.write_str("task_handle"),
         Repr::Product(product) => {
             write!(output, "product {product}(")?;
             let fields = representations

@@ -533,7 +533,10 @@ impl ArtifactValidator<'_> {
                 continue;
             };
             for instruction in function.instructions() {
-                if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
+                if let InstructionKind::DirectCall { callee, .. }
+                | InstructionKind::TaskCreate {
+                    coroutine: callee, ..
+                } = instruction.kind()
                     && let Some(is_reachable) = reachable.get_mut(*callee)
                     && !*is_reachable
                 {
@@ -598,8 +601,15 @@ impl ArtifactValidator<'_> {
 
         for function in program.functions() {
             for instruction in function.instructions() {
-                if let InstructionKind::DirectCall { callee, arguments } = instruction.kind() {
-                    mark_text_call_inputs(program, text, &mut supplied, *callee, arguments);
+                match instruction.kind() {
+                    InstructionKind::DirectCall { callee, arguments }
+                    | InstructionKind::TaskCreate {
+                        coroutine: callee,
+                        arguments,
+                    } => {
+                        mark_text_call_inputs(program, text, &mut supplied, *callee, arguments);
+                    }
+                    _ => {}
                 }
             }
             for block in function.blocks() {
@@ -711,6 +721,29 @@ impl ArtifactValidator<'_> {
                             unwind.block,
                             &unwind.arguments,
                             implicit_writebacks,
+                        );
+                    }
+                    TerminatorKind::AwaitTask { task, normal, .. } => {
+                        let output_is_text = function
+                            .value(*task)
+                            .and_then(|task| program.representations().value_type(task.ty()))
+                            .is_some_and(|task| {
+                                matches!(task.semantic(), Type::Task(output) if output.as_ref() == &Type::Text)
+                            });
+                        if output_is_text
+                            && let Some(parameter) = function
+                                .block(normal.block)
+                                .and_then(|block| block.params().first())
+                        {
+                            mark_text_value(&mut supplied, *parameter);
+                        }
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            normal.block,
+                            &normal.arguments,
+                            1,
                         );
                     }
                     TerminatorKind::ResourceClose { normal, fault, .. } => {

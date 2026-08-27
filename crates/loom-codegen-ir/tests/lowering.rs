@@ -64,6 +64,64 @@ fn complete_dump(source: &str) -> String {
 }
 
 #[test]
+fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
+    let outcome = lower_run(
+        r"module lcir_typed_async
+
+async fn echo(value Bool) Bool {
+    value
+}
+
+pub async fn main() Unit {
+    let observed = echo(true).await
+    if observed {
+        Unit
+    } else {
+        Unit
+    }
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("direct scalar async fixture must lower through typed LCIR")
+    };
+    let echo = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("echo"))
+        .expect("echo instance");
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(echo.coroutine().expect("echo coroutine").suspensions(), []);
+    let main_plan = main.coroutine().expect("main coroutine");
+    assert_eq!(main_plan.suspensions().len(), 1);
+    assert_eq!(main_plan.suspensions()[0].state(), 1);
+    assert!(main_plan.suspensions()[0].live().is_empty());
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskCreate { coroutine, .. } if coroutine == &echo.id()
+    )));
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::AwaitTask { state: 1, .. })
+    )));
+    let task = artifact
+        .representations()
+        .type_id(&Type::Task(Box::new(Type::Bool)))
+        .expect("Task[Bool] type");
+    assert_eq!(
+        artifact
+            .representations()
+            .value_type(task)
+            .and_then(|task| artifact.representations().repr(task.repr())),
+        Some(&loom_codegen_ir::Repr::TaskHandle)
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the hand-built canonical File fixture keeps MIR identity and cleanup-edge evidence local"

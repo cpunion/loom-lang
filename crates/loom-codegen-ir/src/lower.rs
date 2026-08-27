@@ -24,11 +24,11 @@ use crate::text_plan::TextLiteralBudget;
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind, ContractFaultMetadata,
-    Effects, FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId,
-    InstanceKey, InstancePlan, InstanceRole, InstructionKind, IntPredicate, Origin, ProgramBuilder,
-    ResourceKind, ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator,
-    TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
-    analyze_source_reachability,
+    CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
+    FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstanceRole,
+    InstructionKind, IntPredicate, Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature,
+    SourceRoots, SumCase, TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
+    ValueId, ValueTypeId, analyze_source_reachability,
 };
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
@@ -445,6 +445,7 @@ pub fn lower_typed_artifact(
         match_plans,
         immortal_text,
         managed_text,
+        task_handles,
         ..
     } = classifier;
     // Aggregate-contained Text uses the managed-capable pointer provenance mode
@@ -498,6 +499,21 @@ pub fn lower_typed_artifact(
         }
     }
     let effects = solve_effects(summaries)?;
+    let unsupported_async = effects.entries().iter().find_map(|entry| {
+        let function = mir.function(entry.key.source())?;
+        (function.is_async && entry.effects.contains(Effects::MAY_FAULT)).then(|| UnsupportedItem {
+            feature: UnsupportedFeature::AsyncFunction,
+            function: function.id,
+            expression: None,
+            span: function.span,
+            path: format!("function[{}].fallible_coroutine", function.id.0),
+        })
+    });
+    if let Some(item) = unsupported_async {
+        return Ok(LoweringOutcome::Unsupported(SupportReport {
+            items: vec![item],
+        }));
+    }
     let mut builder = ProgramBuilder::new(target);
     if managed_text {
         builder
@@ -516,6 +532,11 @@ pub fn lower_typed_artifact(
                 LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
             }
         })?;
+    for task in task_handles {
+        builder
+            .add_task_handle_type(task)
+            .map_err(LoweringError::from)?;
+    }
     for (index, planned) in effects.entries().iter().enumerate() {
         let function_id = planned.key.source();
         let function = mir.function(function_id).ok_or_else(|| {
@@ -597,7 +618,53 @@ pub fn lower_typed_artifact(
                 format!("function #{} has no LCIR declaration", function_id.0),
             )
         })?;
-        let function_builder = builder.function(instance).map_err(LoweringError::from)?;
+        let coroutine = if source.is_async {
+            let substitution = InstanceSubstitution::new(mir.as_program(), &planned.key);
+            let output = substitution
+                .instantiate_type(&source.return_ty)
+                .map_err(|error| instantiation_defect(source.id, None, error))?;
+            let output = required_type(&builder, &output)?;
+            let suspensions = source
+                .suspension_points
+                .iter()
+                .map(|point| {
+                    let live = point
+                        .live_locals
+                        .iter()
+                        .map(|local| {
+                            let ty = source
+                                .params
+                                .iter()
+                                .chain(&source.locals)
+                                .find(|candidate| candidate.id == *local)
+                                .ok_or_else(|| {
+                                    LoweringError::defect(
+                                        LoweringDefectCode::InconsistentPlan,
+                                        format!(
+                                            "async function #{} suspension state {} references missing local #{}",
+                                            source.id.0, point.state, local.0
+                                        ),
+                                    )
+                                })?;
+                            let ty = substitution.instantiate_type(&ty.ty).map_err(|error| {
+                                instantiation_defect(source.id, None, error)
+                            })?;
+                            required_type(&builder, &ty)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(CoroutineSuspension::new(point.state, live))
+                })
+                .collect::<Result<Vec<_>, LoweringError>>()?;
+            Some(CoroutinePlan::new(output, suspensions))
+        } else {
+            None
+        };
+        let mut function_builder = builder.function(instance).map_err(LoweringError::from)?;
+        if let Some(coroutine) = coroutine {
+            function_builder
+                .set_coroutine_plan(coroutine)
+                .map_err(LoweringError::from)?;
+        }
         FunctionLowerer::new(
             mir.as_program(),
             source,
@@ -1139,6 +1206,75 @@ fn runtime_constraint_result_type(program: &mir::Program, success: Type) -> Opti
     ))
 }
 
+fn block_contains_async_cleanup(block: &mir::Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Scoped { .. } | StatementKind::Defer(_) => true,
+            StatementKind::ForRange { body, .. } => block_contains_async_cleanup(body),
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. }
+            | StatementKind::Assert { condition: value }
+            | StatementKind::Evaluate(value) => expr_contains_async_cleanup(value),
+            StatementKind::Return(value) => value.as_ref().is_some_and(expr_contains_async_cleanup),
+        })
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(expr_contains_async_cleanup)
+}
+
+fn expr_contains_async_cleanup(expression: &mir::Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Block(block) => block_contains_async_cleanup(block),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_contains_async_cleanup(condition)
+                || block_contains_async_cleanup(then_branch)
+                || block_contains_async_cleanup(else_branch)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expr_contains_async_cleanup(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_contains_async_cleanup(&arm.value))
+        }
+        ExprKind::Tuple(values)
+        | ExprKind::List(values)
+        | ExprKind::TaskJoin {
+            arguments: values, ..
+        }
+        | ExprKind::Record { fields: values, .. }
+        | ExprKind::Variant {
+            payload: values, ..
+        } => values.iter().any(expr_contains_async_cleanup),
+        ExprKind::Unary(_, value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::Unrefine(value)
+        | ExprKind::MakeView { value, .. }
+        | ExprKind::Await { task: value, .. }
+        | ExprKind::Sleep {
+            milliseconds: value,
+        } => expr_contains_async_cleanup(value),
+        ExprKind::Binary(_, left, right) => {
+            expr_contains_async_cleanup(left) || expr_contains_async_cleanup(right)
+        }
+        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| match argument {
+            CallArgument::Value(value) => expr_contains_async_cleanup(value),
+            CallArgument::InOut(_) => false,
+        }),
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => false,
+    }
+}
+
 struct Classifier<'program, 'plan> {
     program: &'program mir::Program,
     dyn_concepts: &'plan DynConceptPlan,
@@ -1150,6 +1286,7 @@ struct Classifier<'program, 'plan> {
     text_literals: TextLiteralBudget,
     immortal_text: bool,
     managed_text: bool,
+    task_handles: BTreeSet<Type>,
 }
 
 #[derive(Clone, Copy)]
@@ -1201,6 +1338,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             text_literals: TextLiteralBudget::default(),
             immortal_text: false,
             managed_text: false,
+            task_handles: BTreeSet::new(),
         }
     }
 
@@ -1215,7 +1353,59 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             self.immortal_text = true;
             return true;
         }
+        if let Type::Task(output) = &ty {
+            if self.target.pointer_bits() != 64 || matches!(output.as_ref(), Type::Task(_)) {
+                return false;
+            }
+            if !self.supported_value_type(output) {
+                return false;
+            }
+            self.task_handles.insert(ty.clone());
+            return true;
+        }
         self.aggregates.supports_value_type(&ty)
+    }
+
+    fn supported_coroutine_frame_type(&self, ty: &Type, allow_task_handle: bool) -> bool {
+        fn visit(
+            program: &mir::Program,
+            ty: &Type,
+            allow_task_handle: bool,
+            active: &mut BTreeSet<Type>,
+        ) -> bool {
+            match ty {
+                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
+                Type::Tuple(elements) => elements
+                    .iter()
+                    .all(|element| visit(program, element, false, active)),
+                Type::Task(_) => allow_task_handle,
+                Type::Nominal(_, _) => {
+                    if !active.insert(ty.clone()) {
+                        return false;
+                    }
+                    let supported = if let Some(fields) = concrete_any_record_fields(program, ty) {
+                        fields
+                            .iter()
+                            .all(|field| visit(program, field, false, active))
+                    } else if let Some(base) = concrete_refined_base(program, ty) {
+                        visit(program, &base, false, active)
+                    } else {
+                        false
+                    };
+                    active.remove(ty);
+                    supported
+                }
+                Type::Never
+                | Type::Parameter(_)
+                | Type::List(_)
+                | Type::AssociatedProjection { .. }
+                | Type::TaskOutcome(_)
+                | Type::View { .. }
+                | Type::Error => false,
+            }
+        }
+
+        visit(self.program, ty, allow_task_handle, &mut BTreeSet::new())
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {
@@ -1332,10 +1522,57 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         self.supported_value_type(&ty).then_some(ty)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn classify_function(&mut self, function: &mir::Function, key: &InstanceKey) {
         let base = format!("function[{}]", function.id.0);
-        if function.is_async || !function.suspension_points.is_empty() {
+        if !function.is_async && !function.suspension_points.is_empty() {
             self.function_item(UnsupportedFeature::AsyncFunction, function, &base);
+        }
+        if function.is_async {
+            if block_contains_async_cleanup(&function.body) {
+                self.function_item(
+                    UnsupportedFeature::AsyncFunction,
+                    function,
+                    &format!("{base}.cleanup"),
+                );
+            }
+            for (index, point) in function.suspension_points.iter().enumerate() {
+                if point.state == 0 {
+                    self.item(
+                        UnsupportedFeature::Suspension,
+                        function.id,
+                        None,
+                        point.span,
+                        format!("{base}.suspension_points[{index}].state"),
+                    );
+                }
+                for (live_index, local) in point.live_locals.iter().enumerate() {
+                    let supported = Self::local_type(function, *local)
+                        .and_then(|ty| {
+                            self.instantiated_type(
+                                function,
+                                key,
+                                None,
+                                ty,
+                                point.span,
+                                &format!("{base}.suspension_points[{index}].live[{live_index}]"),
+                            )
+                        })
+                        .is_some_and(|ty| {
+                            self.supported_coroutine_frame_type(&ty, true)
+                                && self.supported_value_type(&ty)
+                        });
+                    if !supported {
+                        self.item(
+                            UnsupportedFeature::Suspension,
+                            function.id,
+                            None,
+                            point.span,
+                            format!("{base}.suspension_points[{index}].live[{live_index}]"),
+                        );
+                    }
+                }
+            }
         }
         let mutable_pod_receiver = function.receiver == Some(mir::Receiver::Mutable)
             && function
@@ -1381,7 +1618,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             let supported = self
                 .instantiated_type(function, key, None, &parameter.ty, parameter.span, &path)
-                .is_some_and(|ty| self.supported_value_type(&ty));
+                .is_some_and(|ty| {
+                    (!function.is_async || self.supported_coroutine_frame_type(&ty, false))
+                        && self.supported_value_type(&ty)
+                });
             if !supported {
                 self.item(
                     UnsupportedFeature::SignatureType,
@@ -1402,7 +1642,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 function.span,
                 &return_path,
             )
-            .is_some_and(|ty| self.supported_value_type(&ty));
+            .is_some_and(|ty| {
+                (!function.is_async || self.supported_coroutine_frame_type(&ty, false))
+                    && self.supported_value_type(&ty)
+            });
         if !supported_return {
             self.item(
                 UnsupportedFeature::SignatureType,
@@ -2495,6 +2738,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             })
                         })
                 });
+                if callee_key.as_ref().is_some_and(|callee_key| {
+                    self.program
+                        .function(callee_key.source())
+                        .is_some_and(|callee| {
+                            callee.is_async
+                                && (callee.params.iter().any(|parameter| parameter.mutable)
+                                    || !callee.call_plan.requires.is_empty())
+                        })
+                }) {
+                    self.expression_item(
+                        UnsupportedFeature::AsyncFunction,
+                        function,
+                        expression,
+                        &format!("{path}.target"),
+                    );
+                }
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -2698,7 +2957,26 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 if !self.visit_expr(function, key, task, &format!("{path}.task")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::Suspension, function, expression, path);
+                let supported = function.is_async
+                    && matches!(
+                        self.instantiated_type(
+                            function,
+                            key,
+                            Some(task),
+                            &task.ty,
+                            task.span,
+                            &format!("{path}.task.ty"),
+                        ),
+                        Some(Type::Task(output)) if output.as_ref() == &expression.ty
+                    );
+                if !supported {
+                    self.expression_item(
+                        UnsupportedFeature::Suspension,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Sleep { milliseconds } => {
@@ -2846,6 +3124,9 @@ fn summarize_effects(
     calls: &[InstanceKey],
 ) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
+    if function.is_async {
+        summary.include(Effects::NEEDS_EXECUTOR);
+    }
     scan_effect_block(program, &function.body, &mut summary);
     // Preconditions execute at each concrete caller boundary. They make the
     // caller's operation fallible, never the assumed callee body by itself.
@@ -3082,6 +3363,12 @@ fn scan_effect_expr(
             }
             if let CallTarget::Direct(callee) | CallTarget::Inherent(callee) = target {
                 summary.calls.insert(*callee);
+                if program
+                    .function(*callee)
+                    .is_some_and(|function| function.is_async)
+                {
+                    summary.include(Effects::NEEDS_EXECUTOR);
+                }
             } else if matches!(
                 target,
                 CallTarget::Builtin(
@@ -3104,8 +3391,14 @@ fn scan_effect_expr(
         ExprKind::Unrefine(value) | ExprKind::MakeView { value, .. } => {
             scan_effect_expr(program, value, summary)
         }
-        ExprKind::Await { task: value, .. }
-        | ExprKind::Sleep {
+        ExprKind::Await { task: value, .. } => {
+            let continues = scan_effect_expr(program, value, summary);
+            if continues {
+                summary.include(Effects::MAY_SUSPEND);
+            }
+            continues
+        }
+        ExprKind::Sleep {
             milliseconds: value,
         } => scan_effect_expr(program, value, summary),
         ExprKind::TaskJoin { arguments, .. } => scan_effect_exprs(program, arguments, summary),
@@ -6415,8 +6708,61 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 self.read_place(flow, &plan, origin)
             }
-            ExprKind::Await { task, .. } => {
-                self.lower_unsupported_operand(flow, task, "suspension")
+            ExprKind::Await { state, task } => {
+                let EvalFlow::Continue { flow, value: task } = self.lower_expr(flow, task)? else {
+                    return Ok(EvalFlow::Terminated);
+                };
+                let suspension = self
+                    .source
+                    .suspension_points
+                    .iter()
+                    .find(|point| point.state == *state)
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "async function #{} has no suspension metadata for state {}",
+                                self.source.id.0, state
+                            ),
+                        )
+                    })?;
+                let normal = self.create_block()?;
+                let result = self
+                    .builder
+                    .append_block_parameter(normal, self.type_id(&expression.ty)?)
+                    .map_err(LoweringError::from)?;
+                let mut arguments = Vec::with_capacity(suspension.live_locals.len());
+                let mut env = EMPTY_ENVIRONMENT;
+                for local in &suspension.live_locals {
+                    let value = self.environments.get(flow.env, *local).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!(
+                                "async function #{} suspension state {} lost live local #{}",
+                                self.source.id.0, state, local.0
+                            ),
+                        )
+                    })?;
+                    arguments.push(value);
+                    let parameter = self
+                        .builder
+                        .append_block_parameter(normal, self.local_type(*local)?)
+                        .map_err(LoweringError::from)?;
+                    env = self.environments.set(env, *local, parameter)?;
+                }
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::AwaitTask {
+                        state: *state,
+                        task,
+                        normal: ResultTarget::new(normal, arguments),
+                    },
+                    origin,
+                )?;
+                Ok(EvalFlow::Continue {
+                    flow: Flow { block: normal, env },
+                    value: result,
+                })
             }
             ExprKind::Sleep { milliseconds } => {
                 self.lower_unsupported_operand(flow, milliseconds, "sleep")
@@ -7865,6 +8211,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 LoweringDefectCode::InconsistentPlan,
                 "an uninhabited value reached structural equality lowering",
             )),
+            crate::Repr::TaskHandle => {
+                Err(self.unsupported_reached("Task handles do not have structural equality"))
+            }
         }
     }
 
@@ -8860,6 +9209,28 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     callee.0
                 ),
             ));
+        }
+        if callee_source.is_async {
+            if !inout_arguments.is_empty() || !callee_source.call_plan.requires.is_empty() {
+                return Err(self.unsupported_reached(
+                    "async Task creation with inout arguments or preconditions",
+                ));
+            }
+            let instance = self.instances.get(&key).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("async call target #{} has no LCIR instance", callee.0),
+                )
+            })?;
+            return self.one_instruction(
+                flow,
+                InstructionKind::TaskCreate {
+                    coroutine: instance,
+                    arguments: lowered_arguments.into_boxed_slice(),
+                },
+                self.type_id(&expression.ty)?,
+                origin,
+            );
         }
         if !callee_source.call_plan.requires.is_empty() {
             let parameters = callee_source

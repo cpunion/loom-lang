@@ -58,10 +58,11 @@ pub use instance::{
 pub use instance_closure::{INSTANCE_CLOSURE_MAX_CALL_EDGES, INSTANCE_CLOSURE_MAX_INSTANCES};
 pub use ir::{
     Block, BlockTarget, BoolPredicate, CONTRACT_FAULT_TEXT_MAX_BYTES, CheckedIntBinaryOp, Constant,
-    ContractFaultKind, ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
-    FloatPredicate, Function, Instruction, InstructionKind, IntPredicate,
-    LIST_LITERAL_MAX_ELEMENTS, Origin, Program, ResourceKind, ResultTarget, Signature, SumCase,
-    Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition,
+    ContractFaultKind, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
+    FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate, Function, Instruction,
+    InstructionKind, IntPredicate, LIST_LITERAL_MAX_ELEMENTS, Origin, Program, ResourceKind,
+    ResultTarget, Signature, SumCase, Terminator, TerminatorKind, UnwindTarget, Value,
+    ValueDefinition,
 };
 pub use lower::{
     InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,
