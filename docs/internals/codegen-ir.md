@@ -374,9 +374,10 @@ The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
 signatures, plus infallible async signatures and suspension frames limited to
 direct scalar/refined/product/Text shapes. It includes bounded direct generic
-calls whose concrete types use those representations. Concrete static concept calls use the selected witness
-method directly, including conditional proof applications and normalized
-associated bindings. Dynamic dispatch remains a whole-artifact fallback. It
+calls whose concrete types use those representations. Concrete static concept
+calls use the selected witness method directly, including conditional proof
+applications and normalized associated bindings. Dynamic dispatch remains a
+whole-artifact fallback. It
 covers constants, locals and assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
