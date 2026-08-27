@@ -4357,7 +4357,8 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (normal.block, &normal.arguments),
             (unwind.block, &unwind.arguments),
         ],
-        TerminatorKind::Assert { success, fault, .. } => vec![
+        TerminatorKind::Assert { success, fault, .. }
+        | TerminatorKind::RuntimeGuard { success, fault, .. } => vec![
             (success.block, &success.arguments),
             (fault.block, &fault.arguments),
         ],
