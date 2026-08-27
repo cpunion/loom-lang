@@ -5070,6 +5070,33 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
     })
     .expect("a nested mutable call may exclusively access a sibling projection");
 
+    let exact_alias = function(
+        3,
+        vec![local(0, pair.clone(), true)],
+        Vec::new(),
+        Type::Unit,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(outer_call(nested_call(1, field(0))))),
+            span: span(),
+        },
+    );
+    let exact_alias_errors = validation_errors(&Program {
+        types: vec![pair_def.clone()],
+        functions: vec![
+            outer.clone(),
+            mutate_field.clone(),
+            reset_pair.clone(),
+            exact_alias,
+        ],
+        ..Program::default()
+    });
+    assert!(exact_alias_errors.iter().any(|error| {
+        error.code == MirValidationCode::BorrowShape
+            && error.path.contains("arguments[1]")
+            && error.path.contains("arguments[0]")
+    }));
+
     let parent_reset = function(
         3,
         vec![local(0, pair, true)],

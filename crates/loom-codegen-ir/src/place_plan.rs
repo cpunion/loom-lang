@@ -253,3 +253,140 @@ impl fmt::Display for PlacePlanError {
 }
 
 impl Error for PlacePlanError {}
+
+#[cfg(test)]
+mod tests {
+    use loom_mir::{LocalId, Place, Type, TypeId};
+
+    use super::{
+        PLACE_MAX_AGGREGATE_WORK, PLACE_MAX_PROJECTION_DEPTH, PlaceBudget, PlacePlan, PlaceUse,
+    };
+    use crate::{ProgramBuilder, TargetLayout, ValueTypeKind};
+
+    #[test]
+    fn plan_retains_every_semantic_and_physical_field_identity() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(32).expect("test target"));
+        let inner_semantic = Type::Nominal(TypeId(7), Vec::new());
+        let outer_semantic = Type::Nominal(TypeId(8), Vec::new());
+        let inner = builder
+            .add_pod_record_type(inner_semantic.clone(), &[Type::Bool, Type::Int])
+            .expect("inner product");
+        let outer = builder
+            .add_pod_record_type(outer_semantic, &[inner_semantic, Type::Float])
+            .expect("outer product");
+        let plan = PlacePlan::build(
+            builder.representations(),
+            &Place {
+                local: LocalId(4),
+                projection: vec![0, 1],
+            },
+            outer,
+        )
+        .expect("nested typed place");
+
+        let int = builder.type_id(&Type::Int).expect("Int type");
+        assert_eq!(plan.local(), LocalId(4));
+        assert_eq!(plan.root_type(), outer);
+        assert_eq!(plan.leaf_type(), int);
+        assert_eq!(
+            plan.root_repr(),
+            builder
+                .representations()
+                .value_type(outer)
+                .expect("outer value type")
+                .repr()
+        );
+        assert_eq!(
+            plan.leaf_repr(),
+            builder
+                .representations()
+                .value_type(int)
+                .expect("Int value type")
+                .repr()
+        );
+        assert_eq!(plan.steps().len(), 2);
+        assert_eq!(plan.steps()[0].parent_type(), outer);
+        assert_eq!(plan.steps()[0].field_type(), inner);
+        assert_eq!(plan.steps()[1].parent_type(), inner);
+        assert_eq!(plan.steps()[1].field_type(), int);
+        for step in plan.steps().iter().copied() {
+            assert_eq!(
+                builder
+                    .representations()
+                    .value_type(step.parent_type())
+                    .expect("parent type")
+                    .repr(),
+                step.parent_repr()
+            );
+            assert_eq!(
+                builder
+                    .representations()
+                    .value_type(step.field_type())
+                    .expect("field type")
+                    .repr(),
+                step.field_repr()
+            );
+        }
+    }
+
+    #[test]
+    fn plan_rejects_excess_depth_and_projection_through_protected_products() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target"));
+        let protected_semantic = Type::Nominal(TypeId(9), Vec::new());
+        let outer_semantic = Type::Nominal(TypeId(10), Vec::new());
+        let protected = builder
+            .add_invariant_record_type(protected_semantic.clone(), &[Type::Int])
+            .expect("invariant product");
+        assert_eq!(
+            builder
+                .representations()
+                .value_type(protected)
+                .expect("protected value type")
+                .kind(),
+            ValueTypeKind::InvariantProduct
+        );
+        let outer = builder
+            .add_pod_record_type(outer_semantic, &[protected_semantic])
+            .expect("outer product");
+        let protected_error = PlacePlan::build(
+            builder.representations(),
+            &Place {
+                local: LocalId(0),
+                projection: vec![0, 0],
+            },
+            outer,
+        )
+        .expect_err("protected parent cannot be reconstructed as an ordinary product");
+        assert!(protected_error.to_string().contains("protected value type"));
+
+        let excessive = Place {
+            local: LocalId(0),
+            projection: vec![0; PLACE_MAX_PROJECTION_DEPTH + 1],
+        };
+        let depth_error = PlacePlan::build(builder.representations(), &excessive, outer)
+            .expect_err("projection depth is bounded before traversal");
+        assert!(
+            depth_error
+                .to_string()
+                .contains("exceeds the supported limit")
+        );
+    }
+
+    #[test]
+    fn aggregate_work_budget_accepts_the_boundary_and_fails_closed() {
+        let mut budget = PlaceBudget {
+            aggregate_work: PLACE_MAX_AGGREGATE_WORK - 3,
+        };
+        assert!(budget.admit(PlaceUse::Write, 2));
+        assert_eq!(budget.aggregate_work, PLACE_MAX_AGGREGATE_WORK);
+        assert!(!budget.admit(PlaceUse::Read, 1));
+        assert_eq!(budget.aggregate_work, PLACE_MAX_AGGREGATE_WORK);
+        assert!(!budget.admit(PlaceUse::InOut, PLACE_MAX_PROJECTION_DEPTH + 1));
+        assert_eq!(budget.aggregate_work, PLACE_MAX_AGGREGATE_WORK);
+
+        assert_eq!(PlaceUse::Read.aggregate_work(4), Some(4));
+        assert_eq!(PlaceUse::Move.aggregate_work(4), Some(4));
+        assert_eq!(PlaceUse::Write.aggregate_work(4), Some(7));
+        assert_eq!(PlaceUse::InOut.aggregate_work(4), Some(18));
+    }
+}
