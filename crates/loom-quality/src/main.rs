@@ -3,6 +3,10 @@ use std::io::Read as _;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use loom_codegen_llvm::{
@@ -12,7 +16,7 @@ use loom_codegen_llvm::{
 use loom_core::{FileId, Span};
 use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
-use loom_mir::{decode_interpreted_artifact, encode_interpreted_artifact};
+use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_syntax::{lex, parse_with_file};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -48,7 +52,7 @@ const TASKS: &[TaskSpec] = &[
         name: "structured-async",
         path: "examples/core03",
         source: "examples/core03/tasks.loom",
-        sha256: "0981e9597a0a450c4a4bc035568be1e57fe50bb746dd827c7471aab45c0dae2d",
+        sha256: "4f24a49bdb93d5813ddd0d7d827d88d59af79cfed58635ca91d72c67aa57d50f",
     },
 ];
 
@@ -62,6 +66,114 @@ struct TaskSpec {
 struct NativeRuntime {
     bundle: RuntimeBundle,
     linker: RuntimeLinker,
+}
+
+struct StandardLibraryFixture {
+    round_trip: PathBuf,
+    empty_write_listener: TcpListener,
+    snapshot_listener: TcpListener,
+}
+
+struct FixtureServer {
+    label: &'static str,
+    audit_listener: TcpListener,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+struct FixtureServers {
+    cancel: Arc<AtomicBool>,
+    servers: Vec<FixtureServer>,
+}
+
+impl FixtureServers {
+    fn spawn(
+        specifications: [(TcpListener, &'static [u8], &'static str); 2],
+    ) -> Result<Self, String> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut group = Self {
+            cancel,
+            servers: Vec::with_capacity(specifications.len()),
+        };
+        for (listener, expected, label) in specifications {
+            group.servers.push(spawn_fixture_server(
+                listener,
+                expected,
+                label,
+                Arc::clone(&group.cancel),
+            )?);
+        }
+        Ok(group)
+    }
+
+    fn finish(mut self, backend: Result<(), String>) -> Result<(), String> {
+        let reject_extra_connections = backend.is_ok();
+        if !reject_extra_connections {
+            self.cancel.store(true, Ordering::Release);
+        }
+        let mut failures = backend.err().into_iter().collect::<Vec<_>>();
+        self.join_all(reject_extra_connections, &mut failures);
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+
+    fn join_all(&mut self, reject_extra_connections: bool, failures: &mut Vec<String>) {
+        for server in &mut self.servers {
+            if let Err(error) = server.join(reject_extra_connections) {
+                failures.push(error);
+            }
+        }
+    }
+}
+
+impl Drop for FixtureServers {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        let mut ignored = Vec::new();
+        self.join_all(false, &mut ignored);
+    }
+}
+
+impl FixtureServer {
+    fn join(&mut self, reject_extra_connections: bool) -> Result<(), String> {
+        let mut failures = Vec::new();
+        if let Some(thread) = self.thread.take() {
+            match thread.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(error),
+                Err(_) => failures.push(format!("{} fixture thread panicked", self.label)),
+            }
+        }
+        if reject_extra_connections {
+            let mut extra_connections = 0_usize;
+            loop {
+                match self.audit_listener.accept() {
+                    Ok((stream, _)) => {
+                        extra_connections = extra_connections.saturating_add(1);
+                        drop(stream);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        failures.push(format!("audit {} fixture connections: {error}", self.label));
+                        break;
+                    }
+                }
+            }
+            if extra_connections != 0 {
+                failures.push(format!(
+                    "{} fixture received {extra_connections} unexpected additional connection(s)",
+                    self.label
+                ));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -230,12 +342,18 @@ fn standard_library_gate(
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
 ) -> Result<(), String> {
-    let project = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let (round_trip, empty_write_listener, snapshot_listener) =
-        prepare_standard_library_fixture(workspace, project.path())?;
+    let interpreter_project = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let interpreter_fixture =
+        prepare_standard_library_fixture(workspace, interpreter_project.path())?;
+    let native_project = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let native_fixture = prepare_standard_library_fixture(workspace, native_project.path())?;
 
     let analysis_started = Instant::now();
-    let snapshot = AnalysisHost::new(project.path())
+    let interpreter_snapshot = AnalysisHost::new(interpreter_project.path())
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let native_snapshot = AnalysisHost::new(native_project.path())
         .map_err(|error| error.to_string())?
         .snapshot()
         .map_err(|error| error.to_string())?;
@@ -245,24 +363,67 @@ fn standard_library_gate(
         analysis_started.elapsed(),
         ANALYSIS_BUDGET,
     );
-    if snapshot.has_errors() {
-        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    if interpreter_snapshot.has_errors() {
+        return Err(format!(
+            "interpreter source diagnostics: {:#?}",
+            interpreter_snapshot.diagnostics()
+        ));
     }
-    let program = snapshot.executable().map_err(|error| error.to_string())?;
-    let empty_write_server = spawn_fixture_server(empty_write_listener, b"", "empty write")?;
-    let snapshot_server =
-        spawn_fixture_server(snapshot_listener, b"socket snapshot", "socket snapshot")?;
+    if native_snapshot.has_errors() {
+        return Err(format!(
+            "native source diagnostics: {:#?}",
+            native_snapshot.diagnostics()
+        ));
+    }
+    let interpreter_program = interpreter_snapshot
+        .executable()
+        .map_err(|error| error.to_string())?;
+    let native_program = native_snapshot
+        .executable()
+        .map_err(|error| error.to_string())?;
+
+    run_standard_library_interpreter(interpreter_program, interpreter_fixture, gates)?;
+    run_standard_library_native(
+        native_program,
+        native_project.path(),
+        native_fixture,
+        runtime,
+        gates,
+    )
+}
+
+fn run_standard_library_interpreter(
+    program: &CheckedProgram,
+    fixture: StandardLibraryFixture,
+    gates: &mut Vec<GateEvidence>,
+) -> Result<(), String> {
+    let servers = FixtureServers::spawn([
+        (fixture.empty_write_listener, b"", "interpreter empty write"),
+        (
+            fixture.snapshot_listener,
+            b"socket snapshot",
+            "interpreter socket snapshot",
+        ),
+    ])?;
 
     let interpreter_started = Instant::now();
     let interpreted = Interpreter::new(program).run_tests();
-    if interpreted.len() != program.tests.len()
+    let backend = if interpreted.len() != program.tests.len()
         || interpreted
             .iter()
             .any(|result| result.status != TestStatus::Passed)
     {
-        return Err(format!(
+        Err(format!(
             "interpreter tests did not all pass: {interpreted:#?}"
-        ));
+        ))
+    } else {
+        Ok(())
+    };
+    servers.finish(backend)?;
+    if std::fs::read_to_string(&fixture.round_trip).map_err(|error| error.to_string())?
+        != "typed I/O"
+    {
+        return Err("interpreter typed file round trip did not preserve text".to_owned());
     }
     upper_gate(
         gates,
@@ -270,8 +431,17 @@ fn standard_library_gate(
         interpreter_started.elapsed(),
         EXECUTION_BUDGET,
     );
+    Ok(())
+}
 
-    let executable = project.path().join("native-tests");
+fn run_standard_library_native(
+    program: &CheckedProgram,
+    project: &Path,
+    fixture: StandardLibraryFixture,
+    runtime: &NativeRuntime,
+    gates: &mut Vec<GateEvidence>,
+) -> Result<(), String> {
+    let executable = project.join("native-tests");
     let native_build_started = Instant::now();
     emit_native(
         program,
@@ -288,28 +458,42 @@ fn standard_library_gate(
         NATIVE_BUILD_BUDGET,
     );
 
+    let servers = FixtureServers::spawn([
+        (fixture.empty_write_listener, b"", "native empty write"),
+        (
+            fixture.snapshot_listener,
+            b"socket snapshot",
+            "native socket snapshot",
+        ),
+    ])?;
     let native_run_started = Instant::now();
-    let output = Command::new(&executable)
-        .current_dir(project.path())
+    let backend = Command::new(&executable)
+        .current_dir(project)
+        .env("LOOM_FAULT_FORMAT", "json")
         .output()
-        .map_err(|error| format!("execute native tests: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success()
-        || stdout.lines().count() != program.tests.len()
-        || !stdout.lines().all(|line| line.starts_with("passed "))
+        .map_err(|error| format!("execute native tests: {error}"))
+        .and_then(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if output.status.success()
+                && stdout.lines().count() == program.tests.len()
+                && stdout.lines().all(|line| line.starts_with("passed "))
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "native test mismatch: status={:?}, stdout={}, stderr={}",
+                    output.status.code(),
+                    stdout,
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+            }
+        });
+    servers.finish(backend)?;
+    if std::fs::read_to_string(&fixture.round_trip).map_err(|error| error.to_string())?
+        != "typed I/O"
     {
-        return Err(format!(
-            "native test mismatch: status={:?}, stdout={}, stderr={}",
-            output.status.code(),
-            stdout,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        return Err("native typed file round trip did not preserve text".to_owned());
     }
-    if std::fs::read_to_string(&round_trip).map_err(|error| error.to_string())? != "typed I/O" {
-        return Err("typed file round trip did not preserve text".to_owned());
-    }
-    join_fixture_server(empty_write_server, "empty-write")?;
-    join_fixture_server(snapshot_server, "socket-snapshot")?;
     upper_gate(
         gates,
         "standard-library.native-execution",
@@ -322,7 +506,7 @@ fn standard_library_gate(
 fn prepare_standard_library_fixture(
     workspace: &Path,
     project: &Path,
-) -> Result<(PathBuf, TcpListener, TcpListener), String> {
+) -> Result<StandardLibraryFixture, String> {
     let round_trip = project.join("round-trip.txt");
     let reuse = project.join("reuse.txt");
     let missing = project.join("missing.txt");
@@ -346,35 +530,47 @@ fn prepare_standard_library_fixture(
         .replace("__LOOPBACK_PORT__", &empty_write_port.to_string())
         .replace("__READ_LOOPBACK_PORT__", &snapshot_port.to_string());
     std::fs::write(project.join("main.loom"), source).map_err(|error| error.to_string())?;
-    Ok((round_trip, empty_write_listener, snapshot_listener))
+    Ok(StandardLibraryFixture {
+        round_trip,
+        empty_write_listener,
+        snapshot_listener,
+    })
 }
 
 fn spawn_fixture_server(
     listener: TcpListener,
     expected: &'static [u8],
     label: &'static str,
-) -> Result<std::thread::JoinHandle<Result<(), String>>, String> {
+    cancel: Arc<AtomicBool>,
+) -> Result<FixtureServer, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("configure {label} listener: {error}"))?;
-    Ok(std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        for connection in 0..2 {
+    let audit_listener = listener
+        .try_clone()
+        .map_err(|error| format!("clone {label} listener: {error}"))?;
+    let thread = std::thread::Builder::new()
+        .name(format!("loom-quality-{label}"))
+        .spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(120);
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(connection) => break connection,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if cancel.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
                         if Instant::now() >= deadline {
-                            return Err(format!(
-                                "{label} fixture timed out before connection {}",
-                                connection + 1
-                            ));
+                            return Err(format!("{label} fixture timed out before connection"));
                         }
                         std::thread::sleep(Duration::from_millis(1));
                     }
                     Err(error) => return Err(format!("accept {label} fixture: {error}")),
                 }
             };
+            stream
+                .set_nonblocking(false)
+                .map_err(|error| format!("configure {label} stream blocking mode: {error}"))?;
             stream
                 .set_read_timeout(Some(EXECUTION_BUDGET))
                 .map_err(|error| format!("configure {label} stream: {error}"))?;
@@ -387,18 +583,14 @@ fn spawn_fixture_server(
                     "{label} fixture expected {expected:?}, received {bytes:?}"
                 ));
             }
-        }
-        Ok(())
-    }))
-}
-
-fn join_fixture_server(
-    server: std::thread::JoinHandle<Result<(), String>>,
-    label: &str,
-) -> Result<(), String> {
-    server
-        .join()
-        .map_err(|_| format!("{label} fixture thread panicked"))?
+            Ok(())
+        })
+        .map_err(|error| format!("spawn {label} fixture thread: {error}"))?;
+    Ok(FixtureServer {
+        label,
+        audit_listener,
+        thread: Some(thread),
+    })
 }
 
 fn loom_text_literal(path: &Path) -> String {
@@ -959,4 +1151,79 @@ fn workspace_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("quality crate is inside the workspace")
         .to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::net::{SocketAddr, TcpStream};
+
+    use super::*;
+
+    fn loopback_listener() -> (TcpListener, SocketAddr) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let address = listener.local_addr().expect("read test listener address");
+        (listener, address)
+    }
+
+    #[test]
+    fn fixture_server_rejects_an_additional_connection() {
+        let (listener, address) = loopback_listener();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut server =
+            spawn_fixture_server(listener, b"", "exactly one", cancel).expect("spawn server");
+
+        drop(TcpStream::connect(address).expect("connect expected client"));
+        drop(TcpStream::connect(address).expect("connect additional client"));
+
+        let error = server
+            .join(true)
+            .expect_err("an additional connection must fail the fixture");
+        assert!(error.contains("1 unexpected additional connection(s)"));
+    }
+
+    #[test]
+    fn fixture_server_group_joins_and_reports_every_server_failure() {
+        let (first_listener, first_address) = loopback_listener();
+        let (second_listener, second_address) = loopback_listener();
+        let servers = FixtureServers::spawn([
+            (first_listener, b"first", "first server"),
+            (second_listener, b"second", "second server"),
+        ])
+        .expect("spawn server group");
+
+        let mut first = TcpStream::connect(first_address).expect("connect first client");
+        first.write_all(b"wrong first").expect("write first client");
+        drop(first);
+        let mut second = TcpStream::connect(second_address).expect("connect second client");
+        second
+            .write_all(b"wrong second")
+            .expect("write second client");
+        drop(second);
+
+        let error = servers
+            .finish(Ok(()))
+            .expect_err("both fixture failures must propagate");
+        assert!(error.contains("first server fixture expected"));
+        assert!(error.contains("second server fixture expected"));
+    }
+
+    #[test]
+    fn fixture_server_group_cancels_and_joins_after_backend_failure() {
+        let (first_listener, _) = loopback_listener();
+        let (second_listener, _) = loopback_listener();
+        let servers = FixtureServers::spawn([
+            (first_listener, b"", "first waiting server"),
+            (second_listener, b"", "second waiting server"),
+        ])
+        .expect("spawn server group");
+        let started = Instant::now();
+
+        let error = servers
+            .finish(Err("backend failed".to_owned()))
+            .expect_err("backend failure must propagate");
+
+        assert_eq!(error, "backend failed");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }
