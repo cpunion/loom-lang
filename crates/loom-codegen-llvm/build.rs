@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -17,6 +18,34 @@ const OBJECT_CRATES: &[&str] = &[
     "loom-core",
     "loom-mir",
     "loom-runtime-abi",
+];
+
+const LLVM_19_TARGETS: &[&str] = &[
+    "AArch64",
+    "AMDGPU",
+    "ARM",
+    "AVR",
+    "BPF",
+    "Hexagon",
+    "Lanai",
+    "LoongArch",
+    "Mips",
+    "MSP430",
+    "NVPTX",
+    "PowerPC",
+    "RISCV",
+    "Sparc",
+    "SystemZ",
+    "VE",
+    "WebAssembly",
+    "X86",
+    "XCore",
+];
+
+const INKWELL_TARGET_CFGS: &[(&str, &str)] = &[
+    ("AArch64", "loom_llvm_target_aarch64"),
+    ("ARM", "loom_llvm_target_arm"),
+    ("X86", "loom_llvm_target_x86"),
 ];
 
 fn main() {
@@ -112,6 +141,9 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
         "--shared-mode",
     ] {
         let output = llvm_config(&config, option);
+        if option == "--targets-built" {
+            emit_llvm_target_configuration(&output);
+        }
         identity.field("llvm-config-option", option.as_bytes());
         identity.field("llvm-config-output", &output);
     }
@@ -143,6 +175,19 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
     );
     identity.field("llvm-libfiles", normalized_libfiles.as_bytes());
 
+    let system_libraries = llvm_config_args_allow_empty(&config, &["--system-libs", link_mode]);
+    let system_libraries =
+        String::from_utf8(system_libraries).expect("llvm-config --system-libs must be UTF-8");
+    let normalized_system_libraries =
+        system_libraries.replace(reported_libdir_text, "$LLVM_LIBDIR");
+    identity.field(
+        "llvm-system-libraries",
+        normalized_system_libraries.as_bytes(),
+    );
+    for library in packaged_system_libraries(&system_libraries, &declared_libdir) {
+        add_external_file(identity, "llvm-system-library", &library);
+    }
+
     let names = String::from_utf8(names_output).expect("llvm-config --libnames must be UTF-8");
     let mut names = names.split_ascii_whitespace().collect::<Vec<_>>();
     names.sort_unstable();
@@ -158,6 +203,32 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
             "llvm-config returned a non-local library name"
         );
         add_external_file(identity, "libllvm", &declared_libdir.join(name));
+    }
+}
+
+fn emit_llvm_target_configuration(output: &[u8]) {
+    println!("cargo:rustc-check-cfg=cfg(loom_llvm_complete_target_set)");
+    for (_, cfg) in INKWELL_TARGET_CFGS {
+        println!("cargo:rustc-check-cfg=cfg({cfg})");
+    }
+
+    let output = String::from_utf8(output.to_vec()).expect("llvm-config --targets-built UTF-8");
+    let built = output.split_ascii_whitespace().collect::<BTreeSet<_>>();
+    if LLVM_19_TARGETS.iter().all(|target| built.contains(target)) {
+        println!("cargo:rustc-cfg=loom_llvm_complete_target_set");
+        return;
+    }
+    let missing = INKWELL_TARGET_CFGS
+        .iter()
+        .filter_map(|(target, _)| (!built.contains(target)).then_some(*target))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "partial LLVM installations must provide Loom's AArch64, ARM, and X86 target set; missing {}",
+        missing.join(", ")
+    );
+    for (_, cfg) in INKWELL_TARGET_CFGS {
+        println!("cargo:rustc-cfg={cfg}");
     }
 }
 
@@ -189,7 +260,23 @@ fn llvm_config_args(config: &Path, arguments: &[&str]) -> Vec<u8> {
     try_llvm_config(config, arguments).unwrap_or_else(|error| panic!("{error}"))
 }
 
+fn llvm_config_args_allow_empty(config: &Path, arguments: &[&str]) -> Vec<u8> {
+    try_run_llvm_config(config, arguments).unwrap_or_else(|error| panic!("{error}"))
+}
+
 fn try_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
+    let output = try_run_llvm_config(config, arguments)?;
+    if !output.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        return Err(format!(
+            "{} {} returned empty output",
+            config.display(),
+            arguments.join(" ")
+        ));
+    }
+    Ok(output)
+}
+
+fn try_run_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new(config)
         .args(arguments)
         .output()
@@ -209,14 +296,41 @@ fn try_llvm_config(config: &Path, arguments: &[&str]) -> Result<Vec<u8>, String>
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    if !output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()) {
-        return Err(format!(
-            "{} {} returned empty output",
-            config.display(),
-            arguments.join(" ")
-        ));
-    }
     Ok(output.stdout)
+}
+
+fn packaged_system_libraries(output: &str, libdir: &Path) -> Vec<PathBuf> {
+    let mut candidates = BTreeSet::new();
+    for argument in output.split_ascii_whitespace() {
+        let argument = argument.trim_matches('"');
+        let path = Path::new(argument);
+        if path.is_absolute() {
+            candidates.insert(path.to_path_buf());
+        } else if path.file_name().and_then(OsStr::to_str) == Some(argument) {
+            candidates.insert(libdir.join(argument));
+            if let Some(name) = argument.strip_prefix("-l").filter(|name| !name.is_empty()) {
+                for (prefix, suffix) in [
+                    ("lib", ".a"),
+                    ("lib", ".so"),
+                    ("lib", ".dylib"),
+                    ("", ".lib"),
+                ] {
+                    candidates.insert(libdir.join(format!("{prefix}{name}{suffix}")));
+                }
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .parent()
+                    .and_then(|parent| fs::canonicalize(parent).ok())
+                    .as_deref()
+                    == Some(libdir)
+        })
+        .collect()
 }
 
 fn add_external_file(identity: &mut BuildFingerprint, role: &str, path: &Path) -> PathBuf {
